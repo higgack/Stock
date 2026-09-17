@@ -2263,24 +2263,44 @@ def _backfill_korean_names(rows: list, market: str) -> None:
         # 번복). yfinance longName(영문)·TWSE 中文 native 명 → 한국어 번역
         # (translate_titles_kr) → '티에스엠씨·미디어텍' 류. JP/HK 와 통일, 소형주까지.
         try:
-            from bot.chart_translate import translate_titles_kr
+            from bot.chart_translate import has_han, translate_titles_kr
             tickers = [r["ticker"] for r in rows]
+            native = {r["ticker"]: r.get("name") for r in rows}   # 中文 원문 보존
             en = _fetch_display_names(tickers)            # yfinance longName(영문)
             ue = sorted({n for n in en.values() if n})
             ke = translate_titles_kr(ue) if ue else {}
+            done: set = set()
             for r in rows:
                 e = en.get(r["ticker"], "")
-                if e:
-                    r["name"] = ke.get(e) or e
-            # longName 미스 종목 — 中文 native 명(_tw_universe names) 한국어 번역
-            miss = [r for r in rows if not en.get(r["ticker"])
-                    and r.get("name") and r["name"] != r["ticker"]]
-            nat = sorted({r["name"] for r in miss})
-            if nat:
-                kr = translate_titles_kr(nat)
-                for r in miss:
-                    if kr.get(r["name"]):
-                        r["name"] = kr[r["name"]]
+                if e and ke.get(e):
+                    r["name"] = ke[e]
+                    done.add(r["ticker"])
+            # ⚠️ 옛 판은 `r["name"] = ke.get(e) or e` 였다 — 번역이 없으면 원문
+            # longName 을 그대로 넣고, 그 종목을 **`miss` 에서도 빼** 버렸다
+            # (`miss` 판정이 `not en.get(ticker)` 였다). yfinance 가 TW 소형주에
+            # 中文 longName 을 주면 그 행은 中文 → 아래 native 번역도 안 타고
+            # 영원히 한자다(사용자 2026-09-17 캡처의 `百達-KY`·`三商電`).
+            # 판정은 '원천이 이름을 줬나' 가 아니라 **'번역이 됐나'** 다(#136).
+            left = [r for r in rows if r["ticker"] not in done]
+            nat = sorted({native[r["ticker"]] for r in left
+                          if native.get(r["ticker"])
+                          and native[r["ticker"]] != r["ticker"]})
+            kr = translate_titles_kr(nat) if nat else {}
+            for r in left:
+                n0 = native.get(r["ticker"])
+                if n0 and kr.get(n0):
+                    r["name"] = kr[n0]
+                    done.add(r["ticker"])
+                elif en.get(r["ticker"]) and not has_han(en[r["ticker"]]):
+                    # 번역은 없지만 longName 이 **영문**이면 한자보다 낫다.
+                    r["name"] = en[r["ticker"]]
+            stuck = [r["ticker"] for r in rows if r["ticker"] not in done
+                     and has_han(r.get("name"))]
+            if stuck:
+                # 침묵하면 다음 라운드가 또 추측한다(#43·#82) — 몇 개가 어느
+                # 상태인지 로그가 말한다.
+                log.info("finviz: TW 한글명 미해소 %d종목(한자 잔존) — %s",
+                         len(stuck), ", ".join(stuck[:8]))
         except Exception as exc:
             log.warning("finviz: TW 한글명 백필 실패: %s", exc)
         return

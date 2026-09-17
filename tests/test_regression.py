@@ -66502,8 +66502,13 @@ class TestKrxAfterMarketBoard20260916:
         assert _current_kr_session(d(8, 30), "NXT") == "pre"
         assert _current_kr_session(d(16, 30), "KRX") == "post"
 
-    def test_scan_writes_to_its_own_venue_files(self, tmp_path, monkeypatch):
-        """수집기를 통째로 태운다 — 헬퍼만 재면 venue 배선을 못 잡는다(#20)."""
+    def _kr_scan_env(self, tmp_path, monkeypatch, *, nxt_open: bool):
+        """수집기를 태우기 위한 최소 환경 — **창 판정만 시계에서 떼어낸다**.
+
+        ⚠️ 옛 판은 실제 `now` 를 그대로 써서 16:00~20:00 KST 에만 빨간불이
+        되는 시한폭탄이었다(2026-09-17 게이트 실측 red). 창에 의존하는
+        테스트는 시계를 고정할 것(#249·#291·#342).
+        """
         import bot.finviz_client as fv
         import bot.prepost_client as pp
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
@@ -66516,14 +66521,66 @@ class TestKrxAfterMarketBoard20260916:
             "reg_close": 80000.0, "over_volume": 50000, "over_value": 4.05e9,
             "volume": 9_000_000})
         monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        monkeypatch.setattr(
+            pp, "_in_kr_extended_window",
+            lambda now, venue="NXT", _o=nxt_open: (
+                True if str(venue).upper() == "KRX" else _o))
+        return pp
+
+    def test_scan_writes_to_its_own_venue_files(self, tmp_path, monkeypatch):
+        """수집기를 통째로 태운다 — 헬퍼만 재면 venue 배선을 못 잡는다(#20).
+
+        NXT 창이 닫혀 있으면 공유가 없으므로 KRX 파일만 쓴다.
+        """
+        pp = self._kr_scan_env(tmp_path, monkeypatch, nxt_open=False)
         out = pp._compute_kr_prepost("KRX")
         assert out["venue"] == "KRX" and out["up"], out
-        krx_cache, krx_status = pp._venue_files("KRX")
-        nxt_cache, _ = pp._venue_files("NXT")
+        krx_cache, _ = pp._venue_files("KRX")
+        nxt_cache, _n = pp._venue_files("NXT")
         assert (tmp_path / krx_cache).exists(), "KRX 결과가 저장되지 않았다"
         assert not (tmp_path / nxt_cache).exists(), "NXT 캐시를 덮어썼다"
         assert pp.kr_prepost_status("KRX").get("venue") == "KRX"
         assert pp.kr_prepost_status("NXT") == {}, "상태 파일이 섞였다"
+
+    def test_a_different_session_is_not_shared(self, tmp_path, monkeypatch):
+        """세션이 다르면 공유하지 않는다 — `_shared_venues` 독스트링이
+        명시적 계약으로 적어 둔 것인데, 위 두 테스트는 `_current_kr_session`
+        을 "post" 로 고정해 **그 조건을 한 번도 안 잰다**(독립 리뷰 L6:
+        세션 동일성 검사를 지워도 128 passed). 진짜 시계로 08:30(NXT 프리 ·
+        KRX 닫힘)을 고정해 태운다.
+        """
+        from datetime import datetime
+
+        import bot.prepost_client as pp
+        from bot.kr_session import KST as _KST
+
+        at = datetime(2026, 9, 16, 8, 30, tzinfo=_KST)
+        assert pp._shared_venues("NXT", at) == ("NXT",), pp._shared_venues("NXT", at)
+        # 반대 증거: 겹치는 창(17:00)에서는 실제로 공유된다(#25).
+        at2 = datetime(2026, 9, 16, 17, 0, tzinfo=_KST)
+        assert set(pp._shared_venues("KRX", at2)) == {"KRX", "NXT"}
+
+    def test_overlapping_windows_share_one_scan_into_two_files(
+            self, tmp_path, monkeypatch):
+        """겹치는 창(16:00~20:00)에선 **한 번 받아 둘 다** 저장한다 — 보드마다
+        따로 스캔하면 같은 숫자를 얻으려고 바깥 호출이 2배가 된다(리뷰 B1).
+
+        위 테스트의 '덮어쓰지 않는다' 는 공유가 없을 때의 계약이다. KRX 의
+        체결 창은 NXT 창 **안**에 통째로 들어가므로 실제 운영에선 이쪽이
+        상시 경로다 — 둘을 갈라 놓지 않으면 시간대에 따라 한쪽이 거짓이 된다
+        (#45 두 모집단 · #222 계약을 다시 쓴 것이지 지운 것이 아니다).
+        """
+        pp = self._kr_scan_env(tmp_path, monkeypatch, nxt_open=True)
+        pp._compute_kr_prepost("KRX")
+        krx_cache, _ = pp._venue_files("KRX")
+        nxt_cache, _n = pp._venue_files("NXT")
+        assert krx_cache != nxt_cache, "두 보드가 같은 파일을 쓴다"
+        assert (tmp_path / krx_cache).exists() and (tmp_path / nxt_cache).exists()
+        # 저장분의 `venue` 는 **읽는 쪽**이고, 누가 받아 왔는지는 scan_venue.
+        for vn in ("KRX", "NXT"):
+            st = pp.kr_prepost_status(vn)
+            assert st.get("venue") == vn, (vn, st)
+            assert st.get("scan_venue") == "KRX", (vn, st)
 
     def test_one_venue_refresh_does_not_block_the_other(self, monkeypatch):
         """전역 불리언 하나면 KRX 스캔 중 NXT 갱신이 통째로 막힌다.
@@ -66693,6 +66750,52 @@ class TestKrBoardsReviewFixes20260916:
         assert "08:50" not in lb, lb
         assert in_extended_window("NXT", datetime(2026, 9, 16, 8, 55, tzinfo=KST))
         assert window_label("KRX") == "애프터마켓 16:00–20:00 KST"
+
+    def test_exclusive_venue_splits_the_three_branches(self):
+        """창으로 갈리는 하한 — 필드로 못 가르는 것을 **창**이 가른다.
+
+        사용자 2026-09-17 "NXT 에 등록안된 기업들도 많다" 에 답하려면 'NXT 에서
+        거래되는 종목' 을 알아야 하는데, 응답엔 거래소 필드가 없다(#373b 실측).
+        그런데 KRX 는 체결 창이 애프터마켓뿐이라 **NXT 전용 창**(프리
+        08:00–09:00 · 15:40–16:00)의 시간외 체결은 정의상 NXT 다 — 그게 하한이다.
+        갈래는 셋이고 처방이 다르다(#82): exclusive / overlap / closed.
+        """
+        from datetime import datetime
+
+        from bot.kr_session import KST, exclusive_venue
+
+        def at(h, m):
+            return exclusive_venue(datetime(2026, 9, 17, h, m, tzinfo=KST))
+
+        assert at(8, 20) == ("NXT", "exclusive")     # KRX 는 개장전(체결 없음)
+        assert at(8, 55) == ("NXT", "exclusive")     # pre_close 도 체결이 있다
+        assert at(15, 45) == ("NXT", "exclusive")    # KRX 애프터는 16:00 부터
+        assert at(16, 10) == ("", "overlap")         # 둘 다 열림 → 귀속 불가
+        assert at(19, 0) == ("", "overlap")
+        assert at(9, 30) == ("", "closed")           # 정규장 = 시간외 창 아님
+        assert at(21, 0) == ("", "closed")
+        # 주말은 어느 쪽도 안 열린다(창 표의 휴장 판정을 그대로 탄다).
+        assert exclusive_venue(datetime(2026, 9, 19 + 1, 8, 20,
+                                        tzinfo=KST))[1] == "closed"
+
+    def test_exclusive_venue_is_derived_not_enumerated(self, monkeypatch):
+        """거래소 이름을 여기 열거하면 거래소가 늘 때 조용히 틀린다(#24).
+
+        ⚠️ 이 가드는 **발화 경로가 있어야** 가드다(#291) — 오늘 레지스트리는
+        둘뿐이라 `("KRX","NXT")` 로 하드코딩해도 위 테스트가 전부 통과한다.
+        합성 거래소를 하나 끼워 **열거면 못 보는 상태**를 만들어 태운다(#91c).
+        """
+        from datetime import datetime
+
+        import bot.kr_session as ks
+        # NXT 전용 창(08:20)에 세 번째 거래소를 겹쳐 놓으면 더 이상 '전용' 이
+        # 아니다 — 열거 구현은 이 변화를 못 본다.
+        third = ((8, 0, 9, 0, "pre", "프리마켓"),
+                 (9, 0, 20, 0, "after_close", "마감"),
+                 (20, 0, 8, 0, "after_close", "마감"))
+        monkeypatch.setitem(ks.VENUES, "ZZZ", third)
+        assert ks.exclusive_venue(
+            datetime(2026, 9, 17, 8, 20, tzinfo=ks.KST)) == ("", "overlap")
 
     # ── H4 + M6: 화면 문구가 거래소를 제대로 말하나 ────────────────
     def test_krx_banners_and_window_come_from_the_venue(self, monkeypatch):
@@ -67165,6 +67268,188 @@ class TestKrBoardProbeMeasured20260916:
         assert out == [("quantTop", "", [])] * 3, out
 
 
+class TestTwKoreanNameStuck20260917:
+    """대만 급등락·신고저에 한자 이름이 남는다(사용자 2026-09-17 캡처:
+    `百達-KY`·`伊雲谷`·`昶瑞機電`·`佑全`·`長園科`·`三商電`·`隆中`, 그리고
+    19행은 티커 `3296.TW` 인데 이름줄이 `3296.TWO | 승덕`).
+
+    원인 둘 — 둘 다 "있으면 됐다" 로 판정한 자리다(#25):
+    (a) 백필이 `r["name"] = ke.get(e) or e` 로 **번역이 없어도** 이름을 채우고
+        그 종목을 `miss` 에서 뺐다 → 中文 native 번역이 안 돌고, 렌더 쪽은
+        `_enrich_incomplete` 가 '다 찼다' 로 봐 워밍도 안 걸린다.
+    (b) 번역기가 `if kr:` 만 보고 **한자 그대로인 답**을 영구 캐시에 넣었다 →
+        한 번 굳으면 다시는 안 고쳐진다.
+    """
+
+    def test_clean_answer_strips_an_echoed_ticker(self):
+        """모델이 입력 형식(`티커 | 현지명`)을 되읊은 답을 벗긴다."""
+        from bot.chart_translate import clean_answer
+        assert clean_answer("3296.TWO | 승덕") == "승덕"
+        assert clean_answer(" 2236.TW  |  바이다 ") == "바이다"
+        # 한글 이름은 건드리지 않는다(되읊기 패턴이 아니다).
+        assert clean_answer("타이쑤화") == "타이쑤화"
+        assert clean_answer("百達-KY") == "百達-KY"
+        # 파이프가 있어도 앞이 티커꼴이 아니면 그대로 — 남의 이름을 자르면 안 된다.
+        assert clean_answer("승덕 | 화학") == "승덕 | 화학"
+
+    def test_han_answer_is_not_accepted_as_a_translation(self):
+        """한자 그대로면 번역이 아니다 — 캐시에 넣으면 영구히 굳는다."""
+        from bot.chart_translate import looks_translated
+        assert looks_translated("百達-KY", "百達-KY") is False   # 에코
+        assert looks_translated("昶瑞機電", "昶瑞機電") is False
+        assert looks_translated("三商電", "") is False
+        # 한글이 섞였으면 받는다(`百達-KY → 바이다-KY`).
+        assert looks_translated("百達-KY", "바이다-KY") is True
+        # 영문 통용명도 받는다 — 한자가 없으면 번역이다(TSMC·UMC 정책).
+        assert looks_translated("台積電", "TSMC") is True
+
+    def test_translator_records_the_miss_so_it_stops_repaying(self, tmp_path,
+                                                              monkeypatch):
+        """거부한 답을 기록 안 하면 **매 수집마다 다시 묻는다**(#348).
+
+        그리고 기록은 **프롬프트 지문**에 묶인다 — 영구 기록이면 프롬프트를
+        고쳐도 재시도가 영영 없다(#171·#119).
+        """
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "t.json")
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "m.json")
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        monkeypatch.setattr(ct, "_log_usage", lambda *a, **k: None)
+        calls = []
+
+        def _fake(_key, prompt, **kw):
+            calls.append(prompt)
+            return ("1. 昶瑞機電", 1, 1)      # 한자 그대로 — 번역 아님
+
+        import bot.screener as sc
+        monkeypatch.setattr(sc, "_call_pro", _fake)
+        assert ct.translate_titles_kr(["昶瑞機電"]) == {}      # 거부
+        assert ct.translate_titles_kr(["昶瑞機電"]) == {}
+        assert len(calls) == 1, "거부한 항목을 다시 물었다(비용이 샌다)"
+        # 프롬프트가 바뀌면 다시 묻는다.
+        monkeypatch.setattr(ct, "_TITLE_PROMPT", ct._TITLE_PROMPT + "x")
+        ct.translate_titles_kr(["昶瑞機電"])
+        assert len(calls) == 2, "프롬프트를 고쳤는데 재시도가 없다"
+
+    def test_a_line_the_model_never_answered_is_also_recorded(self, tmp_path,
+                                                              monkeypatch):
+        """모델이 **줄을 빠뜨린** 경우도 실패다 — 안 적으면 매번 다시 묻는다.
+
+        ⚠️ 이 테스트가 없는 동안 그 기록 줄은 **발화 경로가 없었다**(뮤테이션
+        M3 이 8 passed 로 통과 — #291·#91). 거부 경로만 재면 '답이 아예 안 온'
+        경로는 무가드다.
+        """
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "t.json")
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "m.json")
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        monkeypatch.setattr(ct, "_log_usage", lambda *a, **k: None)
+        calls = []
+        import bot.screener as sc
+
+        def _fake(_key, prompt, **kw):
+            calls.append(prompt)
+            return ("1. 타이쑤화", 1, 1)      # 2번 줄이 통째로 빠졌다
+        monkeypatch.setattr(sc, "_call_pro", _fake)
+        assert ct.translate_titles_kr(["台塑化", "三商電"]) == {"台塑化": "타이쑤화"}
+        # 두 번째 호출은 **빠진 줄을 다시 묻지 않는다**(둘 다 판정이 끝났다).
+        assert ct.translate_titles_kr(["台塑化", "三商電"]) == {"台塑化": "타이쑤화"}
+        assert len(calls) == 1, "응답에 없던 줄을 다시 물었다(비용이 샌다)"
+
+    def test_translator_caches_a_real_translation(self, tmp_path, monkeypatch):
+        """반대 증거 — 멀쩡한 답은 그대로 캐시된다(#25).
+
+        거부 가드가 **전부** 거부해도 위 테스트는 통과하므로 이 짝이 필요하다.
+        """
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "t.json")
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "m.json")
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        monkeypatch.setattr(ct, "_log_usage", lambda *a, **k: None)
+        import bot.screener as sc
+        monkeypatch.setattr(sc, "_call_pro",
+                            lambda *a, **k: ("1. 3296.TWO | 승덕", 1, 1))
+        # 되읊은 접두까지 벗겨서 캐시된다.
+        assert ct.translate_titles_kr(["承德科技"]) == {"承德科技": "승덕"}
+        assert ct.translate_titles_kr(["承德科技"], cache_only=True) == {
+            "承德科技": "승덕"}
+
+    def test_tw_backfill_falls_through_to_the_native_name(self, monkeypatch):
+        """(a) 의 재현 — longName 이 있으면 中文 번역을 건너뛰던 그 자리.
+
+        ⚠️ 헬퍼만 재면 이 결함을 못 본다(#20) — `_backfill_korean_names` 를
+        통째로 태운다. 옛 판은 `百達-KY` 가 longName 으로 오면 그걸 그대로
+        이름에 넣고 native 번역을 아예 안 불렀다.
+        """
+        import bot.finviz_client as fc
+        rows = [{"ticker": "2236.TW", "name": "百達-KY"},
+                {"ticker": "6505.TW", "name": "台塑化"}]
+        # longName 은 **또 다른 한자 문자열**이다(실제 yfinance TW 소형주 모양)
+        # — 옛 판은 이걸 이름에 그대로 넣어 원문보다 더 긴 한자로 바꿔 놓고
+        # native 번역을 건너뛰었다(#155 픽스처는 원천이 실제로 내는 모양대로).
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, **kw: {"2236.TW": "百達精密工業股份有限公司",
+                                               "6505.TW": "Formosa Petrochemical"})
+        seen = []
+
+        def _tt(titles, cache_only=False):
+            seen.append(list(titles))
+            return {"Formosa Petrochemical": "타이쑤화", "百達-KY": "바이다"}
+
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "translate_titles_kr", _tt)
+        fc._backfill_korean_names(rows, "TW")
+        got = {r["ticker"]: r["name"] for r in rows}
+        assert got["6505.TW"] == "타이쑤화", got
+        # 핵심: longName 이 있어도 **번역이 없으면** native 번역까지 간다.
+        assert got["2236.TW"] == "바이다", got
+        assert any("百達-KY" in t for t in seen[1:]), seen
+
+    def test_tw_backfill_prefers_english_over_han(self, monkeypatch):
+        """둘 다 번역이 없으면 **한자보다 영문**을 둔다 — 화면이 덜 틀린다."""
+        import bot.finviz_client as fc
+        rows = [{"ticker": "7642.TW", "name": "昶瑞機電"}]
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, **kw: {"7642.TW": "Chang Rui Electric"})
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda titles, cache_only=False: {})
+        fc._backfill_korean_names(rows, "TW")
+        assert rows[0]["name"] == "Chang Rui Electric", rows
+
+    def test_render_strips_a_suffix_drifted_echo(self):
+        """19행 그대로 — 티커가 `3296.TW` 인데 이름이 `3296.TWO | 승덕`.
+
+        정확 일치만 벗기던 옛 판은 이 행을 통째로 내보냈다(#18 이미 구워진
+        캐시는 렌더가 벗겨야 한다).
+        """
+        from bot.highlow_render import _strip_dup_ticker
+        assert _strip_dup_ticker("3296.TW", "3296.TWO | 승덕") == "승덕"
+        assert _strip_dup_ticker("0004.HK", "0004.HK | 구룡창") == "구룡창"
+        # 되읊기가 아닌 이름은 그대로(반대 증거, #25).
+        assert _strip_dup_ticker("2236.TW", "百達-KY") == "百達-KY"
+        assert _strip_dup_ticker("6505.TW", "타이쑤화") == "타이쑤화"
+
+    def test_enrich_leaves_untranslated_open_for_warming(self, monkeypatch):
+        """(a) 의 렌더판 — 한자뿐이면 `name_kr` 을 **비워** 워밍이 걸리게.
+
+        채워 두면 `_enrich_incomplete` 가 '다 찼다' 로 봐 백그라운드 번역이
+        영영 안 돈다(#25 '있다' 만 묻는 검사는 눈이 먼다).
+        """
+        import bot.chart_translate as ct
+        import bot.finviz_client as fc
+        import bot.highlow_render as hr
+        items = [{"ticker": "7642.TW", "name": "昶瑞機電"}]
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, **kw: {"7642.TW": "昶瑞機電"})
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda titles, cache_only=False: {})
+        monkeypatch.setattr(fc, "_industries_for", lambda *a, **k: {})
+        meta = hr._enrich_compute(["7642.TW"], items, "TW", False, True, False)
+        assert not (meta.get("7642.TW") or {}).get("name_kr"), meta
+        assert hr._enrich_incomplete(meta, ["7642.TW"], False, True) is True
+
+
 class TestVenueAxisAndUnparsed20260917:
     """2026-09-17 VM 프로브가 ④ 를 절반 확정했고, 수입 보드 0건을 로컬에서
     가를 도구가 없었다.
@@ -67273,6 +67558,393 @@ class TestVenueAxisAndUnparsed20260917:
         # 쓰면 별표가 화면에 그대로 찍힌다(#298. 배포전 셀프리뷰가 실제로
         # 잡았고, 그래서 규율이 아니라 회귀로 옮긴다).
         assert "**" not in krx and "**" not in nxt, (krx, nxt)
+
+    def test_probe_nxt_lower_bound_names_every_branch(self):
+        """⑤ 판정 — 네 갈래가 처방이 다르므로 이름을 달리한다(#82).
+
+        ⚠️ '전용 창인데 표본에 체결 0' 은 ❌ 가 아니다 — 그 창에 거래가 없었을
+        뿐일 수 있다(#54 대조 0건은 통과도 실패도 아니다 · #165).
+        """
+        from bot.scripts.kr_board_probe import nxt_lower_bound
+        closed = nxt_lower_bound([], "", "closed")
+        overlap = nxt_lower_bound([], "", "overlap")
+        empty = nxt_lower_bound([], "NXT", "exclusive")
+        hit = nxt_lower_bound(["005930"], "NXT", "exclusive")
+        assert closed.startswith("⏭") and "창 밖" in closed, closed
+        assert overlap.startswith("❓") and "겹치는" in overlap, overlap
+        # 겹칠 때 '같은 목록' 의 원인을 말한다 — 시장이 같아서가 아니다.
+        assert "시장이 같아서가 아니라" in overlap, overlap
+        assert empty.startswith("❓"), empty
+        assert hit.startswith("✅") and "005930" in hit, hit
+        # 확정은 **하한**이라고 말한다(잰 범위를 빼고 말하지 말 것, #286).
+        assert "하한" in hit, hit
+        # 네 갈래가 서로 다른 문장이어야 갈래다(#292 틀린 라벨 금지).
+        assert len({closed, overlap, empty, hit}) == 4
+
+    def test_probe_main_runs_the_nxt_universe_section(self):
+        """배선은 존재가 아니라 **호출**이다(#20·#120·#291).
+
+        ⑤ 를 통째로 지워도 헬퍼 테스트는 green 이다 — 실측으로 그 변형이
+        4,2xx개를 통과했다(#374 의 같은 계열). `main` 의 AST 에서 호출을 센다
+        (네트워크가 필요해 값으로는 못 태운다 — 그게 이 검사가 못 보는
+        축이다, #274).
+        """
+        import ast
+        import inspect
+
+        import bot.scripts.kr_board_probe as kb
+        fn = next(n for n in ast.walk(ast.parse(inspect.getsource(kb)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "main")
+        called = {n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_section_nxt_universe" in called, sorted(called)
+        # 그리고 ⑤ 는 판정 문구를 **찍어야** 한다(계산만 하면 없는 것과
+        # 같다, #123 계열) — 출력 배선도 호출로 센다.
+        sec = next(n for n in ast.walk(ast.parse(inspect.getsource(kb)))
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "_section_nxt_universe")
+        inner = {n.func.id for n in ast.walk(sec)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert {"nxt_lower_bound", "print"} <= inner, sorted(inner)
+        # 버전 배너는 bump 되어야 한다 — 옛 체크아웃 출력과 구별된다(#21·#364).
+        assert kb._PROBE_VER >= 2, kb._PROBE_VER
+
+    def test_probe_venue_param_section_measures_instead_of_guessing(
+            self, monkeypatch, capsys):
+        """⑥ 거래소 축 후보 — 원천에게 **물어서** 재고, 판정은 형제 프로브와
+        **같은 함수**를 쓴다(#38).
+
+        사용자 결정 대기 사항("NXT 종목만으로 거르려면 목록 원천이 필요")을
+        재는 자리다. 이름을 지어내 배선하면 죽은 경로를 배포하므로(#151·#345)
+        일부러 틀린 값을 넣어 zod 가 스스로 스키마를 말하게 한다(#64·#86).
+        """
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        asked = []
+
+        def fake(url, **params):
+            asked.append(dict(params))
+            key = next((k for k in params
+                        if params[k] == "__probe__"), None)
+            if key == "exchange":
+                return None, nd.http_reason(
+                    400, 9,
+                    body=b'{"message":"Invalid option: exchange"}')
+            return {"result": [{"itemCode": "005930"}]}, ""
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        # 기준선 1회 + 후보마다 1회
+        assert len(asked) == len(kb._VENUE_PARAMS) + 1, len(asked)
+        assert "exchange" in out and "있음" in out, out
+        # 후보 이름이 전부 출력에 실린다 — 잘라 내면 다음 결정을 가린다(#156).
+        for key in kb._VENUE_PARAMS:
+            assert key in out, (key, out)
+
+    def test_probe_venue_param_section_says_it_measured_nothing(
+            self, monkeypatch, capsys):
+        """한 건도 못 재면 ✅ 도 '후보에 아무것도 없다' 도 아니다 — **판정
+        불가**라고 말한다(#54 대조 0건은 통과가 아니다 · #143 대조군).
+
+        ⚠️ 이 갈래는 원천이 통째로 안 닿을 때만 나므로 정상 응답 픽스처로는
+        **발화 경로가 없었다**(뮤테이션 실측 통과, #291·#91c).
+        """
+        import bot.scripts.kr_board_probe as kb
+
+        monkeypatch.setattr(kb, "_get", lambda url, **p: (None, ""))
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "한 건도 재지 못했습니다" in out, out
+        # 그리고 '후보에 없다' 라고 단정하면 안 된다 — 못 잰 것이다(#165).
+        assert "스키마에 있는 것이 없습니다" not in out, out
+
+    def test_probe_venue_param_section_prints_what_the_source_declared(
+            self, monkeypatch, capsys):
+        """⑥ 의 **존재 이유**는 원천이 스스로 적어 보낸 허용값을 읽는
+        것이다(#350·#353 이 sortType 12종을 그렇게 알아냈다) — 그 출력
+        블록이 무가드였다(통째로 지워도 전 슈트 green, 독립 리뷰 M7d).
+        그리고 '한 건도 못 잼'·'대조군 실패'·'스키마에 없음' 세 결론 줄도
+        같이 못박는다(#20·#291).
+        """
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        def fake(url, **params):
+            if not any(v == "__probe__" for v in params.values()):
+                return {"result": [{"itemCode": "005930"}]}, ""
+            return None, nd.http_reason(
+                400, 9,
+                body=b'{"message":"Invalid option: expected one of '
+                     b'\"krx\"|\"nxt\"|\"unified\""}')
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "원천이 밝힌 허용값" in out, out
+        for v in ("krx", "nxt", "unified"):
+            assert v in out, (v, out)
+        # 대조군은 살아 있었으므로 그 경고는 **없어야** 한다(반대 증거, #25).
+        assert "대조군이 실패했습니다" not in out, out
+
+    def test_probe_venue_param_section_flags_a_dead_control_group(
+            self, monkeypatch, capsys):
+        """대조군이 죽으면 아래 판정은 '있음/없음' 이 아니라 판정 불가다
+        (#143) — 그 고지가 무가드였다(지워도 green, 독립 리뷰 M7c)."""
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        monkeypatch.setattr(
+            kb, "_get", lambda url, **p: (None, nd.http_reason(429, 5)))
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "대조군이 실패했습니다" in out, out
+
+    def test_probe_venue_param_section_demotes_a_shared_status(
+            self, monkeypatch, capsys):
+        """요청 모양 4xx 한 방에 후보 전부가 '이 키에만' 으로 찍히면
+        안 된다 — 차이는 **혼자일 때만** 차이다(#45·#352). 옛 판은 배선을
+        AST 이름으로만 재서, 강등 **결과**를 버리는 변형이 통과했다
+        (독립 리뷰 H3 — 얕은 복사로는 그 자리를 못 친다는 것도 같이 확인).
+
+        ⚠️ 429 로는 이 경로를 못 태운다 — `REQUEST_SHAPE_4XX` 밖이라
+        `classify_param_probe` 가 먼저 '판정 불가' 로 보낸다(#352a). 강등이
+        필요한 자리는 **이름을 지목하지 않는 400** 이다(#91b 재는 대상).
+        """
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        def fake(url, **params):
+            if not any(v == "__probe__" for v in params.values()):
+                return {"result": [{"itemCode": "005930"}]}, ""
+            # 400 인데 어느 키도 지목하지 않는다 → '이 키에만 4xx' 후보
+            return None, nd.http_reason(400, 9, body=b'{"message":"Bad"}')
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "환경 변화 의심" in out, out
+        assert "이 키에만" not in out, out
+
+    def test_probe_venue_param_section_reads_200_with_zero_rows(
+            self, monkeypatch, capsys):
+        """**이 섹션이 찾으려는 바로 그 성공 케이스** — 키가 먹혀 목록이
+        0행으로 걸러지는 경우. 옛 판은 추출된 행의 truthiness 로 200 을
+        판정해 그걸 '도달 실패' 로 찍었다(독립 리뷰 H2 실측): 사용자 결정
+        대기 사항을 **거짓 negative 로 닫는다**(#82·#54·#165).
+        """
+        import bot.scripts.kr_board_probe as kb
+
+        def fake(url, **params):
+            if params.get("exchange") == "__probe__":
+                return {"result": []}, ""          # 200 인데 0행
+            if any(v == "__probe__" for v in params.values()):
+                return {"result": [{"itemCode": "A"}, {"itemCode": "B"}]}, ""
+            return {"result": [{"itemCode": "A"}, {"itemCode": "B"}]}, ""
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if "exchange " in ln)
+        assert "있음" in line and "0행" in line, line
+        assert "도달 실패" not in line, line
+        # 하나라도 '있음' 이면 "스키마에 없다" 결론을 내면 안 된다.
+        assert "스키마에 있는 것이 없습니다" not in out, out
+
+    def test_probe_venue_param_section_says_none_in_schema(
+            self, monkeypatch, capsys):
+        """전부 무시되면 그렇게 말하되 **물은 수와 잰 수를 둘 다**(#45).
+        이 결론 줄도 무가드였다(독립 리뷰 M7b)."""
+        import bot.scripts.kr_board_probe as kb
+
+        monkeypatch.setattr(
+            kb, "_get",
+            lambda url, **p: ({"result": [{"itemCode": "A"}]}, ""))
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "스키마에 있는 것이 없습니다" in out, out
+        assert f"후보 {len(kb._VENUE_PARAMS)}종" in out, out
+
+        # ⚠️ 전부 200 이면 물은 수 == 잰 수라 두 수를 하나로 합치는 뮤테이션이
+        # 그대로 통과한다(실측). **갈리는** 픽스처로 재야 발화한다(#91c) —
+        # 첫 후보만 답하고 나머지는 막히는(그래서 중단되는) 상태.
+        calls = {"n": 0}
+
+        def flaky(url, **p):
+            calls["n"] += 1
+            if calls["n"] <= 2:      # 기준선 + 첫 후보
+                return {"result": [{"itemCode": "A"}]}, ""
+            return None, "HTTP 503"
+
+        monkeypatch.setattr(kb, "_get", flaky)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert f"후보 {len(kb._VENUE_PARAMS)}종 중 1종을 쟀고" in out, out
+
+    def test_probe_venue_param_section_writes_nothing(
+            self, monkeypatch, tmp_path, capsys):
+        """'읽기 전용' 은 **무엇을 안 쓰는지까지** 재야 참이 된다 —
+        #321 이 정확히 이 형태로 터졌다(배너는 읽기 전용이라 적었는데
+        캐시를 썼다). 형제 `probe_params` 도 같은 사각이다(#284·#264).
+        """
+        import bot.scripts.kr_board_probe as kb
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            kb, "_get",
+            lambda url, **p: ({"result": [{"itemCode": "A"}]}, ""))
+        before = sorted(q.name for q in tmp_path.iterdir())
+        kb._section_venue_params()
+        capsys.readouterr()
+        assert sorted(q.name for q in tmp_path.iterdir()) == before
+
+    def test_probe_venue_param_section_is_wired_into_main(self):
+        """섹션을 만들어 놓고 `main` 이 안 부르면 없는 것과 같다(#20·#291).
+        헬퍼만 재는 테스트로는 배선을 떼는 변형을 못 잡는다."""
+        import ast
+        import inspect
+
+        import bot.scripts.kr_board_probe as kb
+        fn = next(n for n in ast.walk(ast.parse(inspect.getsource(kb)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "main")
+        called = {n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_section_venue_params" in called, sorted(called)
+        assert kb._PROBE_VER >= 3, kb._PROBE_VER
+
+    def test_shared_status_demotion_is_one_function_not_two(self):
+        """'여러 후보가 같은 상태로 거절되면 키가 아니라 환경' 보정은 형제
+        프로브 둘이 쓴다 — 복제하면 한쪽만 고쳐져 통계가 갈린다(#38).
+        """
+        import ast
+        import inspect
+
+        import bot.naver_sector_client as nsc
+        import bot.scripts.kr_board_probe as kb
+        rows = [["a", 429, "", None, "있음 — 이 키에만 HTTP 429"],
+                ["b", 429, "", None, "있음 — 이 키에만 HTTP 429"],
+                ["c", 400, "", None, "있음 — 원천이 값을 지적함"]]
+        nsc.demote_shared_status(rows)
+        assert rows[0][4].startswith("판정 불가"), rows[0]
+        assert rows[1][4].startswith("판정 불가"), rows[1]
+        # 혼자인 것은 그대로 — 차이는 혼자일 때만 차이다(#45).
+        assert rows[2][4].startswith("있음"), rows[2]
+        for mod, fname in ((nsc, "probe_params"),
+                           (kb, "_section_venue_params")):
+            fn = next(n for n in ast.walk(ast.parse(inspect.getsource(mod)))
+                      if isinstance(n, ast.FunctionDef) and n.name == fname)
+            called = {n.func.id for n in ast.walk(fn)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            assert "demote_shared_status" in called, (fname, sorted(called))
+
+    def test_sweep_stops_after_a_run_of_unjudgeable_failures(self):
+        """한도·차단이 걸린 뒤 남은 후보를 더 치는 것은 순손실이다(#279 재시도
+        중단 조건은 '실패했나' 가 아니라 '더 물어서 답이 바뀌나' · #346·#354).
+
+        ⚠️ 요청 모양 4xx 는 걸리면 안 된다 — 그건 원천이 그 키를 읽고 거절한
+        것이라 이 프로브가 찾는 신호 자체다.
+        """
+        import bot.naver_sector_client as nsc
+
+        def rows(*specs):
+            return [[f"k{i}", st, "", None, v]
+                    for i, (st, v) in enumerate(specs)]
+
+        # 같은 상태의 판정 불가 3개 → 중단
+        three = rows((429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+                     (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+                     (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"))
+        assert "429" in nsc.abort_param_sweep(three), three
+        # 둘뿐이면 계속
+        assert nsc.abort_param_sweep(three[:2]) == ""
+        # 상태가 섞이면 계속 — 환경이 아니라 키별 사정일 수 있다
+        assert nsc.abort_param_sweep(rows(
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+            (503, "판정 불가(HTTP 503, 이 키를 지목하지 않음)"),
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"))) == ""
+        # 하나라도 판정이 섰으면 계속 — 특히 '있음' 은 찾던 신호다
+        assert nsc.abort_param_sweep(rows(
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+            (400, "있음 — 원천이 값을 지적함"),
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"))) == ""
+        # ⚠️ **상태가 같아도** 판정이 섰으면 계속이다 — 원천이 요청 모양 4xx
+        # 로 키를 지목하는 것이 이 프로브가 찾는 바로 그 신호라, 여기서 멈추면
+        # 성공 연속을 실패로 읽고 남은 후보를 통째로 버린다. 상태만 보는
+        # 픽스처는 이 갈래를 못 태운다(#91c — 실측으로 뮤테이션이 통과했다).
+        assert nsc.abort_param_sweep(rows(
+            (400, "있음 — 원천이 값을 지적함"),
+            (400, "있음 — 원천이 값을 지적함"),
+            (400, "있음 — 원천이 값을 지적함"))) == ""
+        # 도달 실패(status None)도 갈래 이름을 댄다(#82)
+        assert "도달 실패" in nsc.abort_param_sweep(rows(
+            (None, "판정 불가(도달 실패)"), (None, "판정 불가(도달 실패)"),
+            (None, "판정 불가(도달 실패)")))
+
+    def test_both_param_sweeps_stop_and_say_what_they_skipped(
+            self, monkeypatch, capsys):
+        """중단했으면 남은 후보는 '없음' 이 아니라 **묻지 않은 것**이다 —
+        총계(물은 수)와 소계(잰 수)를 가르지 않으면 "후보에 아무것도 없다"로
+        읽힌다(#45·#54). 형제 둘이 **같은 함수**를 쓴다(#38).
+        """
+        import bot.naver_sector_client as nsc
+        import bot.scripts.kr_board_probe as kb
+
+        calls = []
+
+        def dead(*a, **kw):
+            calls.append(kw.get("params") or kw)
+            return None, "HTTP 429"
+
+        monkeypatch.setattr(nsc, "_get2_json", dead)
+        keys = ("aa", "bb", "cc", "dd", "ee", "ff")
+        out = "\n".join(nsc.probe_params(url="http://x", keys=keys))
+        # 기준선 1 + 후보 3 = 4 콜에서 멈춘다(6 이 아니다)
+        assert len(calls) == 4, (len(calls), calls)
+        assert "429" in out and "묻지 않습니다" in out, out
+        assert out.count(nsc.SKIPPED_VERDICT) == 3, out
+        assert "한 건도 재지 못했습니다" in out, out
+
+        calls.clear()
+        monkeypatch.setattr(kb, "_get", lambda *a, **kw: dead())
+        kb._section_venue_params()
+        got = capsys.readouterr().out
+        assert len(calls) == 1 + 3, (len(calls), got)
+        assert "묻지 않습니다" in got, got
+        assert got.count(nsc.SKIPPED_VERDICT) == len(kb._VENUE_PARAMS) - 3, got
+
+    def test_sweep_says_nothing_when_it_asked_every_candidate(
+            self, monkeypatch):
+        """마지막 후보에서 걸린 '중단' 은 건너뛴 것이 없으므로 알릴 것도
+        없다 — 늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260).
+        """
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **kw: (None, "HTTP 429"))
+        out = "\n".join(nsc.probe_params(url="http://x", keys=("aa", "bb", "cc")))
+        assert "묻지 않습니다" not in out, out
+        assert nsc.SKIPPED_VERDICT not in out, out
+
+    def test_overlap_is_stated_as_our_limit_not_a_market_fact(self):
+        """사용자 2026-09-17: "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데.
+        NXT 에 등록안된 기업들도 많기 때문에."
+
+        옛 문구는 "겹치는 16:00–20:00 엔 같은 값" 이라 적었는데 그건 **우리
+        구현의 결과**(같은 블록 · 같은 유니버스 · 거래소 무필터)이지 시장에
+        대한 사실이 아니다. NXT 거래 종목이 상장 전체의 부분집합이면 시장
+        사실은 오히려 다르다 — 우리 한계를 시장 사실처럼 적으면 안 된다
+        (#165·#34). 계약을 다시 쓴 것이지 지운 것이 아니다(#222): 남는 보장
+        (측정된 절반 + 귀속 미측정)은 위 테스트가 그대로 잰다.
+        """
+        from bot.prepost_client import venue_attribution_note
+        for vn in ("KRX", "NXT"):
+            note = venue_attribution_note(vn)
+            # 부분집합이라는 사실과, 같은 목록이 **그 때문**이라는 인과를 둘 다.
+            assert "부분집합" in note, note
+            assert "거래소로 걸러진 것이 아닙니다" in note, note
+            # ⚠️ 시장 사실로 읽히는 단정은 금지 — "같은 값" 은 두 시장이 같다는
+            # 말로 읽힌다(그래서 사용자가 지적했다).
+            assert "엔 같은 값" not in note, note
 
     def test_the_note_reaches_the_rendered_page(self, monkeypatch):
         """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 렌더 결과로."""

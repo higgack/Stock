@@ -408,3 +408,131 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 4. `_extract_stance` Pass 0-3 폴백(정규식/키워드) — sentinel 도입(2026-07-26) 이후에도 구버전
    아카이브·sentinel 미준수 케이스의 안전망이라 여전히 살아있는 코드. 코드 주석에 인용된 실제
    회귀 티커(009450.KS/9988.HK/2382.TW/ALAB/300750.SZ)별로 최소 1개씩 순수 유닛테스트 고정 권장.
+
+## NXT/KRX 겹침 문구 + 전용 창 하한 (2026-09-17, #375)
+
+사용자 "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데. NXT 에 등록안된 기업들도
+많기 때문에" — 화면이 **우리 구현의 결과**("겹치는 창엔 같은 값")를 시장 사실처럼
+적고 있었고, 미측정 축이 하나 더 있었다(NXT 거래 종목 목록 미수신).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 겹침은 **우리 한계**로 적고 "엔 같은 값"(시장 단정)은 금지 | ✅ 자동 | `test_overlap_is_stated_as_our_limit_not_a_market_fact` |
+| 거래소 무필터·부분집합 사실을 두 줄 모두에 | ✅ 자동 | 같은 테스트(KRX·NXT 순회) |
+| 체결 귀속은 여전히 미측정이라고 말한다 | ✅ 자동 | `test_screen_states_the_measured_half_and_claims_no_venue`(#373 계약 유지) |
+| 각주가 렌더 페이지에 실린다(배선, #20) | ✅ 자동 | `test_the_note_reaches_the_rendered_page` |
+| 전용 창 판정 3갈래(exclusive/overlap/closed) | ✅ 자동 | `test_exclusive_venue_splits_the_three_branches` |
+| 그 판정이 거래소를 **열거하지 않는다**(#24) | ✅ 자동 | `test_exclusive_venue_is_derived_not_enumerated` — 합성 거래소로 발화(#91c) |
+| 프로브 ⑤ 판정 4갈래가 서로 다른 문장 | ✅ 자동 | `test_probe_nxt_lower_bound_names_every_branch` |
+| ⑤ 가 `main` 에서 **불린다** + 판정을 찍는다 | ✅ 자동 | `test_probe_main_runs_the_nxt_universe_section`(AST) |
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **NXT 거래 종목 목록 자체는 아무도 안 잰다** — 원천을 아직 안 쟀으므로
+  보드를 거래소로 거르지 못한다. 화면이 그 사실을 말하는 것까지가 이 라운드다.
+- (b) 전용 창 하한은 **원천이 밝힌 창**(네이버 공지 153) 위에 선 연역이다 —
+  원천이 창을 또 바꾸면 `kr_session` 표와 함께 이 판정도 틀린다(#165).
+- (c) ⑤ 의 실제 호출 경로(네트워크)는 값으로 못 태운다 — AST 로 호출만 센다.
+  인자를 넘기되 엉뚱한 값을 넘기는 변형은 이 검사 밖이다(#366 과 같은 축).
+- (d) 표본이 3종목이라 "전용 창인데 체결 0" 은 NXT 미거래의 증거가 아니다
+  (그래서 ❌ 가 아니라 ❓ 로 찍는다, #54).
+
+## 대만 종목명 한글화 — 번역 판정·실패 기록 (2026-09-17, #376)
+
+사용자 "대만 급등급락이랑 신고가에 한글화 안된것들 처리해줘" — `百達-KY`·
+`昶瑞機電`·`三商電` 이 한자 그대로였고, 19행은 `3296.TW` 인데 이름줄이
+`3296.TWO | 승덕` 이었다. 원인은 넷 다 "있으면 됐다" 판정(#25).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 되읊은 `티커 \| ` 접두를 벗긴다 | ✅ 자동 | `test_clean_answer_strips_an_echoed_ticker` |
+| 한자 그대로인 답은 번역이 아니다 | ✅ 자동 | `test_han_answer_is_not_accepted_as_a_translation` |
+| 멀쩡한 답은 그대로 캐시(반대 증거, #25) | ✅ 자동 | `test_translator_caches_a_real_translation` |
+| 거부한 항목을 다시 묻지 않는다 + 프롬프트 바뀌면 재시도 | ✅ 자동 | `test_translator_records_the_miss_so_it_stops_repaying` |
+| **응답에 없던 줄**도 기록한다 | ✅ 자동 | `test_a_line_the_model_never_answered_is_also_recorded` — 뮤테이션 M3 가 이 테스트 전엔 통과했다(#291) |
+| 백필이 번역 실패 시 native 로 내려간다 | ✅ 자동 | `test_tw_backfill_falls_through_to_the_native_name`(수집기 E2E, #20) |
+| 둘 다 실패면 한자보다 영문 | ✅ 자동 | `test_tw_backfill_prefers_english_over_han` |
+| 렌더가 접미사 어긋난 되읊기를 벗긴다 | ✅ 자동 | `test_render_strips_a_suffix_drifted_echo` |
+| 한자뿐이면 `name_kr` 을 비워 워밍이 걸리게 | ✅ 자동 | `test_enrich_leaves_untranslated_open_for_warming` |
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **모델이 실제로 무엇을 돌려주는지는 안 쟀다** — 샌드박스는 LLM 을 못
+  부른다. 프롬프트에 "통용 한글명이 없으면 공식 영문명" 퇴로를 열었지만 그게
+  `百達-KY` 를 실제로 풀지는 **다음 VM 수집이 답한다**(#12·#79·#82).
+- (b) **이미 굳은 캐시는 이 변경이 못 고친다**(#18) — `names_kr.json`·
+  `chart_title_kr.json` 에 한자로 들어간 항목은 그대로다. 렌더의 되읊기 벗기기만
+  소급 적용된다. 지우고 다시 받으려면 그 키를 손으로 빼야 한다.
+- (c) 실패 기록은 **프롬프트 지문**에만 묶인다 — 모델·모델 버전이 바뀌어도
+  지문은 그대로라 재시도가 없다.
+
+## 산업트렌드 YoY 라벨 위치 (2026-09-17, #377)
+
+사용자 "숫자가 그래프에 가지잖아. 이런거 위치를 조정해서 보여지게 해줘.
+되는게 있게 안되는것도 있고 그러네" — `_yoy_bar_svg` 가 최신값 라벨 baseline 을
+`max(y(v) - 4, 9)` 리터럴로 잡았다. `y(v)` 는 음수 막대에선 **아래끝**이라
+라벨이 막대 안에 박혔고, 양수라도 왼쪽 옆 막대가 더 높으면 가려졌다.
+실측: 24개월 픽스처 6종 중 **5종이 겹쳤다**(옛 판).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 라벨이 어떤 막대에도 겹치지 않는다(6종) | ✅ 자동 | `test_label_never_sits_on_a_bar` — M1(옛 리터럴)에서 5/6 발화 |
+| 라벨이 도화지 안에 남는다(#100·#112 상한) | ✅ 자동 | `test_label_stays_inside_the_canvas` |
+| X축 날짜 라벨과 안 겹친다 | ✅ 자동 | `test_label_does_not_collide_with_the_date_axis` |
+| y 가 **막대 상자에서 파생**된다(부호·이웃 높이에 반응) | ✅ 자동 | `test_placement_is_derived_from_the_bar_boxes` — M1·M2 발화 |
+| 점유된 자리가 있으면 물러난다 | ✅ 자동 | `test_bar_label_y_flips_when_a_text_box_already_sits_there` + `test_axis_label_avoidance_fires_from_the_real_chart`(호출부) |
+| 상·하한이 도화지를 지킨다 | ✅ 자동(합성 기하) | `test_bar_label_y_clamps_inside_the_canvas` |
+| `_est_w` 가 9px sans 실폭보다 **좁지 않다** | ✅ 자동 | `test_est_w_is_not_narrower_than_the_rendered_text` — 독립 대조표(#66 동어반복 회피) |
+| 겹침 판정이 **반올림한 y**(SVG 에 실리는 값)로 돈다 | ✅ 자동 | `test_rounding_is_applied_before_the_overlap_check` — 60,000 차트를 쓸어 찾은 픽스처(3건) |
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **상·하한만** 합성 기하로 태운다 — 20,000 차트를 쓸어 호출부에서
+  0번 걸렸다. 축라벨 회피는 **도달한다**(같은 쓸기에서 1건, 그게
+  `test_axis_label_avoidance_fires_from_the_real_chart` 픽스처다). 처음엔
+  둘 다 '도달 불가' 로 적었는데 재 보니 아니었다 — **"도달 불가"는 재고
+  나서 쓸 것**(#291·#165). 같은 쓸기가 죽은 후보 `_PAD_T - 3.0`(값이 clamp
+  하한과 같은 9.0)과 죽은 폴백 `or [own]` 도 0/20,000 으로 드러내 지웠다.
+- (b) **실제 렌더 폭**은 안 잰다 — `_est_w` 는 근사이고 샌드박스는 브라우저가
+  없다(#14). 다만 옛 판의 문자당 3.4 는 9px sans 실폭(숫자 5.0 · `%` 8.0)의
+  1/1.5 라 가드가 눈이 멀어 있었다(파생 배치를 넣고도 3,000 차트 **78.3%**
+  겹침 → 실폭 표로 바꿔 **0%**). 대조표는 테스트가 따로 들고 있다.
+- (c) **아카이브는 렌더된 HTML 을 동결**하므로(`industry_archive`) 과거 월
+  스냅샷은 옛 위치 그대로다 — 새 스냅샷부터 적용된다(#18).
+- (d) 형제 선차트(`_monthly_chart`·`_ttm_chart`·`_ttm_yoy_chart`)의
+  **콜아웃↔폴리라인** 겹침은 이번에 고치지 않았다(실측 83.2% · 39.1% · 0%).
+  `_place_labels` 후보가 서로와 축라벨만 피하고 선은 안 본다. 미루는 근거는
+  CSS 기제다 — `.ind-cl`·`.ind-cl-ma` 의 `paint-order:stroke · stroke-width:3px`
+  헤일로(좌우 1.5px)가 2.4px/2px 선을 덮는데, 막대는 **면 채움**이라 같은
+  헤일로가 아무 일도 못 했다. ⚠️ 그 기제는 **CSS 를 읽어 세운 것이고 렌더로
+  재지 않았다**(#165) — 선차트에서도 민원이 오면 미룰 근거가 없다.
+  ✅ 반면 `_est_w` 수정은 형제에도 그대로 듣는다: `_monthly_chart` 의
+  **콜아웃↔축라벨 겹침 7.0%(633/9000) → 0%**(옛 폭으로 렌더한 것과 대조).
+
+## NXT 거래소 축 파라미터 후보 (2026-09-17, #377 같은 커밋)
+
+사용자 결정 대기였던 "NXT 종목만으로 거르려면 목록 원천이 필요" 를 **재는**
+자리다(`kr_board_probe` ⑥). 이름을 지어내 배선하면 죽은 경로를 배포하므로
+(#151·#345) zod 에 일부러 틀린 값을 넣어 원천이 스스로 말하게 한다(#64·#86).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 후보마다 실호출하고 이름을 전부 찍는다(#156 자르지 않는다) | ✅ 자동 | `test_probe_venue_param_section_measures_instead_of_guessing` |
+| `main` 이 실제로 부른다 | ✅ 자동(AST) | `test_probe_venue_param_section_is_wired_into_main` — M5 발화 |
+| 한 건도 못 재면 ❌(‘후보에 없다’ 로 단정 금지) | ✅ 자동 | `test_probe_venue_param_section_says_it_measured_nothing` — M7 이 이 테스트 전엔 통과했다(#291) |
+| 같은 상태 공유 보정이 **한 함수**(형제 복제 금지, #38) | ✅ 자동 | `test_shared_status_demotion_is_one_function_not_two` — M6 발화 |
+| 원천이 밝힌 허용값을 그대로 찍는다 | ✅ 자동 | `test_probe_venue_param_section_prints_what_the_source_declared` |
+| 대조군이 죽으면 '판정 불가' 라고 먼저 말한다(#143) | ✅ 자동 | `test_probe_venue_param_section_flags_a_dead_control_group` |
+| 같은 상태가 여럿이면 '환경 의심' 으로 내린다 | ✅ 자동 | `test_probe_venue_param_section_demotes_a_shared_status` |
+| 200·0행을 '도달 실패' 로 찍지 않는다 | ✅ 자동 | `test_probe_venue_param_section_reads_200_with_zero_rows` |
+| 하나도 없으면 물은 수·잰 수를 둘 다 적는다(#45) | ✅ 자동 | `test_probe_venue_param_section_says_none_in_schema` |
+| 읽기 전용 — 캐시·냉각을 안 건드린다 | ✅ 자동 | `test_probe_venue_param_section_writes_nothing` |
+| 판정 불가가 연속 3개면 **멈추고 건너뛴 것을 말한다**(#279·#346·#354) | ✅ 자동 | `test_sweep_stops_after_a_run_of_unjudgeable_failures` · `test_both_param_sweeps_stop_and_say_what_they_skipped`(형제 둘 다) · `test_sweep_says_nothing_when_it_asked_every_candidate`(늘 뜨는 경고 금지, #25·#260) |
+
+**못 보는 축**(#274): 후보 이름 9종은 **우리가 적은 것**이라 원천이 쓰는
+이름이 그 밖일 수 있다(#24) — ④ 의 전 키 덤프가 짝이다. 그리고 '있음' 이
+떠도 그 키로 **목록이 실제로 줄어드는지**는 그다음 측정이 답한다.
+
+**같은 커밋에서 잡은 시한폭탄**: `test_scan_writes_to_its_own_venue_files`
+(2026-09-16 작성)가 실제 `now` 로 창을 판정해 **매일 16:00~20:00 KST 에만**
+빨간불이었다 — KRX 체결 창은 NXT 창 안에 통째로 들어가므로 그 시간엔 공유
+저장(리뷰 B1)이 정상 동작하고, 단언 "NXT 캐시를 덮어썼다" 가 **운영 상시
+경로에서 거짓**이 된다. 창 판정을 시계에서 떼어내고 계약을 둘로 나눴다
+(`test_overlapping_windows_share_one_scan_into_two_files`, M8 발화 확인).

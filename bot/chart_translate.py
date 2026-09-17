@@ -17,6 +17,7 @@ from bot.genai_factory import effective_key as _effective_key
 import re
 import tempfile
 import threading
+import hashlib as _hashlib
 import time
 from pathlib import Path
 
@@ -31,6 +32,99 @@ _MAX_BATCH = 40                       # 한 콜당 최대 제목 수(토큰 boun
 
 
 _SALVAGE_LOCK = threading.Lock()
+
+# 한자/한글 판정 — "이 답이 정말 번역인가" 를 재는 단일 출처(#38).
+# `bollinger_board.has_han` 이 같은 판정을 따로 들고 있었는데, 정작 **번역을
+# 캐시하는 쪽**은 그 판정을 안 써서 한자 그대로인 답이 영구 캐시에 들어갔다.
+_HAN_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+_HANGUL_RE = re.compile(r"[가-힣]")
+# 모델이 입력 형식(`티커 | 현지명`)을 그대로 되읊는 경우를 벗긴다 — 실측:
+# 대만 급등락 19행이 `3296.TW` 인데 이름줄이 `3296.TWO | 승덕` 이었다
+# (사용자 2026-09-17 캡처). `_strip_dup_ticker` 는 **그 행의 티커와 정확히
+# 같을 때만** 벗기므로 접미사가 어긋난 되읊기(.TW vs .TWO)는 화면까지 샌다.
+_ECHO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,14}\s*\|\s*(.+)$")
+
+
+_MISS_CACHE = _HOME / "translate_miss.json"
+
+# 프롬프트는 **상수**다 — 지문(`_prompt_fp`)을 뜨려면 데이터 줄과 분리돼야 한다.
+# ⚠️ 마지막 줄 "한자를 그대로 두지 마세요" 가 이번 라운드의 핵심이다(사용자
+# 2026-09-17 "한글화 안된것들"): 옛 프롬프트는 한자 음독만 금지하고 **대안을
+# 안 줘서**, 통용 한글명이 없는 소형주(百達-KY·昶瑞機電·三商電)에서 모델이
+# 원문을 그대로 돌려줬다. 공식 영문명이라는 퇴로를 열어 준다.
+_TITLE_PROMPT = (
+    "다음은 해외 증시 공시 제목입니다. 각 줄을 자연스럽고 간결한 한국어로 번역하세요.\n"
+    "- 회사명은 한국에서 통용되는 명칭(예: 贵州茅台→귀주모태주, トヨタ→도요타)\n"
+    "- 통용 한글명이 없는 회사는 **공식 영문명**(로마자)을 쓰고 한자를 그대로 두지 마세요.\n"
+    "- 번역문만, 입력과 동일한 '번호. 번역' 형식으로 같은 번호 유지\n"
+    "- 군더더기 설명 금지, 한 줄당 한 번역\n\n")
+
+_NAME_PROMPT = (
+    "다음은 대만/중국/홍콩 상장사입니다('티커 | 현지명'). 각 줄을 한국 투자자에게 "
+    "통용되는 **간결한 한글 회사명**으로 바꾸세요.\n"
+    "- 영문 통용명 기준 음역: 華邦電 → 윈본드, 鴻海 → 폭스콘, 聯發科 → 미디어텍, "
+    "比亞迪 → 비야디, 騰訊 → 텐센트, 阿里巴巴 → 알리바바\n"
+    "- 한국에서 영문 약자로 더 통용되면 영문 유지: 台積電 → TSMC, 聯電 → UMC, "
+    "中芯國際 → SMIC, 日月光 → ASE\n"
+    "- 한자 음독(화봉전 등) 금지. 법인격(Corporation/股份有限公司/控股) 생략, "
+    "핵심 브랜드만. 한 줄당 결과 하나, 입력과 동일한 '번호. 결과' 형식, 같은 "
+    "번호 유지. 설명 금지.\n"
+    "- 통용 한글명이 없으면 그 회사의 **공식 영문명**(로마자)을 쓰세요. "
+    "한자를 그대로 두지 마세요. 티커를 되읊지 말고 이름만 쓰세요.\n\n")
+
+
+def _prompt_fp(template: str) -> str:
+    """프롬프트 **내용**의 지문 — 손으로 올리는 버전은 이 레포에서 여섯 번
+    졌다(#119). 프롬프트를 고치면 지문이 바뀌어 실패 기록이 저절로 무효가
+    되고, 그 종목이 다음 배치에서 자동으로 다시 시도된다(#348)."""
+    return _hashlib.sha1(template.encode("utf-8")).hexdigest()[:10]
+
+
+def _miss_load() -> dict:
+    return _read_json_cache(_MISS_CACHE)
+
+
+def _miss_skip(cache_miss: dict, key: str, fp: str) -> bool:
+    """이 프롬프트로 이미 실패한 항목인가 — 같은 지문이면 다시 안 묻는다.
+
+    ⚠️ 기록이 없으면 **묻는다**(#54 대조 0건은 통과가 아니다). 그리고 지문이
+    다르면 프롬프트가 바뀐 것이므로 다시 묻는다 — 실패를 영구 기록하면
+    프롬프트를 고쳐도 영영 재시도가 없다(#171 가드가 '못 만든다' 로 끝나면
+    그 자리가 영원히 빈다)."""
+    rec = (cache_miss or {}).get(key)
+    return isinstance(rec, dict) and rec.get("ver") == fp
+
+
+def _miss_record(cache_miss: dict, key: str, fp: str, why: str) -> None:
+    cache_miss[key] = {"ver": fp, "why": why}
+
+
+def has_han(name: str | None) -> bool:
+    """한자가 남아 있으면 아직 한글화 안 된 이름이다(한국어엔 한자가 없다)."""
+    return bool(_HAN_RE.search(name or ""))
+
+
+def clean_answer(answer: str) -> str:
+    """모델 답에서 되읊은 `티커 | ` 접두를 벗긴다(순수). 없으면 원본."""
+    m = _ECHO_RE.match((answer or "").strip())
+    return m.group(1).strip() if m else (answer or "").strip()
+
+
+def looks_translated(src: str, answer: str) -> bool:
+    """그 답을 **번역으로 받아들일지**(순수).
+
+    ⚠️ 옛 판은 `if kr:` 만 봤다 — 비어 있지만 않으면 영구 캐시에 넣었다.
+    그래서 모델이 한자를 **그대로 되돌려주면** 그게 '한국어 회사명' 으로
+    굳어 다시는 안 고쳐진다(사용자 2026-09-17 `百達-KY`·`昶瑞機電`·`三商電`
+    이 그 상태). '있다' 만 묻는 검사는 눈이 먼다(#25) — 무엇이 있는지 본다.
+
+    거부 둘: (a) 답이 원문과 같다(에코) (b) 한자가 남았는데 한글이 하나도
+    없다. (b) 는 `百達-KY → 바이다-KY` 처럼 **한글이 섞인** 답은 통과시킨다.
+    """
+    a, s_ = (answer or "").strip(), (src or "").strip()
+    if not a or a == s_:
+        return False
+    return not (has_han(a) and not _HANGUL_RE.search(a))
 
 
 def _atomic_write_json(path: Path, d: dict) -> None:
@@ -302,23 +396,17 @@ def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
         return {}
     cache = _load_name_kr()
     out = {tk: cache[tk] for tk, _ in uniq if cache.get(tk)}
-    todo = [(tk, nm) for tk, nm in uniq if tk not in cache][:_MAX_BATCH]
+    fp = _prompt_fp(_NAME_PROMPT)
+    miss_cache = {} if cache_only else _miss_load()
+    todo = [(tk, nm) for tk, nm in uniq
+            if tk not in cache and not _miss_skip(miss_cache, tk, fp)][:_MAX_BATCH]
     if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
     api_key = _effective_key()
     if not api_key:
         return out
     lines = "\n".join(f"{i + 1}. {tk} | {nm}" for i, (tk, nm) in enumerate(todo))
-    prompt = (
-        "다음은 대만/중국/홍콩 상장사입니다('티커 | 현지명'). 각 줄을 한국 투자자에게 "
-        "통용되는 **간결한 한글 회사명**으로 바꾸세요.\n"
-        "- 영문 통용명 기준 음역: 華邦電 → 윈본드, 鴻海 → 폭스콘, 聯發科 → 미디어텍, "
-        "比亞迪 → 비야디, 騰訊 → 텐센트, 阿里巴巴 → 알리바바\n"
-        "- 한국에서 영문 약자로 더 통용되면 영문 유지: 台積電 → TSMC, 聯電 → UMC, "
-        "中芯國際 → SMIC, 日月光 → ASE\n"
-        "- 한자 음독(화봉전 등) 금지. 법인격(Corporation/股份有限公司/控股) 생략, "
-        "핵심 브랜드만. 한 줄당 결과 하나, 입력과 동일한 '번호. 결과' 형식, 같은 "
-        "번호 유지. 설명 금지.\n\n" + lines)
+    prompt = _NAME_PROMPT + lines
     try:
         from bot.screener import _call_pro
         text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
@@ -329,12 +417,26 @@ def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
             if not m:
                 continue
             idx = int(m.group(1)) - 1
-            kr = m.group(2).strip()
-            if 0 <= idx < len(todo) and kr:
-                tk = todo[idx][0]
+            if not (0 <= idx < len(todo)):
+                continue
+            tk, src = todo[idx]
+            # 되읊은 `티커 | ` 접두를 벗기고(실측 `3296.TWO | 승덕`) **번역인지**
+            # 판정한다 — 한자 그대로면 캐시에 넣지 않는다(#25·#43).
+            kr = clean_answer(m.group(2))
+            if looks_translated(src, kr):
                 out[tk] = kr
                 cache[tk] = kr
+                miss_cache.pop(tk, None)
+            else:
+                _miss_record(miss_cache, tk, fp,
+                             f"모델이 번역을 못 냈습니다(답={kr[:24]!r})")
+        # 답이 아예 안 온 줄도 실패다 — 기록이 없으면 매 수집마다 다시 묻는다
+        # (#348 예산 밖은 언젠가 채워지나).
+        for tk, _src in todo:
+            if tk not in out:
+                _miss_record(miss_cache, tk, fp, "모델 응답에 그 줄이 없습니다")
         _save_name_kr(cache)
+        _atomic_write_json(_MISS_CACHE, miss_cache)
     except Exception:
         pass
     return out
@@ -351,18 +453,17 @@ def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
         return {}
     cache = _load()
     out = {t: cache[t] for t in uniq if t in cache and cache[t]}
-    todo = [t for t in uniq if t not in cache][:_MAX_BATCH]
+    fp = _prompt_fp(_TITLE_PROMPT)
+    miss_cache = {} if cache_only else _miss_load()
+    todo = [t for t in uniq
+            if t not in cache and not _miss_skip(miss_cache, t, fp)][:_MAX_BATCH]
     if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
     api_key = _effective_key()
     if not api_key:
         return out  # graceful — 원문 유지
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))
-    prompt = (
-        "다음은 해외 증시 공시 제목입니다. 각 줄을 자연스럽고 간결한 한국어로 번역하세요.\n"
-        "- 회사명은 한국에서 통용되는 명칭(예: 贵州茅台→귀주모태주, トヨタ→도요타)\n"
-        "- 번역문만, 입력과 동일한 '번호. 번역' 형식으로 같은 번호 유지\n"
-        "- 군더더기 설명 금지, 한 줄당 한 번역\n\n" + lines)
+    prompt = _TITLE_PROMPT + lines
     try:
         from bot.screener import _call_pro
         text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
@@ -373,11 +474,24 @@ def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
             if not m:
                 continue
             idx = int(m.group(1)) - 1
-            kr = m.group(2).strip()
-            if 0 <= idx < len(todo) and kr:
-                out[todo[idx]] = kr
-                cache[todo[idx]] = kr
+            if not (0 <= idx < len(todo)):
+                continue
+            src = todo[idx]
+            kr = clean_answer(m.group(2))
+            # 한자 그대로인 답을 캐시에 넣으면 그게 '한국어' 로 굳는다(#25) —
+            # 이번 라운드에 사용자가 본 `百達-KY`·`三商電` 이 그 상태다.
+            if looks_translated(src, kr):
+                out[src] = kr
+                cache[src] = kr
+                miss_cache.pop(src, None)
+            else:
+                _miss_record(miss_cache, src, fp,
+                             f"모델이 번역을 못 냈습니다(답={kr[:24]!r})")
+        for t in todo:
+            if t not in out:
+                _miss_record(miss_cache, t, fp, "모델 응답에 그 줄이 없습니다")
         _save(cache)
+        _atomic_write_json(_MISS_CACHE, miss_cache)
     except Exception:
         pass
     return out

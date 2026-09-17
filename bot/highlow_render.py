@@ -24,12 +24,26 @@ def _strip_dup_ticker(ticker: str, name: str) -> str:
     """name 앞에 티커가 'TICKER | '/'TICKER - '/'TICKER:' 로 중복되면 그 뒤만
     사용 (HK '0004.HK | 구룡창' → '구룡창'). 티커가 1줄에 이미 표시되는데
     한글명 줄에 또 박혀 중복되던 것 제거(사용자 2026-06-15 '티커가 두번 겹치는
-    거 수정'). 순수·universal — 전 시장 _row 공용. 구분자 없으면 원본 유지."""
+    거 수정'). 순수·universal — 전 시장 _row 공용. 구분자 없으면 원본 유지.
+
+    ⚠️ 티커가 **정확히** 같을 때만 벗기면 접미사가 어긋난 되읊기는 화면까지
+    샌다 — 실측: 급등락 19행이 `3296.TW` 인데 이름줄이 `3296.TWO | 승덕`
+    이었다(사용자 2026-09-17 캡처). 모델이 입력 형식을 되읊어 캐시에 그대로
+    들어간 것이고(`chart_translate.clean_answer` 가 앞으로는 막는다), **이미
+    구워진 캐시**는 렌더가 벗겨야 한다(#18 구워진 데이터는 코드를 고쳐도 안
+    바뀐다). 그래서 정확 일치 → 티커꼴 되읊기 순으로 벗긴다.
+    """
     t, n = (ticker or "").strip(), (name or "").strip()
     if not t or not n:
         return n
     m = _re.match(r'^' + _re.escape(t) + r'\s*[|\-:·]\s*(.+)$', n)
-    return m.group(1).strip() if m else n
+    if m:
+        return m.group(1).strip()
+    try:
+        from bot.chart_translate import clean_answer
+        return clean_answer(n)
+    except Exception:                                          # noqa: BLE001
+        return n
 
 from bot.naver_pages import _fmt_vol, _pct_cell
 
@@ -816,14 +830,19 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
         # 1차 yfinance longName(영문)·2차 中文 종목명 → 한국어 번역
         # (translate_titles_kr, 영구캐시). JP/HK 와 통일, 소형주까지.
         from bot.finviz_client import _fetch_display_names
-        from bot.chart_translate import translate_titles_kr
+        from bot.chart_translate import has_han, translate_titles_kr
         en = _fetch_display_names(tickers, allow_slow=allow_slow)
         ue = sorted({n for n in en.values() if n})
         ke = translate_titles_kr(ue, cache_only=_co) if ue else {}
+        # ⚠️ 옛 판은 `ke.get(e) or e` 로 **번역이 없어도** name_kr 을 채웠다 —
+        # 그러면 그 티커가 아래 `miss` 에서 빠져 中文 native 번역이 안 돌고,
+        # `_enrich_incomplete` 도 '다 찼다' 로 봐 백그라운드 워밍이 안 걸린다.
+        # yfinance 가 TW 소형주에 中文 longName 을 주면 영원히 한자다(사용자
+        # 2026-09-17 캡처). 판정은 '이름이 있나' 가 아니라 **'번역이 됐나'**(#136).
         for tk in tickers:
             e = en.get(tk, "")
-            if e:
-                meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
+            if e and ke.get(e):
+                meta.setdefault(tk, {})["name_kr"] = ke[e]
         miss = [tk for tk in tickers
                 if not meta.get(tk, {}).get("name_kr")]
         if miss:
@@ -841,6 +860,15 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
                             meta.setdefault(tk, {})["name_kr"] = kr[nm]
                 except Exception:
                     pass
+            # 둘 다 실패한 자리엔 **한자가 아닌** 원문이라도 둔다(영문 longName
+            # 이 한자보다 낫다). 한자뿐이면 비워 둬 `_enrich_incomplete` 가
+            # 워밍을 킥하게 한다 — 채워 두면 다시는 안 고쳐진다(#25).
+            for tk in miss:
+                if meta.get(tk, {}).get("name_kr"):
+                    continue
+                e = en.get(tk, "")
+                if e and not has_han(e):
+                    meta.setdefault(tk, {})["name_kr"] = e
     elif want_name:
         from bot.chart_translate import translate_titles_kr
         # 네이티브명(JPX 銘柄名 — items 에 이미 있음) **직접 번역**.
