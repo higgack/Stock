@@ -101,11 +101,11 @@ def _rank_prepost(rows: list, top_n: int = _PREPOST_TOP_N) -> tuple[list, list]:
           if r.get("pct") is not None
           and abs(r.get("pct") or 0) <= _GLITCH_PCT
           and (r.get("price") or 0) >= _MIN_PRICE
-          # 유동성 게이트 = reg_vol(정규장 거래량) 우선, **0/결측이면 NXT vol 로
-          # 폴백**. 장전(09:00 정규장 개장 전)엔 정규장 거래량이 0 이라, 옛
+          # 유동성 게이트 = reg_vol(정규장 거래량) 우선, **0/결측이면 시간외
+          # vol 로 폴백**. 장전(09:00 정규장 개장 전)엔 정규장 거래량이 0 이라, 옛
           # `reg_vol` 키-default(0 을 그대로 사용)가 전 종목을 컷 → **장전 빈 보드**
-          # 버그(사용자 2026-06-16). _one 의 ovol 가드가 실제 NXT 체결을 보장하므로
-          # NXT vol 게이트는 안전. 장후엔 reg_vol>0 이라 동작 불변.
+          # 버그(사용자 2026-06-16). _one 의 ovol 가드가 실제 시간외 체결을
+          # 보장하므로 시간외 vol 게이트는 안전. 장후엔 reg_vol>0 이라 동작 불변.
           and ((r.get("reg_vol") or r.get("vol")) or 0) >= _MIN_EXT_VOL]
     ups = sorted((r for r in ok if r["pct"] > 0),
                  key=lambda r: r["pct"], reverse=True)[:top_n]
@@ -398,27 +398,21 @@ def fetch_us_prepost_movers() -> dict:
 
 # ── KR 장전·장후 시간외(단일가) 급등·급락 — 미국 prepost 의 KR 버전 ─────────
 # (사용자 2026-06-16 'KR 시간외 가격 Top 30'). 네이버 KR domestic overMarketPriceInfo
-# (시간외단일가, VM probe 2026-06-16 삼성전자 342,000 AFTER_MARKET 확인) — NXT 수급
-# 보드와 별개(이건 가격 등락). 유니버스 = 정규장 무버(네이버 domestic), 종목별
+# (시간외단일가, VM probe 2026-06-16 삼성전자 342,000 AFTER_MARKET 확인) — `/nxt`
+# 수급 보드와 별개(이건 가격 등락). 유니버스 = 정규장 무버(네이버 domestic), 종목별
 # fetch_kr_quote 로 시간외가·등락% 수집. 무료·무키·rate-limit 면역(네이버).
 
 _KST9 = timezone(timedelta(hours=9))
-# venue 별 캐시/상태 파일 — 두 보드가 같은 파일을 쓰면 창이 다른 값이 서로를
-# 덮는다(NXT 애프터 15:40~ · KRX 애프터 16:00~, 사용자 2026-09-16 공지 153).
-_KR_VENUE_FILES = {
-    "NXT": ("kr_prepost_v1.json", "kr_prepost_status.json"),
-    "KRX": ("kr_after_krx_v1.json", "kr_after_krx_status.json"),
-}
+# 시간외 보드는 **한 장**이라 캐시·상태도 한 벌이다(사용자 2026-09-17 "합치기로
+# 하자 … 미국처럼 장후로"). 2026-09-16~17 에 잠깐 거래소별로 갈라 뒀던
+# `kr_after_krx_*.json` 은 더 쓰지 않는다 — KRX 창이 NXT 창의 부분집합이라 그
+# 보드가 한 행도 더 내놓지 못했고, 남은 건 재지 않은 거래소 라벨뿐이었다
+# (§kr_session 합집합 주석 · #373b·#375).
+_KR_PREPOST_CACHE = "kr_prepost_v1.json"
+_KR_PREPOST_STATUS = "kr_prepost_status.json"
 
 
-def _venue_files(venue: str) -> tuple[str, str]:
-    try:
-        return _KR_VENUE_FILES[(venue or "NXT").upper()]
-    except KeyError:
-        raise ValueError(f"알 수 없는 거래소: {venue!r} (KRX|NXT)") from None
-
-
-def venue_attribution_note(venue: str) -> str:
+def venue_attribution_note() -> str:
     """이 보드가 **무엇을 재고 있는지**를 화면이 말하는 줄(순수).
 
     ⚠️ 2026-09-17 `kr_board_probe` VM 실측으로 **절반이 확정**됐다(#79 그
@@ -426,7 +420,7 @@ def venue_attribution_note(venue: str) -> str:
     (a) 폴링 응답의 전 키 37개 어디에도 `KRX`/`NXT` 를 **이름으로 가르는
         필드가 없다**. `stockExchangeType` 은 코스피/코스닥(시장) 구분이고
         (`code: KS` · `startTime 0900` · `endTime 1530`), 시간외 블록은
-        `overMarketPriceInfo` **하나**뿐이다 → 두 보드는 같은 블록을 본다.
+        `overMarketPriceInfo` **하나**뿐이다.
     (b) `integratedPriceInfo` 는 거래소 통합이 아니라 **본체 + 시간외
         합산**이다 — 삼성전자·SK하이닉스의 거래량·거래대금 네 쌍이 원 단위
         까지 맞았다(11,438,019 + 4,948,352 = 16,386,371 등).
@@ -435,74 +429,60 @@ def venue_attribution_note(venue: str) -> str:
     가설이 같은 수치를 낸다(#255) — 그러니 거래소는 **주장하지 않는다**
     (#165). 다른 엔드포인트도 안 쟀다(#274 못 보는 축).
 
-    ⚠️ 미측정 절반은 **두 줄 모두**에 적는다(독립 리뷰 2026-09-17 H5) —
-    KRX 줄에만 달면 `/krprepost` 는 제목·부제가 전부 NXT 인 데다 "실측상" 이라는
-    측정 주장까지 달려 있어 독자가 **귀속이 해결된 것으로 읽는다**(#43 침묵이
-    최악 · #34). 그래서 꼬리 문장은 `tail` 단일 출처다(#38).
+    ⚠️⚠️ 그래서 2026-09-17 에 보드를 **한 장으로 합쳤다**(사용자 "합치기로
+    하자 … 미국처럼 장후로"). 잠깐 두었던 거래소별 두 보드는 (a) 때문에 같은
+    블록을 같은 유니버스로 읽어 **정의상 같은 목록**을 냈는데, 그게 화면에서는
+    "두 시장의 시간외가 같다"는 **시장에 대한 주장**으로 읽혔다 — 우리 구현의
+    결과를 시장 사실처럼 적은 것이다(#375·#34). 게다가 KRX 창(16:00–20:00)은
+    NXT 창(08:00–09:00 · 15:40–20:00)의 **진부분집합**이라 KRX 보드는 한 행도
+    더 내놓을 수 없었고, 고유 산출은 하루 80분의 빈 화면과 재지 않은 라벨
+    뿐이었다. 한 장은 **우리가 지지할 수 있는 것만** 말한다.
 
-    ⚠️⚠️ **미측정 축이 하나 더 있었다**(사용자 2026-09-17 "이 NXT 랑 KRX
-    애프터랑 안겹치는것도 많을텐데. NXT 에 등록안된 기업들도 많기 때문에").
-    옛 문구는 "겹치는 16:00–20:00 엔 같은 값" 이라고 적었는데, 그건 **우리
-    구현의 결과**다 — 두 보드가 같은 블록을 같은 유니버스(정규장 무버)로 읽고
-    거래소로 거르지 않으니 정의상 같은 목록이 나온다. 그런데 화면에선 그것이
-    **시장에 대한 사실**("두 시장의 시간외가 같다")로 읽힌다. NXT 거래 종목이
-    상장 전체의 부분집합이면 시장 사실은 오히려 다를 것이므로, 우리 한계를
-    시장 사실처럼 적으면 안 된다(#165 재지 않은 것을 단정하지 말 것 · #34
-    한 문장이 두 뜻을 대표하면 한쪽은 반드시 거짓말).
-
-    ⚠️ 거를 재료가 없어서 못 거른다 — NXT 거래 종목 목록을 주는 원천을
-    **아직 안 쟀다**(이름을 추측해 배선하면 죽은 경로를 배포한다, #151·#345).
-    다만 **필드가 아니라 창으로 갈리는 하한**은 지금도 있다:
+    ⚠️ 거를 재료가 없어서 거래소로 거르지 못한다 — NXT 거래 종목 목록을 주는
+    원천을 **아직 안 쟀다**(이름을 추측해 배선하면 죽은 경로를 배포한다,
+    #151·#345). 다만 **필드가 아니라 창으로 갈리는 하한**은 지금도 있다:
     `kr_session.exclusive_venue` 가 NXT 전용 체결 창(프리 08:00–09:00 ·
     15:40–16:00 — KRX 는 그때 체결 창이 아니다)을 판정하므로, 그 구간에 시간외
     체결이 붙는 종목은 정의상 NXT 다. `kr_board_probe ⑤` 가 그걸 잰다.
     """
-    tail = ("응답에 거래소를 이름으로 가르는 필드가 없어, 그 블록이 어느 "
-            "거래소 체결인지는 아직 재지 않았습니다. NXT 거래 종목 목록도 받아 "
-            "오지 않아 이 목록은 거래소로 걸러진 것이 아닙니다 — 겹치는 "
-            "16:00–20:00 에 두 보드가 같은 목록을 내는 것은 그 때문이지 "
-            "두 시장의 시간외가 같다는 뜻이 아닙니다(NXT 거래 종목은 상장 "
-            "전체의 부분집합입니다).")
-    if (venue or "").upper() == "KRX":
-        return ("네이버 시간외 체결 블록을 KRX 애프터마켓 창(16:00–20:00 KST)"
-                "에서 집계합니다 — 실측상 시간외 블록이 하나뿐이라 NXT 보드와 "
-                "같은 블록을 봅니다. " + tail)
-    return ("네이버 시간외 체결 블록을 NXT 창(프리 08:00–09:00 · 애프터 "
-            "15:40–20:00 KST)에서 집계합니다 — 실측상 시간외 블록이 하나뿐이라 "
-            "16:00 부터는 KRX 보드와 같은 블록을 봅니다. " + tail)
+    from bot.kr_session import union_window_label
+    return ("네이버 시간외 체결 블록을 두 거래소 시간외 창의 합집합"
+            f"({union_window_label()})에서 집계합니다 — 응답에 거래소를 이름으로 "
+            "가르는 필드가 없어, 그 블록이 KRX 체결인지 NXT 체결인지는 아직 "
+            "재지 않았습니다. NXT 거래 종목 목록도 받아 오지 않아 이 목록은 "
+            "거래소로 걸러진 것이 아닙니다.")
+
+
 _KR_UNIVERSE_CACHE = "kr_prepost_universe.json"   # 직전 성공 유니버스(장전 공백 폴백)
-_KR_PREPOST_TTL = 2 * 60        # NXT 창 재산출 간격 2분 (사용자 2026-06-16, 옛 5분
-#   에서 단축 — NXT 는 연속거래라 5분은 거침). 부하 무: SWR 요청-트리거(미열람 시 0)
+_KR_PREPOST_TTL = 2 * 60        # 시간외 창 재산출 간격 2분 (사용자 2026-06-16, 옛
+#   5분에서 단축 — 시간외단일가는 연속 갱신이라 5분은 거침). 부하 무: SWR 요청-트리거(미열람 시 0)
 #   + _KR_REFRESHING 락(스캔 비중첩·stampede 차단) + 종목당 30초 캐시 + 6-worker
 #   풀. 열람 중 ~200종목 네이버 2분당 1회(~100콜/분) — realtime 엔드포인트 안전.
-#   ⚠️ 이 예산은 **스캔이 창당 한 번**일 때만 참이다. KRX·NXT 애프터마켓이
-#   겹치는 16:00~20:00 에 보드마다 스캔하면 콜이 2배가 되고, 그게 네이버
+#   ⚠️ 이 예산은 **스캔이 창당 한 번**일 때만 참이다. 2026-09-16 에 거래소별
+#   보드를 둘로 늘렸을 때 겹치는 16:00~20:00 콜이 2배가 됐고, 그게 네이버
 #   레이트리밋을 건드리면 `naver_paused()` 가 켜져 **전 네이버 보드**가 죽는다
-#   (독립 리뷰 2026-09-16 B1). `_shared_venues` 로 한 번 받아 같이 저장한다.
+#   (독립 리뷰 2026-09-16 B1 — `_shared_venues` 로 한 번만 받게 막았었다).
+#   2026-09-17 에 보드를 한 장으로 합치면서 그 위험 자체가 사라졌다 — 스캔
+#   경로가 하나뿐이라 나눠 쓸 상대가 없다. 시간외 보드를 또 늘리려거든 이
+#   예산부터 다시 재라.
 _spawn = _threading.Thread   # 테스트가 stdlib `threading` 을 프로세스 전역으로
 #   갈아끼우지 않게 하는 모듈 지역 별칭(독립 리뷰 2026-09-16 L18).
 _KR_LOCK = _threading.Lock()
-_KR_REFRESHING: set = set()      # 동시에 도는 venue 집합(거래소별 1개)
+_KR_REFRESHING = False           # 스캔 진행 중 플래그(보드 1장 = 스캔 1개)
 
 
-def _in_kr_extended_window(now_kst: datetime, venue: str = "NXT") -> bool:
-    """KST now 가 그 거래소의 연장 체결 창 안인가. 창은 `bot.kr_session`
-    **단일 출처**에서 온다 — 2026 개편으로 KRX 에도 애프터마켓이 생겨 창이
-    거래소마다 다르므로, 여기 리터럴로 적으면 두 보드가 갈라진다
-    (#38, 사용자 2026-09-16 네이버증권 공지 153)."""
-    from bot.kr_session import in_extended_window
-    return in_extended_window(venue, now_kst)
+def _in_kr_extended_window(now_kst: datetime) -> bool:
+    """KST now 가 **어느 거래소든** 연장 체결 창 안인가 = 재스캔할 창.
+    창은 `bot.kr_session` **단일 출처**에서 온다 — 여기 리터럴로 적으면 그 표와
+    갈라진다(#38·#55, 사용자 2026-09-16 네이버증권 공지 153)."""
+    from bot.kr_session import union_extended_window
+    return union_extended_window(now_kst)
 
 
-def _current_kr_session(now_kst: datetime | None = None,
-                        venue: str = "NXT") -> str:
-    """현재 KST 의 그 거래소 세션 — 'pre'·'post'·''. 창은 `bot.kr_session`.
-    KRX 는 프리마켓이 없으므로 'pre' 가 나올 수 없다(공지 153)."""
-    from bot.kr_session import phase
-    k = phase(venue, now_kst)[0]
-    if k in ("pre", "pre_close"):
-        return "pre"
-    return "post" if k == "after" else ""
+def _current_kr_session(now_kst: datetime | None = None) -> str:
+    """현재 KST 의 시간외 세션 — 'pre'·'post'·''. 창은 `bot.kr_session`."""
+    from bot.kr_session import union_session
+    return union_session(now_kst)
 
 
 def _kr_over_session(sess: str) -> str | None:
@@ -518,37 +498,13 @@ def _kr_over_session(sess: str) -> str | None:
     return None
 
 
-def _shared_venues(venue: str, now_kst: datetime | None = None) -> tuple:
-    """이 스캔 결과를 **그대로 써도 되는** 거래소들(순수).
-
-    `_one()` 은 거래소와 무관하다 — 같은 네이버 시간외 블록을 보고, 창과
-    세션만 거래소가 정한다. 그래서 **창이 열려 있고 세션이 같은** 거래소는
-    같은 결과를 갖는다(겹치는 16:00~20:00). 보드마다 따로 스캔하면 같은
-    숫자를 얻으려고 바깥 원천 호출이 2배가 된다(리뷰 B1).
-
-    ⚠️ 세션이 다르면(예: NXT 프리 08:30 — KRX 는 닫힘) 공유하지 않는다.
-    """
-    now = now_kst or datetime.now(_KST9)
-    vn = (venue or "NXT").upper()
-    mine = _current_kr_session(now, vn)
-    out = [vn]
-    for other in _KR_VENUE_FILES:
-        if other == vn:
-            continue
-        if (_in_kr_extended_window(now, other)
-                and _current_kr_session(now, other) == mine):
-            out.append(other)
-    return tuple(out)
+def _kr_status_write(state: str, **kw) -> None:
+    kw.update({"state": state, "ts": time.time(), "ts_label": _now_label()})
+    _cache_write(_KR_PREPOST_STATUS, kw)
 
 
-def _kr_status_write(state: str, venue: str = "NXT", **kw) -> None:
-    kw.update({"state": state, "ts": time.time(), "ts_label": _now_label(),
-               "venue": (venue or "NXT").upper()})
-    _cache_write(_venue_files(venue)[1], kw)
-
-
-def kr_prepost_status(venue: str = "NXT") -> dict:
-    return _cached(_venue_files(venue)[1], ttl=86400) or {}
+def kr_prepost_status() -> dict:
+    return _cached(_KR_PREPOST_STATUS, ttl=86400) or {}
 
 
 def _kr_movers_universe() -> tuple[list, dict, dict]:
@@ -575,7 +531,7 @@ def _kr_movers_universe() -> tuple[list, dict, dict]:
     # 장전(08:00–09:00, 정규장 개장 전)엔 네이버 정규장 무버 랭킹이 비거나 얇아
     # 유니버스 0 → NXT 장전 스캔이 'universe 실패'로 영영 빈 보드(사용자 'NXT
     # 장전집계 또 안 됨'의 유력 원인). 직전 성공 유니버스(전일 정규장 무버)를
-    # 폴백 — NXT 활동 확인용 후보군이라 전일 리스트로 충분(additive·라이브가
+    # 폴백 — 시간외 활동 확인용 후보군이라 전일 리스트로 충분(additive·라이브가
     # 차면 no-op). 라이브 성공 시 캐시 갱신.
     # ⚠️ TTL 은 주말·연휴를 넘겨야 함(사용자 2026-06-22 월요일 08:56 'universe 실패'):
     # 24h 면 금요일 장후 캐시가 월요일 장전에 이미 만료(~61h) → 폴백도 빈 보드.
@@ -592,52 +548,55 @@ def _kr_movers_universe() -> tuple[list, dict, dict]:
     return tks, names, mcaps
 
 
-def _compute_kr_prepost(venue: str = "NXT") -> dict:
+def _compute_kr_prepost() -> dict:
     """KR 장전·장후 시간외(단일가) 급등·급락 TOP30 — 네이버 시간외단일가 실시간.
     정규장 무버 유니버스를 종목별 fetch_kr_quote 로 스캔(over-market OPEN 만 집계).
-    백그라운드 전용. yfinance 미사용·네이버만."""
-    vn = (venue or "NXT").upper()
-    cache_name = _venue_files(vn)[0]
+    백그라운드 전용. yfinance 미사용·네이버만.
+
+    ⚠️ 거래소를 인자로 받지 않는다 — 네이버 응답의 시간외 블록은 하나뿐이고
+    (#373b 실측) 보드도 하나다. 창만 합집합에서 온다(§kr_session)."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0, "session": "",
-                 "venue": vn,
-                 "source": f"KR 정규장 무버 {vn} 시간외 · 네이버 실시간"}
+                 "source": "KR 정규장 무버 시간외 · 네이버 실시간"}
     tks, names, mcaps = _kr_movers_universe()
     if not tks:
-        log.warning("kr prepost[%s]: universe empty", vn)
-        _kr_status_write("failed", venue=vn, detail="universe 실패(네이버 무버 0)")
+        log.warning("kr prepost: universe empty")
+        _kr_status_write("failed", detail="universe 실패(네이버 무버 0)")
         return out
     from concurrent.futures import ThreadPoolExecutor
 
     from bot.naver_quote import fetch_kr_quote
-    _kr_status_write("running", venue=vn, total=len(tks))
+    _kr_status_write("running", total=len(tks))
 
     def _one(tk: str):
         try:
             q = fetch_kr_quote(tk) or {}     # 접미사 내부 strip
             _ses = _kr_over_session(q.get("over_session") or "")   # pre/post/None(REGULAR 제외)
             op, reg = q.get("over_price"), q.get("reg_close")
-            ovol = q.get("over_volume")      # NXT 세션 거래량 — 실제 NXT 체결 신호
-            # NXT 보드 = 실제 NXT 체결 종목만 (사용자 2026-06-16 'NXT 장전장후
-            # 거래량과 거래대금'). Naver 는 NXT 미체결이면 accumulatedTradingVolume=
-            # '-'(→ _num None) → 제외. overPrice 만 있고 NXT 거래량 0 인 phantom
+            ovol = q.get("over_volume")      # 시간외 세션 거래량 = 실체결 신호
+            # 보드 = **실제 시간외 체결 종목만** (사용자 2026-06-16 '장전장후
+            # 거래량과 거래대금'). Naver 는 미체결이면 accumulatedTradingVolume=
+            # '-'(→ _num None) → 제외. overPrice 만 있고 거래량 0 인 phantom
             # (참조가) 랭킹 차단 — 후성 093370/피에스케이홀딩스 031980 류(over '-'
             # 인데 옛 over_volume-or-volume 폴백이 정규장 풀데이 거래량으로 보드를
-            # 점령하던 것)가 이 클래스. 신세계 004170(NXT vol 54,419 실체결)만 잔존.
+            # 점령하던 것)가 이 클래스. 신세계 004170(vol 54,419 실체결)만 잔존.
+            # ⚠️ 이 거래량이 **어느 거래소** 체결인지는 안 쟀다(#373b·#378) —
+            # 그래서 화면도 거래소를 주장하지 않는다.
             if _ses and op and reg and reg > 0 and ovol:
-                # 순수 NXT move = NXT가 vs 정규장 종가 (사용자 2026-06-16 '신세계
-                # 장후가 2천원 싸면 정규장보다 내린 것 → 격차순 고하 30'). Naver
-                # over_pct(=fluctuationsRatio)는 KR 에서 전일종가 누적이라 정규장
-                # 급등락과 중복 → 정규장 종가 대비로 재계산해 NXT '추가' 움직임만 랭킹.
+                # 순수 시간외 move = 시간외가 vs 정규장 종가 (사용자 2026-06-16
+                # '신세계 장후가 2천원 싸면 정규장보다 내린 것 → 격차순 고하 30').
+                # Naver over_pct(=fluctuationsRatio)는 KR 에서 전일종가 누적이라
+                # 정규장 급등락과 중복 → 정규장 종가 대비로 재계산해 시간외
+                # '추가' 움직임만 랭킹.
                 pct = round((op / reg - 1) * 100, 2)
-                _ov = q.get("over_value")    # NXT 세션 거래대금(원) → 억
+                _ov = q.get("over_value")    # 시간외 세션 거래대금(원) → 억
                 return {"ticker": tk, "name": names.get(tk, tk),
                         "price": op, "pct": pct,
-                        # 표시 거래량/거래대금 = NXT 세션 전용(정규장과 별개). 정규장
-                        # 폴백 금지(옛 버그) — vol 은 위 가드로 항상 실체결값.
+                        # 표시 거래량/거래대금 = 시간외 세션 전용(정규장과 별개).
+                        # 정규장 폴백 금지(옛 버그) — vol 은 위 가드로 항상 실체결값.
                         "vol": ovol,
                         "value": round(_ov / 1e8, 2) if _ov else None,
                         # 유동성 게이트 전용(미표시) — 정규장 누적거래량으로 페니·
-                        # 유령 컷. 표시(NXT)와 게이트(정규장) 분리.
+                        # 유령 컷. 표시(시간외)와 게이트(정규장) 분리.
                         "reg_vol": q.get("volume"),
                         "mcap": mcaps.get(tk),
                         "session": _ses}
@@ -647,13 +606,13 @@ def _compute_kr_prepost(venue: str = "NXT") -> dict:
 
     rows: list = []
     try:
-        log.info("kr prepost[%s]: 정규장 무버 %d종목 네이버 시간외 스캔 시작",
-                 vn, len(tks))
+        log.info("kr prepost: 정규장 무버 %d종목 네이버 시간외 스캔 시작",
+                 len(tks))
         with ThreadPoolExecutor(max_workers=6) as pool:
             for rec in pool.map(_one, tks):
                 if rec:
                     rows.append(rec)
-        cur = _current_kr_session(venue=vn)
+        cur = _current_kr_session()
         if cur:
             pref = [r for r in rows if r.get("session") == cur]
             if pref:
@@ -664,71 +623,65 @@ def _compute_kr_prepost(venue: str = "NXT") -> dict:
         votes = [r.get("session") for r in ups + downs if r.get("session")]
         out["session"] = max(set(votes), key=votes.count) if votes else ""
         if ups or downs:
-            # 창이 겹치는 거래소는 같은 결과를 갖는다 — 한 번 받아 같이
-            # 저장한다(리뷰 B1). 저장분의 `venue` 는 **읽는 쪽**이 정한다.
-            for _v in _shared_venues(vn):
-                _cache_write(_venue_files(_v)[0], {**out, "venue": _v,
-                                                   "scan_venue": vn})
-                _kr_status_write("done", venue=_v, up=len(ups), down=len(downs),
-                                 session=out["session"], scan_venue=vn)
+            _cache_write(_KR_PREPOST_CACHE, out)
+            _kr_status_write("done", up=len(ups), down=len(downs),
+                             session=out["session"])
         else:
-            _kr_status_write("failed", venue=vn, scanned=len(rows),
-                             detail="시간외 행 0 — 그 거래소 연장 창 밖이거나 체결 없음")
+            _kr_status_write("failed", scanned=len(rows),
+                             detail="시간외 행 0 — 연장 창 밖이거나 체결 없음")
     except Exception as exc:
-        log.warning("kr prepost[%s]: 산출 실패: %s", vn, exc)
-        _kr_status_write("failed", venue=vn, detail=f"{type(exc).__name__}: {exc}")
+        log.warning("kr prepost: 산출 실패: %s", exc)
+        _kr_status_write("failed", detail=f"{type(exc).__name__}: {exc}")
     return out
 
 
-def _kr_prepost_fresh(cache_ts: float, venue: str = "NXT") -> bool:
-    """KR 장-인지 신선도 — 그 거래소 창에서만 2분 TTL, 그 밖엔 직전 스냅샷 fresh."""
-    if _in_kr_extended_window(datetime.now(_KST9), venue):
+def _kr_prepost_fresh(cache_ts: float) -> bool:
+    """KR 장-인지 신선도 — 합집합 창에서만 2분 TTL, 그 밖엔 직전 스냅샷 fresh."""
+    if _in_kr_extended_window(datetime.now(_KST9)):
         return (time.time() - cache_ts) < _KR_PREPOST_TTL
     return True
 
 
-def _kick_kr_refresh(venue: str = "NXT") -> None:
-    """venue 별로 하나씩만 돈다 — 전역 불리언 하나면 KRX 스캔이 도는 동안
-    NXT 갱신이 통째로 막힌다(#45 두 모집단)."""
-    vn = (venue or "NXT").upper()
+def _kick_kr_refresh() -> None:
+    """스캔은 한 번에 하나만 — stampede 차단(#113)."""
+    global _KR_REFRESHING
     with _KR_LOCK:
-        if vn in _KR_REFRESHING:
+        if _KR_REFRESHING:
             return
-        _KR_REFRESHING.add(vn)
+        _KR_REFRESHING = True
 
     def _run():
+        global _KR_REFRESHING
         try:
-            _compute_kr_prepost(vn)
+            _compute_kr_prepost()
         except Exception as exc:
-            log.warning("kr prepost[%s]: 백그라운드 재계산 실패: %s", vn, exc)
+            log.warning("kr prepost: 백그라운드 재계산 실패: %s", exc)
         finally:
             with _KR_LOCK:
-                _KR_REFRESHING.discard(vn)
+                _KR_REFRESHING = False
 
     try:
-        _spawn(target=_run, daemon=True, name=f"kr-prepost-{vn}").start()
+        _spawn(target=_run, daemon=True, name="kr-prepost").start()
     except Exception:                                       # noqa: BLE001
-        # start() 가 던지면 finally 가 안 돌아 그 venue 가 영구 정지한다(#280).
+        # start() 가 던지면 finally 가 안 돌아 보드가 영구 정지한다(#280).
         with _KR_LOCK:
-            _KR_REFRESHING.discard(vn)
+            _KR_REFRESHING = False
         raise
 
 
-def fetch_kr_prepost_movers(venue: str = "NXT") -> dict:
+def fetch_kr_prepost_movers() -> dict:
     """KR 시간외 급등·급락 — 동기 계산 안 함(SWR, US prepost 동일):
-    신선/스테일 서빙 + 그 거래소 창에서만 백그라운드 재계산. 재발동 백오프."""
-    vn = (venue or "NXT").upper()
-    cache_name = _venue_files(vn)[0]
-    stale = _cached(cache_name, ttl=86400)
+    신선/스테일 서빙 + 합집합 창에서만 백그라운드 재계산. 재발동 백오프."""
+    stale = _cached(_KR_PREPOST_CACHE, ttl=86400)
     if stale is not None:
         try:
-            mt = (_CACHE_DIR / cache_name).stat().st_mtime
+            mt = (_CACHE_DIR / _KR_PREPOST_CACHE).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _kr_prepost_fresh(mt, vn):
+        if _kr_prepost_fresh(mt):
             return stale
-    in_win = _in_kr_extended_window(datetime.now(_KST9), vn)
-    st = kr_prepost_status(vn)
+    in_win = _in_kr_extended_window(datetime.now(_KST9))
+    st = kr_prepost_status()
     age = time.time() - (st.get("ts") or 0)
     if not in_win:
         pass
@@ -737,11 +690,11 @@ def fetch_kr_prepost_movers(venue: str = "NXT") -> dict:
     elif st.get("state") == "running" and age < 1800:
         pass
     else:
-        _kick_kr_refresh(vn)
+        _kick_kr_refresh()
     if stale is not None:
         return stale
     return {"up": [], "down": [], "ts": "", "source": "", "session": "",
-            "venue": vn, "building": in_win, "status": st}
+            "building": in_win, "status": st}
 
 
 if __name__ == "__main__":

@@ -400,7 +400,7 @@ def run() -> dict:
         "Naver 테마(stock API raw)": _naver_theme_raw(),
         "Naver 테마 스냅샷(화면값)": _naver_theme_snapshot(),
         "Naver 업종맵(finance HTML)": _naver_upjong_map_html(),
-        # ⚠️ KR 5탭 중 `/nxt`(NXT 수급)·`/krprepost`(NXT 급등·급락)의 원천은
+        # ⚠️ KR 탭 중 `/nxt`(NXT 수급)·`/krprepost`(시간외 급등·급락)의 원천은
         # 이 목록에 **한 줄도 없었다** — 죽으면 화면이 '없습니다' 만 띄우고
         # /health 도 일일 결산도 아무 말을 안 한다(#24 열거형 가드 · #52).
         "Naver NXT 수급(trendForeignOrg)": _naver_nxt(),

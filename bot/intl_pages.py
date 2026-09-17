@@ -222,49 +222,31 @@ def render_jp_stop_page() -> str:
                      nav=_market_nav("JP", "jphighlow"), back=_asia_back("JP"))
 
 
-def render_kr_after_page() -> str:
-    """🏛️ KRX 애프터마켓(16:00–20:00 KST) 급등·급락 TOP30 (사용자 2026-09-16,
-    네이버증권 공지 153 — 2026 개편으로 KRX 에도 애프터마켓이 생겼다).
-
-    NXT 보드와 **같은 엔진·같은 원천**이고 창만 다르다(#38 복제 금지) —
-    체결 귀속은 아직 재지 않았으므로 화면이 그 사실을 적는다(#165·#43).
-    ⚠️ '같은 블록을 본다' 는 쪽은 2026-09-17 프로브가 **확정**했다(응답에
-    거래소를 가르는 필드가 없다) — 문구 근거는 `prepost_client.
-    venue_attribution_note` 독스트링 하나가 든다(#38 복제 금지).
-    """
-    return _render_kr_over_page("KRX")
-
-
 def render_kr_prepost_page() -> str:
-    """KR NXT(넥스트레이드) 장전·장후 급등·급락 TOP30 — 네이버 overMarketPriceInfo
-    (= NXT After-Market, 네이버페이 표기) 가격 등락(정규장 종가 대비, 사용자
-    2026-06-16 'NXT≠시간외, NXT로 정정'). 미국 '🌙 장전·장후' 보드의 KR 버전. NXT
-    수급 보드(외국인·기관 흐름)와 별개 — 이건 'NXT 가격'. 정규장 무버 유니버스를
-    종목별 네이버 NXT 가로 스캔."""
-    return _render_kr_over_page("NXT")
+    """🌙 KR 장전·장후 시간외 급등·급락 TOP30 — 미국 `usprepost` 의 KR 버전.
 
+    네이버 domestic `overMarketPriceInfo`(시간외단일가) 가격이 **정규장 종가
+    대비** 얼마나 움직였나. NXT 수급 보드(외국인·기관 흐름)와 별개 — 이건 가격.
+    유니버스 = 정규장 무버, 종목별 네이버 실시간으로 스캔.
 
-def _render_kr_over_page(venue: str = "NXT") -> str:
-    """KR 시간외 급등·급락 렌더러 — 거래소만 인자로 받는다(#38 복제 금지).
-
-    KRX·NXT 는 **같은 네이버 시간외 블록**을 보고 창만 다르다(공지 153 —
-    2026-09-17 프로브 실측 — 시간외 블록이 `overMarketPriceInfo` 하나뿐이고
-    응답엔 거래소를 **이름으로** 가르는 필드가 없다. 값으로만 가르는 필드·다른
-    엔드포인트는 안 쟀다, #165·#274).
-    남은 미측정은 **그 블록의 체결 귀속**뿐이고, 화면이 그 사실을 적는다
-    (#165·#43 — 문구는 `venue_attribution_note` 단일 출처).
+    ⚠️ **거래소를 고르지 않는다**(사용자 2026-09-17 "합치기로 하자 … 미국처럼
+    장후로"). 2026-09-16~17 에 잠깐 `/krafter`(KRX)·`/krprepost`(NXT) 두 장으로
+    나눠 뒀는데, 네이버 응답의 시간외 블록이 하나뿐이고(#373b) KRX 창이 NXT 창의
+    **진부분집합**이라 두 보드가 정의상 같은 목록을 냈다 — 화면에선 그게 "두
+    시장의 시간외가 같다"는 시장 주장으로 읽혔다(#375). 한 장으로 합치고 창은
+    `kr_session` **합집합**에서 받으며, 무엇을 재고 무엇을 안 쟀는지는
+    `prepost_client.venue_attribution_note` 단일 출처가 보이는 줄로 말한다
+    (#38·#43·#165).
     """
-    vn = (venue or "NXT").upper()
-    is_krx = vn == "KRX"
     try:
         from bot.prepost_client import (fetch_kr_prepost_movers,
                                         kr_prepost_status,
                                         venue_attribution_note)
-        data = fetch_kr_prepost_movers(vn)
-        st = kr_prepost_status(vn)
-        note = venue_attribution_note(vn)
+        data = fetch_kr_prepost_movers()
+        st = kr_prepost_status()
+        note = venue_attribution_note()
     except Exception as exc:
-        log.warning("kr over page[%s]: %s", vn, exc)
+        log.warning("kr prepost page: %s", exc)
         data = {"up": [], "down": [], "ts": "", "building": False,
                 "status": {}, "session": ""}
         st = {}
@@ -272,29 +254,26 @@ def _render_kr_over_page(venue: str = "NXT") -> str:
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
-    sess_kr = ("장후" if is_krx else
-               ("장전" if sess == "pre" else
-                "장후" if sess == "post" else "장전·장후"))
-    from bot.kr_session import window_label as _wl
-    win = _wl(vn)
-    label = "KRX 애프터마켓" if is_krx else "NXT"
+    sess_kr = ("장전" if sess == "pre" else
+               "장후" if sess == "post" else "장전·장후")
+    from bot.kr_session import union_window_label
+    win = union_window_label()
     if not up and not down:
         if data.get("building"):
-            body = (f'<div class="empty">⏳ {label} 급등·급락 산출 중…<br>'
+            body = ('<div class="empty">⏳ 장전·장후 급등·급락 산출 중…<br>'
                     '네이버 시간외 스캔 중. 잠시 후 새로고침해 주세요.</div>')
         else:
-            body = (f'<div class="empty">{label} 급등·급락 데이터가 없습니다.<br>'
+            body = ('<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
                     f'{win} 에 확인해 주세요.</div>')
     else:
         from bot.highlow_render import HL_SORT_JS, sort_by_pct, stock_panel
         _o = dict(show_vol=True, show_value=True, show_ind=False)  # 가격·거래량·거래대금·시총
         up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
-        _pfx = "krx" if is_krx else "kpp"
         body = ('<div class="grid">'
                 + stock_panel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up,
-                              f"{_pfx}-up", "KR", "", **_o)
+                              "kpp-up", "KR", "", **_o)
                 + stock_panel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down,
-                              f"{_pfx}-down", "KR", "", **_o)
+                              "kpp-down", "KR", "", **_o)
                 + '</div>' + HL_SORT_JS)
     # 이 보드가 무엇을 재고 있는지 — **보이는 줄**로(#43·#228 툴팁 금지).
     if note:
@@ -312,7 +291,7 @@ def _render_kr_over_page(venue: str = "NXT") -> str:
             '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'
             'background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.45);'
             'font-size:13px;line-height:1.55">'
-            f'⚠️ <b>최근 {label} 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
+            f'⚠️ <b>최근 시간외 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
             f'아래는 직전 성공 스냅샷입니다. {win} 창에서 자동 재집계됩니다.'
             '</div>') + body
     elif _state == "running":
@@ -320,15 +299,12 @@ def _render_kr_over_page(venue: str = "NXT") -> str:
             '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'
             'background:rgba(56,139,253,.12);border:1px solid rgba(56,139,253,.45);'
             'font-size:13px;line-height:1.55">'
-            f'⏳ <b>{label} 집계 진행 중</b> — {_stl} · 잠시 후 새로고침하면 최신으로 '
+            f'⏳ <b>시간외 집계 진행 중</b> — {_stl} · 잠시 후 새로고침하면 최신으로 '
             '갱신됩니다. 아래는 직전 스냅샷.</div>') + body
-    sub = (f"🇰🇷 {sess_kr} {label} 급등·급락 상·하위 30 · 등락률=시간외가 vs 정규장 "
+    sub = (f"🇰🇷 {sess_kr} 시간외 급등·급락 상·하위 30 · 등락률=시간외가 vs 정규장 "
            "종가(시간외-정규장 격차) · 거래량·거래대금=시간외 세션 누적(정규장 별개) · "
            "실제 시간외 체결 종목만(미체결=전일가 placeholder 제외) · 네이버 실시간 · "
            f"{win} · 창에서 2분"
            + (f" · {ts} 기준" if ts else ""))
-    title = ("🏛️ 한국 KRX 애프터마켓 급등·급락" if is_krx
-             else "🇰🇷 한국 NXT 장전·장후 급등·급락")
-    active = "krafter" if is_krx else "krprepost"
-    return _tw_shell(title, sub, body,
-                     nav=_market_nav("KR", active), back=_asia_back("KR"))
+    return _tw_shell("🇰🇷 한국 장전·장후 급등·급락", sub, body,
+                     nav=_market_nav("KR", "krprepost"), back=_asia_back("KR"))
