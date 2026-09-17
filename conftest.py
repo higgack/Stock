@@ -188,6 +188,9 @@ def _redirect_disk_caches() -> list:
         ("bot.chart_translate", "_MISS_CACHE", "translate_miss.json"),
         ("bot.chart_translate", "_CACHE", "chart_title_kr.json"),
         ("bot.chart_translate", "_NAME_KR_CACHE", "names_kr.json"),
+        # 번역 회귀가 `_call_pro` 를 스텁하면 `_log_usage` 가 **운영 비용 원장**에
+        # 쓴다(#284·#312, 독립 리뷰 2026-09-17 L3 — 리뷰 프로브가 실제로 한 줄 썼다).
+        ("bot.chart_translate", "_USAGE", "usage.jsonl"),
     )
     done = []
     for mod, attr, leaf in targets:

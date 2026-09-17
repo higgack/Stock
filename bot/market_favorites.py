@@ -717,7 +717,15 @@ def _compute_favorites_with_prices() -> list[dict]:
         # 영문 영속분을 영구 고착시키던 것 해소). 진짜 한글명(≠name)은 skip.
         # translate_names_kr·Naver 둘 다 캐시라 재호출 싸다.
         _cur_kr = f.get("name_kr")
-        if not _cur_kr or _cur_kr == f.get("name"):
+        # ⚠️ 되읊기가 **영속된** 값도 미해결이다 — `3296.TWO | 승덕` 은 `name`
+        # 과 달라 옛 게이트를 통과해 영구 고착됐다(2026-09-17 실측, #381·#18).
+        # 정화는 읽는 경계가 하지만 여기 값은 **복사본**이라 안 따라온다(#38).
+        try:
+            from bot.chart_translate import clean_answer as _clean
+            _echoed = bool(_cur_kr) and _clean(_cur_kr) != _cur_kr
+        except Exception:                                      # noqa: BLE001
+            _echoed = False
+        if not _cur_kr or _cur_kr == f.get("name") or _echoed:
             _new_kr = ((nq.get("name") if nq else None)
                        or _resolve_kr_name(f["ticker"], f.get("name") or f["ticker"]))
             if _new_kr:
