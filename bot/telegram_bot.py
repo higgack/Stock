@@ -1098,7 +1098,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
  http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
 ━━━━━━━━━
 <b>【대시보드】</b> 위 <b>Main</b> 이 단일 entry — 나머지는 전부 Main nav 에서 이동
- 🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·★중요표시+중요만 필터·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·거래량상위·KRX장후·장전/시간외·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
+ 🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·★중요표시+중요만 필터·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·거래량상위·장전/장후·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
  📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 🔋Bollinger(볼린저 상단 돌파 종목수 · 5일선 추이 · 에너지 국면) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
  🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
  ★📝⏰ <b>카드 도구</b>(카드형 보드 공통 · 차트보드 제외) — 카드마다 ★중요·📝메모·⏰알람(서버 저장 → 모바일↔PC 동기화). 검색창 옆 필터로 표시한 것만 보기. ⏰=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 발송, ✅확인 시 종료·미확인 시 다음날 재발송
@@ -3471,11 +3471,13 @@ def _warm_light_boards() -> None:
             yf_off = False
 
         from datetime import timedelta as _td
+        from datetime import timezone as _tz9
+        _KST_TZ = _tz9(_td(hours=9))
         _kst = now + _td(hours=9)                          # UTC→KST (weekday·hour 모두 KST)
         # ⚠️ weekday 도 KST 로 — KST 08:xx 는 UTC 전일 23:xx 라 now.weekday()(UTC)
         # 를 쓰면 월요일 장전(UTC 일요일)이 weekday<5 에 걸려 영영 워밍 안 됨
         # (사용자 'NXT 장전집계 또 안 됨' 클래스). _kst.weekday() 로 교정.
-        kr_ext = _kst.weekday() < 5 and 8 <= _kst.hour < 20   # KST 평일 08-20 (NXT 장전후)
+        kr_ext = _kst.weekday() < 5 and 8 <= _kst.hour < 20   # KST 평일 08-20 (시간외 창)
 
         jobs = []   # (label, callable) — 시장시간/연장창 게이트 통과분만
         if not nav_off:                                  # 네이버 경량 보드
@@ -3488,7 +3490,7 @@ def _warm_light_boards() -> None:
                     ("theme", lambda: _warm_render(
                         "bot.naver_pages", "render_theme_page")),
                     # 거래량 상위 (사용자 2026-09-16) — 정규장 누적이라 KR 정규장
-                    # 게이트에 둔다(연장창 게이트는 NXT 보드 소관).
+                    # 게이트에 둔다(연장창 게이트는 시간외 보드 소관).
                     ("krvolume", lambda: _warm_render(
                         "bot.naver_pages", "render_kr_volume_page")),
                 ]
@@ -3496,15 +3498,24 @@ def _warm_light_boards() -> None:
                 if _open(m):
                     jobs.append((f"{m}movers", lambda m=m: _warm_render(
                         "bot.intl_pages", "render_intl_movers_page", m)))
-            if kr_ext:                                   # KR 장전후(NXT) — KST 08-20
-                jobs += [
+            # ⚠️ 시간외 보드의 워밍 게이트는 **수집기와 같은 술어**를 쓴다
+            # (`kr_session.union_extended_window`) — 여기 시각을 리터럴로 적으면
+            # 원천이 KRX 창을 넓혔을 때 스캔 게이트만 따라가고 워머는 안 따라가
+            # 그 구간이 방문 전까지 안 데워진다(#38·#24, 독립 리뷰 2026-09-17 M2).
+            # `/nxt`(NXT 수급)는 하루 누적이라 종전 08-20 게이트를 그대로 둔다.
+            try:
+                from bot.kr_session import union_extended_window as _uew
+                kr_over = _uew(_kst.replace(tzinfo=_KST_TZ))
+            except Exception:
+                kr_over = kr_ext                         # 판정 불가면 종전 게이트
+            if kr_over:
+                jobs.append(
+                    # 시간외 급등·급락 — 거래소 중립 한 장(2026-09-17 합침).
                     ("krprepost", lambda: _warm_render(
-                        "bot.intl_pages", "render_kr_prepost_page")),
-                    # KRX 애프터마켓(16:00–20:00) — 같은 연장창 게이트.
-                    ("krafter", lambda: _warm_render(
-                        "bot.intl_pages", "render_kr_after_page")),
-                    ("nxt", lambda: _warm_render("bot.nxt_pages", "render_nxt_page")),
-                ]
+                        "bot.intl_pages", "render_kr_prepost_page")))
+            if kr_ext:                                   # KST 평일 08-20
+                jobs.append(
+                    ("nxt", lambda: _warm_render("bot.nxt_pages", "render_nxt_page")))
         if _open("US"):                                  # US 무버·업종(Finviz)
             jobs += [
                 ("usmovers", lambda: _warm_render(

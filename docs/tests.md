@@ -259,47 +259,73 @@
 | 배운 키가 400 이면 **다시 배운다**(#24 — 원천 enum 드리프트) | ✅ 자동 | `…::test_rejected_learned_key_is_relearned` |
 | 고가·저가가 안 오면 **말한다**, 오면 조용하다(#43·#25·#260) | ✅ 자동 | `…::test_missing_high_low_is_stated_not_silently_blank` |
 | 네이버 칼럼 8종 + 사유가 **보이는 줄**(#228) | ✅ 자동 | `…::test_page_draws_naver_columns_and_shows_the_reason` |
-| nav 순서 = 거래량 상위 → NXT 급등·급락(단일 출처·폴백 동일) | ✅ 자동 | `…::test_nav_order_puts_volume_before_the_nxt_movers_board` |
+| nav 순서 = 거래량 상위 → 시간외 보드(단일 출처·폴백 동일) | ✅ 자동 | `…::test_nav_order_puts_volume_before_the_nxt_movers_board` |
 | 라우트·no-cache·라이브 폴링 배선(#20) | ✅ 자동 | `…::test_route_and_live_polling_are_wired` |
 | 서버 TTL < 화면 폴링 주기(#36 — 아니면 '2분 갱신' 이 거짓) | ✅ 자동 | `…::test_volume_cache_ttl_is_shorter_than_the_poll_interval` |
 | 네이버증권은 **nav 전용**이고 그 축이 조용히 커지지 않는다 | ✅ 자동 | `…::test_naver_stock_is_nav_only` |
 | KR 자식 링크 수 = nav 레지스트리 탭 수(옛 `== 5` 스냅샷 대체, #222) | ✅ 자동 | `TestNaverWidgetSilence20260911::test_reason_branch_keeps_the_child_page_links` |
 
-⚠️ 못 보는 축(#274): **KRX 애프터마켓 블록의 체결 귀속**은 여전히 미측정이다 —
+⚠️ 못 보는 축(#274): **시간외 블록의 체결 귀속**은 여전히 미측정이다 —
 네이버 `overMarketPriceInfo` 가 어느 거래소 체결인지 모른다. 단 "시간외 블록이
 하나뿐이고 응답에 거래소를 **이름으로** 가르는 필드가 없다"는 2026-09-17 프로브
 실측으로 확정됐다 → 아래 §venue 축 실측 절. 화면은 그 절반만 사실로 적는다.
+그래서 2026-09-17 에 거래소별 두 보드를 **한 장으로 합쳤다**(실수 #378) —
+KRX 창이 NXT 창의 진부분집합이라 KRX 보드는 한 행도 더 내놓을 수 없었다.
 
-### KRX 애프터마켓 보드 (2026-09-16, 실수 #371)
-`tests/test_regression.py::TestKrxAfterMarketBoard20260916`
+### KR 시간외 보드 — 거래소 중립 한 장 (2026-09-17, 실수 #378)
+`tests/test_regression.py::TestKrOverBoardMerged20260917`
+
+2026-09-16 에 공지 153(KRX 애프터마켓 신설)을 보고 `/krafter`(KRX)·`/krprepost`
+(NXT) 두 장을 뒀는데, 창 표를 보면 KRX 창(16:00–20:00)이 NXT 창(08:00–09:00 ·
+15:40–20:00)의 **진부분집합**이고 네이버 시간외 블록은 하나뿐이다(#373b) — 두
+보드는 정의상 같은 목록을 냈고, 화면에선 그게 "두 시장의 시간외가 같다"는 시장
+주장으로 읽혔다(#375). 사용자 2026-09-17 "합치기로 하자 … 미국처럼 장후로".
 
 | 계약 | 상태 | 테스트 |
 |---|---|---|
-| 두 거래소가 캐시·상태 파일을 공유하지 않는다(#45) + 오타는 거부(#82) | ✅ 자동 | `…::test_two_venues_never_share_a_cache_file` |
-| KRX 창은 NXT 보다 20분 늦게 열린다 · KRX 엔 프리마켓 없음 | ✅ 자동 | `…::test_krx_window_starts_20_minutes_after_nxt` |
-| 수집기를 태워 **자기 venue 파일에만** 쓴다(#20) | ✅ 자동 | `…::test_scan_writes_to_its_own_venue_files` |
-| 한 거래소 스캔이 다른 거래소 갱신을 막지 않는다 | ✅ 자동 | `…::test_one_venue_refresh_does_not_block_the_other` |
+| 합집합 창이 **어느 거래소 창이든** 덮는다(5분 격자 전수·이름 열거 금지, #24·#171) | ✅ 자동 | `…::test_union_window_covers_every_venue_window` |
+| 오늘은 합집합 = NXT 창 → 이 변경은 **동작을 안 바꾼다**(값으로 못박음) | ✅ 자동 | `…::test_union_window_is_todays_nxt_window_and_says_so` |
+| 부분집합이 **아닌** 세계에서 합집합이 실제로 넓어진다(#91c 발화 경로) | ✅ 자동 | `…::test_union_window_widens_when_a_venue_widens` |
+| 합집합 세션이 pre/post 를 말한다(`pre_close` 포함) | ✅ 자동 | `…::test_union_session_names_pre_and_post` |
+| 수집기를 태워 **캐시 1 + 상태 1** 에 쓰고 옛 거래소 파일은 안 만든다(#20·#53) | ✅ 자동 | `…::test_scan_writes_one_cache_and_one_status` |
+| 스캔은 한 번에 하나(stampede, #113) | ✅ 자동 | `…::test_only_one_scan_runs_at_a_time` |
+| `start()` 가 던져도 플래그가 안 선다 — 영구 정지 금지(#280) | ✅ 자동 | `…::test_kick_releases_the_flag_when_the_thread_cannot_start` |
 | 화면이 **재지 않은 귀속**을 보이는 줄로 밝힌다(#43·#165·#228) | ✅ 자동 | `…::test_page_states_what_it_is_actually_measuring` |
-| KRX 패널 제목에 '장전' 이 없다(없는 세션 금지) | ✅ 자동 | `…::test_krx_page_never_says_pre_market` |
-| 렌더러 합침 뒤에도 NXT 보드는 자기 창·제목(#222) | ✅ 자동 | `…::test_nxt_board_keeps_its_own_window_and_labels` |
-| nav 순서 = 거래량 상위 → KRX 장후 → NXT 급등·급락 | ✅ 자동 | `…::test_nav_order_krx_after_sits_between_volume_and_nxt` |
-| 라우트·no-cache·폴링·워머 배선(#20) | ✅ 자동 | `…::test_krx_route_and_polling_are_wired` |
+| 제목·부제·패널 제목이 **거래소를 주장하지 않는다**(#375·#55 표면별) | ✅ 자동 | `…::test_page_never_claims_a_venue` |
+| 부제 창이 `kr_session` 합집합 단일 출처에서 온다(#55·#38) | ✅ 자동 | `…::test_page_says_both_windows_in_its_subtitle` |
+| 집계 실패 배너도 거래소를 말하지 않는다(#91b 배너 블록만 잘라서) | ✅ 자동 | `…::test_banner_does_not_name_a_venue` |
+| 실패 배너가 **없는 스냅샷**을 '아래에 있다' 고 말하지 않는다(#55·#43 · 반대 증거 포함) | ✅ 자동 | `…::test_banner_does_not_promise_a_snapshot_that_is_not_there` |
+| 패널 제목 세션 라벨이 원천 세션을 따른다(pre→장전 · post→장후 · 미상→둘 다) | ✅ 자동 | `…::test_panel_titles_follow_the_session` |
+| `union_session` 의 "충돌 시 pre 가 이긴다" 규약(합성 거래소로 실제 발화, #291) | ✅ 자동 | `…::test_pre_wins_when_two_venues_disagree` |
+| `union_session` 이 거래소를 **열거하지 않는다**(합성 거래소 전용 창으로 발화, #24·#291) | ✅ 자동 | `…::test_union_session_is_derived_not_enumerated` |
+| 한 구간이 두 국면에 걸치면 '시간외' 라고만 적는다(독스트링 규약을 가드로, #286) | ✅ 자동 | `…::test_a_span_covering_both_phases_is_named_시간외` |
+| `_run` 의 `global` — 스캔이 끝나면 플래그가 내려간다(정상·예외 두 분기, #280) | ✅ 자동 | `…::test_the_flag_is_released_after_the_scan_finishes` · `…::test_the_flag_is_released_when_the_scan_raises` |
+| 배너가 거래소를 말하지 않는다 — **스냅샷 유무 × 실패/진행 4분기 전부**(#343) | ✅ 자동 | `…::test_banner_does_not_name_a_venue` |
+| 워머 게이트도 수집기와 **같은 술어**(`union_extended_window`)에서 온다(#38·#24) | ✅ 자동 | `…::test_route_and_polling_are_wired` |
+| 폴링 기본값을 리터럴로 안 박고 `live_refresh` 에서 파생해 서버 TTL 과 비교(#66·#36) | ✅ 자동 | 〃 |
+| KRX 보드가 **모든 표면에서** 사라졌다 — 렌더러·헬퍼·nav·라우트·폴링·워머(#286 양방향) | ✅ 자동 | `…::test_the_krx_board_is_gone_everywhere` |
+| 탭 라벨이 **미국 보드와 같다**(사용자 "미국처럼") + 거래량 상위 뒤 순서 유지 | ✅ 자동 | `…::test_nav_has_one_after_hours_tab_named_like_the_us_board` |
+| 라우트·no-cache·폴링·워머 배선 + `_HELP_TEXT` 에 사라진 탭이 없다(#20·§Help) | ✅ 자동 | `…::test_route_and_polling_are_wired` |
 
 ⚠️ 못 보는 축(#274): **네이버 시간외 블록의 체결 귀속**(KRX인가 NXT인가)은
 여전히 미측정이다. 2026-09-17 프로브가 답한 것은 **절반**(같은 블록을 본다)이고
 그건 화면 문구에 반영됐다 → 아래 §venue 축 실측 절. 화면은 남은 절반을
-**보이는 줄**로 밝힌다(#43·#165) — 라벨을 지어내지 않는다.
+**보이는 줄**로 밝힌다(#43·#165) — 라벨을 지어내지 않는다. 그리고 "KRX 창이
+NXT 창의 부분집합" 은 **원천이 밝힌 창**(공지 153)에서 나온 연역이지 우리가
+체결을 잰 것이 아니다 — 원천이 창을 바꾸면 이 근거도 같이 바뀐다(#165).
+⚠️ 거래소별 두 보드 시절의 계약(캐시 분리·공유 스캔·KRX 전용 문구)은 지운
+것이 아니라 **다시 쓴 것**이다(#222) — 어느 것이 왜 바뀌었는지는 위 테스트
+독스트링에 남아 있다.
 
 ### KR 보드 독립 리뷰 반영분 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrBoardsReviewFixes20260916`
 
 | 계약 | 상태 | 테스트 |
 |---|---|---|
-| B1 겹치는 창에서 **한 번만 스캔**하고 열린 venue 전부에 쓴다(#61·#280) | ✅ 자동 | `…::test_overlapping_venues_share_one_scan` |
-| B1 세션이 다른 venue 에는 안 쓴다(창이 닫혔으면 남의 결과다, #45) | ✅ 자동 | `…::test_sharing_only_when_the_session_matches` |
+| B1 스캔 경로가 **하나**이고 보드를 읽어도 또 스캔하지 않는다(#61·#113·#222) | ✅ 자동 | `…::test_one_scan_path_means_no_double_polling` |
 | H2 필터 **전에** 넉넉히 받아 요청한 수를 채운다 + 제외 수를 말한다(#148·#45) | ✅ 자동 | `…::test_volume_board_overfetches_so_the_filter_does_not_shrink_it` |
 | H3 원천이 sortType 을 검증 안 하면 **미끼 응답 행을 쓰고** partial 로 밝힌다 | ✅ 자동 | `…::test_probe_rows_are_used_instead_of_a_blank_board` |
-| H4 배너·창이 **venue 에서** 온다('NXT' 리터럴 금지, #38·#55) | ✅ 자동 | `…::test_krx_banners_and_window_come_from_the_venue` |
+| H4/M6 배너·부제의 창이 **단일 출처**에서 온다(리터럴 금지, #38·#55·#222) | ✅ 자동 | `…::test_banner_and_subtitle_come_from_the_single_source` |
 | H5 창 문구가 프리마켓 08:00–09:00 을 **안 잘라먹는다**(#43) | ✅ 자동 | `…::test_window_label_matches_the_scanner_window` |
 | M7 네이버 일시정지는 실패가 아니라 **판정 보류**(#279·#345) | ✅ 자동 | `…::test_health_row_is_registered_and_pause_is_not_a_failure` |
 | M8 원천이 막히면 **직전 저장분**을 💾 로 밝혀 내보낸다(#306·#335) | ✅ 자동 | `…::test_fetch_failure_falls_back_to_the_snapshot_and_says_so` |
@@ -307,8 +333,8 @@
 | L14 칼럼 순서가 네이버와 같다(거래량·거래대금 → 고가·저가) | ✅ 자동 | `TestKrVolumeAndSessions20260916::test_page_draws_naver_columns_and_shows_the_reason` |
 | L15 거래대금·체결강도 류를 거래량 정렬로 고르지 않는다(#34) | ✅ 자동 | `…::test_volume_sort_rejects_lookalike_keys` |
 | L16 재학습은 **옛 키를 먼저 지운다**(죽은 키가 30일 살아남지 않게) | ✅ 자동 | `…::test_relearn_clears_the_dead_key` |
-| L17 `/krafter` 폴링은 형제 `/krprepost` 와 **같은 축**(#38·#36) | ✅ 자동 | `TestKrxAfterMarketBoard20260916::test_krx_route_and_polling_are_wired` |
-| L18 킥 스텁은 stdlib 가 아니라 모듈 로컬 `_spawn` 에(#30) + 스레드 시작 실패가 venue 를 영구 잠그지 않는다 | ✅ 자동 | `…::test_failed_thread_start_does_not_wedge_the_venue` |
+| L17 시간외 보드 폴링(30초)이 서버 재집계 TTL(120초)보다 짧다(#36) | ✅ 자동 | `TestKrOverBoardMerged20260917::test_route_and_polling_are_wired` |
+| L18 킥 스텁은 stdlib 가 아니라 모듈 로컬 `_spawn` 에(#30) + 스레드 시작 실패가 보드를 영구 잠그지 않는다 | ✅ 자동 | `…::test_failed_thread_start_does_not_wedge_the_venue` |
 
 ### KR 보드 프로브 실측 반영 (2026-09-16, 실수 #372)
 `tests/test_regression.py::TestKrBoardProbeMeasured20260916`
@@ -415,10 +441,14 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 많기 때문에" — 화면이 **우리 구현의 결과**("겹치는 창엔 같은 값")를 시장 사실처럼
 적고 있었고, 미측정 축이 하나 더 있었다(NXT 거래 종목 목록 미수신).
 
+⚠️ 2026-09-17 에 **보드를 합치면서 이 계약이 한 번 더 바뀌었다**(#378·#222) —
+"두 보드가 같은 목록을 낸다" 는 문장 자체가 사라졌으므로 남는 보장은 **거래소를
+주장하지 않는다**는 것이다. 창은 `kr_session` 합집합 단일 출처에서 온다.
+
 | 계약 | 강제 | 테스트 |
 |---|---|---|
 | 겹침은 **우리 한계**로 적고 "엔 같은 값"(시장 단정)은 금지 | ✅ 자동 | `test_overlap_is_stated_as_our_limit_not_a_market_fact` |
-| 거래소 무필터·부분집합 사실을 두 줄 모두에 | ✅ 자동 | 같은 테스트(KRX·NXT 순회) |
+| 거래소 무필터 · 귀속 미측정 · 창은 단일 출처 | ✅ 자동 | 같은 테스트 |
 | 체결 귀속은 여전히 미측정이라고 말한다 | ✅ 자동 | `test_screen_states_the_measured_half_and_claims_no_venue`(#373 계약 유지) |
 | 각주가 렌더 페이지에 실린다(배선, #20) | ✅ 자동 | `test_the_note_reaches_the_rendered_page` |
 | 전용 창 판정 3갈래(exclusive/overlap/closed) | ✅ 자동 | `test_exclusive_venue_splits_the_three_branches` |
@@ -530,9 +560,17 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 이름이 그 밖일 수 있다(#24) — ④ 의 전 키 덤프가 짝이다. 그리고 '있음' 이
 떠도 그 키로 **목록이 실제로 줄어드는지**는 그다음 측정이 답한다.
 
-**같은 커밋에서 잡은 시한폭탄**: `test_scan_writes_to_its_own_venue_files`
-(2026-09-16 작성)가 실제 `now` 로 창을 판정해 **매일 16:00~20:00 KST 에만**
-빨간불이었다 — KRX 체결 창은 NXT 창 안에 통째로 들어가므로 그 시간엔 공유
-저장(리뷰 B1)이 정상 동작하고, 단언 "NXT 캐시를 덮어썼다" 가 **운영 상시
-경로에서 거짓**이 된다. 창 판정을 시계에서 떼어내고 계약을 둘로 나눴다
-(`test_overlapping_windows_share_one_scan_into_two_files`, M8 발화 확인).
+**같은 커밋에서 잡은 시한폭탄**(2026-09-16 당시): 그때의
+`test_scan_writes_to_its_own_venue_files` 가 실제 `now` 로 창을 판정해 **매일
+16:00~20:00 KST 에만** 빨간불이었다 — KRX 체결 창은 NXT 창 안에 통째로
+들어가므로 그 시간엔 공유 저장(리뷰 B1)이 정상 동작하고, 단언 "NXT 캐시를
+덮어썼다" 가 **운영 상시 경로에서 거짓**이 된다. 창 판정을 시계에서 떼어내고
+계약을 둘로 나눴다(당시의 `test_overlapping_windows_share_one_scan_into_two_files`,
+M8 발화 확인).
+⚠️ 두 테스트 다 **2026-09-17 보드 합침(#378)으로 사라졌다** — 남는 보장은
+§KR 시간외 보드 절의 `test_scan_writes_one_cache_and_one_status` ·
+`test_one_scan_path_means_no_double_polling` 이고, 창 판정을 시계에서
+떼어내는 규율은 `_kr_scan_env` 가 그대로 든다(#222 지운 것이 아니라 다시 쓴 것).
+⚠️ `docs/tests.md` 가 **인용한 테스트 이름이 실재하는지 검사하는 가드는
+없다**(#274 못 보는 축) — 그래서 이런 이름은 조용히 썩는다. 지울 땐 인용처를
+같이 볼 것.

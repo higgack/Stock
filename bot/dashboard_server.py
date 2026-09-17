@@ -810,7 +810,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                   "/jp52", "/hk52", "/kr52", "/cn52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
                                   "/jphighlow", "/nxt", "/krprepost",
-                                  "/krvolume", "/krafter")
+                                  "/krvolume")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -934,14 +934,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_simple_page(
                 "bot.nxt_pages", "render_nxt_page")
         # /krprepost — KR 장전·장후 시간외(단일가) 가격 급등·급락 TOP30 (네이버
-        # overMarketPriceInfo, 2026-06-16). NXT(수급)와 별개 — 이건 '가격'.
+        # overMarketPriceInfo, 2026-06-16). NXT 수급(/nxt)과 별개 — 이건 '가격'.
+        # ⚠️ 2026-09-17: 거래소별로 잠깐 두었던 `/krafter`(KRX 장후)를 **뺐다**
+        # — 시간외 블록이 하나뿐이라 두 경로가 같은 목록을 냈다(#373b·#375).
         if raw == "/krprepost":
             return self._handle_simple_page(
                 "bot.intl_pages", "render_kr_prepost_page")
-        # /krafter — KRX 애프터마켓(16:00–20:00 KST) 급등·급락 (공지 153, 2026-09-16).
-        if raw == "/krafter":
-            return self._handle_simple_page(
-                "bot.intl_pages", "render_kr_after_page")
         # /krvolume — KR 거래량 상위 (네이버 실시간 랭킹 형식, 2026-09-16).
         if raw == "/krvolume":
             return self._handle_simple_page(

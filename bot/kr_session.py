@@ -144,3 +144,73 @@ def exclusive_venue(now: datetime | None = None) -> tuple[str, str]:
     if len(open_) == 1:
         return (open_[0], "exclusive")
     return ("", "overlap" if open_ else "closed")
+
+
+# ── 합집합(거래소 중립) ─────────────────────────────────────────────
+# 사용자 2026-09-17 "합치기로 하자 … 미국처럼 장후로": KR 시간외 보드를 미국
+# `usprepost` 처럼 **한 장**으로 합쳤다. 근거는 창이다 — KRX 체결 창
+# (16:00–20:00)은 NXT 창(08:00–09:00 · 15:40–20:00)의 **진부분집합**이라
+# KRX 보드가 한 행도 더 내놓을 수 없었고, 남은 고유 산출은 하루 80분의 빈
+# 화면과 **재지 않은 거래소 라벨**뿐이었다(#373b 응답에 거래소를 이름으로
+# 가르는 필드가 없다 · #165·#375 우리 구현의 결과를 시장 사실로 적지 말 것).
+#
+# ⚠️ 그래서 보드는 거래소를 고르지 않고 **두 창의 합집합**을 쓴다. 오늘은
+# NXT 창과 같아 동작이 한 글자도 안 바뀌지만(부분집합이므로), 원천이 KRX
+# 창을 20:00 너머로 늘리면 거기서 조용히 빠지지 않는다. 거래소 이름을 여기
+# 열거하지 않으므로 거래소가 늘어도 저절로 따라온다(#24).
+
+def union_extended_window(now: datetime | None = None) -> bool:
+    """어느 거래소든 체결 창이 열려 있나 = 시간외 보드가 재스캔할 창."""
+    return any(in_extended_window(v, now) for v in VENUES)
+
+
+def union_session(now: datetime | None = None) -> str:
+    """합집합 세션 — 'pre'·'post'·''(창 밖). 보드 라벨·행 필터가 쓴다.
+
+    ⚠️ 프리와 애프터가 동시에 열린 거래소 조합은 오늘 없다(KRX 엔 프리마켓이
+    없다). 그런 날이 오면 'pre' 가 이긴다 — 임의 선택이므로 여기 적어 둔다.
+    """
+    ph = [phase(v, now)[0] for v in VENUES]
+    if any(k in ("pre", "pre_close") for k in ph):
+        return "pre"
+    return "post" if "after" in ph else ""
+
+
+def _union_spans() -> list[tuple[int, int, set]]:
+    """전 거래소 체결 구간을 분 단위로 합쳐 정렬 (시작, 끝, 국면종류들)."""
+    raw: list[tuple[int, int, str]] = []
+    for v in VENUES:
+        for sh, sm, eh, em, k, _lb in _table(v):
+            if k in ("pre", "pre_close", "after"):
+                raw.append((sh * 60 + sm, eh * 60 + em, "pre"
+                            if k.startswith("pre") else "after"))
+    raw.sort()
+    out: list[tuple[int, int, set]] = []
+    for s_, e_, kind in raw:
+        if out and s_ <= out[-1][1]:            # 겹치거나 맞닿으면 잇는다
+            prev = out[-1]
+            out[-1] = (prev[0], max(prev[1], e_), prev[2] | {kind})
+        else:
+            out.append((s_, e_, {kind}))
+    return out
+
+
+def union_window_label() -> str:
+    """합집합 창을 사람이 읽는 문장으로 — 화면 각주가 창을 리터럴로 적으면
+    이 표와 갈라진다(#55). `union_extended_window` 와 **같은 구간**을 말한다.
+
+    ⚠️ 한 구간이 두 국면(프리·애프터)에 걸치면 이름을 고를 수 없으므로
+    '시간외' 라고만 적는다 — 없는 구분을 지어내지 않는다(#34·#165).
+
+    ⚠️ **못 보는 축**(#274): 자정을 넘는 체결 창(끝 < 시작)은 이 합치기가
+    제대로 못 잇는다. 오늘 pre/pre_close/after 중 자정을 넘는 구간은 없고,
+    **동작을 정하는** `union_extended_window` 는 `_in()` 을 쓰므로 그때도
+    옳다 — 틀려지는 것은 라벨뿐이다. 그런 창이 생기면 여기부터 고칠 것.
+    """
+    parts = []
+    for s_, e_, kinds in _union_spans():
+        lb = ("프리마켓" if kinds == {"pre"} else
+              "애프터마켓" if kinds == {"after"} else "시간외")
+        parts.append(f"{lb} {s_ // 60:02d}:{s_ % 60:02d}–"
+                     f"{e_ // 60:02d}:{e_ % 60:02d}")
+    return " · ".join(parts) + " KST"
