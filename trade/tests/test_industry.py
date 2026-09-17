@@ -1,4 +1,5 @@
 """Industry aggregation + HSK-MTI bridge tests (phase 1)."""
+import re
 import unittest
 
 from trade import industry, mti_map
@@ -887,3 +888,115 @@ class SubitemCardEscapeTests20260820(unittest.TestCase):
         # 지워진 게 아니라 escape 돼 실려야 한다(#25 — 반대 증거도 확인).
         self.assertIn("품목INJ&lt;Y&gt;", html)
         self.assertIn("산업INJ&lt;X&gt;", html)
+
+
+class YoyBarLabelPlacement20260917(unittest.TestCase):
+    """YoY 성장률 막대 차트의 최신값 라벨이 막대에 가리지 않는다 (실수 #377).
+
+    옛 판은 baseline 을 `max(y(v) - 4, 9)` 리터럴로 잡았다 — `y(v)` 는 양수
+    막대에선 **위끝**이지만 음수 막대에선 **아래끝**이라 라벨이 막대 안에
+    박혔고, 양수라도 라벨이 걸치는 옆 막대가 더 높으면 그 막대에 가렸다.
+    사용자 2026-09-17: "숫자가 그래프에 가지잖아 … 되는게 있게 안되는것도
+    있고" — 실제로 아래 네 픽스처 중 셋이 옛 판에서 겹쳤다(실측).
+    """
+
+    _RECT = re.compile(
+        r'<rect x="([-\d.]+)" y="([-\d.]+)" width="([\d.]+)" height="([\d.]+)"')
+    _LBL = re.compile(
+        r'<text x="([-\d.]+)" y="([-\d.]+)" class="ind-cl" text-anchor="(\w+)">'
+        r'([^<]+)</text>')
+
+    def _pts(self, yoys):
+        return [{"ym": f"{2024 + k // 12}-{k % 12 + 1:02d}", "exp": 100.0,
+                 "yoy": y} for k, y in enumerate(yoys)]
+
+    def _label_and_bars(self, yoys):
+        svg = industry._yoy_bar_svg(self._pts(yoys))
+        m = self._LBL.search(svg)
+        self.assertIsNotNone(m, "최신값 라벨이 아예 없다")
+        x, y = float(m.group(1)), float(m.group(2))
+        w = industry._est_w(m.group(4))
+        xl, xr = (x - w, x) if m.group(3) == "end" else (x, x + w)
+        bars = [tuple(map(float, t)) for t in self._RECT.findall(svg)]
+        return (xl, xr, y - 7.0, y + 2.0), bars, y, m.group(4)
+
+    def _overlaps(self, box, bars):
+        xl, xr, top, bot = box
+        return [b for b in bars
+                if xl < b[0] + b[2] and b[0] < xr
+                and top < b[1] + b[3] and b[1] < bot]
+
+    def test_label_never_sits_on_a_bar(self):
+        n = 24
+        cases = {
+            # (되던 경우) 최신이 최고치라 위가 비어 있다
+            "평탄·최신 양수": [5.0] * n + [24.2],
+            # (안 되던 경우 ①) 옆 막대가 훨씬 높아 라벨을 덮었다
+            "옆이 더 높음·양수": [5.0] * (n - 1) + [180.0, 24.2],
+            # (안 되던 경우 ②) 음수는 y(v) 가 아래끝이라 막대 **안**에 박혔다
+            "최신 음수": [5.0] * n + [-3.4],
+            "옆이 깊은 음수": [5.0] * (n - 1) + [-90.0, -3.4],
+            "전부 음수": [-40.0] * n + [-3.4],
+            "최신이 최저": [5.0] * n + [-99.0],
+        }
+        for name, yoys in cases.items():
+            with self.subTest(name):
+                box, bars, _, txt = self._label_and_bars(yoys)
+                hit = self._overlaps(box, bars)
+                self.assertFalse(
+                    hit, f"{name}: 라벨 {txt!r} 이 막대 {len(hit)}개에 겹친다")
+
+    def test_label_stays_inside_the_canvas(self):
+        """파생 좌표에는 상한을 둔다(#100·#112) — 도화지 밖으로 나가면
+        잘려서 '숫자가 안 보인다' 는 같은 증상이 된다."""
+        for yoys in ([5.0] * 24 + [300.0], [5.0] * 24 + [-99.0],
+                     [200.0] * 24 + [190.0]):
+            with self.subTest(yoys[-1]):
+                box, _, y, _ = self._label_and_bars(yoys)
+                self.assertGreaterEqual(box[2], 0.0, "라벨 윗변이 도화지 위로")
+                self.assertLessEqual(box[3], float(industry._VH),
+                                     "라벨 아랫변이 도화지 아래로")
+
+    def test_label_does_not_collide_with_the_date_axis(self):
+        """아래로 밀 때 X축 날짜 라벨과 겹치지 않는다 — 겹치면 옛 증상이
+        막대가 아니라 글자끼리로 옮겨갈 뿐이다(#33)."""
+        box, _, _, _ = self._label_and_bars([5.0] * 24 + [-3.4])
+        # 오른쪽 날짜 라벨 baseline = _VH - 3
+        date_y = float(industry._VH - 3)
+        self.assertGreaterEqual(
+            abs(((box[2] + box[3]) / 2 + 2.5) - date_y), 8.0,
+            "최신값 라벨이 X축 날짜 라벨 위에 얹혔다")
+
+    def test_placement_is_derived_from_the_bar_boxes(self):
+        """라벨 y 가 막대 상자에서 파생되는지 — 옆 막대의 높이만 바꾸면
+        라벨이 따라 움직여야 한다. 안 움직이면 리터럴로 되돌아간 것이다."""
+        n = 24
+        _, _, flat_y, _ = self._label_and_bars([5.0] * n + [24.2])
+        _, _, tall_y, _ = self._label_and_bars(
+            [5.0] * (n - 1) + [180.0, 24.2])
+        _, _, neg_y, _ = self._label_and_bars([5.0] * n + [-3.4])
+        self.assertNotEqual(
+            round(flat_y), round(neg_y),
+            "양수/음수 최신값이 같은 y 로 간다 = 막대 방향을 안 보고 있다")
+        self.assertTrue(flat_y <= 12.0 and tall_y <= 12.0)
+
+    # ── _bar_label_y 직접 — 아래 둘은 **막대 차트 호출부에선 도달 불가**하다
+    # (후보 y 가 막대 기하에 묶여 있어 도화지 밖으로도, 날짜 라벨 위로도
+    # 못 간다 — 실측으로 M3·M4 뮤테이션이 통과했다). 그래도 가드를 남기는
+    # 이유는 이 함수가 기하를 인자로 받는 범용 배치기이기 때문이고, 그렇다면
+    # 가드에는 발화 경로가 있어야 한다(#291) — 합성 기하로 직접 태운다.
+    # 못 보는 축: 호출부가 이 두 갈래를 만드는지는 여기서 재지 않는다(#274).
+    def test_bar_label_y_flips_when_a_text_box_already_sits_there(self):
+        own = (100.0, 120.0, 40.0, 60.0)     # 막대 하나 (top 40, bottom 60)
+        # 바로 아래(y≈68)에 이미 글자가 있으면 위로 물러나야 한다.
+        y = industry._bar_label_y(
+            100.0, 120.0, own, [own], [(90.0, 130.0, 68.0)], prefer_below=True)
+        self.assertLess(y, 40.0, "점유된 자리를 피하지 않았다")
+
+    def test_bar_label_y_clamps_inside_the_canvas(self):
+        # 도화지 바닥에 닿는 막대 → '아래' 후보가 밖으로 나간다. 상한이 잡는다.
+        own = (100.0, 120.0, 10.0, float(industry._VH))
+        y = industry._bar_label_y(
+            100.0, 120.0, own, [own], [], prefer_below=True)
+        self.assertLessEqual(y, float(industry._VH - 3))
+        self.assertGreaterEqual(y, 0.0)

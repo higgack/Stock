@@ -43,7 +43,7 @@ from __future__ import annotations
 import json
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -319,6 +319,73 @@ def _section_nxt_universe() -> None:
           "이름을 추측해 배선하면 죽은 경로를 배포합니다(#151·#345).")
 
 
+_VENUE_PARAMS = ("stockExchangeType", "exchange", "exchangeType", "market",
+                 "marketType", "venue", "tradingVenue", "nxt",
+                 "alternativeExchange")
+
+
+def _section_venue_params() -> None:
+    """⑥ 거래소 축 파라미터 후보 — **재기만** 한다(읽기 전용).
+
+    사용자 결정 대기 사항이었다: 보드를 NXT 거래 종목만으로 거르려면 그
+    **목록 원천**이 필요한데, 샌드박스는 네이버에 못 닿아 후보를 실호출로
+    못 쟀다. 이름을 지어내 배선하면 죽은 경로를 배포한다(#151·#345) —
+    zod 는 **모르는 키를 조용히 버리고**(200) 아는 키에 잘못된 값이 오면
+    그 키를 이름으로 지목해 4xx 를 준다. 그래서 일부러 틀린 값을 넣으면
+    원천이 스스로 스키마를 말해 준다(#64·#86·#351·#353).
+
+    ⚠️ 이 섹션이 '있음'을 찍어도 **그것만으로 배선하지 않는다** — 그다음
+    측정(그 키로 받은 목록이 실제로 줄어드나)이 답한다. 그리고 여기 쓰는
+    후보 목록은 우리가 적은 것이라 **원천이 쓰는 이름이 그 밖일 수 있다**
+    (#24 열거는 목록 밖을 못 잡는다) — ④ 의 전 키 덤프가 짝이다.
+    """
+    print("\n⑥ 거래소 축 파라미터가 스키마에 있나 — 원천에게 묻는다")
+    from bot.naver_sector_client import (classify_param_probe,
+                                         demote_shared_status, allowed_values)
+    base, base_why = _get(_LIST, sortType="up", category="all", page=1,
+                          pageSize=20)
+    base_rows = _rows(base)
+    base_n = len(base_rows) if base_rows else None
+    base_status = 200 if base_rows else None
+    print(f"   기준선: sortType=up · pageSize=20 → "
+          + (f"{base_n}행" if base_n is not None else f"실패({base_why})"))
+    if base_n is None:
+        # 대조군이 죽으면 아래 판정은 '있음/없음' 이 아니라 **판정 불가**다
+        # (#143) — 그 사실을 먼저 적는다.
+        print("   ⚠️ 대조군이 실패했습니다 — 아래 결과는 판정 불가로 읽을 것")
+    from bot import naver_diag as _nd
+    rows: list = []
+    for key in _VENUE_PARAMS:
+        d, why = _get(_LIST, sortType="up", category="all", page=1,
+                      pageSize=20, **{key: "__probe__"})
+        got = _rows(d)
+        status = 200 if got else _nd.status_from(why)
+        n = len(got) if got else None
+        rows.append([key, status, why, n,
+                     classify_param_probe(status, why, key, n, base_n,
+                                          base_status)])
+    demote_shared_status(rows)
+    measured = 0
+    for key, status, why, n, verdict in rows:
+        if not verdict.startswith("판정 불가"):
+            measured += 1
+        extra = f" · {n}행(기준선 {base_n})" if (
+            n is not None and base_n is not None) else ""
+        print(f"   {key:<20} {verdict}{extra}"
+              + (f" — {why}" if why and status != 200 else ""))
+        vals = allowed_values(why) if status and status != 200 else ()
+        if vals:
+            print(f"       원천이 밝힌 허용값 {len(vals)}종: {', '.join(vals)}")
+    if not measured:
+        # 한 건도 못 쟀다 — 성공으로 집계하면 "후보에 아무것도 없다"로
+        # 읽힌다(#54 대조 0건은 통과가 아니다).
+        print("   ❌ 한 건도 재지 못했습니다 — 위 사유를 볼 것")
+    elif not any(v.startswith("있음") for *_x, v in rows):
+        print(f"   ⚠️ 후보 {measured}종 중 스키마에 있는 것이 없습니다 — "
+              "이 엔드포인트로는 거래소를 못 거릅니다. 우리가 적은 후보 밖의 "
+              "이름일 수 있으니 ④ 의 전 키 덤프를 같이 볼 것(#24).")
+
+
 def main() -> int:
     if not _banner():
         return 2
@@ -342,9 +409,12 @@ def main() -> int:
               "시험할 후보가 없습니다)")
     _section_venue()
     _section_nxt_universe()
+    _section_venue_params()
     done = "②③" if vals else "②"
     print(f"\n판정은 사람이 합니다 — 위 {done} 이(가) 거래량 보드의 정렬 키를, "
-          "④⑤ 가 KRX/NXT 구별 가능 여부를 정합니다.")
+          "④⑤⑥ 이 KRX/NXT 구별 가능 여부를 정합니다(⑥ 이 '있음' 을 찍어도 "
+          "그것만으로 배선하지 않습니다 — 목록이 실제로 줄어드는지가 다음 "
+          "측정입니다).")
     if _VENUE_MISMATCH:
         # ⚠️ 판정키를 계산해 놓고 마지막 줄에 안 실으면 없는 것과 같다
         # (#123 계열) — ❌ 는 rc 에도 실린다(#54).

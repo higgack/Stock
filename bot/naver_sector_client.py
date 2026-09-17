@@ -1869,6 +1869,28 @@ def probe_sorts(url: str = "", size: int = 0) -> list:
     return out
 
 
+def demote_shared_status(rows: list) -> list:
+    """`[key, status, why, n_rows, verdict]` 목록을 제자리 보정(순수 판정).
+
+    ⚠️ **여러 후보가 같은 상태로 거절되면 그건 키가 아니라 환경이다** —
+    프로브 도중 한도·차단이 걸리면 '이 키에만' 이라는 문구가 거짓이 된다
+    (독립 리뷰 실측: 429 하나로 12개 중 9개가 '있음' 으로 찍혔다). 차이
+    판정은 **혼자일 때만** 차이다(#45 모집단 · #165 단정 금지).
+
+    형제 프로브가 이 보정을 복제하면 한쪽만 고쳐져 통계가 갈린다(#38) —
+    `kr_board_probe` 의 거래소 후보 섹션도 이 함수를 쓴다.
+    """
+    shared: dict = {}
+    for _k, st, _w, _n, v in rows:
+        if v.startswith("있음 — 이 키에만"):
+            shared[st] = shared.get(st, 0) + 1
+    for r in rows:
+        if r[4].startswith("있음 — 이 키에만") and shared.get(r[1], 0) > 1:
+            r[4] = (f"판정 불가(HTTP {r[1]} 가 후보 {shared[r[1]]}개에 동시에 "
+                    "— 키가 아니라 환경 변화 의심)")
+    return rows
+
+
 def probe_params(url: str = "", keys: tuple = ()) -> list:
     """후보 파라미터가 원천 스키마에 있는지 **재기만** 한다 → 표시용 줄 목록.
 
@@ -1895,18 +1917,7 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
         verdict = classify_param_probe(status, why, key, n_rows, base_n,
                                        base_status)
         rows.append([key, status, why, n_rows, verdict])
-    # ⚠️ **여러 후보가 같은 상태로 거절되면 그건 키가 아니라 환경이다** —
-    # 프로브 도중 한도·차단이 걸리면 '이 키에만' 이라는 문구가 거짓이 된다
-    # (독립 리뷰 실측: 429 하나로 12개 중 9개가 '있음' 으로 찍혔다). 차이
-    # 판정은 **혼자일 때만** 차이다(#45 모집단 · #165 단정 금지).
-    shared: dict = {}
-    for _k, st, _w, _n, v in rows:
-        if v.startswith("있음 — 이 키에만"):
-            shared[st] = shared.get(st, 0) + 1
-    for r in rows:
-        if r[4].startswith("있음 — 이 키에만") and shared.get(r[1], 0) > 1:
-            r[4] = (f"판정 불가(HTTP {r[1]} 가 후보 {shared[r[1]]}개에 동시에 "
-                    "— 키가 아니라 환경 변화 의심)")
+    demote_shared_status(rows)
     for key, status, why, n_rows, verdict in rows:
         if not verdict.startswith("판정 불가"):
             measured += 1

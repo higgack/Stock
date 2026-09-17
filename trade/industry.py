@@ -416,6 +416,47 @@ def _est_w(text: str) -> float:
     return w
 
 
+_LBL_ASC, _LBL_DESC = 7.0, 2.0   # 9px 글자의 baseline 위/아래 근사
+
+
+def _bar_label_y(xl: float, xr: float, own, bars, occupied,
+                 *, prefer_below: bool) -> float:
+    """막대 차트에 얹는 최신값 라벨의 baseline y — **막대 기하에서 파생**한다.
+
+    xl, xr   — 라벨이 실제로 차지하는 x 구간(앵커 반영).
+    own      — 그 라벨이 가리키는 막대 (x1, x2, top, bottom).
+    bars     — 그려진 막대 전부 [(x1, x2, top, bottom)].
+    occupied — [(xl, xr, y)] 축 라벨 등 이미 글자가 놓인 자리.
+    prefer_below — 음수 막대면 True(막대 **아래**가 자연스럽다).
+
+    옛 판은 `max(y(v) - 4, 9)` 리터럴 하나였다. 그래서 (a) 음수 막대는
+    `y(v)` 가 막대의 **아래끝**이라 라벨이 막대 **안**에 박혔고 (b) 양수라도
+    옆 막대가 더 높으면 그 막대에 가렸다 — 사용자 2026-09-17 "숫자가 그래프에
+    가지잖아. 되는게 있게 안되는것도 있고". 파생 좌표는 데이터에서 만들고
+    상한을 둘 것(#100·#112), 그리고 겹침은 **재서** 피한다(#33).
+    """
+    def hits(y: float) -> bool:
+        top, bot = y - _LBL_ASC, y + _LBL_DESC
+        for bx1, bx2, btop, bbot in bars:
+            if xl < bx2 and bx1 < xr and top < bbot and btop < bot:
+                return True
+        return any(xl < orr and ol < xr and abs(y - oy) < _LBL_H
+                   for ol, orr, oy in occupied)
+
+    over = [b for b in bars if xl < b[1] and b[0] < xr] or [own]
+    above = [own[2] - 3.0, min(b[2] for b in over) - 3.0]
+    below = [own[3] + _LBL_ASC + 1.0, max(b[3] for b in over) + _LBL_ASC + 1.0]
+    # 선호 방향을 **둘 다 먼저** 시도한다 — 양수인데 옆 막대가 높다고
+    # 곧장 0선 아래로 내리면 값의 부호와 위치가 어긋나 읽힌다(#34).
+    cands = (below + above if prefer_below else above + below) + [_PAD_T - 3.0]
+    for y in cands:
+        y = min(max(y, _LBL_ASC + 2.0), _VH - 3.0)
+        if not hits(y):
+            return y
+    # 최후: 가장 높은 막대보다 위(막대 top 은 _PAD_T 이상이라 정의상 안 겹친다).
+    return _LBL_ASC + 2.0
+
+
 def _place_labels(cands_per_label, occupied):
     """각 라벨의 후보 y들 중, 이미 점유된 박스(occupied: [(xl,xr,y)])와
     x겹침+y근접(<_LBL_H)이 없는 첫 y를 골라 배치. 못 고르면 첫 후보.
@@ -641,6 +682,7 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
     zero_y = y(0)
     bw = max(2.0, plot_w / (n_max + 1) * 0.7)
     bars = []
+    boxes: list[tuple[float, float, float, float]] = []
     for i, v in ys:
         bx = x(i) - bw / 2
         if v >= 0:
@@ -649,10 +691,13 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
         else:
             by, bh = zero_y, y(v) - zero_y
             cls = "ind-bar-neg"
+        bh = max(bh, 0.6)
+        box = (bx, bx + bw, by, by + bh)
+        boxes.append(box)
         p = pts[i]
         bars.append(
             f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bw:.1f}" '
-            f'height="{max(bh,0.6):.1f}" class="{cls}">'
+            f'height="{bh:.1f}" class="{cls}">'
             f'<title>{_html.escape(p["ym"])} | YoY {_pct(p.get("yoy"))} | '
             f'ΔYoY {_pct(p.get("dyoy"),"%p")}</title></rect>'
         )
@@ -660,14 +705,30 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
             f'y2="{zero_y:.1f}" class="ind-zero-line"/>')
     # axis labels: top=+hi%, bottom=lo%, X dates, latest YoY callout
     li, lv = ys[-1]
+    x_first, x_last = _dot_ym(pts[0]["ym"]), _dot_ym(pts[-1]["ym"])
+    # 최신값 라벨 — 옛 판은 y 를 리터럴(`max(y(v)-4, 9)`)로 잡아 음수 막대
+    # 안에 박히거나 더 높은 옆 막대에 가렸다. 막대 상자에서 파생시킨다.
+    lbl = _pct(lv)
+    lw = _est_w(lbl)
+    lxl, lxr = x(li) - lw, x(li)
+    occupied = [
+        (2.0, 2.0 + _est_w(f"+{hi:.0f}%"), _PAD_T + 4.0),
+        (2.0, 2.0 + _est_w(f"{lo:.0f}%"), _PAD_T + plot_h),
+        (float(_PAD_L), _PAD_L + _est_w(x_first), float(_VH - 3)),
+        (_VW - _PAD_R - _est_w(x_last), float(_VW - _PAD_R), float(_VH - 3)),
+    ]
+    # `boxes[-1]` 이 곧 최신 막대다(`ys` 가 i 오름차순) — `own = None` +
+    # 폴백으로 두면 **도달 불가한 가드**가 된다(#291, 배포전 셀프리뷰).
+    lbl_y = _bar_label_y(lxl, lxr, boxes[-1], boxes, occupied,
+                         prefer_below=lv < 0)
     axes = (
         f'<text x="2" y="{_PAD_T+4:.0f}" class="ind-axis">+{hi:.0f}%</text>'
         f'<text x="2" y="{_PAD_T+plot_h:.0f}" class="ind-axis">{lo:.0f}%</text>'
-        f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(_dot_ym(pts[0]["ym"]))}</text>'
+        f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(x_first)}</text>'
         f'<text x="{_VW-_PAD_R}" y="{_VH-3}" class="ind-axis" text-anchor="end">'
-        f'{_html.escape(_dot_ym(pts[-1]["ym"]))}</text>'
-        f'<text x="{x(li):.0f}" y="{max(y(lv)-4,9):.0f}" class="ind-cl" '
-        f'text-anchor="end">{_pct(lv)}</text>'
+        f'{_html.escape(x_last)}</text>'
+        f'<text x="{x(li):.0f}" y="{lbl_y:.0f}" class="ind-cl" '
+        f'text-anchor="end">{lbl}</text>'
     )
     return (f'<svg viewBox="0 0 {_VW} {_VH}" role="img" aria-label="전년동월 대비 성장률" '
             f'class="ind-chart">{zero}{axes}{"".join(bars)}</svg>')

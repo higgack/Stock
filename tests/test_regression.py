@@ -66502,8 +66502,13 @@ class TestKrxAfterMarketBoard20260916:
         assert _current_kr_session(d(8, 30), "NXT") == "pre"
         assert _current_kr_session(d(16, 30), "KRX") == "post"
 
-    def test_scan_writes_to_its_own_venue_files(self, tmp_path, monkeypatch):
-        """수집기를 통째로 태운다 — 헬퍼만 재면 venue 배선을 못 잡는다(#20)."""
+    def _kr_scan_env(self, tmp_path, monkeypatch, *, nxt_open: bool):
+        """수집기를 태우기 위한 최소 환경 — **창 판정만 시계에서 떼어낸다**.
+
+        ⚠️ 옛 판은 실제 `now` 를 그대로 써서 16:00~20:00 KST 에만 빨간불이
+        되는 시한폭탄이었다(2026-09-17 게이트 실측 red). 창에 의존하는
+        테스트는 시계를 고정할 것(#249·#291·#342).
+        """
         import bot.finviz_client as fv
         import bot.prepost_client as pp
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
@@ -66516,14 +66521,48 @@ class TestKrxAfterMarketBoard20260916:
             "reg_close": 80000.0, "over_volume": 50000, "over_value": 4.05e9,
             "volume": 9_000_000})
         monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        monkeypatch.setattr(
+            pp, "_in_kr_extended_window",
+            lambda now, venue="NXT", _o=nxt_open: (
+                True if str(venue).upper() == "KRX" else _o))
+        return pp
+
+    def test_scan_writes_to_its_own_venue_files(self, tmp_path, monkeypatch):
+        """수집기를 통째로 태운다 — 헬퍼만 재면 venue 배선을 못 잡는다(#20).
+
+        NXT 창이 닫혀 있으면 공유가 없으므로 KRX 파일만 쓴다.
+        """
+        pp = self._kr_scan_env(tmp_path, monkeypatch, nxt_open=False)
         out = pp._compute_kr_prepost("KRX")
         assert out["venue"] == "KRX" and out["up"], out
-        krx_cache, krx_status = pp._venue_files("KRX")
-        nxt_cache, _ = pp._venue_files("NXT")
+        krx_cache, _ = pp._venue_files("KRX")
+        nxt_cache, _n = pp._venue_files("NXT")
         assert (tmp_path / krx_cache).exists(), "KRX 결과가 저장되지 않았다"
         assert not (tmp_path / nxt_cache).exists(), "NXT 캐시를 덮어썼다"
         assert pp.kr_prepost_status("KRX").get("venue") == "KRX"
         assert pp.kr_prepost_status("NXT") == {}, "상태 파일이 섞였다"
+
+    def test_overlapping_windows_share_one_scan_into_two_files(
+            self, tmp_path, monkeypatch):
+        """겹치는 창(16:00~20:00)에선 **한 번 받아 둘 다** 저장한다 — 보드마다
+        따로 스캔하면 같은 숫자를 얻으려고 바깥 호출이 2배가 된다(리뷰 B1).
+
+        위 테스트의 '덮어쓰지 않는다' 는 공유가 없을 때의 계약이다. KRX 의
+        체결 창은 NXT 창 **안**에 통째로 들어가므로 실제 운영에선 이쪽이
+        상시 경로다 — 둘을 갈라 놓지 않으면 시간대에 따라 한쪽이 거짓이 된다
+        (#45 두 모집단 · #222 계약을 다시 쓴 것이지 지운 것이 아니다).
+        """
+        pp = self._kr_scan_env(tmp_path, monkeypatch, nxt_open=True)
+        pp._compute_kr_prepost("KRX")
+        krx_cache, _ = pp._venue_files("KRX")
+        nxt_cache, _n = pp._venue_files("NXT")
+        assert krx_cache != nxt_cache, "두 보드가 같은 파일을 쓴다"
+        assert (tmp_path / krx_cache).exists() and (tmp_path / nxt_cache).exists()
+        # 저장분의 `venue` 는 **읽는 쪽**이고, 누가 받아 왔는지는 scan_venue.
+        for vn in ("KRX", "NXT"):
+            st = pp.kr_prepost_status(vn)
+            assert st.get("venue") == vn, (vn, st)
+            assert st.get("scan_venue") == "KRX", (vn, st)
 
     def test_one_venue_refresh_does_not_block_the_other(self, monkeypatch):
         """전역 불리언 하나면 KRX 스캔 중 NXT 갱신이 통째로 막힌다.
@@ -67551,6 +67590,96 @@ class TestVenueAxisAndUnparsed20260917:
         assert {"nxt_lower_bound", "print"} <= inner, sorted(inner)
         # 버전 배너는 bump 되어야 한다 — 옛 체크아웃 출력과 구별된다(#21·#364).
         assert kb._PROBE_VER >= 2, kb._PROBE_VER
+
+    def test_probe_venue_param_section_measures_instead_of_guessing(
+            self, monkeypatch, capsys):
+        """⑥ 거래소 축 후보 — 원천에게 **물어서** 재고, 판정은 형제 프로브와
+        **같은 함수**를 쓴다(#38).
+
+        사용자 결정 대기 사항("NXT 종목만으로 거르려면 목록 원천이 필요")을
+        재는 자리다. 이름을 지어내 배선하면 죽은 경로를 배포하므로(#151·#345)
+        일부러 틀린 값을 넣어 zod 가 스스로 스키마를 말하게 한다(#64·#86).
+        """
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        asked = []
+
+        def fake(url, **params):
+            asked.append(dict(params))
+            key = next((k for k in params
+                        if params[k] == "__probe__"), None)
+            if key == "exchange":
+                return None, nd.http_reason(
+                    400, 9,
+                    body=b'{"message":"Invalid option: exchange"}')
+            return {"result": [{"itemCode": "005930"}]}, ""
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        # 기준선 1회 + 후보마다 1회
+        assert len(asked) == len(kb._VENUE_PARAMS) + 1, len(asked)
+        assert "exchange" in out and "있음" in out, out
+        # 후보 이름이 전부 출력에 실린다 — 잘라 내면 다음 결정을 가린다(#156).
+        for key in kb._VENUE_PARAMS:
+            assert key in out, (key, out)
+
+    def test_probe_venue_param_section_says_it_measured_nothing(
+            self, monkeypatch, capsys):
+        """한 건도 못 재면 ✅ 도 '후보에 아무것도 없다' 도 아니다 — **판정
+        불가**라고 말한다(#54 대조 0건은 통과가 아니다 · #143 대조군).
+
+        ⚠️ 이 갈래는 원천이 통째로 안 닿을 때만 나므로 정상 응답 픽스처로는
+        **발화 경로가 없었다**(뮤테이션 실측 통과, #291·#91c).
+        """
+        import bot.scripts.kr_board_probe as kb
+
+        monkeypatch.setattr(kb, "_get", lambda url, **p: (None, ""))
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "한 건도 재지 못했습니다" in out, out
+        # 그리고 '후보에 없다' 라고 단정하면 안 된다 — 못 잰 것이다(#165).
+        assert "스키마에 있는 것이 없습니다" not in out, out
+
+    def test_probe_venue_param_section_is_wired_into_main(self):
+        """섹션을 만들어 놓고 `main` 이 안 부르면 없는 것과 같다(#20·#291).
+        헬퍼만 재는 테스트로는 배선을 떼는 변형을 못 잡는다."""
+        import ast
+        import inspect
+
+        import bot.scripts.kr_board_probe as kb
+        fn = next(n for n in ast.walk(ast.parse(inspect.getsource(kb)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "main")
+        called = {n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_section_venue_params" in called, sorted(called)
+        assert kb._PROBE_VER >= 3, kb._PROBE_VER
+
+    def test_shared_status_demotion_is_one_function_not_two(self):
+        """'여러 후보가 같은 상태로 거절되면 키가 아니라 환경' 보정은 형제
+        프로브 둘이 쓴다 — 복제하면 한쪽만 고쳐져 통계가 갈린다(#38).
+        """
+        import ast
+        import inspect
+
+        import bot.naver_sector_client as nsc
+        import bot.scripts.kr_board_probe as kb
+        rows = [["a", 429, "", None, "있음 — 이 키에만 HTTP 429"],
+                ["b", 429, "", None, "있음 — 이 키에만 HTTP 429"],
+                ["c", 400, "", None, "있음 — 원천이 값을 지적함"]]
+        nsc.demote_shared_status(rows)
+        assert rows[0][4].startswith("판정 불가"), rows[0]
+        assert rows[1][4].startswith("판정 불가"), rows[1]
+        # 혼자인 것은 그대로 — 차이는 혼자일 때만 차이다(#45).
+        assert rows[2][4].startswith("있음"), rows[2]
+        for mod, fname in ((nsc, "probe_params"),
+                           (kb, "_section_venue_params")):
+            fn = next(n for n in ast.walk(ast.parse(inspect.getsource(mod)))
+                      if isinstance(n, ast.FunctionDef) and n.name == fname)
+            called = {n.func.id for n in ast.walk(fn)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            assert "demote_shared_status" in called, (fname, sorted(called))
 
     def test_overlap_is_stated_as_our_limit_not_a_market_fact(self):
         """사용자 2026-09-17: "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데.
