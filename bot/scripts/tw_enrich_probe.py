@@ -15,6 +15,12 @@
                 (--slow 면 ④-b: 백그라운드와 같은 yfinance/FinMind 경로)
   ⑤ 판정        갈래로(#82) — 판정 불가는 ✅ 가 아니다(#54). ④-b 를 돌렸으면
                 그 결과가 판정에 **들어간다**(같은 실행이 반증한 원인을 적지 않는다)
+  ⑥ 한글명      **종목별로** 왜 아직 한자인가(사용자 2026-09-17 "최대한 한글화 한것
+                맞지? 5번은 넘게 이거 돌리는듯하네"). 거부된 번역은
+                `translate_miss.json` 에 프롬프트 지문과 함께 남아 **같은
+                프롬프트로는 다시 묻지 않는다** — 그런데 화면·진단은 "다음 빌드가
+                채운다" 고 말해 왔다(#55). 그래서 갈래를 이름으로 적는다:
+                거부(영구) / 재시도 예정 / 미시도 / 영문폴백. LLM 0(cache-only)
 
     cd ~/stock && .venv/bin/python -m bot.scripts.tw_enrich_probe
     cd ~/stock && .venv/bin/python -m bot.scripts.tw_enrich_probe --slow
@@ -32,10 +38,11 @@ from __future__ import annotations
 import sys
 import time
 
+from bot.chart_translate import _MAX_BATCH
 from bot.finviz_client import MCAP_PERSIST_TTL
 from bot.twse_client import _TW_IND_CACHE_TTL
 
-_PROBE_VER = 5
+_PROBE_VER = 6
 # 문턱은 **제품에서 가져온다** — 복제하면 진단이 화면과 다른 말을 한다(#38).
 _MCAP_TTL_H = MCAP_PERSIST_TTL / 3600
 _IND_TTL_H = _TW_IND_CACHE_TTL / 3600
@@ -126,6 +133,108 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
                    f"{in_map}/{n}, 지금 받은 원천엔 {src_in}/{n} 이 실제로 들어 있다 — "
                    "크기가 이유라면 맵에도 없어야 한다")
     return out
+
+
+def name_rows_diag(items: list, *, titles: dict, names: dict, miss: dict,
+                   longnames: dict | None = None) -> list:
+    """종목별 한글명 갈래(순수 · LLM 0). 화면이 쓰는 캐시를 그대로 조회한 결과를
+    받아 **왜 그 상태인지**만 정한다 — 판정을 여기 두면 값으로 잴 수 있다(#176).
+
+    ⚠️ 화면의 해소 순서를 그대로 따른다(독립 리뷰 2026-09-17 H1 — 첫 판은
+    longName 을 아예 안 봐서, longName 으로 풀린 행을 '한자 잔존' 으로 과대
+    보고했다, #35): yfinance longName 번역 → native 번역 → 영문 longName 폴백 →
+    티커 캐시(`stock_panel` 이 마지막에 덮는다).
+
+    갈래(#82): 'korean' · 'by_longname'/'by_title'/'by_ticker'(캐시가 풀어 준다) ·
+    'latin'(원천 이름이 한자가 아님) · 'en_fallback'(longName 이 영문이라 화면이
+    그걸 쓴다) · 'rejected'(물었는데 거부 — **영구**) · 'will_retry' ·
+    'never_asked' · 'no_name'(원천 이름 없음 = 인자 모드).
+    """
+    from bot.chart_translate import has_han
+    out = []
+    for it in items:
+        tk, nm = it.get("ticker"), it.get("name") or ""
+        en = (longnames or {}).get(tk) or ""
+        # ⚠️ 인자 모드(`… probe 8227 6949`)는 원천 이름이 없어 `name` 이 **코드**다
+        # — 그걸 이름으로 세면 한자가 아니라서 '영문 폴백' 이라는 **거짓 갈래**가
+        # 나온다(#35 진단은 화면이 보는 입력을 재야 한다).
+        if not nm or nm in (tk, str(tk or "").split(".")[0]):
+            out.append({"ticker": tk, "native": nm, "branch": "no_name",
+                        "label": "원천 이름 없음(인자 모드) — 화면 입력이 아니다"})
+            continue
+        kr = ((names or {}).get(tk) or (titles or {}).get(en)
+              or (titles or {}).get(nm))
+        if kr:
+            branch = ("by_ticker" if (names or {}).get(tk)
+                      else "by_longname" if (titles or {}).get(en) else "by_title")
+            label = f"캐시가 풂 → {kr}"
+        elif not has_han(nm):
+            branch, label = (("korean", "") if _has_hangul(nm)
+                             else ("latin", "원천 이름이 한자가 아님(영문/숫자)"))
+        elif en and not has_han(en):
+            branch = "en_fallback"
+            label = f"번역은 없지만 longName 이 영문이라 화면은 그걸 쓴다 → {en}"
+        else:
+            # 관문이 둘이라 **둘 다** 본다(리뷰 B1) — 하나라도 다시 물으면
+            # 화면은 바뀔 수 있다(#82 처방이 다르다: 어느 프롬프트를 고칠 것인가).
+            recs = [r for r in ((miss or {}).get(nm), (miss or {}).get(tk))
+                    if isinstance(r, dict)]
+            if not recs:
+                branch, label = "never_asked", "아직 한 번도 안 물음 — 다음 빌드가 채운다"
+            elif any(r.get("retry") for r in recs):
+                branch = "will_retry"
+                gates = "·".join(sorted({r.get("gate") or "?" for r in recs
+                                         if r.get("retry")}))
+                label = f"프롬프트가 바뀜({gates}) — 다음 빌드가 다시 묻는다"
+            else:
+                branch = "rejected"
+                g = "·".join(sorted({r.get("gate") or "?" for r in recs}))
+                why = next((r.get("why") for r in recs if r.get("why")), "사유 미기록")
+                # 지문을 같이 적는다 — "어느 프롬프트 판에서 거부됐나" 를
+                # 답해야 고친 뒤 다시 볼 때 갈린다(#364, 리뷰 L3: 안 찍으면
+                # 죽은 출력이다).
+                ver = next((r.get("ver") for r in recs if r.get("ver")), "")
+                label = (f"물었는데 거부됨({g} 관문) — 같은 프롬프트로는 다시 안 묻는다"
+                         f" · {why}" + (f" · 지문 {ver}" if ver else ""))
+        out.append({"ticker": tk, "native": nm, "branch": branch, "label": label})
+    return out
+
+
+def _has_hangul(s: str) -> bool:
+    return any("\uac00" <= c <= "\ud7a3" for c in s or "")
+
+
+def name_verdict(rows: list) -> list:
+    """⑥ 판정 — 대조 0건은 ✅ 가 아니다(#54). 고칠 수 있는 것만 ❌ 로(#260)."""
+    if not rows:
+        return ["❓ 대조 0행 — 판정 불가"]
+    c: dict = {}
+    for r in rows:
+        c[r["branch"]] = c.get(r["branch"], 0) + 1
+    kor = (c.get("korean", 0) + c.get("by_title", 0) + c.get("by_ticker", 0)
+           + c.get("by_longname", 0))
+    han = c.get("rejected", 0) + c.get("will_retry", 0) + c.get("never_asked", 0)
+    latin = c.get("latin", 0) + c.get("en_fallback", 0)
+    lines = [f"총 {len(rows)}종목 · 한글 {kor} · 영문 {latin} · 한자 잔존 {han}"
+             # 소계 합이 총계와 같아야 한다(#45) — 이름을 못 받은 행은 따로 센다.
+             + (f" · 이름 미확인 {c['no_name']}" if c.get("no_name") else "")]
+    if c.get("rejected"):
+        lines.append(f"❌ {c['rejected']}종목은 기다려도 안 바뀐다 — 물었는데 거부됐고 "
+                     "같은 프롬프트로는 다시 묻지 않는다. 위 줄의 관문 프롬프트를 "
+                     "고치면 지문이 바뀌어 자동 재시도된다.")
+    if c.get("will_retry") or c.get("never_asked"):
+        lines.append(f"⚠️ {c.get('will_retry', 0) + c.get('never_asked', 0)}종목은 다음 "
+                     "빌드가 (다시) 묻는다 — 기다리면 된다(한 번에 최대 "
+                     f"{_MAX_BATCH}종목씩).")
+    if latin:
+        lines.append(f"ℹ️ 영문 {latin}종목 — 통용 한글명이 없으면 한자보다 영문이 "
+                     "낫다는 규약대로다(설계대로, 사용자 2026-09-17).")
+    if c.get("no_name"):
+        lines.append(f"❓ {c['no_name']}종목은 원천 이름을 못 받아 판정 불가 — "
+                     "인자 없이 돌리면 화면과 같은 입력을 잰다(#35·#54).")
+    if not han and not c.get("no_name"):
+        lines.append("✅ 한자로 남은 종목 없음")
+    return lines
 
 
 def _closes_by_code(tw) -> dict[str, float]:
@@ -285,6 +394,37 @@ def main() -> int:
     if not slow and render_ok and (mcap_filled < n or ind_filled < n):
         _p("   ↪ 캐시 콜드인지 원천 부재인지 가르려면(시총 캐시를 채우는 쓰기):")
         _p("      cd ~/stock && .venv/bin/python -m bot.scripts.tw_enrich_probe --slow")
+
+    _p("")
+    _p("⑥ 한글명 — 왜 아직 한자인가(종목별 · cache-only · LLM 0)")
+    if not items:
+        _p("   ❓ 대상이 없어 판정 불가(대조 0행)")
+        return 0
+    try:
+        from bot.chart_translate import (miss_diag, translate_names_kr,
+                                         translate_titles_kr)
+        tks = [it["ticker"] for it in items]
+        natives = [it["name"] for it in items if it.get("name")]
+        # 화면은 longName 을 **먼저** 번역한다 — 안 보면 그걸로 풀린 행을 '한자
+        # 잔존' 으로 과대보고한다(리뷰 H1·#35). `allow_slow=False` = 영구 캐시만
+        # (yfinance .info 호출 0 · 쓰기 0).
+        en = fv._fetch_display_names(tks, allow_slow=False) or {}
+        ktl = translate_titles_kr(natives + [v for v in en.values() if v],
+                                  cache_only=True) or {}
+        knm = translate_names_kr([(it["ticker"], it.get("name")) for it in items],
+                                 cache_only=True) or {}
+        miss = miss_diag(titles=natives, tickers=tks)   # 관문 둘 다(리뷰 B1)
+        rows = name_rows_diag(items, titles=ktl, names=knm, miss=miss,
+                              longnames=en)
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   ❌ 캐시 조회 실패 {type(exc).__name__}: {exc} — 판정 불가")
+        return 0
+    for r in rows:
+        if r["branch"] == "korean":
+            continue
+        _p(f"   · {r['ticker']} {r['native']} → {r['label']}")
+    for line in name_verdict(rows):
+        _p(f"   {line}")
     return 0
 
 

@@ -1504,8 +1504,9 @@ def name_diag(rows: list, market: str) -> dict:
     """진단용 — 한글명이 왜 안 붙었는지 **캐시별로** 센다(LLM 0 · 킥 0).
 
     {total, han_before, han_after, by_ticker(names_kr 적중), by_title(제목
-    캐시 적중), samples(아직 한자인 티커·이름)}. '없음' 만 말하면 추측을
-    부르므로(#82) 어느 캐시가 비었는지까지 갈라 말한다."""
+    캐시 적중), stuck_all(아직 한자인 전 행), samples(그중 앞 8개),
+    miss(거부 기록 — `chart_translate.miss_diag`), miss_error(그 조회 실패)}.
+    '없음' 만 말하면 추측을 부르므로(#82) 어느 캐시가 비었는지까지 갈라 말한다."""
     rows = [dict(r) for r in rows or []]
     out = {"total": len(rows), "han_before": sum(1 for r in rows if has_han(r.get("name"))),
            "by_ticker": 0, "by_title": 0, "han_after": 0, "samples": []}
@@ -1524,9 +1525,71 @@ def name_diag(rows: list, market: str) -> dict:
         out["error"] = f"{type(exc).__name__}: {exc}"
     korean_names(rows, market, kick=False)
     out["han_after"] = sum(1 for r in rows if has_han(r.get("name")))
-    out["samples"] = [f"{r.get('ticker')} {r.get('name')}" for r in rows
-                      if has_han(r.get("name"))][:8]
+    stuck = [r for r in rows if has_han(r.get("name"))]
+    # ⚠️ 총계(`han_after`)와 소계(갈래별)는 **같은 모집단**이어야 한다 — 첫 판은
+    # `samples[:8]` 만 갈래로 돌려 9번째부터가 조용히 사라졌다(#45, 리뷰 M2).
+    out["stuck_all"] = [f"{r.get('ticker')} {r.get('name')}" for r in stuck]
+    out["samples"] = out["stuck_all"][:8]
+    # ⚠️ 여기까지는 "캐시에 없다" 까지만 말한다 — 그런데 **거부된 번역은 다시
+    # 묻지 않는다**(`translate_miss.json` + 프롬프트 지문). 그 사실을 안 실으면
+    # 진단이 "다음 빌드가 채운다" 고 거짓말하고, 사용자는 같은 화면을 다시
+    # 돌린다(사용자 2026-09-17 "5번은 넘게 이거 돌리는듯하네", #55·#82).
+    try:
+        from bot.chart_translate import miss_diag
+        # 관문이 둘이다 — 이름 키(titles)와 티커 키(names) 둘 다 묻는다(리뷰 B1).
+        out["miss"] = miss_diag(titles=[r.get("name") for r in stuck],
+                                tickers=[r.get("ticker") for r in stuck])
+    except Exception as exc:                                   # noqa: BLE001
+        out["miss_error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+def name_stuck_lines(nd: dict) -> list:
+    """아직 한자인 이름들이 **왜** 그런지 갈래로(순수 · 화면과 진단 공용 #38).
+
+    갈래(#82 — 처방이 다르다): 'asked_rejected'=물었는데 모델이 번역을 못 냈고
+    **현재 프롬프트로는 다시 안 묻는다**(프롬프트를 고쳐야 한다) ·
+    'will_retry'=프롬프트가 바뀌어 다음 빌드가 다시 묻는다 · 'never_asked'=아직
+    한 번도 안 물었다(다음 빌드가 채운다).
+    """
+    stuck = list(nd.get("stuck_all") or nd.get("samples") or [])
+    if not stuck:
+        return []
+    miss = nd.get("miss") or {}
+    if nd.get("miss_error"):
+        return [f"↪ 실패 기록을 못 읽어 판정 불가 — {nd['miss_error']}"]
+    rejected, retry, never = [], [], []
+    for s in stuck:
+        tk, name = (s.split(" ", 1) + [""])[:2] if " " in s else (s, s)
+        # 관문이 둘이라 **둘 다** 본다 — 하나라도 다시 물으면 화면은 바뀔 수
+        # 있다(리뷰 B1). 한쪽만 막힌 경우는 어느 관문인지 이름으로 말한다(#82).
+        recs = [r for r in (miss.get(name), miss.get(tk)) if isinstance(r, dict)]
+        if not recs:
+            never.append(s)
+        elif any(r.get("retry") for r in recs):
+            retry.append(s)
+        else:
+            g = "·".join(sorted({r.get("gate") or "?" for r in recs}))
+            why = next((r.get("why") for r in recs if r.get("why")), "사유 미기록")
+            rejected.append((s, f"{g} 관문 · {why}"))
+    lines = []
+    if rejected:
+        lines.append(
+            f"↪ {len(rejected)}종목은 이미 물었고 거부됐다 — 같은 프롬프트로는 "
+            "다시 묻지 않는다(기다려도 안 바뀐다). 프롬프트를 고치면 지문이 바뀌어 "
+            "자동 재시도된다.")
+        lines += [f"   · {s} — {why}" for s, why in rejected[:5]]
+        if len(rejected) > 5:      # 자른 사실을 말한다(#45)
+            lines.append(f"   · (외 {len(rejected) - 5}종목)")
+    if retry:
+        lines.append(f"↪ {len(retry)}종목은 프롬프트가 바뀌어 다음 빌드가 다시 "
+                     f"묻는다: {', '.join(retry[:5])}"
+                     + (f" (외 {len(retry) - 5}종목)" if len(retry) > 5 else ""))
+    if never:
+        lines.append(f"↪ {len(never)}종목은 아직 한 번도 안 물었다 — 다음 빌드의 "
+                     f"LLM 번역이 채운다: {', '.join(never[:5])}"
+                     + (f" (외 {len(never) - 5}종목)" if len(never) > 5 else ""))
+    return lines
 
 
 def _phase_table_html() -> str:
@@ -2324,10 +2387,17 @@ def _why(market: str) -> int:
                 from bot.env_keys import env_diag
                 _p(f"   아직 한자: {', '.join(nd['samples'])}")
                 why = env_diag("GOOGLE_API_KEY")
-                _p(("   ↪ 캐시 조회가 실패해 판정 불가 — 위 ❌ 원문부터"
-                    if nd.get("error") else
-                    "   ↪ 두 캐시 모두 없음 — 3시간 빌드의 LLM 번역이 채운다")
-                   + (f" · 번역 키 {why}" if why else " · 번역 키 GOOGLE_API_KEY 는 환경변수에 있음"))
+                if nd.get("error"):
+                    _p("   ↪ 캐시 조회가 실패해 판정 불가 — 위 ❌ 원문부터"
+                       + (f" · 번역 키 {why}" if why
+                          else " · 번역 키 GOOGLE_API_KEY 는 환경변수에 있음"))
+                else:
+                    # ⚠️ 옛 판은 무조건 "3시간 빌드의 LLM 번역이 채운다" 였다 —
+                    # 거부 기록이 있으면 **영영 안 채운다**(#55, 사용자가 같은
+                    # 화면을 다섯 번 넘게 다시 돌린 이유).
+                    for ln in name_stuck_lines(nd):
+                        _p("   " + ln)
+                    _p("   ↪ 번역 키 " + (why or "GOOGLE_API_KEY 는 환경변수에 있음"))
             else:
                 _p("   ✅ 전 행 한글(또는 한자 없음)")
     _p("")

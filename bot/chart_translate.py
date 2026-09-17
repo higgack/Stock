@@ -99,6 +99,45 @@ def _miss_record(cache_miss: dict, key: str, fp: str, why: str) -> None:
     cache_miss[key] = {"ver": fp, "why": why}
 
 
+def miss_diag(titles: list | None = None, tickers: list | None = None) -> dict:
+    """{키: {gate, why, ver, retry}} — **읽기 전용 조회**(LLM·네트워크 0).
+
+    사용자 2026-09-17 "대만 급등/급락 종목들 최대한 한글화 한것 맞지? 5번은
+    넘게 이거 돌리는듯하네": 화면·진단이 아직 한자인 종목을 두고 "다음 빌드의
+    LLM 번역이 채운다"고 말해 왔는데, **거부된 번역은 여기 기록이 남아 같은
+    프롬프트로는 다시 묻지 않는다**(`_miss_skip`). 그래서 기다려도 안 바뀌고
+    사용자가 같은 화면을 다시 돌린다 — 설명이 코드와 어긋나면 버그다(#55).
+
+    ⚠️ **관문이 둘이다**(독립 리뷰 2026-09-17 B1 — 첫 판은 하나만 봤다):
+    `translate_titles_kr` 는 **원문 문자열** 키 + `_TITLE_PROMPT` 지문,
+    `translate_names_kr` 는 **티커** 키 + `_NAME_PROMPT` 지문으로 같은 파일에
+    쓴다. 한 관문만 보면 (a) 다른 관문에 막힌 종목을 '아직 안 물었다' 로 말하고
+    (b) 운영자가 그 관문의 프롬프트를 고쳐도 진단이 계속 "기다려도 안 바뀐다"
+    고 한다(#364 고친 것이 안 먹은 것처럼 보였다). 그래서 지문 상수를 호출부가
+    고르지 않고 **관문 이름에서 파생**시킨다(#38).
+
+    `retry` = 그 관문이 지금 프롬프트로 **다시 물어보나**. False 면 프롬프트가
+    바뀌기 전엔 영구다(#171 가드가 '못 만든다' 로 끝나면 그 자리가 영원히 빈다).
+
+    ⚠️ '읽기 전용' 의 범위: LLM·네트워크를 안 쓰고 miss 기록을 **의미상** 바꾸지
+    않는다. 파일이 깨진 UTF-8 이면 공용 캐시 독자(`_read_json_cache`)가 정리본을
+    쓴다 — 그건 제품이 어차피 하는 수리다(#331·#284 '안 쓴다'는 무엇을 안 쓰는지까지).
+    """
+    cache_miss = _miss_load()
+    out: dict = {}
+    for keys, gate, tpl in ((titles, "titles", _TITLE_PROMPT),
+                            (tickers, "names", _NAME_PROMPT)):
+        fp = _prompt_fp(tpl)
+        for k in keys or []:
+            rec = (cache_miss or {}).get(k)
+            if not isinstance(rec, dict):
+                continue
+            out[k] = {"gate": gate, "why": str(rec.get("why") or ""),
+                      "ver": str(rec.get("ver") or ""),
+                      "retry": rec.get("ver") != fp}
+    return out
+
+
 def has_han(name: str | None) -> bool:
     """한자가 남아 있으면 아직 한글화 안 된 이름이다(한국어엔 한자가 없다)."""
     return bool(_HAN_RE.search(name or ""))
