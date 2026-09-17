@@ -371,13 +371,20 @@
 | '원천이 안 준다' 와 '내 파서가 이름을 모른다' 를 가른다(#372) · 52주 류는 ❌ 아님(#34·#260) | ✅ 자동 | `…::test_hl_verdict_splits_source_gap_from_parser_gap` · `…::test_hl_key_candidates_marks_the_names_we_do_not_read` |
 | 업종은 형제 보드와 **같은 맵**(#38) + 분포 줄 + 빈 사유는 보이는 줄(#43) | ✅ 자동 | `…::test_industry_column_and_distribution_are_wired` · `…::test_empty_industry_says_why_on_a_visible_line` |
 | 부제가 업종 **출처**를 말한다(규칙 10b) | ✅ 자동 | `…::test_subtitle_names_the_industry_source` |
-| `--why` 가 배너(코드 지문)·③·④ 를 **찍는다**(#20·#364) · 행 0 이면 rc=1(#54) | ✅ 자동 | `…::test_why_prints_the_verdicts_and_the_fingerprint` · `…::test_why_returns_one_when_there_are_no_rows` |
+| `--why` 가 배너·②③④ 를 **찍는다**(#20·#364) · 행 0 이면 rc=1(#54) | ✅ 자동 | `…::test_why_prints_the_verdicts_and_the_fingerprint` · `…::test_why_returns_one_when_there_are_no_rows` |
+| ③ 은 키 이름이 아니라 **갈래 문구**를 찍는다(#75·#313) | ✅ 자동 | `…::test_why_prints_the_verdict_itself_not_just_the_key_names` |
+| ④ 업종 섹션이 실제로 찍힌다(붙은 수 · 0이면 사유) — 리뷰 H3 실측 무가드였다 | ✅ 자동 | `…::test_why_reports_the_industry_section` |
+| 지문이 **소스에 반응**하고, 못 구하면 '지문불가' 라고 말한다(#291·#365) | ✅ 자동 | `…::test_banner_fingerprint_reacts_and_says_when_it_cannot` |
+| 의존성 없는 인터프리터는 **갈래로** 말하고 원시 트레이스백으로 죽지 않는다(#82·#132) | ✅ 자동 | `test_why_names_the_dependency_branch_instead_of_dying` — 수집을 `ImportError` 로 태워 rc=1 과 처방 문구를 값으로 본다 |
+| 냉각 되돌리기가 **본문 예외를 삼키지 않는다**(#291·#315) | ✅ 자동 | `test_cooldown_restore_does_not_swallow_the_body_exception` — `finally` 안의 `return` 이 위 갈래를 도달 불가로 만들었던 그 자리(배포전 셀프리뷰 실측) |
 | 진단이 **새 학습 냉각을 심지 않는다** — 내용·mtime 둘 다(#264·#283) + `why()` 가 두르는지(#20) | ✅ 자동 | `…::test_why_does_not_plant_a_new_learn_cooldown` |
 | 각주에 마크다운 볼드 금지 — 화면은 escape 한다(#298) | ✅ 자동 | `…::test_notes_carry_no_markdown_bold` |
 | YoY 카드 4종은 **화면과 같은 창**(730일)으로 재어진다(#35·#176) | ✅ 자동 | `…::TestFredIndicatorSelector20260917::test_yoy_cards_take_the_yoy_path` · `…::test_audit_asks_the_same_selector` |
 | `_fetch_all_fred` 배선은 결과로 본다(#20·#141) | ✅ 자동 | `…::test_fetch_all_fred_uses_the_shared_selector` |
-| '관측 없음' 갈래 셋(우리 실패/원천 창에 없음/못 물음)을 `observation_end` 로 가른다(#82·#86·#260) | ✅ 자동 | `…::test_empty_observation_splits_source_gap_from_ours` · `…::test_audit_wires_empty_diag_into_the_buckets` |
-| 백필이 **소스별 계수 + 0건 소스 이름**을 찍는다(#82·#54·#290) | ✅ 자동 | `trade/tests/test_badonion_sources.py::TestRelevanceBreakdown20260917`(4건) |
+| '관측 없음' 갈래 셋을 `observation_end` **와 요청 창의 시작일 대조**로 가른다(#82·#86·#260) | ✅ 자동 | `…::test_empty_observation_splits_source_gap_from_ours` · `…::test_audit_wires_empty_diag_into_the_buckets` |
+| 행마다 **그 표면의 화면이 쓰는 선택기**(매크로=spot · 글로벌=YoY 디스패치)(#35·#45) | ✅ 자동 | `…::test_audit_asks_each_surface_with_its_own_selector`(값으로 — `audit_rows`) |
+| 백필이 **소스별 계수 + 0건 소스 이름**을 찍는다(#82·#54·#290) · 0건 줄은 **두 갈래를 대칭으로**(#165) | ✅ 자동 | `trade/tests/test_badonion_sources.py::TestRelevanceBreakdown20260917`(4건) |
+| `matching_keys` 는 **받는 소스 전부**를 돌려준다 — 합성 소스 둘로 발화(#45·#91c) | ✅ 자동 | `…::test_matching_keys_returns_every_source_that_takes_it` |
 
 ⚠️ 못 보는 축(#274): (a) `hl_key_candidates` 는 **이름에 high/low 가 든 키**만 본다 —
 원천이 `dayRange` 처럼 다른 이름으로 주면 '원천이 안 준다' 로 찍힌다(그 판정을
@@ -386,7 +393,11 @@
 (c) `empty_diag` 의 `src_lag` 갈래가 **계열 중단인지 그냥 공표 지연인지**는 안
 가른다 — 둘 다 "우리가 고칠 게 없다" 까지만 참이고, 카탈로그를 바꾸는 것은
 그 사실을 재고 나서 할 일이다(#165). (d) 백필 계수는 `--show-irrelevant` 의
-드랍 목록과 **다른 모집단**이다(관련 유닛만 센다).
+드랍 목록과 **다른 모집단**이다(관련 유닛만 센다). (e) 업종은 **전 행이 빌
+때만** 사유를 적는다 — 부분 커버리지는 빈칸이 조용하고, `kr_industry_map()` 은
+TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 결함, #43·#163).
+(f) `fetch_series_meta` 는 캐시가 없고 타임아웃 10초라, FRED 전면 장애면
+감사에 최대 `관측 없음 행 수 × 10초` 가 붙는다(#116 — 오늘 그 행은 0건).
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

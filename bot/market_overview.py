@@ -745,7 +745,7 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         except Exception:
             pass
 
-    start = (date.today() - timedelta(days=730)).isoformat()
+    start = (date.today() - timedelta(days=_FRED_YOY_WINDOW_DAYS)).isoformat()
     url = (
         f"https://api.stlouisfed.org/fred/series/observations"
         f"?series_id={series_id}&api_key={api_key}&file_type=json"
@@ -822,6 +822,17 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
 # 다른 경로를 보게 되므로(#35·#38) 여기 하나에 두고 `fred_indicator_fetch`
 # 가 갈라 준다.
 _FRED_YOY_SIDS = ("CPIAUCSL", "PPIACO", "PCEPILFE", "RSAFS")
+_FRED_YOY_WINDOW_DAYS = 730      # `_fetch_fred_yoy` 가 실제로 요청하는 창
+
+
+def fred_indicator_window(series_id: str, lookback_days: int) -> int:
+    """`fred_indicator_fetch` 가 **실제로 요청하는 창**(일).
+
+    감사가 "원천에 그 창의 관측이 있나" 를 물으려면 화면이 쓴 창과 같아야
+    한다 — 창을 감사 쪽에 따로 적으면 두 수가 갈린다(#35·#38).
+    """
+    return (_FRED_YOY_WINDOW_DAYS if series_id in _FRED_YOY_SIDS
+            else lookback_days)
 
 
 def fred_indicator_fetch(series_id: str, lookback_days: int) -> Optional[dict]:

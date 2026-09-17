@@ -319,9 +319,13 @@ def relevance_breakdown(units) -> list[str]:
               if sum(brk.values()) > n_units else "")]
     zero = [s.label for s in SOURCES if s.key not in brk]
     if zero:
+        # ⚠️ 0건은 갈래가 **둘**이고 하나가 이 도구의 존재 이유다 —
+        # (a) 채널에 그런 글이 없었다 (b) 새 형식을 우리 파서가 떨어뜨렸다
+        # (#83·#261·#330·#332·#370 — 일곱 번 반복된 조용한 유실). 주절로
+        # (a)를 사실처럼 적으면 (b)를 안 보게 만든다(#165·#82, 리뷰 M4).
         out.append(f"  0건 소스({len(zero)}): {', '.join(zero)}"
-                   " — 이 창의 채널에 해당 글이 없었다는 뜻"
-                   "(파서가 떨어뜨린 것인지는 --show-irrelevant 원문으로)")
+                   " — 채널에 그 글이 없었거나, 새 형식을 파서가 못 받은 것"
+                   "(가르려면 --show-irrelevant 원문을 볼 것)")
     return out
 
 

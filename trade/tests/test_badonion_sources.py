@@ -558,6 +558,11 @@ class TestRelevanceBreakdown20260917(unittest.TestCase):
         # 0건 소스도 **이름을 댄다** — 침묵하면 '검사가 돌았나' 를 모른다(#54).
         zero = " ".join(out[1:])
         self.assertIn("한국 수입(회사별)", zero)
+        # ⚠️ 0건은 갈래가 둘이고 **둘째가 이 도구의 존재 이유**다(새 형식을
+        # 파서가 못 받은 것 — #83·#261·#330·#332·#370). 주절로 한쪽을
+        # 사실처럼 적으면 다른 쪽을 안 보게 만든다(#165·#82, 리뷰 M4).
+        self.assertIn("파서가 못 받은", zero)
+        self.assertNotIn("없었다는 뜻", zero)
         self.assertNotIn("한국 수출(종목별)", zero)
         # 전 소스가 소계 **또는** 0건 목록 중 하나에 정확히 한 번 나온다(#45).
         # ⚠️ 부분문자열로 세면 '대만' 이 '대만 수출(종목별)' 에 걸려 3 이 된다
@@ -578,13 +583,36 @@ class TestRelevanceBreakdown20260917(unittest.TestCase):
 
     def test_matching_keys_returns_every_source_that_takes_it(self):
         """한 캡션이 둘 이상에 걸릴 수 있으므로 **전부** 돌려준다 — 먼저
-        걸린 하나만 세면 소계 합이 총계와 어긋난다(#45)."""
+        걸린 하나만 세면 소계 합이 총계와 어긋난다(#45).
+
+        ⚠️ 오늘 레지스트리에선 이 캡션이 **한 소스에만** 걸려, 첫 매치만
+        돌려주는 변형이 그대로 통과했다(리뷰 M3 실측 · #91c 픽스처가
+        충분히 센가). 계약이 발화하려면 **둘이 받는 상태**가 있어야 하므로
+        합성 소스 둘로 태운다(#291 발화 경로 없는 가드는 가드가 아니다).
+        """
+        from unittest import mock
         from trade import badonion_sources as srcs
         got = srcs.matching_keys(self._KR_EXPORT)
         self.assertTrue(got, "관련 캡션인데 키가 0개다")
         self.assertEqual(bool(got), srcs.is_relevant(self._KR_EXPORT))
         self.assertEqual((), srcs.matching_keys("오늘 점심 뭐 먹지"))
         self.assertFalse(srcs.is_relevant("오늘 점심 뭐 먹지"))
+
+        class _S:                       # 합성 — 원천 소스가 아니다(#165)
+            def __init__(self, key):
+                self.key, self.label = key, f"합성 {key}"
+
+            def parse(self, text):
+                return {"ok": 1} if "겹침" in text else None
+
+        with mock.patch.object(srcs, "SOURCES", [_S("a"), _S("b")]):
+            self.assertEqual(("a", "b"), srcs.matching_keys("겹침"))
+            out = srcs.relevance_breakdown([[self._M("겹침")]])
+            self.assertIn("합성 a 1", out[0])
+            self.assertIn("합성 b 1", out[0])
+            # 소계 합(2) > 유닛 수(1) 이면 그 사실을 적는다(#45).
+            self.assertIn("중복 계수", out[0])
+            self.assertEqual(1, len(out), "0건 소스가 없는데 줄이 붙었다")
 
     def test_backfill_logs_the_breakdown(self):
         """배선은 존재가 아니라 **호출**이다(#20·#120). telethon 이 없어

@@ -66372,6 +66372,17 @@ class TestKrVolumeAndSessions20260916:
         assert out["rows"] and out["has_hl"] is False
         assert "고가" not in out["reason"], out["reason"]
         assert out["hl_keys"] == ["high52week (미읽음)"], out["hl_keys"]
+        # ⚠️ 첫 행만 보면 "행마다 같은 스키마" 라는 **내 가정**이 판정이
+        # 된다(#50, 리뷰 L6) — 뒤 행에만 있는 이름도 잡아야 한다.
+        (tmp_path / kv._CACHE).unlink()
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: ([
+            {"itemCode": "005930", "name": "삼성전자", "stockEndType": "stock",
+             "currentPrice": "80,000", "accumulatedTradingVolume": 10},
+            {"itemCode": "000660", "name": "SK하이닉스", "stockEndType": "stock",
+             "currentPrice": "90,000", "accumulatedTradingVolume": 9,
+             "dayHighPrice": "91,000"}], ""))
+        out_b = kv.fetch_kr_volume_top(limit=5)
+        assert out_b["hl_keys"] == ["dayHighPrice (미읽음)"], out_b["hl_keys"]
         assert any("고가·저가 없음" in r.message for r in caplog.records), (
             "조용히 뺐다 — 폴백은 로그로 알릴 것(#42a)")
         # ⚠️ 60초 캐시를 비우고 다시 잰다 — 안 비우면 두 번째 단언이 **첫
@@ -67550,7 +67561,9 @@ class TestKrVolumeIndustryAndHl20260917:
         assert "highPrice" in got and "highPrice (미읽음)" not in got
         assert "high52week (미읽음)" in got
         assert not any("closePrice" in g for g in got), got
-        assert _HIGH_KEYS[0] in got[0] or True
+        # ⚠️ 우리가 읽는 이름은 **표시가 안 붙는다** — `or True` 로 적으면
+        # 아무것도 안 재는 죽은 단언이다(#291, 리뷰 L1).
+        assert all(not g.endswith("(미읽음)") for g in got if g in _HIGH_KEYS)
 
     # ── 업종 ────────────────────────────────────────────────────────
     def test_industry_column_and_distribution_are_wired(self, monkeypatch):
@@ -67595,6 +67608,60 @@ class TestKrVolumeIndustryAndHl20260917:
         assert "원시 89개" in out and "제외(ETF·ETN·스팩) 39개" in out
         assert "quantTop" in out
 
+    def test_why_prints_the_verdict_itself_not_just_the_key_names(
+            self, monkeypatch, capsys):
+        """⚠️ `"high52week" in out` 은 **`hl_keys` 목록 자체**가 대신
+        만족시킨다(#75) — 독립 리뷰 실측: ③ 을 `", ".join(hl_keys)` 로
+        바꿔도 통과했다. 이 변경의 존재 이유인 **갈래 문구**를 집는다(#313).
+        """
+        import bot.kr_volume_client as kv
+        row = dict(self._ROW)
+        for keys, want in ((["high52week (미읽음)"], "안 읽습니다"),
+                           ([], "안 줍니다"),
+                           (None, "판정 불가")):
+            monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50,
+                                _k=keys: {"rows": [row], "hl_keys": _k})
+            kv.why()
+            out = capsys.readouterr().out
+            assert want in out, (keys, out)
+
+    def test_why_reports_the_industry_section(self, monkeypatch, capsys):
+        """④ 블록을 통째로 지워도 전 슈트가 green 이었다(리뷰 H3 실측) —
+        `docs/tests.md` 는 그걸 '✅ 자동' 이라 적고 있었다(#286).
+        업종 커버리지는 샌드박스에서 못 재므로 이 섹션이 VM 에서 답할
+        **유일한** 자리다(#291 발화 경로 없는 가드는 가드가 아니다)."""
+        import bot.kr_volume_client as kv
+        import bot.naver_sector_client as ns
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50: {
+            "rows": [dict(self._ROW)], "hl_keys": []})
+        monkeypatch.setattr(ns, "kr_industry_map", lambda: {"005930": "반도체"})
+        kv.why()
+        assert "1/1종목에 업종이 붙습니다" in capsys.readouterr().out
+
+        monkeypatch.setattr(ns, "kr_industry_map", lambda: {})
+        monkeypatch.setattr(ns, "kr_industry_fail_reason", lambda: "맵 빌드 중")
+        kv.why()
+        out = capsys.readouterr().out
+        assert "0/1" in out and "맵 빌드 중" in out, out
+
+    def test_banner_fingerprint_reacts_and_says_when_it_cannot(
+            self, monkeypatch, capsys):
+        """형제 `blog_watch` 는 이 테스트를 갖고 있는데 여기만 없었다(#38).
+        지문 값과 '지문불가' 갈래 **둘 다** 발화 경로가 없어 `"deadbeef00"`·
+        `""` 로 바꿔도 전 슈트 green 이었다(리뷰 M1 실측 · #291·#365)."""
+        import bot.audit_sweep as aud
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(aud, "audit_fingerprint", lambda mods: "abc1234567")
+        assert "abc1234567" in kv.why_banner()
+
+        def _boom(mods):
+            raise RuntimeError("nope")
+        monkeypatch.setattr(aud, "audit_fingerprint", _boom)
+        b = kv.why_banner()
+        assert "지문불가" in b and "RuntimeError" in b, b
+        # 빈 지문은 낡은 체크아웃과 신선한 것이 같은 글자를 낸다(#54·#43).
+        assert b.strip() != "#"
+
     def test_why_returns_one_when_there_are_no_rows(self, monkeypatch, capsys):
         """행이 없으면 rc=1 — 대조 0건을 ✅ 로 찍지 않는다(#54)."""
         import bot.kr_volume_client as kv
@@ -67638,6 +67705,63 @@ class TestKrVolumeIndustryAndHl20260917:
                             or {"rows": [], "hl_keys": []})
         kv.why()
         assert not p.exists(), "why() 가 냉각 되돌리기를 두르지 않았다"
+        # ⚠️ 반대 증거: 학습이 **성공**해 제품이 냉각을 풀면 그건 되돌리지
+        # 않는다 — 진단이 운영을 나쁘게 만들면 안 된다(리뷰 L5 · #264).
+        p.write_text('{"why": "옛 도장"}', encoding="utf-8")
+        with kv._keep_learn_cooldown():
+            fv._cache_write(kv._LEARN_FAIL, {})      # 제품이 해제
+        import json as _j
+        assert not (_j.loads(p.read_text(encoding="utf-8")) or {}).get("why"), (
+            "진단이 제품의 냉각 해제를 되돌렸다")
+
+    def test_why_names_the_dependency_branch_instead_of_dying(
+            self, tmp_path, monkeypatch, capsys):
+        """의존성 없는 인터프리터에서 **원시 트레이스백으로 죽으면** '도달
+        실패' 와 구별되지 않는다(#82·#12·#132 — 형제 `blog_watch --check`
+        가 이미 이 갈래를 말한다, 리뷰 M2).
+
+        ⚠️⚠️ 이 테스트가 없는 동안 그 갈래는 **도달 불가**였다(#291).
+        `_keep_learn_cooldown` 의 `finally` 안에 넣은 `return` 이 진행 중인
+        예외를 통째로 삼켜, `except ImportError` 가 한 번도 안 돌고 `d` 가
+        미바인딩으로 남아 `NameError` 가 났다 — 고치려던 바로 그 증상이다.
+        배포전 셀프리뷰가 실측으로 잡았다(#328 의 짝: 가드를 넣었으면
+        **그게 실제로 발화하는 상태**로 태울 것, #91).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+
+        def _boom(limit=50):
+            raise ImportError("No module named 'requests'")
+
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", _boom)
+        rc = kv.why()
+        out = capsys.readouterr().out
+        assert rc == 1, "의존성 부재인데 rc=0 이면 '정상' 로 읽힌다"
+        assert "의존성이 없습니다" in out, out
+        assert "venv" in out, "처방(어디서 돌릴 것)이 없다(#82)"
+
+    def test_cooldown_restore_does_not_swallow_the_body_exception(
+            self, tmp_path, monkeypatch):
+        """`finally` 안의 `return` 은 예외를 삼킨다 — 되돌리기는 **함수로**.
+
+        위 테스트의 뿌리를 그 자리에서 직접 못박는다: 컨텍스트 매니저가
+        본문 예외를 전파하지 않으면 호출부의 모든 `except` 갈래가 죽는다
+        (#291·#315).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        with pytest.raises(ImportError):
+            with kv._keep_learn_cooldown():
+                raise ImportError("boom")
+        # 도장을 심고 죽어도 되돌리기는 **여전히 돈다**(#264).
+        p = tmp_path / kv._LEARN_FAIL
+        with pytest.raises(RuntimeError):
+            with kv._keep_learn_cooldown():
+                fv._cache_write(kv._LEARN_FAIL, {"why": "진단이 심은 도장"})
+                raise RuntimeError("boom")
+        assert not p.exists(), "예외 경로에서 냉각 되돌리기가 안 돌았다"
 
     def test_notes_carry_no_markdown_bold(self):
         """화면은 사유를 `_html.escape` 로 찍는다 — 마크다운 볼드는 별표가
@@ -67693,42 +67817,106 @@ class TestFredIndicatorSelector20260917:
             "_fetch_all_fred 가 공용 선택기를 안 쓴다"
 
     def test_audit_asks_the_same_selector(self):
-        """감사가 화면과 **같은 함수**를 부른다 — 옛 `_fred_fetch_series`
-        직접 호출이 남아 있으면 YoY 카드가 다시 다른 창으로 재어진다(#35)."""
-        import ast
-        import inspect
+        """옛 계약(이 커밋 첫 판): 감사는 `_fred_fetch_series` 를 **한 번도**
+        부르면 안 된다. 독립 리뷰(H1)가 뒤집었다 — 매크로 스냅샷 화면이 바로
+        그 함수로 그리므로, 전 행을 YoY 디스패치로 보내면 CPIAUCSL·PCEPILFE
+        2행이 자기 화면과 갈린다. 지금 계약은 **표면별로 그 화면의 선택기**
+        이고 형제 테스트가 그걸 잰다(#222 로 다시 씀).
 
-        import bot.scripts.macro_staleness_audit as m
-        tree = ast.parse(inspect.getsource(m.main))
-        attrs = [n.func.attr for n in ast.walk(tree)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
-        assert "fred_indicator_fetch" in attrs, "공용 선택기를 안 부른다"
-        assert "_fred_fetch_series" not in attrs, (
-            "감사가 아직 화면과 다른 경로를 본다(#35)")
+        여기 남는 보장: 글로벌 스냅샷 행(YoY 카드)은 **그 디스패치**를 타서
+        730일 창으로 재어진다 — 값으로 확인한다(#19 소스 문자열 금지).
+        """
+        import bot.market_overview as mo
+
+        seen: list = []
+        _spot, _yoy = mo._fred_fetch_series, mo._fetch_fred_yoy
+        try:
+            mo._fred_fetch_series = lambda sid, lb: seen.append(("spot", sid, lb))
+            mo._fetch_fred_yoy = lambda sid: seen.append(("yoy", sid))
+            mo.fred_indicator_fetch("PPIACO", 400)
+            mo.fred_indicator_fetch("DGS2", 400)
+        finally:
+            mo._fred_fetch_series, mo._fetch_fred_yoy = _spot, _yoy
+        assert seen == [("yoy", "PPIACO"), ("spot", "DGS2", 400)], seen
 
     def test_empty_observation_splits_source_gap_from_ours(self, monkeypatch):
-        """원천이 스스로 보고하는 `observation_end` 가 갈래를 가른다
-        (#86·#318). 못 물어보면 **단정하지 않는다**(#165·#54)."""
+        """옛 계약(2026-09-17 첫 판): `observation_end` 가 **있기만 하면**
+        ⚠️ 원천 미게시. 독립 리뷰가 배포 전에 뒤집었다 — 그러면 FRED 조회
+        실패(429·타임아웃)가 '우리가 고칠 게 없다' 가 되고 ❌ 가 **도달
+        불가**라 일일 결산이 조용해진다(#41·#54·#82). 게다가 원천이 오늘까지
+        데이터가 있다고 말하는데 화면은 '없다' 고 적는 거짓 진술이다(#165).
+        지금 계약: **우리가 요청한 창의 시작일과 대조**한다(#222 로 다시 씀).
+        """
         import bot.fred_client as fc
         from bot.scripts.macro_staleness_audit import empty_diag
 
+        # (a) 원천에 **그 창의** 관측이 있는데 우리가 빈손 → 우리 문제 ❌
         monkeypatch.setattr(fc, "fetch_series_meta",
-                            lambda sid: {"observation_end": "2025-10-01"})
-        b, txt = empty_diag("fred", "PPIACO")
-        assert b == "src_lag" and "2025-10-01" in txt and txt.startswith("⚠️")
+                            lambda sid: {"observation_end": "2026-09-14"})
+        b, txt = empty_diag("fred", "PPIACO", "2025-08-13")
+        assert b == "late" and txt.startswith("❌"), txt
+        assert "2026-09-14" in txt and "2025-08-13" in txt, txt
+
+        # (b) 원천의 마지막 관측이 창보다 **앞** → 우리가 고칠 게 없다 ⚠️
+        b, txt = empty_diag("fred", "X", "2025-08-13")   # 메타는 위 스텁 그대로
+        monkeypatch.setattr(fc, "fetch_series_meta",
+                            lambda sid: {"observation_end": "2019-01-01"})
+        b, txt = empty_diag("fred", "X", "2025-08-13")
+        assert b == "src_lag" and txt.startswith("⚠️"), txt
         assert "❌" not in txt, "고칠 수 없는 것을 ❌ 로 낸다(#260)"
 
+        # (c) 못 물어봤다 → 판정 불가(원천 탓으로 단정하지 않는다, #82·#292)
         monkeypatch.setattr(fc, "fetch_series_meta", lambda sid: None)
-        b, txt = empty_diag("fred", "PPIACO")
+        b, txt = empty_diag("fred", "X", "2025-08-13")
         assert b == "unknown" and txt.startswith("⚪"), txt
+        assert "안 준다" not in txt, "네트워크 실패를 원천 탓으로 적는다(L4)"
 
         def _boom(sid):
             raise RuntimeError("키 없음")
         monkeypatch.setattr(fc, "fetch_series_meta", _boom)
-        b, txt = empty_diag("fred", "PPIACO")
-        assert b == "unknown" and "키 없음" in txt
+        assert empty_diag("fred", "X", "2025-08-13")[0] == "unknown"
+
+        # (d) 창을 모르면 대조하지 않는다 — 못 잰 것을 단정하지 않는다(#165)
+        monkeypatch.setattr(fc, "fetch_series_meta",
+                            lambda sid: {"observation_end": "2026-09-14"})
+        b, txt = empty_diag("fred", "X", "")
+        assert b == "unknown" and "대조 못" in txt, txt
+
         # ECOS 는 이 메타 축이 없다 — 남의 축으로 판정하지 않는다.
-        assert empty_diag("ecos", "m2")[0] == "late"
+        assert empty_diag("ecos", "m2", "2025-08-13")[0] == "late"
+
+    def test_audit_asks_each_surface_with_its_own_selector(self):
+        """#35 를 고치며 **전 행을 YoY 디스패치로** 보내면 이번엔 매크로
+        스냅샷 행(CPIAUCSL·PCEPILFE)이 자기 화면과 갈린다(리뷰 H1 실측 2행).
+        표면별로 경로를 싣고, 창도 그 경로에서 파생시킨다(#38).
+        """
+        import ast
+        import inspect
+
+        import bot.market_overview as mo
+        import bot.scripts.macro_staleness_audit as m
+
+        # 창은 선택기와 **같은 곳**에서 온다 — 감사가 따로 적으면 갈린다.
+        assert mo.fred_indicator_window("PPIACO", 400) == 730
+        assert mo.fred_indicator_window("DGS2", 400) == 400
+
+        # 행 목록은 **값으로** 잰다 — 소스 문자열은 리팩터에 깨진다(#19).
+        from bot import macro_snapshot as ms
+        rows = m.audit_rows(ms, mo)
+        modes = {sid: mode for _s, _l, k, mode, _lb in rows
+                 for sid in [k.split(":", 1)[1]]}
+        # 두 화면에 다 있는 시리즈는 **자기 화면**(매크로 스냅샷)의 경로로.
+        assert modes.get("CPIAUCSL") == "spot", modes.get("CPIAUCSL")
+        assert modes.get("PCEPILFE") == "spot"
+        # 글로벌 스냅샷 전용 YoY 카드는 화면의 디스패치로.
+        assert modes.get("PPIACO") == "screen"
+        assert modes.get("DGS2") == "spot"
+        # 그리고 그 분기가 main 에 실제로 배선돼 있다(#20).
+        src = inspect.getsource(m.main)
+        attrs = [n.func.attr for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        assert "fred_indicator_fetch" in attrs and "_fred_fetch_series" in attrs
+        assert "fred_indicator_window" in attrs
 
     def test_audit_wires_empty_diag_into_the_buckets(self):
         """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20). 그리고 갈래가
@@ -67743,7 +67931,16 @@ class TestFredIndicatorSelector20260917:
                 and getattr(n.func, "id", "") == "empty_diag"], \
             "main 이 갈래 함수를 부르지 않는다"
         # 세 버킷이 전부 이 분기에서 쓰인다(하나라도 빠지면 그 갈래가 사라진다).
-        i = src.index("empty_diag(")
-        seg = src[i:i + 400]
-        for bucket in ("src_lag", "unknown", "late"):
-            assert bucket in seg, f"{bucket} 버킷으로 안 담긴다"
+        # ⚠️ 고정 길이 소스 창으로 재면 **옆 분기의 `unknown.append`** 가 대신
+        # 만족시킨다(#60·#75 — 리뷰 L2 가 뮤테이션으로 실측). 배분 dict 의
+        # **키**를 AST 로 본다.
+        keys = {k.value for n in ast.walk(tree) if isinstance(n, ast.Dict)
+                for k in n.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        assert {"src_lag", "unknown"} <= keys, f"배분 dict 키: {keys}"
+        dflt = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr == "get"
+                and isinstance(n.func.value, ast.Dict)]
+        assert dflt and any(
+            isinstance(a, ast.Name) and a.id == "late"
+            for c in dflt for a in c.args), "기본 버킷이 late 가 아니다"

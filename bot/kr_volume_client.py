@@ -295,7 +295,12 @@ def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
     out["has_hl"] = any(r.get("high") is not None for r in out["rows"])
     # 원천 행이 고가·저가로 보이는 키를 갖고 있나 — 화면엔 안 싣고 로그·
     # `--why` 가 말한다(위 독스트링). 첫 행 하나면 충분하다(같은 스키마).
-    out["hl_keys"] = list(hl_key_candidates(kept[0] if kept else {}))
+    # ⚠️ 첫 행만 보면 "행마다 같은 스키마" 라는 **내 가정**이 판정이 된다
+    # (#50) — 전 행의 합집합으로 잰다(순수 파이썬, 50행이라 무시할 비용).
+    _hl: set = set()
+    for r in kept:
+        _hl |= set(hl_key_candidates(r))
+    out["hl_keys"] = sorted(_hl)
     if dropped:
         # 총계와 소계가 다른 모집단을 세면 사용자가 눈으로 잡는다(#45).
         notes.append(f"ETF·ETN·스팩 {dropped}종을 뺀 {len(out['rows'])}종목입니다")
@@ -420,9 +425,27 @@ def _keep_learn_cooldown():
         before = (p.read_bytes(), p.stat().st_mtime) if p.exists() else None
     except OSError:
         before = None
-    try:
-        yield
-    finally:
+    def _restore() -> None:
+        """되돌리기 — **함수로 뺀다**. `finally` 안의 `return` 은 진행 중인
+        예외를 통째로 삼켜(#315 의 컨텍스트판) 호출부의 `except ImportError`
+        갈래를 **도달 불가**로 만들고 `d` 를 미바인딩으로 남긴다(#291·#20).
+        배포전 셀프리뷰가 잡았다 — 실측으로 확인하고 고쳤다.
+        """
+        try:
+            now = p.read_bytes() if p.exists() else None
+        except OSError:
+            return
+        if now == (before[0] if before else None):
+            return                          # 아무것도 안 바뀌었다
+        import json as _json
+        try:
+            planted = bool((_json.loads(now or b"{}") or {}).get("why"))
+        except Exception:                   # noqa: BLE001
+            planted = True                  # 못 읽으면 되돌리는 쪽이 안전
+        if not planted:
+            # 학습이 **성공**해 제품이 냉각을 푼 것이다 — 그걸 되돌리면
+            # 진단이 운영을 나쁘게 만든다(리뷰 L5). 그대로 둔다.
+            return
         try:
             if before is None:
                 p.unlink(missing_ok=True)
@@ -432,8 +455,13 @@ def _keep_learn_cooldown():
         except OSError:
             pass
 
+    try:
+        yield
+    finally:
+        _restore()
 
-def hl_verdict(rows: list, hl_keys: list) -> str:
+
+def hl_verdict(rows: list, hl_keys) -> str:
     """고가·저가 갈래(순수) — '원천이 안 준다' 와 '우리가 못 읽는다' 를 가른다.
 
     #372 그대로: 진단이 ❌ 를 찍으면 원천을 의심하기 전에 **내 파서가 못 읽은
@@ -441,6 +469,10 @@ def hl_verdict(rows: list, hl_keys: list) -> str:
     """
     if not rows:
         return "❓ 판정 불가 — 행이 없어 원천 스키마를 못 봤습니다"
+    if hl_keys is None:
+        # 배포 전에 구운 저장분엔 이 측정 자체가 없다 — 그걸 '이름 0개' 로
+        # 읽으면 재지 않은 것을 단정하는 것이다(#54·#165, 리뷰 L6).
+        return "❓ 판정 불가 — 이 저장분엔 키 측정이 없습니다(다음 수집부터)"
     unread = [k for k in hl_keys if k.endswith("(미읽음)")]
     if any(r.get("high") is not None for r in rows):
         return f"✅ 원천이 줍니다 — 두 칸을 그립니다(키: {', '.join(hl_keys)})"
@@ -477,8 +509,15 @@ def why() -> int:
         print(f"   ⏸ 학습 냉각 중 — {f['why']}")
 
     print("② 수집(화면 경로)")
-    with _keep_learn_cooldown():
-        d = fetch_kr_volume_top(limit=50)
+    try:
+        with _keep_learn_cooldown():
+            d = fetch_kr_volume_top(limit=50)
+    except ImportError as exc:
+        # ⚠️ 원시 트레이스백으로 죽으면 '도달 실패' 와 구별되지 않는다
+        # (#82·#12·#132 — 형제 `blog_watch --check` 가 이미 이 갈래를 말한다).
+        print(f"   ❌ 진단 불가 — 이 인터프리터에 의존성이 없습니다({exc}). "
+              "봇이 도는 venv 로 돌릴 것.")
+        return 1
     rows = d.get("rows") or []
     print(f"   행 {len(rows)}개 · 원시 {d.get('scanned', 0)}개 · "
           f"제외(ETF·ETN·스팩) {d.get('excluded', 0)}개 · "
@@ -489,7 +528,8 @@ def why() -> int:
         print(f"   사유: {d['reason']}")
 
     print("③ 고가·저가")
-    print("   " + hl_verdict(rows, list(d.get("hl_keys") or [])))
+    _keys = d.get("hl_keys")
+    print("   " + hl_verdict(rows, None if _keys is None else list(_keys)))
 
     print("④ 업종(신고저·급등락 보드와 같은 맵)")
     try:
@@ -504,6 +544,8 @@ def why() -> int:
             print(f"   ✅ {got}/{len(rows)}종목에 업종이 붙습니다")
         else:
             print(f"   ❌ 0/{len(rows)} — {kr_industry_fail_reason() or '사유 미기록'}")
+    except ImportError as exc:
+        print(f"   ❌ 진단 불가 — 이 인터프리터에 의존성이 없습니다({exc})")
     except Exception as exc:                                   # noqa: BLE001
         print(f"   ❌ 업종 맵 조회 실패 — {type(exc).__name__}: {exc}")
 
