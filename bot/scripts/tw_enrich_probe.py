@@ -41,24 +41,55 @@ import time
 
 from bot.chart_translate import _MAX_BATCH
 from bot.finviz_client import MCAP_PERSIST_TTL
-from bot.twse_client import _TW_IND_CACHE_TTL, _TW_IND_RETRY_SEC
+from bot.twse_client import _TW_IND_CACHE_TTL
 
 _PROBE_VER = 6
 # 문턱은 **제품에서 가져온다** — 복제하면 진단이 화면과 다른 말을 한다(#38).
 _MCAP_TTL_H = MCAP_PERSIST_TTL / 3600
 _IND_TTL_H = _TW_IND_CACHE_TTL / 3600
-_IND_RETRY_M = _TW_IND_RETRY_SEC / 60
 
 
 def _p(*a):
     print(*a, flush=True)
 
 
-def _age_label(sec: float | None) -> str:
+def _age_label(sec: float | None, none: str = "파일 없음") -> str:
+    """⚠️ `None` 의 뜻은 **재는 대상마다 다르다** — 파일 나이면 '파일 없음'이지만
+    데이터 나이(`data_age`)면 '받은 시각이 기록돼 있지 않다'는 뜻이다. 한 문구가
+    두 뜻을 대표하면 한쪽은 거짓말이 된다(#34) — 부르는 쪽이 정한다."""
     if sec is None:
-        return "파일 없음"
+        return none
     h = sec / 3600.0
     return f"{h:.1f}시간 전" if h >= 1 else f"{sec / 60:.0f}분 전"
+
+
+def _retry_note(ind_cache: dict, labels: list[str] | None) -> str:
+    """"언제 다시 시도하나" 를 **기록된 사실**로만 적는다 — 약속이 아니라
+    마지막 시도 시각과 연속 실패 단이다(#380·#165·#82).
+
+    `labels` 가 None 이면 전 소스를 훑는다(낡음 갈래). 시도 기록이 없는 소스도
+    **건너뛰지 않고** 그렇게 말한다 — 침묵하면 '곧 된다'로 읽힌다(#43·#54).
+    """
+    from bot.twse_client import _TW_IND_SOURCES, _retry_delay
+    labs = labels if labels else [lab for lab, _u in _TW_IND_SOURCES]
+    now, parts = time.time(), []
+    tried = ind_cache.get("tried") or {}
+    fails = ind_cache.get("fails") or {}
+    for lab in labs:
+        t = tried.get(lab)
+        if t is None:
+            parts.append(f"{lab}: 시도 기록 없음")
+            continue
+        nf = int(fails.get(lab) or 0)
+        left = _retry_delay(nf) - (now - float(t))
+        when = ("다음 렌더에 재시도" if left <= 0
+                else f"{left / 60:.0f}분 뒤 재시도 가능")
+        parts.append(f"{lab}: 마지막 시도 {_age_label(now - float(t))}"
+                     + (f" · 연속 실패 {nf}회" if nf else "") + f" · {when}")
+    # ⚠️ `parts` 는 항상 비지 않는다(`labs` 가 비지 않으므로) — 빈 경우의 폴백을
+    # 두면 발화 경로 없는 가드가 된다(#291·#373). 기록 없음은 **소스별 문구**로
+    # 표현되고 그쪽은 실제로 도달한다.
+    return "재시도 " + " / ".join(parts)
 
 
 def ind_cache_probe(tw) -> dict:
@@ -177,12 +208,20 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
         # 실제 처방은 그 소스 수집을 고치는 것이다(#380 "기다리면 된다"를 재고 말할 것).
         miss = [str(x) for x in (ind_cache.get("missing") or [])]
         if miss:
+            # ⚠️ 우리가 잰 것은 "봉투에 그 소스가 없다"까지다. '수집이 실패했다'
+            # 는 그 다음 추론이라 단정하지 않고, 대신 봉투가 **기록한 사실**
+            # (마지막 시도 시각·연속 실패 단)을 그대로 적는다(#165·#82).
             why = (f"캐시가 **부분**이다 — {'·'.join(miss)} 가 통째로 없다"
-                   f"(낡은 게 아니라 그 소스 수집이 실패한 것이다 — 실패한 소스만 "
-                   f"{_IND_RETRY_M:.0f}분 뒤 다시 시도한다)")
+                   f"(낡은 게 아니다: 낡음은 전 소스를 받아 둔 뒤의 상태다). "
+                   f"{_retry_note(ind_cache, miss)}")
         else:
-            why = (f"맵이 낡았다(받은 지 {_age_label(ind_cache.get('data_age'))} · "
-                   f"TTL {_IND_TTL_H:.0f}시간 — 만료 뒤 첫 렌더가 갱신)")
+            # ⚠️ '만료 뒤 첫 렌더가 갱신한다' 는 **약속**이었다 — 실제로는 쿨다운
+            # (연속 실패면 배로 늘어 상한 6h)에 걸리면 그 렌더는 아무것도 안
+            # 한다. 약속 대신 **기록된 사실**(마지막 시도 시각·연속 실패 단)을
+            # 적고 판정은 읽는 사람이 한다(#380·#165).
+            why = (f"맵이 낡았다(받은 지 "
+                   f"{_age_label(ind_cache.get('data_age'), none='받은 시각 미기록')} · "
+                   f"TTL {_IND_TTL_H:.0f}시간). {_retry_note(ind_cache, None)}")
         out.append(f"⚠️ 업종 {ind_filled}/{n} — 캐시 맵({map_n}종목)엔 {in_map}/{n}, "
                    f"지금 원천엔 {src_in}/{n}: {why}")
         # ⚠️ **화면은 맵만 읽지 않는다.** 맵 밖은 yfinance 개별조회(`.TWO` 포함)가
@@ -449,6 +488,7 @@ def main() -> int:
     _p(f"   업종 캐시  {ind_cache['file']}  "
        + (f"파일 {_age_label(_fa)}" if _fa is not None else _age_label(_fa))
        + f" · TTL {_IND_TTL_H:.0f}시간 · 항목 {map_n}종목 · 이 표의 {in_map}/{n}"
+       + "  (③ 전 스냅샷 — ⑤ 는 ③ 뒤에 다시 읽는다)"
        + (f"  ⚠️ 상태 {ind_cache['state']}"
           f"{' — ' + ind_cache['detail'] if ind_cache['detail'] else ''}"
           if ind_cache["state"] not in ("ok", "absent") else ""))
@@ -549,6 +589,16 @@ def main() -> int:
 
     _p("")
     _p("⑤ 판정")
+    # ⚠️ ② 의 스냅샷은 **③ 이 갱신하기 전의 값**이다(③·④-b 는 업종맵에 읽기
+    # 전용이 아니다 — 콜드/만료면 원천을 받아 쓴다). 그 옛 스냅샷으로 판정하면
+    # 같은 실행이 이미 고친 상태를 결함이라 말한다(#114 루프의 잔여 상태 ·
+    # #35). 판정 직전에 다시 읽는다 — 읽기 전용이라 비용 0.
+    ind_cache = ind_cache_probe(tw)
+    # 맵 수도 같은 스냅샷에서 다시 센다 — ② 의 수와 ⑤ 의 상태가 다른 스냅샷이면
+    # 한 판정이 두 모집단을 섞는다(#45).
+    ind_cached = ind_cache["map"]
+    map_n = len(ind_cached)
+    in_map = sum(1 for c in codes if ind_cached.get(c))
     for line in enrich_verdict(n=n, render_ok=render_ok, mcap_filled=mcap_filled,
                                ind_filled=ind_filled, mcap_age_sec=mcap_age,
                                map_n=map_n, in_map=in_map, src_in=src_in,

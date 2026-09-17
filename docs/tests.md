@@ -792,7 +792,20 @@ yfinance 개별조회가 채우고 있었다.
 | ⑤ 가 **맵 밖을 무엇이 채웠는지** 댄다(같은 실행의 ③ 과 모순 금지, #382b·#43) | ✅ 자동 | `test_the_verdict_names_what_filled_beyond_the_map` |
 | ② 가 소스별로 찍는다(한 줄로 합치면 '한쪽 없음' 이 '조금 낡음' 으로 보인다) | ✅ 자동 | `test_main_prints_a_verdict_derived_from_what_it_measured` |
 | 캐시 저장 모양이 소스별 봉투다(병합 결과는 그대로) | ✅ 자동 | `test_fetch_tw_industry_map_merges_both_sources_and_caches` |
-| 읽기(렌더) 경로는 캐시를 **다시 쓰지 않는다** | ✅ 자동 | `test_cached_numeric_codes_are_healed` |
+| 읽기(렌더) 경로는 **쿨다운 안에서만** 캐시를 다시 쓰지 않는다 | ✅ 자동 | `test_cached_numeric_codes_are_healed` |
+| 재시도 간격이 리터럴로 못박혀 있고 연속 실패면 배로, 6h 에서 멎는다(#66·#116) | ✅ 자동 | `test_the_retry_interval_is_pinned_by_literals_not_by_itself` |
+| 계속 실패하는 소스는 백오프에 걸리고, **성공하면 단이 지워진다**(#72) | ✅ 자동 | `test_a_source_that_keeps_failing_backs_off` · `test_a_failure_raises_the_backoff_step` |
+| 남의 시도 시각을 채택하면 그 시도의 **실패 단**도 같이 온다(#45) | ✅ 자동 | `test_the_concurrent_tried_merge_carries_that_attempts_result` |
+| 모르는 라벨은 봉투에서 걷어낸다(소스 목록이 바뀌면 옛 라벨이 영원히 남는다, #24) | ✅ 자동 | `test_unknown_labels_are_pruned_on_write` |
+| 쓰다 만 파일을 '빈 상태' 로 읽지 않는다 + 우리 쓰기는 **원자 교체**(#379) | ✅ 자동 | `test_a_partially_written_file_is_not_read_as_empty` · `test_cache_write_uses_atomic_replace` |
+| 나이는 **가장 낡은 소스**가 말한다(min 이면 만료가 숨는다, #91c) | ✅ 자동 | `test_expired_map_is_called_stale_but_not_thrown_away` |
+| 부분이면서 만료면 **부분**이 이름이 된다(처방이 더 행동 가능하다, #275) | ✅ 자동 | `test_partial_beats_stale_when_both_are_true` |
+| 손편집·찢어진 파일의 이상값이 정상 소스를 영구 '없음' 으로 만들지 않는다 | ✅ 자동 | `test_foreign_input_does_not_become_a_permanent_missing_source` |
+| ⑤ 는 ② 가 아니라 **③ 뒤의 스냅샷**으로 판정한다(#114 루프의 잔여 상태) | ✅ 자동 | `test_probe_passes_the_cache_probe_result_into_the_verdict` |
+| '언제 다시 시도하나' 는 약속이 아니라 **기록된 사실**로 적는다(#380·#165) | ✅ 자동 | `test_the_retry_note_states_recorded_facts_not_a_promise` |
+| `not_envelope` 갈래가 옛 형식이라고 이름을 대고 파일 삭제를 처방한다(#291) | ✅ 자동 | `test_the_not_envelope_arm_names_the_old_format` |
+| 제품이 내는 상태 갈래 전부가 위 회귀 목록에 등재돼 있다(#24) | ✅ 자동 | `test_every_state_the_product_assigns_is_covered_here` |
+| conftest 리다이렉트는 **선언한 전 대상**이 실제로 걸린다(이름 변경 시 빨간불) | ✅ 자동 | `test_production_disk_caches_are_redirected` |
 
 ⚠️ 뮤테이션 14종 중 둘이 생존했다 — '실패한 소스의 행을 유지한다' 는 **암묵
 동작**이라(그냥 `by[label]` 을 안 건드린다) 그 자리의 `elif` 는 로그뿐이었다.
@@ -806,11 +819,28 @@ yfinance 개별조회가 채우고 있었다.
 루트 `conftest.py` 리다이렉트 목록에 `bot.twse_client._CACHE_DIR` 을 더했고, 그
 테스트 자신도 `tmp_path` 를 써 순서에 기대지 않는다.
 
+⚠️ **독립 리뷰(2026-09-17)가 잡은 축**: (a) `_TW_IND_RETRY_SEC` 을 **아무도
+못박지 않아** 테스트가 그 상수로 그 상수를 검증하고 있었다(#66) (b) `data_age`
+의 `max` 와 `min` 이 구별되지 않았다 — 두 픽스처가 **같은 시각**을 썼다(#91c)
+(c) 15분 고정 쿨다운은 원천이 오래 죽었을 때 렌더 경로의 바깥 요청을 하루
+1회에서 **96회**로 늘린다(한 번에 최대 15초 블로킹, singleflight·백그라운드
+워머 없음 — #116 예산 · #110 요청마다 스레드). 지수 백오프(15m→30m→1h→2h→4h,
+상한 6h)로 **하루 8~9회**로 유계가 됐고, 두 상수는 리터럴로 못박혔다.
+
 **못 보는 축**(#274): 이 계약들은 캐시 **경계**만 잰다 — 원천이 필드명을 바꿔
 `_fetch_one_industry_source` 가 `{}` 를 주는 경우와 원천이 진짜로 비어 있는
 경우는 여기서 안 갈린다(그건 ④ 가 원문 표본으로 말한다, #109). 그리고 15분
 쿨다운이 **적절한 값인지**는 재지 않았다 — 원천 복구 시간을 측정한 적이
-없다(#165).
+없다(#165). **동시 버스트**도 안 잰다: 백오프는 *한 스레드가 반복해서* 두드리는
+것을 막지만, 콜드 캐시에 요청 N개가 동시에 들어오면 singleflight 가 없어 N번
+나간다(#113) — 오늘은 첫 성공이 24h TTL 을 채우므로 그 창이 짧다. 그리고
+`test_a_partially_written_file_is_not_read_as_empty` 는 쓰기가 **끝난 뒤**를
+보므로 원자성 자체가 아니라 그 결과만 잰다 — 원자성은 AST 로 못박는다.
+
+**사용자 표면 공백**(리뷰 L5, 아직 안 만듦): "한 소스가 통째로 없다" 는 사실이
+프로브·로그까지만 가고 **TW 무버·52주 화면엔 안 간다**. 화면은 업종이 '—' 인
+이유를 여전히 말하지 않는다(#43). 만들지 않은 이유는 요청받지 않은 UI 변경이라
+사용자 결정 사항이기 때문이다.
 
 ## ⑥ 한글명 계수는 갈래가 아니라 값으로 (2026-09-17 · 실수 #382)
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -168,12 +169,21 @@ def _cached_stale(name: str, max_age_sec: int = 86400) -> Optional[dict]:
 
 
 def _cache_write(name: str, obj: dict) -> None:
+    """원자 교체로 쓴다 — `write_text` 는 truncate 후 쓰기라 그 사이에 읽는
+    프로세스가 **쓰다 만 파일**(길이 0 포함)을 본다(#379). 이 캐시엔 reader 가
+    둘 이상이다(봇 워머 · 대시보드 요청 스레드 · 프로브) — 업종 맵은 길이 0 을
+    '빈 상태'로 읽으면 누적분을 통째로 덮으므로(#384) 실제 사고가 된다.
+    tmp 이름에 pid+ns 를 넣어 동시 쓰기끼리도 안 섞이게 한다."""
+    tmp = _CACHE_DIR / f".{name}.{os.getpid()}.{time.time_ns()}.tmp"
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (_CACHE_DIR / f"{name}.json").write_text(
-            json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _CACHE_DIR / f"{name}.json")
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _to_tables(js: dict) -> list[dict]:
@@ -487,7 +497,20 @@ _TW_IND_SOURCES: tuple[tuple[str, str], ...] = (
     ("上櫃", _OPENAPI_OTC_INFO),
 )
 # 실패한 소스를 매 렌더마다 다시 두드리지 않는다 — 실패는 **짧게만** 믿는다(#303).
+# ⚠️ 그런데 15분 고정이면 원천이 오래 죽었을 때 **하루 96번**을 계속 두드린다
+# (렌더 경로라 한 번에 최대 15초 블로킹 — 옛 판은 24h TTL 이라 하루 1번이었다).
+# 그래서 연속 실패 횟수로 **지수 백오프**를 걸고 상한을 둔다(#116 예산 · #303
+# 실패는 짧게만 · #346 느림의 원인이 양이 아니라 실패 재시도였다).
+#   실패 1회 15분 · 2회 30분 · 3회 1h · 4회 2h · 5회 4h · 6회+ 6h(상한)
+# 최악 = 첫날 15m+30m+1h+2h+4h 뒤 6h 간격 → **하루 8~9회**(96회가 아니다).
 _TW_IND_RETRY_SEC = 15 * 60
+_TW_IND_RETRY_MAX = 6 * 3600
+
+
+def _retry_delay(fails: int) -> float:
+    """연속 실패 `fails` 회 뒤 다음 재시도까지의 최소 간격(초). 상한 유계."""
+    n = max(0, int(fails) - 1)
+    return min(float(_TW_IND_RETRY_MAX), _TW_IND_RETRY_SEC * (2.0 ** min(n, 20)))
 
 
 def _merge_industry_by(by: dict) -> dict[str, str]:
@@ -527,7 +550,7 @@ def industry_cache_state() -> dict:
     name = f"{_TW_IND_CACHE_KEY}.json"
     labels = [lab for lab, _u in _TW_IND_SOURCES]
     out: dict = {"file": name, "age": None, "state": "absent", "detail": "",
-                 "by": {}, "fetched": {}, "tried": {}, "map": {},
+                 "by": {}, "fetched": {}, "tried": {}, "fails": {}, "map": {},
                  "missing": list(labels), "partial": True, "data_age": None}
     fp = _CACHE_DIR / name
     try:
@@ -559,6 +582,11 @@ def industry_cache_state() -> dict:
         if isinstance(v, dict):
             out[k] = {str(a): float(b) for a, b in v.items()
                       if isinstance(b, (int, float)) and not isinstance(b, bool)}
+    v = raw.get("fails")
+    if isinstance(v, dict):
+        # 연속 실패 횟수(백오프 단) — 음수·불리언은 받지 않는다.
+        out["fails"] = {str(a): int(b) for a, b in v.items()
+                        if isinstance(b, int) and not isinstance(b, bool) and b > 0}
     out["missing"] = [lab for lab in labels if lab not in out["by"]]
     out["partial"] = bool(out["missing"])
     ages = [time.time() - out["fetched"][lab] for lab in out["by"]
@@ -586,13 +614,15 @@ def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     호출측에서 티커 정규화).
 
     캐시는 **소스별**이다(§industry_cache_state): 한쪽이 실패해도 다른 쪽의
-    커버리지를 버리지 않고(#148), 실패한 쪽만 15분 뒤 다시 시도한다. 옛 판은
+    커버리지를 버리지 않고(#148), 실패한 쪽만 15분 뒤 — 연속 실패면 배로 늘어
+    상한 6h 간격으로(§_retry_delay) — 다시 시도한다. 옛 판은
     합친 부분 맵을 완전본과 같은 24h TTL 로 구워 上櫃 892종목이 하루 동안
     통째로 사라졌다(2026-09-17 VM 실측, #280).
     """
     st = industry_cache_state()
     now = time.time()
     by, fetched, tried = dict(st["by"]), dict(st["fetched"]), dict(st["tried"])
+    fails = dict(st["fails"])
     changed = False
     for label, url in _TW_IND_SOURCES:
         got_at = fetched.get(label) if label in by else None
@@ -600,15 +630,19 @@ def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
             continue
         # ⚠️ 쿨다운은 **만료·미수신 둘 다**에 건다 — 미수신에만 걸었더니 원천이
         # 계속 죽은 동안 만료된 소스를 매 렌더가 다시 두드렸다. 실패는 짧게만
-        # 믿되, 재시도도 유계여야 한다(#303·#116).
-        if not force and now - (tried.get(label) or 0.0) < _TW_IND_RETRY_SEC:
+        # 믿되, 재시도도 유계여야 한다(#303·#116). 연속 실패면 간격이 배로
+        # 늘어 상한 6h 에서 멎는다(§_retry_delay).
+        if not force and now - (tried.get(label) or 0.0) < _retry_delay(fails.get(label, 0)):
             continue
         tried[label] = now
         changed = True
         rows = _fetch_one_industry_source(url, label)
         if rows:
             by[label], fetched[label] = rows, now
-        elif label in by:
+            fails.pop(label, None)   # 성공하면 백오프를 지운다(#72 카운터 리셋)
+        else:
+            fails[label] = fails.get(label, 0) + 1
+        if not rows and label in by:
             # ⚠️ 받은 적 있는 소스가 이번에 실패하면 **버리지 않는다** — 버리면
             # 그 소스의 커버리지가 통째로 사라진다(#148 '없다'고 하기 전에
             # 우리가 버린 건 아닌가).
@@ -629,11 +663,25 @@ def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
         t2 = latest["tried"].get(label)
         if t2 is not None and t2 > (tried.get(label) or 0.0):
             tried[label] = t2
+            # 시도 시각을 남의 것으로 갈아끼웠으면 그 시도의 **결과(실패 단)**도
+            # 같이 가져와야 한다 — 시각만 새것이고 단이 옛것이면 백오프가 갈린다.
+            if label in latest["fails"]:
+                fails[label] = latest["fails"][label]
+            else:
+                fails.pop(label, None)
+    # ⚠️ 모르는 라벨은 싣지 않는다 — 소스 목록이 바뀌면 옛 라벨이 봉투에 영원히
+    # 남아 `fetched`/`tried` 가 아무도 안 읽는 값을 나른다(#24).
+    known = {lab for lab, _u in _TW_IND_SOURCES}
+    by = {k: v for k, v in by.items() if k in known}
+    fetched = {k: v for k, v in fetched.items() if k in known}
+    tried = {k: v for k, v in tried.items() if k in known}
+    fails = {k: v for k, v in fails.items() if k in known}
     # ⚠️ `by` 가 비어도 쓴다 — 옛 판의 `if out:` 는 **첫 실패에서 아무것도 안 남겨**
     # 재시도 시각이 기록되지 않았다(쿨다운이 영영 안 걸린다). 빈 봉투는 `empty`
     # 라는 이름으로 읽히므로 통과로 오독되지 않는다(#54).
     _cache_write(_TW_IND_CACHE_KEY,
-                 {"v": 3, "by": by, "fetched": fetched, "tried": tried})
+                 {"v": 3, "by": by, "fetched": fetched, "tried": tried,
+                  "fails": fails})
     return _merge_industry_by(by)
 
 

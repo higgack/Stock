@@ -59454,7 +59454,27 @@ class TestNoOutboundHttpInTests20260911:
                 "bot.market_favorites._FAVORITES_FILE"}
         assert want <= set(_cf._REDIRECTED), (
             f"리다이렉트가 빠졌다(상수 이름 변경?): {want - set(_cf._REDIRECTED)}")
-        for dotted in sorted(want):
+        # ⚠️ `want` 는 손으로 적은 목록이라 **나중에 더한 줄**을 못 본다 — 상수
+        # 이름이 바뀌면 `continue` 로 조용히 빠지고 그 캐시만 운영 경로로 샌다
+        # (#24 열거형 가드는 목록 밖을 못 잡는다). 목록을 conftest 소스에서
+        # 파생시켜 **전수**로 잰다(독립 리뷰 2026-09-17 L1).
+        import ast as _ast
+        _src0 = pathlib.Path(_cf.__file__).read_text(encoding="utf-8")
+        _fn = next(n for n in _ast.parse(_src0).body
+                   if isinstance(n, _ast.FunctionDef)
+                   and n.name == "_redirect_disk_caches")
+        declared = set()
+        for nd in _ast.walk(_fn):
+            if (isinstance(nd, _ast.Assign) and isinstance(nd.value, _ast.Tuple)
+                    and any(getattr(t, "id", "") == "targets" for t in nd.targets)):
+                for el in nd.value.elts:
+                    if isinstance(el, _ast.Tuple) and len(el.elts) == 3:
+                        declared.add(f"{el.elts[0].value}.{el.elts[1].value}")
+        assert declared >= want, "conftest 의 targets 를 못 읽었다(대조 0건, #54)"
+        assert declared == set(_cf._REDIRECTED), (
+            "선언했는데 안 걸린 대상이 있다(상수 이름 변경?): "
+            f"{sorted(declared - set(_cf._REDIRECTED))}")
+        for dotted in sorted(declared):
             mod, attr = dotted.rsplit(".", 1)
             val = _pl.Path(str(getattr(importlib.import_module(mod), attr)))
             assert home not in val.parents and val != home, f"{dotted} → {val}"
@@ -69921,7 +69941,8 @@ class TestTwKoreanNameStuckDiag20260917:
 # (#38) v2 rename 을 못 따라갔고, ③ cache-only 는 같은 실행에서 59/60 을
 # 채우고 있었다(= 화면은 멀쩡한데 진단만 거짓 ❌, #35·#53·#260).
 def _ind_cache(state="ok", age=600.0, detail="", file=None, map_=None,
-               missing=None, data_age=None, by=None, fetched=None, tried=None):
+               missing=None, data_age=None, by=None, fetched=None, tried=None,
+               fails=None):
     """`twse_client.industry_cache_state()` 가 내는 그 모양(#155).
 
     ⚠️ 나이 하나만 넘기던 첫 판은 호출부가 **시총 캐시 나이**를 넘겨도 전
@@ -69935,7 +69956,8 @@ def _ind_cache(state="ok", age=600.0, detail="", file=None, map_=None,
             "state": state, "detail": detail, "map": dict(map_ or {}),
             "missing": list(missing or []), "partial": bool(missing),
             "data_age": data_age, "by": dict(by or {}),
-            "fetched": dict(fetched or {}), "tried": dict(tried or {})}
+            "fetched": dict(fetched or {}), "tried": dict(tried or {}),
+            "fails": dict(fails or {})}
 
 
 def _cache_names_in(tree):
@@ -70373,14 +70395,52 @@ class TestTwIndustryMapVerdictBranches20260917:
         assert "❌ 업종" in none and "다음 렌더가 받는다" in none
         assert "이 실행" not in none
 
+    _STATES = ("absent", "unknown", "unreadable", "not_dict", "not_envelope",
+               "empty", "partial", "stale", "ok")
+
     def test_verdict_never_promises_soon_without_measuring(self):
         """'곧 채워진다' 는 재지 않은 약속이었다 — 어느 갈래에도 없어야 한다."""
         from bot.twse_client import _TW_IND_CACHE_TTL
-        for st, age in (("absent", None), ("empty", 60.0),
-                        ("stale", _TW_IND_CACHE_TTL * 7.7),
-                        ("unreadable", 60.0), ("not_dict", 60.0),
-                        ("unknown", None)):
+        for st in self._STATES:
+            age = None if st in ("absent", "unknown") else _TW_IND_CACHE_TTL * 7.7
             assert "곧 채워진다" not in self._v(ind_cache=_ind_cache(st, age))
+
+    def test_every_state_the_product_assigns_is_covered_here(self):
+        """손으로 적은 목록은 새 갈래를 못 잡는다(#24) — 제품이 대입하는
+        `out["state"] = "…"` 를 AST 로 전수해 대조한다. 갈래를 늘리면 이
+        테스트가 먼저 깨지고, 고치려면 위 목록에 등재해야 한다."""
+        import ast
+        import inspect
+        import bot.twse_client as tw
+        fn = ast.parse(inspect.getsource(tw.industry_cache_state)).body[0]
+        def _is_state(t):
+            return (isinstance(t, ast.Subscript)
+                    and getattr(t.value, "id", "") == "out"
+                    and getattr(getattr(t, "slice", None), "value", None) == "state")
+
+        assigned = set()
+        for nd in ast.walk(fn):
+            if not isinstance(nd, ast.Assign):
+                continue
+            for tgt in nd.targets:
+                # `out["state"] = "x"` 와 `out["state"], out["detail"] = "x", "y"`
+                pairs = (list(zip(tgt.elts, nd.value.elts))
+                         if isinstance(tgt, ast.Tuple) and isinstance(nd.value, ast.Tuple)
+                         else [(tgt, nd.value)])
+                for t, v in pairs:
+                    if _is_state(t) and isinstance(v, ast.Constant) and isinstance(v.value, str):
+                        assigned.add(v.value)
+        assert assigned, "제품에서 상태 대입을 하나도 못 찾았다(대조 0건 = 실패, #54)"
+        missing = assigned - set(self._STATES)
+        assert not missing, f"제품이 내는 새 갈래가 이 목록 밖이다: {sorted(missing)}"
+
+    def test_the_not_envelope_arm_names_the_old_format(self):
+        """옛 형식·손편집 파일은 '빈 dict' 와 처방이 다르다 — 그 파일을 지워야
+        한다(#82). 발화 경로 없는 갈래는 가드가 아니다(#291)."""
+        txt = self._v(ind_cache=_ind_cache("not_envelope", 60.0,
+                                           detail="봉투에 `by` 가 없다"))
+        assert "봉투" in txt and "삭제" in txt, txt
+        assert "빈 dict" not in txt
 
     def test_probe_passes_the_cache_probe_result_into_the_verdict(self):
         """배선 — `ind_cache_probe()` 가 낸 그 dict 를 넘기는지 본다(#20).
@@ -70408,6 +70468,36 @@ class TestTwIndustryMapVerdictBranches20260917:
             assert "ind_cache" in kw, "판정에 캐시 상태를 안 넘긴다"
             assert getattr(kw["ind_cache"], "id", "") in bound, (
                 "ind_cache 에 ind_cache_probe() 결과가 아닌 값을 넘긴다(#91b)")
+        # ⚠️ ② 의 스냅샷은 **③ 이 갱신하기 전의 값**이다(③·④-b 는 콜드/만료면
+        # 원천을 받아 쓴다) — 그걸로 판정하면 같은 실행이 이미 고친 상태를 결함
+        # 이라 말한다(#114 루프의 잔여 상태). 판정 **직전에** 다시 읽어야 한다.
+        reads = sorted(nd.lineno for nd in ast.walk(tree)
+                       if isinstance(nd, ast.Assign) and isinstance(nd.value, ast.Call)
+                       and getattr(nd.value.func, "id", "") == "ind_cache_probe")
+        assert len(reads) >= 2, "판정 전에 다시 읽지 않는다(② 스냅샷 재사용)"
+        assert max(reads) < min(c.lineno for c in calls), (
+            "재읽기가 판정 뒤에 있다 — 판정은 여전히 옛 스냅샷을 본다")
+
+    def test_the_retry_note_states_recorded_facts_not_a_promise(self):
+        """'만료 뒤 첫 렌더가 갱신' 은 약속이었다 — 쿨다운(연속 실패면 배로)에
+        걸리면 그 렌더는 아무것도 안 한다. 기록된 사실만 적는다(#380·#165)."""
+        import time
+        from bot.scripts.tw_enrich_probe import _retry_note
+        from bot.twse_client import _TW_IND_RETRY_SEC
+        now = time.time()
+        txt = _retry_note(_ind_cache("partial", 60.0, missing=["上櫃"],
+                                     tried={"上櫃": now - 60}, fails={"上櫃": 3}),
+                          ["上櫃"])
+        assert "연속 실패 3회" in txt and "뒤 재시도 가능" in txt, txt
+        assert "갱신" not in txt and "곧" not in txt
+        # 쿨다운이 지났으면 그렇게 말한다
+        ready = _retry_note(_ind_cache("partial", 60.0, missing=["上櫃"],
+                                       tried={"上櫃": now - _TW_IND_RETRY_SEC - 1}),
+                            ["上櫃"])
+        assert "다음 렌더에 재시도" in ready, ready
+        # 기록이 없으면 침묵하지 않는다 — 침묵은 '곧 된다' 로 읽힌다(#43·#54)
+        assert "시도 기록 없음" in _retry_note(_ind_cache("partial", 60.0,
+                                                          missing=["上櫃"]), ["上櫃"])
 
 
 class TestTwIndCacheProbeMeasuresTheProductFile20260917:
@@ -70496,6 +70586,65 @@ class TestTwIndCacheProbeMeasuresTheProductFile20260917:
         assert st["data_age"] >= _TW_IND_CACHE_TTL
         # 파일은 방금 썼으므로 mtime 은 신선하다 — 그걸 나이로 쓰면 거짓말이다
         assert st["age"] < 60
+        # ⚠️ 두 소스 시각이 **같으면** min 과 max 가 구별되지 않는다(독립 리뷰
+        # 실측 2026-09-17, #91c). 나이는 **가장 낡은 소스**가 말해야 한다 —
+        # 신선한 소스 하나가 맵 전체를 신선하다고 말하면 만료가 숨는다.
+        mixed = self._probe(tmp_path, monkeypatch,
+                            self._env({"上市": {"2330": "반도체"},
+                                       "上櫃": {"6488": "광전(디스플레이)"}},
+                                      fetched={"上市": time.time() - 60,
+                                               "上櫃": old}), name=nm)
+        assert mixed["data_age"] >= _TW_IND_CACHE_TTL, (
+            "가장 낡은 소스가 아니라 가장 새 소스로 나이를 쟀다")
+        assert mixed["state"] == "stale"
+
+    def test_partial_beats_stale_when_both_are_true(self, tmp_path, monkeypatch):
+        """부분이면서 만료인 상태에서 **더 행동 가능한 쪽**이 이름이 된다(#275).
+
+        '낡았다' 는 기다리라는 뜻이지만 '부분' 은 그 소스 수집을 고치라는 뜻이라
+        처방이 다르다(#82). 두 조건이 동시에 참인 픽스처가 없으면 순서를 뒤집는
+        변형이 통과한다(#91c)."""
+        import time
+        from bot.twse_client import _TW_IND_CACHE_KEY, _TW_IND_CACHE_TTL
+        old = time.time() - _TW_IND_CACHE_TTL - 60
+        st = self._probe(tmp_path, monkeypatch,
+                         self._env({"上市": {"2330": "반도체"}},
+                                   fetched={"上市": old}),
+                         name=f"{_TW_IND_CACHE_KEY}.json")
+        assert st["partial"] is True and st["missing"] == ["上櫃"]
+        assert st["data_age"] >= _TW_IND_CACHE_TTL, "만료 조건도 참이어야 한다"
+        assert st["state"] == "partial", "만료가 부분을 가렸다"
+
+    def test_foreign_input_does_not_become_a_permanent_missing_source(
+            self, tmp_path, monkeypatch):
+        """손편집·찢어진 파일이 낸 이상값이 **정상 소스를 지우면** 그 소스가
+        영구히 '없음' 이 된다(독립 리뷰 2026-09-17 L3/L4).
+
+        ⚠️ 우리 writer 는 이런 값을 만들지 않는다 — 즉 이 갈래는 우리 쓰기
+        경로에서는 도달 불가다(#291). 그래도 남기는 이유는 **입력이 우리 것만이
+        아니기 때문**이고, 그 사실을 여기 적어 다음 사람이 가드를 '죽은 코드' 로
+        지우지 않게 한다(#274 못 보는 축을 같이 답할 것).
+        """
+        from bot.twse_client import _TW_IND_CACHE_KEY
+        nm = f"{_TW_IND_CACHE_KEY}.json"
+        # (a) 소스 값이 dict 가 아니거나 비면 그 소스는 '없음' 이지 크래시가 아니다
+        got = self._probe(tmp_path, monkeypatch,
+                          {"v": 3, "by": {"上市": {"2330": "반도체"}, "上櫃": []},
+                           "fetched": {}, "tried": {}}, name=nm)
+        assert got["missing"] == ["上櫃"] and got["map"] == {"2330": "반도체"}
+        # (b) 시각이 불리언이면 숫자가 아니다 — True 를 1.0 초로 읽으면 1970년이
+        #     되어 그 소스가 영원히 만료로 보인다
+        got = self._probe(tmp_path, monkeypatch,
+                          {"v": 3, "by": {"上市": {"2330": "반도체"}},
+                           "fetched": {"上市": True}, "tried": {},
+                           "fails": {"上市": True}}, name=nm)
+        assert got["fetched"] == {} and got["fails"] == {}
+        # (c) fails 가 음수·문자열이면 백오프 계산이 뒤집힌다 — 받지 않는다
+        got = self._probe(tmp_path, monkeypatch,
+                          {"v": 3, "by": {"上市": {"2330": "반도체"}},
+                           "fetched": {}, "tried": {},
+                           "fails": {"上市": -5, "上櫃": "많이"}}, name=nm)
+        assert got["fails"] == {}
 
 
 class TestTwIndustryPartialCacheIsNotBakedAsComplete20260917:
@@ -70509,14 +70658,15 @@ class TestTwIndustryPartialCacheIsNotBakedAsComplete20260917:
     """
 
     @staticmethod
-    def _setup(tmp_path, monkeypatch, by=None, fetched=None, tried=None):
+    def _setup(tmp_path, monkeypatch, by=None, fetched=None, tried=None,
+               fails=None):
         import json
         import bot.twse_client as tw
         monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
         if by is not None:
             (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
                 {"v": 3, "by": by, "fetched": fetched or {},
-                 "tried": tried or {}}), encoding="utf-8")
+                 "tried": tried or {}, "fails": fails or {}}), encoding="utf-8")
         return tw
 
     @staticmethod
@@ -70663,6 +70813,147 @@ class TestTwIndustryPartialCacheIsNotBakedAsComplete20260917:
         assert tw.fetch_tw_industry_map(force=True) == {
             "2330": "반도체", "6488": "광전(디스플레이)"}
         assert seen == ["上市", "上櫃"], seen
+
+    # ── 아래는 2026-09-17 독립 리뷰가 잡은 축들 ─────────────────────────────
+    def test_the_retry_interval_is_pinned_by_literals_not_by_itself(self):
+        """자기 상수로 자기를 검증하면 tautology 다(#66) — 리터럴로 못박는다.
+
+        이 두 수는 **렌더 경로의 바깥 요청 예산**이다(#116). 15분 고정이던 첫
+        판은 원천이 오래 죽었을 때 하루 96번을 두드렸다(한 번에 최대 15초
+        블로킹). 백오프 상한이 6h 라 하루 8~9회로 유계가 된다.
+        """
+        import bot.twse_client as tw
+        assert tw._TW_IND_RETRY_SEC == 900, "첫 재시도는 15분"
+        assert tw._TW_IND_RETRY_MAX == 21600, "재시도 간격 상한은 6시간"
+        assert tw._retry_delay(0) == 900 and tw._retry_delay(1) == 900
+        assert tw._retry_delay(2) == 1800 and tw._retry_delay(3) == 3600
+        assert tw._retry_delay(4) == 7200 and tw._retry_delay(5) == 14400
+        assert tw._retry_delay(6) == 21600, "6회째에 상한"
+        assert tw._retry_delay(99) == 21600, "상한 밖으로 자라지 않는다"
+        # 최악의 하루 = 상한에 닿기까지의 합 + 나머지를 6h 로 — 96회가 아니다.
+        day, t, n = 0, 0.0, 0
+        while t < 86400:
+            t += tw._retry_delay(n + 1)
+            n += 1
+            day += 1
+        assert day <= 12, f"하루 {day}회 — 유계가 아니다"
+
+    def test_a_source_that_keeps_failing_backs_off(self, tmp_path, monkeypatch):
+        """연속 실패면 간격이 배로 는다 — 고정 간격이면 이 픽스처가 통과한다."""
+        import time
+        import bot.twse_client as tw0
+        now = time.time()
+        # 上櫃 가 3회 연속 실패 → 다음 간격은 1시간. 30분 전 시도는 아직 쿨다운 안.
+        tw = self._setup(tmp_path, monkeypatch, by={"上市": {"2330": "반도체"}},
+                         fetched={"上市": now},
+                         tried={"上市": now, "上櫃": now - 1800},
+                         fails={"上櫃": 3})
+        seen = self._sources(tw, monkeypatch, {"上櫃": {"6488": "광전(디스플레이)"}})
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체"}
+        assert seen == [], f"백오프를 안 건다 — {tw0._retry_delay(3)}초여야 한다"
+        # 1시간 하고도 1초가 지나면 다시 시도하고, 성공하면 백오프가 지워진다
+        self._setup(tmp_path, monkeypatch, by={"上市": {"2330": "반도체"}},
+                    fetched={"上市": now},
+                    tried={"上市": now, "上櫃": now - 3601}, fails={"上櫃": 3})
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체",
+                                              "6488": "광전(디스플레이)"}
+        assert seen == ["上櫃"], seen
+        assert "上櫃" not in tw.industry_cache_state()["fails"], (
+            "성공했는데 백오프 단이 남았다 — 다음 실패가 6h 에서 시작한다(#72)")
+
+    def test_a_failure_raises_the_backoff_step(self, tmp_path, monkeypatch):
+        import time
+        now = time.time()
+        tw = self._setup(tmp_path, monkeypatch, by={"上市": {"2330": "반도체"}},
+                         fetched={"上市": now}, tried={"上市": now})
+        self._sources(tw, monkeypatch, {})              # 上櫃 실패
+        tw.fetch_tw_industry_map()
+        assert tw.industry_cache_state()["fails"].get("上櫃") == 1
+        # 쿨다운을 지나 또 실패하면 2단
+        st = tw.industry_cache_state()
+        self._setup(tmp_path, monkeypatch, by=st["by"], fetched=st["fetched"],
+                    tried={"上市": now, "上櫃": now - 901}, fails={"上櫃": 1})
+        tw.fetch_tw_industry_map()
+        assert tw.industry_cache_state()["fails"].get("上櫃") == 2
+
+    def test_the_concurrent_tried_merge_carries_that_attempts_result(
+            self, tmp_path, monkeypatch):
+        """시도 시각을 남의 것으로 갈아끼우면 그 시도의 **실패 단**도 같이 온다 —
+        시각만 새것이고 단이 옛것이면 백오프가 갈린다(#45 두 모집단)."""
+        import json
+        import time
+        tw = self._setup(tmp_path, monkeypatch)
+        now = time.time()
+
+        def _f(url, label):
+            if label == "上市":
+                (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
+                    {"v": 3, "by": {}, "fetched": {},
+                     "tried": {"上櫃": now + 5}, "fails": {"上櫃": 4}}),
+                    encoding="utf-8")
+                return {"2330": "반도체"}
+            return {}
+        monkeypatch.setattr(tw, "_fetch_one_industry_source", _f)
+        tw.fetch_tw_industry_map()
+        st = tw.industry_cache_state()
+        assert st["tried"]["上櫃"] == now + 5, "더 새 시도 시각을 안 남겼다"
+        assert st["fails"].get("上櫃") == 4, (
+            "남의 시도 시각만 가져오고 그 실패 단은 버렸다")
+
+    def test_unknown_labels_are_pruned_on_write(self, tmp_path, monkeypatch):
+        """소스 목록이 바뀌면 옛 라벨이 봉투에 영원히 남는다 — 아무도 안 읽는
+        값을 나르고, `missing` 판정에도 안 잡힌다(#24)."""
+        import time
+        now = time.time()
+        tw = self._setup(tmp_path, monkeypatch,
+                         by={"上市": {"2330": "반도체"}, "興櫃": {"9999": "기타"}},
+                         fetched={"上市": now, "興櫃": now},
+                         tried={"上市": now, "興櫃": now}, fails={"興櫃": 2})
+        self._sources(tw, monkeypatch, {"上櫃": {"6488": "광전(디스플레이)"}})
+        tw.fetch_tw_industry_map()
+        st = tw.industry_cache_state()
+        for k in ("by", "fetched", "tried", "fails"):
+            assert "興櫃" not in st[k], f"{k} 에 모르는 라벨이 남았다"
+
+    def test_a_partially_written_file_is_not_read_as_empty(self, tmp_path,
+                                                           monkeypatch):
+        """`write_text` 는 truncate 후 쓰기라 그 사이 reader 가 **길이 0** 파일을
+        본다 — 그걸 '빈 상태' 로 읽으면 다음 쓰기가 누적을 통째로 덮는다(#379).
+        원자 교체면 reader 는 옛 완전본이나 새 완전본 중 하나만 본다."""
+        import json
+        import time
+        tw = self._setup(tmp_path, monkeypatch)
+        fp = tmp_path / f"{tw._TW_IND_CACHE_KEY}.json"
+        # 쓰다 만 파일(길이 0 · 잘린 JSON)은 'empty'(정상 빈 봉투)가 아니라
+        # **판정 불가**로 읽혀야 한다 — 두 상태는 처방이 다르다(#82).
+        fp.write_text("", encoding="utf-8")
+        assert tw.industry_cache_state()["state"] == "unreadable"
+        fp.write_text('{"v": 3, "by": {"上市": {"2330"', encoding="utf-8")
+        assert tw.industry_cache_state()["state"] == "unreadable"
+        # 그리고 우리 쓰기는 tmp 를 남기지 않는다 — tmp 후 os.replace
+        tw._cache_write(tw._TW_IND_CACHE_KEY,
+                        {"v": 3, "by": {"上市": {"2330": "반도체"}},
+                         "fetched": {"上市": time.time()}, "tried": {}})
+        assert json.loads(fp.read_text(encoding="utf-8"))["by"]["上市"]
+        assert not list(tmp_path.glob(".*tmp")), (
+            f"tmp 파일이 남았다: {list(tmp_path.iterdir())}")
+
+    def test_cache_write_uses_atomic_replace(self):
+        """배선 — `write_text` 로 되돌리는 변형을 잡는다(#20).
+
+        위 테스트는 **결과**만 보므로 원자성 자체는 못 잰다(쓰기가 끝난 뒤를
+        보기 때문에 truncate 판도 통과한다) — 못 보는 축이라 구조로 못박는다(#274).
+        """
+        import ast
+        import inspect
+        import bot.twse_client as tw
+        fn = ast.parse(inspect.getsource(tw._cache_write)).body[0]
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        assert any(getattr(n.func, "attr", "") == "replace"
+                   and getattr(n.func.value, "id", "") == "os" for n in calls), (
+            "원자 교체(os.replace)를 안 쓴다 — 쓰다 만 파일이 보인다(#379)")
+        names = [n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)]
+        assert names.count("write_text") <= 1, "본 파일에 직접 쓴다"
 
 
 class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
