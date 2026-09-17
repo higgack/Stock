@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -168,12 +169,21 @@ def _cached_stale(name: str, max_age_sec: int = 86400) -> Optional[dict]:
 
 
 def _cache_write(name: str, obj: dict) -> None:
+    """원자 교체로 쓴다 — `write_text` 는 truncate 후 쓰기라 그 사이에 읽는
+    프로세스가 **쓰다 만 파일**(길이 0 포함)을 본다(#379). 이 캐시엔 reader 가
+    둘 이상이다(봇 워머 · 대시보드 요청 스레드 · 프로브) — 업종 맵은 길이 0 을
+    '빈 상태'로 읽으면 누적분을 통째로 덮으므로(#384) 실제 사고가 된다.
+    tmp 이름에 pid+ns 를 넣어 동시 쓰기끼리도 안 섞이게 한다."""
+    tmp = _CACHE_DIR / f".{name}.{os.getpid()}.{time.time_ns()}.tmp"
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (_CACHE_DIR / f"{name}.json").write_text(
-            json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _CACHE_DIR / f"{name}.json")
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _to_tables(js: dict) -> list[dict]:
@@ -479,32 +489,292 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
 
 # 2026-09-10: 표에 없는 코드를 "기타" 로 굽던 옛 캐시가 24h 동안 `.TWO` 폴백을
 # 계속 가린다(독립 리뷰 #5) — 키를 올려 배포 즉시 새로 받는다(#21b 캐시가 fix 를 가림).
-_TW_IND_CACHE_KEY = "tw_industry_map_v2"
+# 2026-09-17 v3: **소스별 봉투**로 바꾸며 다시 올린다 — 옛 판이 구운 부분 맵
+# (上市만 1084종목)이 24시간 더 살면 이 fix 가 화면에 한 글자도 안 닿는다.
+_TW_IND_CACHE_KEY = "tw_industry_map_v3"
+_TW_IND_SOURCES: tuple[tuple[str, str], ...] = (
+    ("上市", _OPENAPI_LISTED_INFO),
+    ("上櫃", _OPENAPI_OTC_INFO),
+)
+# 실패한 소스를 매 렌더마다 다시 두드리지 않는다 — 실패는 **짧게만** 믿는다(#303).
+# ⚠️ 그런데 15분 고정이면 원천이 오래 죽었을 때 **하루 96번**을 계속 두드린다
+# (렌더 경로라 한 번에 최대 15초 블로킹 — 옛 판은 24h TTL 이라 하루 1번이었다).
+# 그래서 연속 실패 횟수로 **지수 백오프**를 걸고 상한을 둔다(#116 예산 · #303
+# 실패는 짧게만 · #346 느림의 원인이 양이 아니라 실패 재시도였다).
+#   실패 1회 15분 · 2회 30분 · 3회 1h · 4회 2h · 5회 4h · 6회+ 6h(상한)
+# 최악 = 첫날 15m+30m+1h+2h+4h 뒤 6h 간격 → **하루 8~9회**(96회가 아니다).
+_TW_IND_RETRY_SEC = 15 * 60
+_TW_IND_RETRY_MAX = 6 * 3600
+
+
+def _retry_delay(fails: int) -> float:
+    """연속 실패 `fails` 회 뒤 다음 재시도까지의 최소 간격(초). 상한 유계."""
+    n = max(0, int(fails) - 1)
+    return min(float(_TW_IND_RETRY_MAX), _TW_IND_RETRY_SEC * (2.0 ** min(n, 20)))
+
+
+def _merge_industry_by(by: dict) -> dict[str, str]:
+    """소스별 하위맵 → {종목코드: 업종(한글)} 병합. 코드표에 없는 값은 싣지
+    않는다(미스로 남아야 yfinance `.TWO` 폴백이 돈다 — _fetch_one_industry_source
+    와 같은 규약, #38)."""
+    out: dict[str, str] = {}
+    # ⚠️ 같은 類股명이 수백 종목에 반복되므로 **값 단위로 메모**한다 — 옛 판은
+    # 이미 한국어인 값에도 47키 prefix 루프를 돌려 렌더 경로에서 8.4ms 를 썼다
+    # (독립 리뷰 2026-09-17 M6 실측). 값은 한 글자도 안 바뀐다.
+    seen: dict[str, str] = {}
+    for label, _url in _TW_IND_SOURCES:
+        rows = by.get(label)
+        if not isinstance(rows, dict):
+            continue
+        for code, ind in rows.items():
+            key = str(ind)
+            nm = seen.get(key)
+            if nm is None:
+                nm = seen[key] = _sector_kr(key)
+            if nm:
+                out[str(code)] = nm
+    return out
+
+
+def industry_cache_state() -> dict:
+    """업종 맵 캐시 **한 파일**의 상태 — 화면·프로브·진단이 같은 함수를 쓴다
+    (#35·#38·#176). 읽기 전용(네트워크 0 · 쓰기 0).
+
+    ⚠️ **소스별로 나눠 담는다.** 옛 판은 `上市 | 上櫃` 를 한 dict 로 합쳐 굽고
+    `if out:` 로 썼다 — 한쪽이 실패해도 "graceful 부분 반환"이라며 **부분 맵을
+    완전본과 똑같은 파일에 24시간** 구웠고, 무엇이 빠졌는지 아무도 몰랐다(#280
+    부분을 완전본으로 굽지 말 것 · #45 한 파일이 두 모집단을 나른다). 2026-09-17
+    VM 실측이 그 상태였다 — 맵 1084종목 = ④ 의 上市 개수와 정확히 같고 上櫃 892
+    는 통째로 없어, 上櫃 무버 30개가 렌더-세이프 경로에서 전부 업종 '—' 였다.
+
+    ⚠️ **파일 mtime 은 데이터 나이가 아니다** — 실패한 소스의 재시도 시각만
+    바뀌어도 파일은 새로 쓰인다. 나이는 소스별 `fetched` 가 말한다(#304 병합
+    캐리오버가 파일 mtime 을 거짓말로 만든다 · #64 상태는 아는 쪽이 말하게).
+
+    상태: absent / unknown / unreadable / not_dict / not_envelope / empty /
+          partial / stale / ok
+    """
+    name = f"{_TW_IND_CACHE_KEY}.json"
+    labels = [lab for lab, _u in _TW_IND_SOURCES]
+    out: dict = {"file": name, "age": None, "state": "absent", "detail": "",
+                 "by": {}, "fetched": {}, "tried": {}, "fails": {}, "map": {},
+                 "missing": list(labels), "partial": True, "data_age": None}
+    fp = _CACHE_DIR / name
+    try:
+        if not fp.exists():
+            return out
+        out["age"] = time.time() - fp.stat().st_mtime
+    except OSError as exc:
+        # '파일이 없다' 와 'stat 이 실패했다' 는 다른 사실이고 후자는 판정 불가다(#54).
+        out["state"], out["detail"] = "unknown", f"{type(exc).__name__}: {exc}"
+        return out
+    try:
+        raw = json.loads(fp.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        # 파손은 원천 수정이 아니라 **그 파일 삭제**가 처방이다(#82·#331).
+        out["state"], out["detail"] = "unreadable", f"{type(exc).__name__}: {exc}"
+        return out
+    if not isinstance(raw, dict):
+        out["state"], out["detail"] = "not_dict", type(raw).__name__
+        return out
+    by = raw.get("by")
+    if not isinstance(by, dict):
+        out["state"], out["detail"] = "not_envelope", "봉투에 `by` 가 없다"
+        return out
+    out["by"] = {lab: by[lab] for lab in labels
+                 if isinstance(by.get(lab), dict) and by.get(lab)}
+    out["map"] = _merge_industry_by(out["by"])
+    for k in ("fetched", "tried"):
+        v = raw.get(k)
+        if isinstance(v, dict):
+            out[k] = {str(a): float(b) for a, b in v.items()
+                      if isinstance(b, (int, float)) and not isinstance(b, bool)}
+    v = raw.get("fails")
+    if isinstance(v, dict):
+        # 연속 실패 횟수(백오프 단) — 음수·불리언은 받지 않는다.
+        out["fails"] = {str(a): int(b) for a, b in v.items()
+                        if isinstance(b, int) and not isinstance(b, bool) and b > 0}
+    out["missing"] = [lab for lab in labels if lab not in out["by"]]
+    out["partial"] = bool(out["missing"])
+    ages = [time.time() - out["fetched"][lab] for lab in out["by"]
+            if lab in out["fetched"]]
+    out["data_age"] = max(ages) if ages else None
+    if not out["map"]:
+        out["state"] = "empty"
+    elif out["partial"]:
+        # 부분과 만료가 겹치면 **더 행동 가능한 쪽**을 머리에 둔다(#275).
+        out["state"] = "partial"
+    elif out["data_age"] is None or out["data_age"] >= _TW_IND_CACHE_TTL:
+        out["state"] = "stale"
+    else:
+        out["state"] = "ok"
+    return out
+
+
+def industry_source_note() -> str:
+    """업종 맵이 완전본이 아니면 **화면이 그 사실을 말한다**(#43·#384).
+
+    2026-09-17 까지 이 사실은 프로브·로그까지만 갔다 — 上櫃 가 통째로 빠진
+    날에도 화면은 업종 '—' 만 보여 주고 이유를 말하지 않았고, 사용자는 그걸
+    '수집 실패' 로 읽을 수밖에 없었다(#52 조용한 것과 죽은 것).
+
+    ⚠️ 완전본이면 **빈 문자열**이다 — 늘 뜨는 배지는 아무것도 안 재는 것과
+    같다(#25·#260). 그리고 이 문장은 **우리 맵에 대한 주장**이지 "그 종목에
+    업종이 없다" 가 아니다(#375) — 맵 밖은 느린 yfinance 개별조회가 채우므로
+    '일부는 빌 수 있다' 까지만 적는다.
+
+    ⚠️ 낡음의 **원인을 단정하지 않는다**(독립 리뷰 2026-09-17 H1): 첫 판은
+    `state == "stale"` 이면 실패가 한 건도 없어도 "갱신이 실패하고 있습니다"
+    를 찍었다. 처방이 정반대인 두 세계(실패 중 = 원천·수집을 봐야 한다 /
+    아직 아무도 안 물어봄 = 다음 렌더가 그냥 갱신한다)를 `fails` 로 가른다(#82).
+    """
+    st = industry_cache_state()
+    state = st["state"]
+    if state == "ok":
+        return ""
+    if state == "partial":
+        miss = "·".join(str(x) for x in st["missing"])
+        return (f"⚠️ 업종 맵에 {miss} 가 없습니다 — 그 종목 업종은 느린 개별조회로만 "
+                f"채워져 일부가 비어 보일 수 있습니다 · {retry_note(st, st['missing'])}")
+    if state == "stale":
+        fails = st.get("fails") or {}
+        bad = [lab for lab in st["by"] if fails.get(lab)]
+        why2 = (f" — {'·'.join(bad)} 갱신이 실패하고 있습니다"
+                if bad else " — 갱신 실패 기록은 없습니다")
+        return (f"⚠️ 업종 맵이 낡았습니다(받은 지 {_age_ko(st['data_age'])})"
+                f"{why2} · {retry_note(st)}")
+    # 맵이 아예 없는 갈래들 — 사유를 이름으로 말한다(#82).
+    # ⚠️ 처방은 **이 문장을 읽는 사람**(서버 파일을 못 지우는 대시보드 방문자)이
+    # 할 수 있는 것이어야 한다 — 파손 파일은 다음 갱신이 그대로 덮어쓴다(실측).
+    why = {"absent": "캐시 파일이 아직 없습니다",
+           "unknown": "캐시 파일 상태를 못 읽었습니다",
+           "unreadable": f"캐시 파일이 손상됐습니다(다음 갱신이 {st['file']} 을 덮어씁니다)",
+           "not_dict": "캐시 payload 형식이 다릅니다",
+           "not_envelope": "캐시가 옛 형식입니다",
+           "empty": "맵이 비어 있습니다"}.get(state, f"알 수 없는 상태 {state}")
+    return (f"⚠️ 업종 맵을 쓸 수 없습니다 — {why}. 업종은 종목별 개별조회로만 "
+            f"채워집니다 · {retry_note(st)}")
+
+
+def _age_ko(sec: float | None) -> str:
+    if sec is None:
+        return "시각 미기록"
+    h = sec / 3600.0
+    return f"{h:.1f}시간" if h >= 1 else f"{sec / 60:.0f}분"
+
+
+def retry_note(st: dict, labels: list | None = None) -> str:
+    """"언제 다시 시도하나" 를 **기록된 사실**로만 적는다 — 약속이 아니라
+    마지막 시도 시각 · 연속 실패 단 · 다음 재시도까지다(#380·#165·#82).
+
+    ⚠️ **소스별**로 적는다. 옛 `_tried_suffix` 는 `max(tried)` 한 숫자만 적어
+    (a) 빠진 소스가 30분째 못 들어와도 **멀쩡한 소스**의 '0분 전' 을 말하고
+    (b) 지수 백오프(최대 6h)를 숨겨 "곧 된다" 로 읽혔다(독립 리뷰 H2·H3 실측).
+    ⚠️ 시도 기록이 없는 소스도 **건너뛰지 않는다** — 침묵은 '곧 된다' 로
+    읽힌다(#43·#54).
+
+    화면(`industry_source_note`)과 프로브(`tw_enrich_probe`)가 **이 함수 하나**
+    를 쓴다 — 같은 사실을 두 곳이 따로 쓰면 규약이 갈린다(#38·#35).
+    """
+    labs = list(labels) if labels else [lab for lab, _u in _TW_IND_SOURCES]
+    now, parts = time.time(), []
+    tried = st.get("tried") or {}
+    fails = st.get("fails") or {}
+    for lab in labs:
+        t = tried.get(lab)
+        if t is None:
+            parts.append(f"{lab}: 시도 기록 없음")
+            continue
+        nf = int(fails.get(lab) or 0)
+        left = _retry_delay(nf) - (now - float(t))
+        when = ("다음 렌더에 재시도" if left <= 0
+                else f"{left / 60:.0f}분 뒤 재시도 가능")
+        parts.append(f"{lab}: 마지막 시도 {_age_ko(now - float(t))} 전"
+                     + (f" · 연속 실패 {nf}회" if nf else "") + f" · {when}")
+    # ⚠️ `labs` 가 비지 않으므로 `parts` 도 비지 않는다 — 빈 경우의 폴백을 두면
+    # 발화 경로 없는 가드가 된다(#291·#373).
+    return "재시도 " + " / ".join(parts)
 
 
 def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     """{종목코드: 업종(한글)} — 상장(TWSE)+상장(TPEx上櫃) 전종목 기본자료
-    일괄 조회(24h 캐시, 사용자 2026-08-04). TW 무버/52주 페이지가 지금까지
+    일괄 조회(소스별 24h 캐시, 사용자 2026-08-04). TW 무버/52주 페이지가 지금까지
     yfinance 개별조회(백그라운드·상한 250개/회)에만 의존해 신규진입 종목
     (변동성 큰 소형주 위주라 캐시가 늘 콜드)이 항상 업종 '—' 로 빠지던 것의
-    근본 해소 시도 — 전종목 일괄이라 렌더-세이프(캐시-only) 경로에서도
-    즉시 채워짐. 두 소스 중 하나만 성공해도 부분 반환(graceful) — TPEx 실패
-    시 TWSE 상장분만이라도 개선. 코드 키는 6자리 zero-pad 없이 원문 그대로
-    (finviz_client._industries_for 가 호출측에서 티커 정규화)."""
-    if not force:
-        c = _cached_stale(_TW_IND_CACHE_KEY, max_age_sec=_TW_IND_CACHE_TTL)
-        if isinstance(c, dict) and c:
-            normalized = {code: _sector_kr(ind) for code, ind in c.items()}
-            normalized = {k: v for k, v in normalized.items() if v}
-            if normalized != c:
-                _cache_write(_TW_IND_CACHE_KEY, normalized)
-            return normalized
-    out: dict[str, str] = {}
-    out.update(_fetch_one_industry_source(_OPENAPI_LISTED_INFO, "上市"))
-    out.update(_fetch_one_industry_source(_OPENAPI_OTC_INFO, "上櫃"))
-    if out:
-        _cache_write(_TW_IND_CACHE_KEY, out)
-    return out
+    근본 해소 — 전종목 일괄이라 렌더-세이프(캐시-only) 경로에서도 즉시 채워짐.
+    코드 키는 6자리 zero-pad 없이 원문 그대로(finviz_client._industries_for 가
+    호출측에서 티커 정규화).
+
+    캐시는 **소스별**이다(§industry_cache_state): 한쪽이 실패해도 다른 쪽의
+    커버리지를 버리지 않고(#148), 실패한 쪽만 15분 뒤 — 연속 실패면 배로 늘어
+    상한 6h 간격으로(§_retry_delay) — 다시 시도한다. 옛 판은
+    합친 부분 맵을 완전본과 같은 24h TTL 로 구워 上櫃 892종목이 하루 동안
+    통째로 사라졌다(2026-09-17 VM 실측, #280).
+    """
+    st = industry_cache_state()
+    now = time.time()
+    by, fetched, tried = dict(st["by"]), dict(st["fetched"]), dict(st["tried"])
+    fails = dict(st["fails"])
+    changed = False
+    for label, url in _TW_IND_SOURCES:
+        got_at = fetched.get(label) if label in by else None
+        if not force and got_at is not None and now - got_at < _TW_IND_CACHE_TTL:
+            continue
+        # ⚠️ 쿨다운은 **만료·미수신 둘 다**에 건다 — 미수신에만 걸었더니 원천이
+        # 계속 죽은 동안 만료된 소스를 매 렌더가 다시 두드렸다. 실패는 짧게만
+        # 믿되, 재시도도 유계여야 한다(#303·#116). 연속 실패면 간격이 배로
+        # 늘어 상한 6h 에서 멎는다(§_retry_delay).
+        if not force and now - (tried.get(label) or 0.0) < _retry_delay(fails.get(label, 0)):
+            continue
+        tried[label] = now
+        changed = True
+        rows = _fetch_one_industry_source(url, label)
+        if rows:
+            by[label], fetched[label] = rows, now
+            fails.pop(label, None)   # 성공하면 백오프를 지운다(#72 카운터 리셋)
+        else:
+            fails[label] = fails.get(label, 0) + 1
+        if not rows and label in by:
+            # ⚠️ 받은 적 있는 소스가 이번에 실패하면 **버리지 않는다** — 버리면
+            # 그 소스의 커버리지가 통째로 사라진다(#148 '없다'고 하기 전에
+            # 우리가 버린 건 아닌가).
+            log.warning("twse industry map (%s): 갱신 실패 — 직전 %d종목 유지",
+                        label, len(by[label]))
+    if not changed:
+        return st["map"]
+    # ⚠️ 렌더는 요청마다 스레드다(#110·#113) — 두 스레드가 같은 빈 상태에서
+    # 출발해 각자 **다른 소스만** 받아 오면 나중 쓰기가 앞의 소스를 지운다.
+    # 그건 우리가 지금 고치는 바로 그 부분 맵이다. 쓰기 직전에 다시 읽어
+    # 소스별로 **더 새 쪽**을 남긴다(#344 쓰기 직전에 다시 읽는 규율).
+    latest = industry_cache_state()
+    for label, _u in _TW_IND_SOURCES:
+        theirs = latest["fetched"].get(label)
+        if (theirs is not None and label in latest["by"]
+                and theirs > (fetched.get(label) or 0.0)):
+            by[label], fetched[label] = latest["by"][label], theirs
+        t2 = latest["tried"].get(label)
+        if t2 is not None and t2 > (tried.get(label) or 0.0):
+            tried[label] = t2
+            # 시도 시각을 남의 것으로 갈아끼웠으면 그 시도의 **결과(실패 단)**도
+            # 같이 가져와야 한다 — 시각만 새것이고 단이 옛것이면 백오프가 갈린다.
+            if label in latest["fails"]:
+                fails[label] = latest["fails"][label]
+            else:
+                fails.pop(label, None)
+    # ⚠️ 모르는 라벨은 싣지 않는다 — 소스 목록이 바뀌면 옛 라벨이 봉투에 영원히
+    # 남아 `fetched`/`tried` 가 아무도 안 읽는 값을 나른다(#24).
+    known = {lab for lab, _u in _TW_IND_SOURCES}
+    by = {k: v for k, v in by.items() if k in known}
+    fetched = {k: v for k, v in fetched.items() if k in known}
+    tried = {k: v for k, v in tried.items() if k in known}
+    fails = {k: v for k, v in fails.items() if k in known}
+    # ⚠️ `by` 가 비어도 쓴다 — 옛 판의 `if out:` 는 **첫 실패에서 아무것도 안 남겨**
+    # 재시도 시각이 기록되지 않았다(쿨다운이 영영 안 걸린다). 빈 봉투는 `empty`
+    # 라는 이름으로 읽히므로 통과로 오독되지 않는다(#54).
+    _cache_write(_TW_IND_CACHE_KEY,
+                 {"v": 3, "by": by, "fetched": fetched, "tried": tried,
+                  "fails": fails})
+    return _merge_industry_by(by)
 
 
 def fetch_tw_sector_movers(top_n: int = 10) -> dict:

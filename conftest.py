@@ -191,6 +191,12 @@ def _redirect_disk_caches() -> list:
         # 번역 회귀가 `_call_pro` 를 스텁하면 `_log_usage` 가 **운영 비용 원장**에
         # 쓴다(#284·#312, 독립 리뷰 2026-09-17 L3 — 리뷰 프로브가 실제로 한 줄 썼다).
         ("bot.chart_translate", "_USAGE", "usage.jsonl"),
+        # TW 업종 맵 — 2026-09-17 캐시가 소스별 봉투가 되며 `fetch_tw_industry_map`
+        # 이 **실패해도** 재시도 시각을 굽는다(#384·#303). 그래서 개발기에서 프로브를
+        # 한 번 돌리면 그 쿨다운이 남아, 이 상수를 안 쓰는 회귀가 원천을 못 타고
+        # 조용히 빈 맵을 받는다(실측: `TestTwIndustryMapTpexEnglishKeys` 가 전체
+        # 실행에서만 빨간불). 위 주석이 적은 대로 관측했으니 한 줄 더한다.
+        ("bot.twse_client", "_CACHE_DIR", "twse"),
     )
     done = []
     for mod, attr, leaf in targets:

@@ -14,6 +14,24 @@ from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.tw_pages")
 
+
+def _ind_note() -> str:
+    """업종 맵이 완전본이 아닐 때만 부제에 붙는 한 조각(#43·#384).
+
+    판정·문구는 **제품 단일 출처**(`twse_client.industry_source_note`)가 낸다 —
+    여기서 다시 쓰면 프로브·화면이 갈라진다(#38·#35). 실패해도 페이지를 죽이지
+    않는다(#315 곁들이 하나가 본체를 지우면 안 된다)."""
+    try:
+        from bot.twse_client import industry_source_note
+        note = industry_source_note()
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("tw 업종 맵 상태 조회 실패: %s", exc)
+        return ""
+    # ⚠️ `_tw_shell` 은 부제를 **이스케이프 없이** 넣는다. 오늘 이 문장에 닿는
+    # 값은 모듈 상수·숫자뿐이지만, 다음 편집이 `st['detail']`(원시 예외)을 실으면
+    # raw HTML 이 된다(독립 리뷰 2026-09-17 L2) — 여기서 한 번 막는다(규칙 7).
+    return (" · " + _html.escape(note)) if note else ""
+
 # 시장별 자식 대시보드 nav — 모두 상호 연결 (사용자 2026-06-13 '캡쳐처럼').
 # (href, label). KR 은 naver _shell 과 동일 셋(kr52 가 _tw_shell 렌더라 여기 포함).
 _MARKET_NAV = {
@@ -131,7 +149,7 @@ def render_tw_highlow_page() -> str:
     sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 당일 등락 상·하위 · {_mhl('TW')} · "
            f"종목명=한글 · 업종·시총="
            f"yfinance · {(dt + ' 종가 기준 · ') if dt else ''}TWSE/TPEx 공식 종가(EOD·실시간 아님)"
-           f"{(' · 마지막 갱신 ' + ts) if ts else ''}")
+           f"{(' · 마지막 갱신 ' + ts) if ts else ''}") + _ind_note()
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
                      nav=_market_nav("TW", "twhighlow"), back=_asia_back("TW"))
 
@@ -196,6 +214,6 @@ def render_tw_highlow52_page() -> str:
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 1년 일봉 · 당일 52주 신고가/신저가 갱신 · "
            f"{_mhl('TW')} · 장중 1h·마감후 EOD 자동"
-           f"{(' · 마지막 갱신 ' + ts) if ts else ''}")
+           f"{(' · 마지막 갱신 ' + ts) if ts else ''}") + _ind_note()
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body,
                      nav=_market_nav("TW", "tw52"), back=_asia_back("TW"))

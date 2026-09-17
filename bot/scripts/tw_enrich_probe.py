@@ -35,14 +35,14 @@
 """
 from __future__ import annotations
 
-import json
 import re
 import sys
 import time
 
 from bot.chart_translate import _MAX_BATCH
 from bot.finviz_client import MCAP_PERSIST_TTL
-from bot.twse_client import _TW_IND_CACHE_KEY, _TW_IND_CACHE_TTL
+from bot.twse_client import _TW_IND_CACHE_TTL
+from bot.twse_client import retry_note as _retry_note
 
 _PROBE_VER = 6
 # 문턱은 **제품에서 가져온다** — 복제하면 진단이 화면과 다른 말을 한다(#38).
@@ -54,70 +54,29 @@ def _p(*a):
     print(*a, flush=True)
 
 
-def _age_label(sec: float | None) -> str:
+def _age_label(sec: float | None, none: str = "파일 없음") -> str:
+    """⚠️ `None` 의 뜻은 **재는 대상마다 다르다** — 파일 나이면 '파일 없음'이지만
+    데이터 나이(`data_age`)면 '받은 시각이 기록돼 있지 않다'는 뜻이다. 한 문구가
+    두 뜻을 대표하면 한쪽은 거짓말이 된다(#34) — 부르는 쪽이 정한다."""
     if sec is None:
-        return "파일 없음"
+        return none
     h = sec / 3600.0
     return f"{h:.1f}시간 전" if h >= 1 else f"{sec / 60:.0f}분 전"
 
 
 def ind_cache_probe(tw) -> dict:
-    """업종 맵 캐시의 **파일·나이·상태·맵** — ⑤ 가 갈래를 말할 재료(읽기 전용).
+    """업종 맵 캐시 상태 — **제품의 판정 함수를 그대로 부른다**(#35·#38·#176).
 
-    ⚠️ 파일 이름은 **제품 상수**(`_TW_IND_CACHE_KEY`)에서 만든다 — 리터럴로
-    적었더니 v2 rename 을 못 따라가 죽은 파일(`tw_industry_map.json`, 184.8시간
-    전)을 재고 `항목 0종목` 을 찍었다(VM 실측 2026-09-17, #35·#38·#53).
-    ⚠️ 상태를 `빈 dict` 하나로 뭉개지 않는다 — 제품의 `_cached_stale` 은 모든
-    예외를 삼키므로 파손(#331 에서 한 바이트가 보드 셋을 비웠다)·dict 아닌
-    payload·읽기 실패가 전부 같은 `0종목` 으로 보인다. 처방이 다르다(파손은
-    원천 수정이 아니라 그 파일 삭제, #82·#165).
-    ⚠️ 나이를 못 쟀으면 `absent` 가 아니라 `unknown` 이다 — '파일이 없다' 와
-    'stat 이 실패했다' 는 다른 사실이고, 후자는 판정 불가다(#54).
+    ⚠️ 옛 판은 파일 이름을 리터럴로 적었다가 v2 rename 을 못 따라가 죽은 파일
+    (`tw_industry_map.json`, 184.8시간 전)을 재고 `항목 0종목` 을 찍었다(VM 실측
+    2026-09-17, #53). 그래서 이름을 제품 상수에서 만들게 고쳤는데, 그건 **이름만**
+    따라갈 뿐 payload 모양이 바뀌면 또 갈린다 — 판정 자체를 제품
+    (`twse_client.industry_cache_state`)에 두고 여기서는 부르기만 한다.
 
-    ⚠️ **맵은 제품의 리더**(`_cached_stale`)로 받는다 — 화면이 읽는 그 경로여야
-    ② 의 수와 화면이 안 갈린다(#35). 파일을 직접 읽는 것은 **비어 있을 때 왜**
-    비었나를 가르기 위해서다(진단 전용).
-
-    상태: absent / unknown / stale / unreadable / not_dict / empty / ok
+    상태 갈래(⑤ 가 쓴다): absent / unknown / unreadable / not_dict /
+    not_envelope / empty / partial / stale / ok
     """
-    name = f"{_TW_IND_CACHE_KEY}.json"
-    out: dict = {"file": name, "age": None, "state": "absent",
-                 "detail": "", "map": {}}
-    fp = tw._CACHE_DIR / name
-    try:
-        if fp.exists():
-            out["age"] = time.time() - fp.stat().st_mtime
-    except OSError as exc:                                     # noqa: BLE001
-        out["state"], out["detail"] = "unknown", f"{type(exc).__name__}: {exc}"
-        return out
-    got = tw._cached_stale(_TW_IND_CACHE_KEY, max_age_sec=_TW_IND_CACHE_TTL)
-    if got is not None and not isinstance(got, dict):
-        # ⚠️ 제품 리더는 payload 를 검사하지 않는다 — list 를 그대로 돌려주면
-        # 호출부의 `.get()` 이 AttributeError 로 죽어 ② 에서 프로브가 통째로
-        # 끝난다(선재 결함, 독립 리뷰 2026-09-17). 여기서 갈래로 돌린다.
-        out["state"], out["detail"] = "not_dict", type(got).__name__
-        return out
-    out["map"] = got or {}
-    if out["map"]:
-        out["state"] = "ok"
-        return out
-    if out["age"] is None:
-        return out                                             # absent
-    if out["age"] >= _TW_IND_CACHE_TTL:
-        out["state"] = "stale"
-        return out
-    try:
-        raw = json.loads(fp.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError) as exc:
-        out["state"], out["detail"] = "unreadable", f"{type(exc).__name__}: {exc}"
-        return out
-    if not isinstance(raw, dict):
-        # 리더가 None 을 준 뒤(예외를 삼켰거나 TTL 경계 race)에만 닿는다 —
-        # 회귀는 리더 쪽 갈래만 잰다(못 보는 축, #274).
-        out["state"], out["detail"] = "not_dict", type(raw).__name__
-        return out
-    out["state"] = "empty"
-    return out
+    return tw.industry_cache_state()
 
 
 def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int,
@@ -189,14 +148,14 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
             cause = f"지금 캐시 파일이 없다({f_})"
         elif st == "unknown":
             cause = f"캐시 파일 상태를 못 읽었다({det or '사유 미기록'}) — 나이 판정 불가"
-        elif st == "stale":
-            cause = (f"캐시가 {age_s}이라 만료(TTL {_IND_TTL_H:.0f}시간) — "
-                     "화면은 이 맵을 안 읽는다")
         elif st == "unreadable":
             cause = (f"캐시 파일을 못 읽었다({det or '사유 미기록'}) — 파손일 수 있다"
                      f"(처방은 원천이 아니라 그 파일 삭제: {f_})")
         elif st == "not_dict":
             cause = f"캐시 payload 가 dict 가 아니다({det or '형 미기록'}) — {f_} 삭제"
+        elif st == "not_envelope":
+            cause = (f"캐시가 소스별 봉투가 아니다({det or '사유 미기록'}) — 옛 형식"
+                     f"이거나 손으로 고친 파일이다({f_} 삭제)")
         elif st == "empty":
             cause = f"캐시는 살아 있는데({age_s}) 맵이 **빈 dict** 다"
         else:
@@ -215,9 +174,36 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
         out.append(f"❗ 업종 {ind_filled}/{n} — 캐시 맵({map_n}종목)엔 {in_map}/{n} 이 "
                    "다 있는데 화면 값이 비었다 = 배선 문제")
     elif src_in > in_map:
+        # ⚠️ '부분' 과 '낡음' 은 처방이 다르다(#82). 옛 판은 둘을 "맵이 낡았다"
+        # 하나로 뭉뚱그려, 上櫃 가 **통째로 없는** 상태(2026-09-17 VM 실측:
+        # 1084종목 = 上市 전부)를 '조금 낡았다' 로 말했다 — 기다리라는 뜻이 되는데
+        # 실제 처방은 그 소스 수집을 고치는 것이다(#380 "기다리면 된다"를 재고 말할 것).
+        miss = [str(x) for x in (ind_cache.get("missing") or [])]
+        if miss:
+            # ⚠️ 우리가 잰 것은 "봉투에 그 소스가 없다"까지다. '수집이 실패했다'
+            # 는 그 다음 추론이라 단정하지 않고, 대신 봉투가 **기록한 사실**
+            # (마지막 시도 시각·연속 실패 단)을 그대로 적는다(#165·#82).
+            why = (f"캐시가 **부분**이다 — {'·'.join(miss)} 가 통째로 없다"
+                   f"(낡은 게 아니다: 낡음은 전 소스를 받아 둔 뒤의 상태다). "
+                   f"{_retry_note(ind_cache, miss)}")
+        else:
+            # ⚠️ '만료 뒤 첫 렌더가 갱신한다' 는 **약속**이었다 — 실제로는 쿨다운
+            # (연속 실패면 배로 늘어 상한 6h)에 걸리면 그 렌더는 아무것도 안
+            # 한다. 약속 대신 **기록된 사실**(마지막 시도 시각·연속 실패 단)을
+            # 적고 판정은 읽는 사람이 한다(#380·#165).
+            why = (f"맵이 낡았다(받은 지 "
+                   f"{_age_label(ind_cache.get('data_age'), none='받은 시각 미기록')} · "
+                   f"TTL {_IND_TTL_H:.0f}시간). {_retry_note(ind_cache, None)}")
         out.append(f"⚠️ 업종 {ind_filled}/{n} — 캐시 맵({map_n}종목)엔 {in_map}/{n}, "
-                   f"지금 원천엔 {src_in}/{n}: 맵이 낡았다(TTL {_IND_TTL_H:.0f}시간 "
-                   "안이라 화면이 옛 맵을 읽는다 — 만료 뒤 첫 렌더가 갱신)")
+                   f"지금 원천엔 {src_in}/{n}: {why}")
+        # ⚠️ **화면은 맵만 읽지 않는다.** 맵 밖은 yfinance 개별조회(`.TWO` 포함)가
+        # 채운다 — 그 사실을 안 적으면 "화면이 옛 맵을 읽는다"가 같은 실행의 ③
+        # 측정과 모순된다(VM 실측: 맵 30/60 인데 화면은 59/60 — #382b 의 이웃 갈래).
+        if ind_filled > in_map:
+            out.append(f"   ↪ 그런데 이 실행은 업종을 {ind_filled}/{n} 채웠다 — 맵 밖 "
+                       f"{ind_filled - in_map}개는 맵이 아닌 경로(yfinance 개별조회·"
+                       "그 캐시)가 채운 것이다(코드상 그 경로뿐). 개별조회는 느리고 "
+                       "백그라운드 상한이 있어, 맵이 채우면 렌더-세이프 경로에서 즉시 뜬다")
     else:
         gap = n - max(in_map, src_in)
         out.append(f"⚠️ 업종 {ind_filled}/{n} — 上市·上櫃 파싱 맵 어디에도 없는 코드 "
@@ -470,11 +456,28 @@ def main() -> int:
     ind_cached = ind_cache["map"]
     map_n = len(ind_cached)
     in_map = sum(1 for c in codes if ind_cached.get(c))
-    _p(f"   업종 캐시  {ind_cache['file']}  {_age_label(ind_cache['age'])}"
-       f" · TTL {_IND_TTL_H:.0f}시간 · 항목 {map_n}종목 · 이 표의 {in_map}/{n}"
+    _fa = ind_cache["age"]
+    _p(f"   업종 캐시  {ind_cache['file']}  "
+       + (f"파일 {_age_label(_fa)}" if _fa is not None else _age_label(_fa))
+       + f" · TTL {_IND_TTL_H:.0f}시간 · 항목 {map_n}종목 · 이 표의 {in_map}/{n}"
+       + "  (③ 전 스냅샷 — ⑤ 는 ③ 뒤에 다시 읽는다)"
        + (f"  ⚠️ 상태 {ind_cache['state']}"
           f"{' — ' + ind_cache['detail'] if ind_cache['detail'] else ''}"
           if ind_cache["state"] not in ("ok", "absent") else ""))
+    # ⚠️ 소스별로 나눠 찍는다 — 한 줄로 합치면 **한쪽이 통째로 없는 것**이
+    # '조금 낡았다' 로 보인다(2026-09-17 VM 실측: 1084종목 = 上市 전부, 上櫃 0).
+    # 그리고 파일 mtime 은 데이터 나이가 아니다 — 실패한 소스의 재시도 시각만
+    # 바뀌어도 파일은 새로 쓰인다(#304).
+    for _lab, _u in tw._TW_IND_SOURCES:
+        _rows = ind_cache["by"].get(_lab)
+        if _rows:
+            _at = ind_cache["fetched"].get(_lab)
+            _p(f"              ↳ {_lab} {len(_rows)}종목 · 받은 지 "
+               + (_age_label(time.time() - _at) if _at else "시각 미기록"))
+        else:
+            _tr = ind_cache["tried"].get(_lab)
+            _p(f"              ↳ {_lab} ❌ 캐시에 없음 · 마지막 시도 "
+               + (_age_label(time.time() - _tr) if _tr else "기록 없음"))
     yf_pause = fv.yf_paused()
     _p(f"   yfinance   정지마커 {'🚫 켜짐' if yf_pause else '꺼짐'}"
        " · fast_info 쿨다운은 봇 프로세스 안에서만 보여 여기서 판정 불가")
@@ -558,6 +561,16 @@ def main() -> int:
 
     _p("")
     _p("⑤ 판정")
+    # ⚠️ ② 의 스냅샷은 **③ 이 갱신하기 전의 값**이다(③·④-b 는 업종맵에 읽기
+    # 전용이 아니다 — 콜드/만료면 원천을 받아 쓴다). 그 옛 스냅샷으로 판정하면
+    # 같은 실행이 이미 고친 상태를 결함이라 말한다(#114 루프의 잔여 상태 ·
+    # #35). 판정 직전에 다시 읽는다 — 읽기 전용이라 비용 0.
+    ind_cache = ind_cache_probe(tw)
+    # 맵 수도 같은 스냅샷에서 다시 센다 — ② 의 수와 ⑤ 의 상태가 다른 스냅샷이면
+    # 한 판정이 두 모집단을 섞는다(#45).
+    ind_cached = ind_cache["map"]
+    map_n = len(ind_cached)
+    in_map = sum(1 for c in codes if ind_cached.get(c))
     for line in enrich_verdict(n=n, render_ok=render_ok, mcap_filled=mcap_filled,
                                ind_filled=ind_filled, mcap_age_sec=mcap_age,
                                map_n=map_n, in_map=in_map, src_in=src_in,

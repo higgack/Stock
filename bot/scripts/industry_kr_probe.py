@@ -39,10 +39,16 @@ _TW_DESC = "대만(TWSE/TPEx)"
 
 
 def _tw_source():
-    """(파일명, 설명, 로더) — 대만 업종 맵은 twse 캐시 dir · 키는 제품 상수."""
-    from bot.twse_client import _TW_IND_CACHE_KEY, _cached_stale
-    return (f"{_TW_IND_CACHE_KEY}.json", _TW_DESC,
-            lambda: _cached_stale(_TW_IND_CACHE_KEY, max_age_sec=10 ** 9))
+    """(파일명, 설명, 로더) — 대만 업종 맵은 twse 캐시 dir.
+
+    ⚠️ 이름도 payload 해석도 **제품**(`twse_client.industry_cache_state`)이 한다.
+    옛 판은 finviz 캐시 dir 을 읽어 대만 줄이 영구히 '캐시 없음' 이었고(#53),
+    그 뒤 키만 제품 상수에서 가져오게 고쳤는데 — 2026-09-17 캐시가 소스별
+    **봉투**로 바뀌자 그 판은 `{"by": …}` 를 업종 맵으로 읽었을 것이다. 이름만
+    따라가면 모양이 바뀔 때 또 갈린다(#35·#38)."""
+    from bot.twse_client import industry_cache_state
+    return (industry_cache_state()["file"], _TW_DESC,
+            lambda: industry_cache_state()["map"])
 
 
 def _p(*a):
