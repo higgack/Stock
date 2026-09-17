@@ -604,6 +604,63 @@ def industry_cache_state() -> dict:
     return out
 
 
+def industry_source_note() -> str:
+    """업종 맵이 완전본이 아니면 **화면이 그 사실을 말한다**(#43·#384).
+
+    2026-09-17 까지 이 사실은 프로브·로그까지만 갔다 — 上櫃 가 통째로 빠진
+    날에도 화면은 업종 '—' 만 보여 주고 이유를 말하지 않았고, 사용자는 그걸
+    '수집 실패' 로 읽을 수밖에 없었다(#52 조용한 것과 죽은 것).
+
+    ⚠️ 완전본이면 **빈 문자열**이다 — 늘 뜨는 배지는 아무것도 안 재는 것과
+    같다(#25·#260). 그리고 이 문장은 **우리 맵에 대한 주장**이지 "그 종목에
+    업종이 없다" 가 아니다(#375) — 맵 밖은 느린 yfinance 개별조회가 채우므로
+    '일부는 빌 수 있다' 까지만 적는다.
+    """
+    st = industry_cache_state()
+    state = st["state"]
+    if state == "ok":
+        return ""
+    if state == "partial":
+        miss = "·".join(str(x) for x in st["missing"])
+        return (f"⚠️ 업종 맵에 {miss} 가 없습니다 — 그 종목 업종은 느린 개별조회로만 "
+                f"채워져 일부가 비어 보일 수 있습니다"
+                f"{_tried_suffix(st, st['missing'])}")
+    if state == "stale":
+        return (f"⚠️ 업종 맵이 낡았습니다(받은 지 {_age_ko(st['data_age'])}) — "
+                f"갱신이 실패하고 있습니다{_tried_suffix(st)}")
+    # 맵이 아예 없는 갈래들 — 사유를 이름으로 말한다(#82).
+    why = {"absent": "캐시 파일이 없습니다",
+           "unknown": "캐시 파일 상태를 못 읽었습니다",
+           "unreadable": f"캐시 파일이 손상됐습니다({st['file']} 삭제)",
+           "not_dict": "캐시 payload 형식이 다릅니다",
+           "not_envelope": "캐시가 옛 형식입니다",
+           "empty": "맵이 비어 있습니다"}.get(state, f"상태 {state}")
+    return (f"⚠️ 업종 맵을 쓸 수 없습니다({why}) — 업종은 종목별 개별조회로만 "
+            f"채워집니다{_tried_suffix(st)}")
+
+
+def _age_ko(sec: float | None) -> str:
+    if sec is None:
+        return "시각 미기록"
+    h = sec / 3600.0
+    return f"{h:.1f}시간" if h >= 1 else f"{sec / 60:.0f}분"
+
+
+def _tried_suffix(st: dict, labels: list | None = None) -> str:
+    """마지막 시도 시각 — **약속이 아니라 기록**을 적는다(#380·#165).
+
+    ⚠️ `labels` 를 안 주면 전 소스의 **가장 최근** 시도를 적는데, 부분 상태에서
+    그건 **멀쩡한 소스**의 시각이라 "방금 시도했다" 는 거짓 안심이 된다(회귀가
+    잡았다 — 上櫃 가 30분째 못 받는데 上市 기준으로 '0분 전'). 빠진 소스를
+    말할 땐 **그 소스의** 기록을 적는다(#45 두 모집단).
+    """
+    tried = st.get("tried") or {}
+    want = [tried[k] for k in (labels or tried) if k in tried]
+    if not want:
+        return ""
+    return f" · 마지막 시도 {_age_ko(time.time() - max(want))} 전"
+
+
 def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     """{종목코드: 업종(한글)} — 상장(TWSE)+상장(TPEx上櫃) 전종목 기본자료
     일괄 조회(소스별 24h 캐시, 사용자 2026-08-04). TW 무버/52주 페이지가 지금까지

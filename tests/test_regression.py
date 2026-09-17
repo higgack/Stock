@@ -70956,6 +70956,143 @@ class TestTwIndustryPartialCacheIsNotBakedAsComplete20260917:
         assert names.count("write_text") <= 1, "본 파일에 직접 쓴다"
 
 
+class TestTwIndustrySourceNoteReachesTheScreen20260917:
+    """"한 소스가 통째로 없다" 는 사실이 **프로브·로그까지만** 가고 화면엔 안
+    갔다(#384 리뷰 L5 · 사용자 "어 띄워주고").
+
+    上櫃 가 빠진 날 화면은 업종 '—' 만 보여 주고 이유를 말하지 않았다 — 그건
+    '수집 실패' 로 읽힌다(#43 침묵이 최악 · #52 조용한 것과 죽은 것).
+    ⚠️ 완전본이면 **한 글자도 안 붙는다**(#25·#260 늘 뜨는 배지는 안 재는 것과
+    같다). 그리고 문장은 **우리 맵에 대한 주장**까지만이다(#375).
+    """
+
+    @staticmethod
+    def _state(tmp_path, monkeypatch, by, fetched=None, tried=None):
+        import json
+        import time
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
+        now = time.time()
+        (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
+            {"v": 3, "by": by,
+             "fetched": fetched if fetched is not None else {k: now for k in by},
+             "tried": tried if tried is not None else {k: now for k in by}}),
+            encoding="utf-8")
+        return tw
+
+    def test_complete_map_says_nothing(self, tmp_path, monkeypatch):
+        tw = self._state(tmp_path, monkeypatch,
+                         {"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}})
+        assert tw.industry_source_note() == ""
+
+    def test_partial_names_the_missing_source_and_the_last_attempt(
+            self, tmp_path, monkeypatch):
+        import time
+        now = time.time()
+        tw = self._state(tmp_path, monkeypatch, {"上市": {"2330": "반도체"}},
+                         fetched={"上市": now},
+                         tried={"上市": now, "上櫃": now - 1800})
+        note = tw.industry_source_note()
+        assert "上櫃" in note and "上市" not in note, note
+        assert "마지막 시도" in note and "30분" in note, note
+        # ⚠️ 우리 맵에 대한 주장까지만 — "그 종목에 업종이 없다" 가 아니다(#375)
+        assert "비어 보일 수 있습니다" in note
+        assert "업종이 없" not in note
+
+    def test_unusable_map_names_the_branch_not_one_lumped_phrase(
+            self, tmp_path, monkeypatch):
+        """처방이 다른 갈래를 한 문구로 뭉뚱그리지 않는다(#82)."""
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
+        assert "캐시 파일이 없습니다" in tw.industry_source_note()
+        (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(
+            "{oops", encoding="utf-8")
+        note = tw.industry_source_note()
+        assert "손상" in note and "삭제" in note, note
+        self._state(tmp_path, monkeypatch, {})
+        assert "비어 있습니다" in tw.industry_source_note()
+
+    def test_stale_says_the_refresh_is_failing(self, tmp_path, monkeypatch):
+        import time
+        import bot.twse_client as tw0
+        old = time.time() - tw0._TW_IND_CACHE_TTL - 3600
+        tw = self._state(tmp_path, monkeypatch,
+                         {"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}},
+                         fetched={"上市": old, "上櫃": old})
+        note = tw.industry_source_note()
+        assert "낡았습니다" in note and "갱신이 실패" in note, note
+
+    def test_both_tw_panels_carry_it_and_kr_does_not(self, monkeypatch):
+        """배선 — 한 장에만 달면 나머지 화면은 침묵한다(#359·#38).
+
+        ⚠️ 순수 함수만 재면 배선을 떼는 변형을 못 잡는다(#20) — 두 페이지를
+        실제로 렌더해 부제에 실리는지 값으로 본다.
+        """
+        import bot.tw_pages as tp
+        import bot.tw_highlow as th
+        import bot.twse_client as tw
+        mark = "⚠️ 업종 맵에 上櫃 가 없습니다 — 테스트 표식"
+        monkeypatch.setattr(tw, "industry_source_note", lambda: mark)
+        monkeypatch.setattr(tw, "fetch_tw_movers",
+                            lambda *a, **k: {"up": [], "down": [], "ts": "", "date": ""})
+        monkeypatch.setattr(th, "fetch_tw_highlow",
+                            lambda *a, **k: {"high": [], "low": [], "ts": "",
+                                             "building": False, "status": {}})
+        for fn in (tp.render_tw_highlow_page, tp.render_tw_highlow52_page):
+            assert mark in fn(), fn.__name__
+        # 같은 shell 을 쓰는 형제 페이지(JP)는 TW 업종 맵과 무관하다 — 남의
+        # 사실을 실으면 그 자체가 거짓말이다(#34 · #25 반대 증거).
+        import bot.intl_pages as ip
+        monkeypatch.setattr(ip, "fetch_jp_limit_stops",
+                            lambda *a, **k: {"up": [], "down": [], "ts": ""},
+                            raising=False)
+        assert mark not in ip.render_jp_stop_page()
+
+    def test_the_note_is_built_after_the_body_not_before(self):
+        """부제는 **본문을 만든 뒤**에 조립돼야 한다(#114 루프 잔여 상태).
+
+        `_ind_note()` 가 읽는 캐시는 본문 조립(`enrich_for_panel` →
+        `_industries_for` → `fetch_tw_industry_map`)이 **그 실행에서 채운다**.
+        `sub =` 를 위로 옮기면 같은 실행이 방금 고친 상태를 결함이라 말한다
+        (프로브 ②/③ 가 정확히 그 사고였다) — 값으로 재려면 원천을 태워야 하니
+        여기서는 **구조**(줄 번호 순서)로 못박는다(#274 못 보는 축: 인자·값이
+        아니라 순서만 본다).
+        """
+        import ast
+        import inspect
+        import bot.tw_pages as tp
+        for fn in (tp.render_tw_highlow_page, tp.render_tw_highlow52_page):
+            tree = ast.parse(inspect.getsource(fn).lstrip())
+            body_last = max(
+                (n.lineno for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "enrich_for_panel"), default=None)
+            sub_at = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "sub"
+                              for t in n.targets)]
+            note_at = [n.lineno for n in ast.walk(tree)
+                       if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                       and n.func.id == "_ind_note"]
+            assert body_last, f"{fn.__name__}: enrich_for_panel 호출을 못 찾았다"
+            assert len(sub_at) == 1 and len(note_at) == 1, fn.__name__
+            assert note_at[0] > body_last, (
+                f"{fn.__name__}: _ind_note 가 본문 조립보다 먼저다 — 그 실행이 "
+                f"채운 캐시를 못 본다(#114)")
+            assert sub_at[0] > body_last, fn.__name__
+
+    def test_a_broken_state_read_does_not_kill_the_page(self, monkeypatch):
+        """곁들이 하나가 본체를 지우면 안 된다(#315)."""
+        import bot.tw_pages as tp
+        import bot.twse_client as tw
+
+        def _boom():
+            raise RuntimeError("boom")
+        monkeypatch.setattr(tw, "industry_source_note", _boom)
+        monkeypatch.setattr(tw, "fetch_tw_movers",
+                            lambda *a, **k: {"up": [], "down": [], "ts": "", "date": ""})
+        assert "대만 급등·급락" in tp.render_tw_highlow_page()
+
+
 class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
     """대만 줄은 **dir 도 키도** 틀려 영구히 "캐시 없음" 이었다(#53·#260).
 
