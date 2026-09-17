@@ -66694,6 +66694,52 @@ class TestKrBoardsReviewFixes20260916:
         assert in_extended_window("NXT", datetime(2026, 9, 16, 8, 55, tzinfo=KST))
         assert window_label("KRX") == "애프터마켓 16:00–20:00 KST"
 
+    def test_exclusive_venue_splits_the_three_branches(self):
+        """창으로 갈리는 하한 — 필드로 못 가르는 것을 **창**이 가른다.
+
+        사용자 2026-09-17 "NXT 에 등록안된 기업들도 많다" 에 답하려면 'NXT 에서
+        거래되는 종목' 을 알아야 하는데, 응답엔 거래소 필드가 없다(#373b 실측).
+        그런데 KRX 는 체결 창이 애프터마켓뿐이라 **NXT 전용 창**(프리
+        08:00–09:00 · 15:40–16:00)의 시간외 체결은 정의상 NXT 다 — 그게 하한이다.
+        갈래는 셋이고 처방이 다르다(#82): exclusive / overlap / closed.
+        """
+        from datetime import datetime
+
+        from bot.kr_session import KST, exclusive_venue
+
+        def at(h, m):
+            return exclusive_venue(datetime(2026, 9, 17, h, m, tzinfo=KST))
+
+        assert at(8, 20) == ("NXT", "exclusive")     # KRX 는 개장전(체결 없음)
+        assert at(8, 55) == ("NXT", "exclusive")     # pre_close 도 체결이 있다
+        assert at(15, 45) == ("NXT", "exclusive")    # KRX 애프터는 16:00 부터
+        assert at(16, 10) == ("", "overlap")         # 둘 다 열림 → 귀속 불가
+        assert at(19, 0) == ("", "overlap")
+        assert at(9, 30) == ("", "closed")           # 정규장 = 시간외 창 아님
+        assert at(21, 0) == ("", "closed")
+        # 주말은 어느 쪽도 안 열린다(창 표의 휴장 판정을 그대로 탄다).
+        assert exclusive_venue(datetime(2026, 9, 19 + 1, 8, 20,
+                                        tzinfo=KST))[1] == "closed"
+
+    def test_exclusive_venue_is_derived_not_enumerated(self, monkeypatch):
+        """거래소 이름을 여기 열거하면 거래소가 늘 때 조용히 틀린다(#24).
+
+        ⚠️ 이 가드는 **발화 경로가 있어야** 가드다(#291) — 오늘 레지스트리는
+        둘뿐이라 `("KRX","NXT")` 로 하드코딩해도 위 테스트가 전부 통과한다.
+        합성 거래소를 하나 끼워 **열거면 못 보는 상태**를 만들어 태운다(#91c).
+        """
+        from datetime import datetime
+
+        import bot.kr_session as ks
+        # NXT 전용 창(08:20)에 세 번째 거래소를 겹쳐 놓으면 더 이상 '전용' 이
+        # 아니다 — 열거 구현은 이 변화를 못 본다.
+        third = ((8, 0, 9, 0, "pre", "프리마켓"),
+                 (9, 0, 20, 0, "after_close", "마감"),
+                 (20, 0, 8, 0, "after_close", "마감"))
+        monkeypatch.setitem(ks.VENUES, "ZZZ", third)
+        assert ks.exclusive_venue(
+            datetime(2026, 9, 17, 8, 20, tzinfo=ks.KST)) == ("", "overlap")
+
     # ── H4 + M6: 화면 문구가 거래소를 제대로 말하나 ────────────────
     def test_krx_banners_and_window_come_from_the_venue(self, monkeypatch):
         """리뷰 H4(배너가 'NXT' 리터럴) · M6(창 문구가 이웃 줄로 대신 만족).
@@ -67273,6 +67319,77 @@ class TestVenueAxisAndUnparsed20260917:
         # 쓰면 별표가 화면에 그대로 찍힌다(#298. 배포전 셀프리뷰가 실제로
         # 잡았고, 그래서 규율이 아니라 회귀로 옮긴다).
         assert "**" not in krx and "**" not in nxt, (krx, nxt)
+
+    def test_probe_nxt_lower_bound_names_every_branch(self):
+        """⑤ 판정 — 네 갈래가 처방이 다르므로 이름을 달리한다(#82).
+
+        ⚠️ '전용 창인데 표본에 체결 0' 은 ❌ 가 아니다 — 그 창에 거래가 없었을
+        뿐일 수 있다(#54 대조 0건은 통과도 실패도 아니다 · #165).
+        """
+        from bot.scripts.kr_board_probe import nxt_lower_bound
+        closed = nxt_lower_bound([], "", "closed")
+        overlap = nxt_lower_bound([], "", "overlap")
+        empty = nxt_lower_bound([], "NXT", "exclusive")
+        hit = nxt_lower_bound(["005930"], "NXT", "exclusive")
+        assert closed.startswith("⏭") and "창 밖" in closed, closed
+        assert overlap.startswith("❓") and "겹치는" in overlap, overlap
+        # 겹칠 때 '같은 목록' 의 원인을 말한다 — 시장이 같아서가 아니다.
+        assert "시장이 같아서가 아니라" in overlap, overlap
+        assert empty.startswith("❓"), empty
+        assert hit.startswith("✅") and "005930" in hit, hit
+        # 확정은 **하한**이라고 말한다(잰 범위를 빼고 말하지 말 것, #286).
+        assert "하한" in hit, hit
+        # 네 갈래가 서로 다른 문장이어야 갈래다(#292 틀린 라벨 금지).
+        assert len({closed, overlap, empty, hit}) == 4
+
+    def test_probe_main_runs_the_nxt_universe_section(self):
+        """배선은 존재가 아니라 **호출**이다(#20·#120·#291).
+
+        ⑤ 를 통째로 지워도 헬퍼 테스트는 green 이다 — 실측으로 그 변형이
+        4,2xx개를 통과했다(#374 의 같은 계열). `main` 의 AST 에서 호출을 센다
+        (네트워크가 필요해 값으로는 못 태운다 — 그게 이 검사가 못 보는
+        축이다, #274).
+        """
+        import ast
+        import inspect
+
+        import bot.scripts.kr_board_probe as kb
+        fn = next(n for n in ast.walk(ast.parse(inspect.getsource(kb)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "main")
+        called = {n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_section_nxt_universe" in called, sorted(called)
+        # 그리고 ⑤ 는 판정 문구를 **찍어야** 한다(계산만 하면 없는 것과
+        # 같다, #123 계열) — 출력 배선도 호출로 센다.
+        sec = next(n for n in ast.walk(ast.parse(inspect.getsource(kb)))
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "_section_nxt_universe")
+        inner = {n.func.id for n in ast.walk(sec)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert {"nxt_lower_bound", "print"} <= inner, sorted(inner)
+        # 버전 배너는 bump 되어야 한다 — 옛 체크아웃 출력과 구별된다(#21·#364).
+        assert kb._PROBE_VER >= 2, kb._PROBE_VER
+
+    def test_overlap_is_stated_as_our_limit_not_a_market_fact(self):
+        """사용자 2026-09-17: "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데.
+        NXT 에 등록안된 기업들도 많기 때문에."
+
+        옛 문구는 "겹치는 16:00–20:00 엔 같은 값" 이라 적었는데 그건 **우리
+        구현의 결과**(같은 블록 · 같은 유니버스 · 거래소 무필터)이지 시장에
+        대한 사실이 아니다. NXT 거래 종목이 상장 전체의 부분집합이면 시장
+        사실은 오히려 다르다 — 우리 한계를 시장 사실처럼 적으면 안 된다
+        (#165·#34). 계약을 다시 쓴 것이지 지운 것이 아니다(#222): 남는 보장
+        (측정된 절반 + 귀속 미측정)은 위 테스트가 그대로 잰다.
+        """
+        from bot.prepost_client import venue_attribution_note
+        for vn in ("KRX", "NXT"):
+            note = venue_attribution_note(vn)
+            # 부분집합이라는 사실과, 같은 목록이 **그 때문**이라는 인과를 둘 다.
+            assert "부분집합" in note, note
+            assert "거래소로 걸러진 것이 아닙니다" in note, note
+            # ⚠️ 시장 사실로 읽히는 단정은 금지 — "같은 값" 은 두 시장이 같다는
+            # 말로 읽힌다(그래서 사용자가 지적했다).
+            assert "엔 같은 값" not in note, note
 
     def test_the_note_reaches_the_rendered_page(self, monkeypatch):
         """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 렌더 결과로."""

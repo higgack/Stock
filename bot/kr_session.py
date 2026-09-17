@@ -119,3 +119,28 @@ def window_label(venue: str) -> str:
     parts = [f"{lb} {s_ // 60:02d}:{s_ % 60:02d}–{e_ // 60:02d}:{e_ % 60:02d}"
              for s_, e_, lb in spans]
     return " · ".join(parts) + " KST"
+
+
+def exclusive_venue(now: datetime | None = None) -> tuple[str, str]:
+    """지금 **체결 창이 열려 있는 거래소가 하나뿐인가** — (거래소, 갈래 라벨).
+
+    ⚠️ 왜 필요한가(사용자 2026-09-17 "이 NXT 랑 KRX 애프터랑 안겹치는것도
+    많을텐데. NXT 에 등록안된 기업들도 많기 때문에"): 네이버 폴링 응답에는
+    거래소를 이름으로 가르는 필드가 없다(#373b 실측). 그래서 시간외 체결이
+    어느 거래소 것인지는 **필드로는 못 가른다**. 그런데 **창**으로는 갈린다 —
+    KRX 는 체결 창이 애프터마켓(16:00~20:00)뿐이라, 그 밖의 NXT 체결 창
+    (프리 08:00~09:00 · 애프터 15:40~16:00)에 붙는 시간외 체결은 **정의상
+    NXT** 다. 그 구간에서 모은 종목은 'NXT 에서 거래되는 종목' 의 하한이다.
+
+    ⚠️ 이건 **원천이 밝힌 창**(공지 153)에서 나온 연역이지 우리가 귀속을 잰
+    것이 아니다 — 원천이 창을 또 바꾸면 이 판정도 같이 틀린다(#165). 그래서
+    창 표와 **같은 술어**(`in_extended_window`)에서 파생시키고 거래소 이름을
+    여기 열거하지 않는다(#24 — 거래소가 늘면 저절로 따라온다).
+
+    갈래(#82 — 처방이 다르다): 'exclusive'=그 거래소 확정 · 'overlap'=둘 다
+    열려 귀속 불가 · 'closed'=체결 창 밖(잴 것이 없다).
+    """
+    open_ = [v for v in VENUES if in_extended_window(v, now)]
+    if len(open_) == 1:
+        return (open_[0], "exclusive")
+    return ("", "overlap" if open_ else "closed")

@@ -19,6 +19,10 @@
   ③ **행이 네이버 화면의 칼럼을 다 들고 오나** — 종목명·현재가·전일대비·
      거래량·거래대금·고가·저가·시총. 키를 **자르지 않고 전부** 찍는다
      (자르는 자리가 다음 결정을 가린다, #156·#338).
+  ⑤ **NXT 거래 종목을 창으로 가를 수 있나**(2026-09-17 추가) — 사용자가
+     "NXT 에 등록안된 기업들도 많다" 고 짚었다. 응답 **필드**로는 못 가르지만
+     (④ 실측) KRX 는 체결 창이 애프터마켓뿐이라 **NXT 전용 창**(프리
+     08:00–09:00 · 15:40–16:00)의 시간외 체결은 정의상 NXT 다 — 그 하한을 잰다.
   ④ **KRX 애프터마켓이 NXT 와 구별되나** — 이게 이번 라운드의 급소다.
      `overMarketPriceInfo` 는 2026-06 에 'KR 시간외 = NXT' 이던 시절 측정한
      것이고, KRX 애프터마켓이 생긴 지금 그 블록이 어느 거래소인지는 **재지
@@ -39,7 +43,7 @@ from __future__ import annotations
 import json
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -264,6 +268,57 @@ def _section_venue():
                   "안 붙습니다(장중/장 완전 종료).")
 
 
+def nxt_lower_bound(codes_with_over: list, venue: str, branch: str) -> str:
+    """⑤ 판정(순수) — 지금 창에서 NXT 거래 종목을 **확정**할 수 있나.
+
+    사용자 2026-09-17: "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데. NXT 에
+    등록안된 기업들도 많기 때문에." 맞는 지적이고, 우리 두 보드가 겹치는 창에서
+    같은 목록을 내는 것은 **거래소로 거르지 않기 때문**이다(#373b 실측: 응답에
+    거래소 필드가 없다). 필드로는 못 가르지만 **창으로는** 갈린다 — KRX 는 체결
+    창이 애프터마켓뿐이라 NXT 전용 창(프리 08:00–09:00 · 15:40–16:00)에 붙는
+    시간외 체결은 정의상 NXT 다. 그 구간의 종목이 'NXT 거래 종목' 의 하한이다.
+
+    ⚠️ 하한이지 목록이 아니다 — 그 창에 체결이 없었을 뿐인 NXT 종목이 있다
+    (#54·#165 잰 범위를 빼고 말하지 말 것). 그리고 이 연역은 **원천이 밝힌
+    창**(공지 153) 위에 선다(#165).
+    """
+    if branch == "closed":
+        return ("⏭ 지금은 체결 창 밖 — 잴 것이 없습니다(NXT 전용 창 "
+                "08:00–09:00 · 15:40–16:00 KST 에 돌리면 확정됩니다).")
+    if branch == "overlap":
+        return ("❓ 지금은 KRX·NXT 체결 창이 **겹치는** 구간이라 이 블록의 "
+                "거래소를 못 가릅니다 — 두 보드가 같은 목록을 내는 것은 그 "
+                "때문입니다(시장이 같아서가 아니라).")
+    if not codes_with_over:
+        return (f"❓ 지금은 {venue} 전용 창인데 표본에 시간외 체결이 하나도 "
+                "안 붙었습니다 — 표본이 그 창에 거래가 없었을 뿐일 수 있습니다.")
+    return (f"✅ 지금은 {venue} 전용 창이라 아래 종목의 시간외 체결은 정의상 "
+            f"{venue} 입니다(하한): " + ", ".join(codes_with_over))
+
+
+def _section_nxt_universe() -> None:
+    print("\n⑤ NXT 거래 종목을 창으로 가를 수 있나 — 전용 창 하한")
+    from bot.kr_session import exclusive_venue, now_kst
+    venue, branch = exclusive_venue(now_kst())
+    hit = []
+    if branch != "closed":
+        for code in _CODES:
+            d, why = _get(_POLL.format(code=code))
+            datas = (d or {}).get("datas") if isinstance(d, dict) else None
+            if not datas:
+                print(f"   · {code} 0행 — {why or '사유 없음'}")
+                continue
+            om = datas[0].get("overMarketPriceInfo")
+            vol = _n((om or {}).get("accumulatedTradingVolume")) if isinstance(om, dict) else None
+            print(f"   · {code} 시간외 누적거래량 = "
+                  f"{'없음' if vol is None else int(vol)}")
+            if vol:
+                hit.append(code)
+    print("   " + nxt_lower_bound(hit, venue, branch))
+    print("   ⚠️ NXT 거래 종목 **목록**을 주는 원천은 아직 안 쟀습니다 — "
+          "이름을 추측해 배선하면 죽은 경로를 배포합니다(#151·#345).")
+
+
 def main() -> int:
     if not _banner():
         return 2
@@ -286,9 +341,10 @@ def main() -> int:
         print("\n③ 후보 정렬 키 실호출 — ⏭ 건너뜀(② 가 허용값을 못 읽어 "
               "시험할 후보가 없습니다)")
     _section_venue()
+    _section_nxt_universe()
     done = "②③" if vals else "②"
     print(f"\n판정은 사람이 합니다 — 위 {done} 이(가) 거래량 보드의 정렬 키를, "
-          "④ 가 KRX/NXT 구별 가능 여부를 정합니다.")
+          "④⑤ 가 KRX/NXT 구별 가능 여부를 정합니다.")
     if _VENUE_MISMATCH:
         # ⚠️ 판정키를 계산해 놓고 마지막 줄에 안 실으면 없는 것과 같다
         # (#123 계열) — ❌ 는 rc 에도 실린다(#54).
