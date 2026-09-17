@@ -56621,7 +56621,8 @@ class TestTwEnrichProbe20260910:
         import bot.highlow_render as hr
         import bot.chart_translate as ct
         import requests
-        calls = {"movers": 0, "enrich": [], "translate": 0, "requests": 0, "closes": 0}
+        calls = {"movers": 0, "enrich": [], "translate": 0, "translate_cached": 0,
+                 "requests": 0, "closes": 0}
 
         monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
         monkeypatch.setattr(fv, "cache_age_sec", lambda name: mcap_age)
@@ -56653,9 +56654,17 @@ class TestTwEnrichProbe20260910:
             return dict((slow_meta if allow_slow else meta) or {})
         monkeypatch.setattr(hr, "_enrich_compute", _enrich)
 
+        # ⚠️ 2026-09-17 계약 갱신(#222): ⑥ 한글명 섹션이 생기며 진단이 번역
+        # 캐시를 **조회**한다. 계약은 "번역 함수를 안 부른다" 가 아니라 **"돈을
+        # 안 쓴다"** 이고, `cache_only=True` 는 `_effective_key` 앞에서 반환하므로
+        # 정의상 LLM 0 이다. 그래서 과금 호출(= cache_only 없는 호출)만 센다 —
+        # 그 변형은 여전히 잡힌다(실측: N13·N14 뮤테이션 발화).
         def _boom(*a, **k):
-            calls["translate"] += 1
-            raise AssertionError("진단이 번역(LLM)을 불렀다 — #312·#321")
+            if not k.get("cache_only"):
+                calls["translate"] += 1
+                raise AssertionError("진단이 과금 경로로 번역을 불렀다 — #312·#321")
+            calls["translate_cached"] += 1
+            return {}
         monkeypatch.setattr(ct, "translate_titles_kr", _boom)
         monkeypatch.setattr(ct, "translate_names_kr", _boom)
 
@@ -56776,8 +56785,43 @@ class TestTwEnrichProbe20260910:
         rc, out = self._run(monkeypatch, [])
         assert rc == 0 and calls["translate"] == 0 and calls["requests"] == 0, out
         assert calls["enrich"], "enrich 를 한 번도 안 태웠다 — 아무것도 안 재는 진단"
+        # 반대 증거(#25): ⑥ 이 캐시 조회를 **실제로** 한다 — 과금 0 만 재면
+        # 섹션이 통째로 사라져도 통과한다(#291).
+        assert calls["translate_cached"] >= 2, calls
+        assert "⑥ 한글명" in out and "총 2종목" in out, out
         for c in calls["enrich"]:
             assert c["want_name"] is False and c["allow_slow"] is False and c["want_ind"] is True, c
+
+    def test_the_name_section_prints_a_line_per_ticker_and_the_counts(
+            self, monkeypatch, tmp_path):
+        """⑥ 의 존재 이유가 '종목별로' 다 — per-row 출력 루프를 통째로 지워도
+        40개가 green 이었다(독립 리뷰 2026-09-17 H3 R9, #20·#291)."""
+        self._harness(monkeypatch, tmp_path, movers=self._M,
+                      listed=self._BOTH, otc=self._BOTH)
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0
+        assert "· 8227.TW 巨騰 →" in out and "· 6949.TW 普及 →" in out, out
+        assert "총 2종목 · 한글 0 · 영문 0 · 한자 잔존 2" in out, out
+        assert "✅ 한자로 남은 종목 없음" not in out, out
+
+    def test_the_name_section_feeds_the_longname_cache_into_the_branches(
+            self, monkeypatch, tmp_path):
+        """⑥ 이 longName 을 안 받으면 화면이 영문으로 보여주는 행을 '한자 잔존'
+        으로 과대보고한다(리뷰 H1) — 배선을 떼는 변형은 순수 함수 테스트로는
+        안 잡힌다(#20). `allow_slow=False` = 캐시만(yfinance 호출 0)."""
+        import bot.finviz_client as fv
+        seen = {}
+        self._harness(monkeypatch, tmp_path, movers=self._M,
+                      listed=self._BOTH, otc=self._BOTH)
+
+        def _names(tks, allow_slow=True):
+            seen["allow_slow"] = allow_slow
+            return {"8227.TW": "Jutron Technology Inc", "6949.TW": ""}
+        monkeypatch.setattr(fv, "_fetch_display_names", _names)
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0 and seen.get("allow_slow") is False, seen
+        assert "Jutron Technology Inc" in out, out
+        assert "총 2종목 · 한글 0 · 영문 1 · 한자 잔존 1" in out, out
 
     def test_network_bomb_is_armed_where_the_raw_dump_lives(self, monkeypatch, tmp_path):
         """반대 증거(#25): 上櫃 원천이 비면 진단이 원문 덤프를 시도한다 — 그 자리에서
@@ -69262,3 +69306,303 @@ class TestVenueExclusiveWindowLowerBound20260917:
         out = capsys.readouterr().out
         assert "cd ~/stock && .venv/bin/python -m bot.venue_universe" in out
         assert "전용 창 관측 하한 1종목" in out
+
+
+class TestTwKoreanNameStuckDiag20260917:
+    """아직 한자인 대만 종목이 **왜** 그런지 종목별로 말한다(실수 #380).
+
+    사용자 2026-09-17 캡처: `昶瑞機電`·`佑全`·`隆中`·`長園科` 한자 잔존 +
+    `Patec…`·`eCloudValley…` 영문. "최대한 한글화 한것 맞지? 5번은 넘게 이거
+    돌리는듯하네" — 다섯 번 넘게 다시 돌린 이유가 화면·진단에 있었다:
+    거부된 번역은 `translate_miss.json` 에 **프롬프트 지문**과 함께 남아 같은
+    프롬프트로는 다시 묻지 않는데(`_miss_skip`), 진단은 "3시간 빌드의 LLM
+    번역이 채운다" 고 말해 왔다(#55 설명이 코드와 어긋나면 버그).
+    """
+
+    @pytest.fixture()
+    def ct(self, tmp_path, monkeypatch):
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "translate_miss.json")
+        return ct
+
+    def test_miss_diag_tells_whether_this_prompt_would_retry(self, ct):
+        """`retry=False` 면 그 종목은 **기다려도 안 바뀐다** — 그 사실이 진단의
+        전부다. 지문이 다르면(프롬프트가 바뀌면) 저절로 재시도된다(#348·#171)."""
+        import json
+        fp = ct._prompt_fp(ct._TITLE_PROMPT)
+        ct._MISS_CACHE.write_text(json.dumps({
+            "昶瑞機電": {"ver": fp, "why": "모델이 번역을 못 냈습니다(답='昶瑞機電')"},
+            "佑全": {"ver": "옛지문", "why": "모델 응답에 그 줄이 없습니다"},
+        }, ensure_ascii=False), encoding="utf-8")
+        before = ct._MISS_CACHE.read_bytes()
+        d = ct.miss_diag(["昶瑞機電", "佑全", "隆中"])
+        assert d["昶瑞機電"]["retry"] is False and "답=" in d["昶瑞機電"]["why"]
+        assert d["佑全"]["retry"] is True
+        assert "隆中" not in d, "기록이 없는 것을 지어내지 않는다"
+        assert ct._MISS_CACHE.read_bytes() == before, "진단이 기록을 건드렸다(#264)"
+
+    def test_the_two_gates_have_different_keys_and_different_prompts(self, ct):
+        """⚠️ 관문이 **둘**이다(독립 리뷰 2026-09-17 B1 — 첫 판은 하나만 봤다):
+        `translate_titles_kr` 는 원문 문자열 키 + `_TITLE_PROMPT`,
+        `translate_names_kr` 는 **티커** 키 + `_NAME_PROMPT`. 한 관문만 보면
+        (a) 다른 관문에 막힌 종목을 '아직 안 물었다' 로 말하고 (b) 운영자가 그
+        관문의 프롬프트를 고쳐도 계속 "기다려도 안 바뀐다" 고 한다(#364).
+        (옛 계약 `prompt=` 인자는 이 관문 파생으로 대체 — #222.)"""
+        import json
+        assert ct._prompt_fp(ct._TITLE_PROMPT) != ct._prompt_fp(ct._NAME_PROMPT)
+        ct._MISS_CACHE.write_text(json.dumps({
+            "7642.TW": {"ver": ct._prompt_fp(ct._NAME_PROMPT), "why": "names 관문"},
+            "昶瑞機電": {"ver": ct._prompt_fp(ct._TITLE_PROMPT), "why": "titles 관문"},
+        }, ensure_ascii=False), encoding="utf-8")
+        d = ct.miss_diag(titles=["昶瑞機電"], tickers=["7642.TW"])
+        assert d["7642.TW"] == {"gate": "names", "why": "names 관문",
+                                "ver": ct._prompt_fp(ct._NAME_PROMPT), "retry": False}
+        assert d["昶瑞機電"]["gate"] == "titles" and d["昶瑞機電"]["retry"] is False
+        # 관문을 바꿔 물으면 지문이 달라 "다시 묻는다" 가 된다 — 그래서 호출부가
+        # 관문을 골라 주면 안 되고 **둘 다** 물어야 한다.
+        assert ct.miss_diag(titles=["7642.TW"])["7642.TW"]["retry"] is True
+
+    # ── 프로브 ⑥ — 종목별 갈래 ─────────────────────────────────────────
+    @staticmethod
+    def _rows(**kw):
+        import bot.scripts.tw_enrich_probe as tp
+        items = [{"ticker": "7642.TW", "name": "昶瑞機電"},     # 거부(영구)
+                 {"ticker": "6929.TW", "name": "佑全"},         # 재시도 예정
+                 {"ticker": "8038.TW", "name": "長園科"},        # 미시도
+                 {"ticker": "2236.TW", "name": "Patec Co."},     # 영문 폴백
+                 {"ticker": "3296.TW", "name": "承德"},          # 제목 캐시가 풂
+                 {"ticker": "2330.TW", "name": "티에스엠씨"}]    # 이미 한글
+        base = dict(titles={"承德": "승덕"}, names={},
+                    miss={"昶瑞機電": {"why": "모델이 번역을 못 냈습니다",
+                                       "ver": "now", "retry": False},
+                          "佑全": {"why": "모델 응답에 그 줄이 없습니다",
+                                   "ver": "old", "retry": True}})
+        base.update(kw)
+        return tp.name_rows_diag(items, **base)
+
+    def test_every_branch_gets_its_own_sentence(self):
+        """'한자다' 로 뭉뚱그리면 처방이 정반대인 셋이 한 통에 담긴다(#82)."""
+        by = {r["ticker"]: r["branch"] for r in self._rows()}
+        assert by == {"7642.TW": "rejected", "6929.TW": "will_retry",
+                      "8038.TW": "never_asked", "2236.TW": "latin",
+                      "3296.TW": "by_title", "2330.TW": "korean"}, by
+
+    def test_the_ticker_cache_wins_over_the_title_cache(self):
+        """캐시가 둘이라는 것이 이 화면의 지난 사고였다(#330) — 어느 쪽이
+        풀었는지 갈라 말한다."""
+        rows = {r["ticker"]: r for r in
+                self._rows(names={"7642.TW": "창루이기전"})}
+        assert rows["7642.TW"]["branch"] == "by_ticker"
+        assert "창루이기전" in rows["7642.TW"]["label"]
+
+    def test_the_argument_mode_name_is_not_mistaken_for_an_english_fallback(self):
+        """인자 모드(`… probe 8227`)는 원천 이름이 없어 `name` 이 **코드**다 —
+        한자가 아니라서 '영문 폴백' 이라는 거짓 갈래가 나온다(#35·#292 틀린
+        라벨은 라벨이 없는 것보다 나쁘다). 배포전 셀프리뷰가 잡았다."""
+        import bot.scripts.tw_enrich_probe as tp
+        rows = tp.name_rows_diag([{"ticker": "8227.TW", "name": "8227"},
+                                  {"ticker": "6949.TW", "name": "6949.TW"}],
+                                 titles={}, names={}, miss={})
+        assert [r["branch"] for r in rows] == ["no_name", "no_name"], rows
+        txt = " ".join(tp.name_verdict(rows))
+        assert "이름 미확인 2" in txt and "판정 불가" in txt, txt
+        assert "영문 0" in txt, txt
+        # ❓ 바로 아래에 ✅ 가 붙으면 아무것도 안 쟀는데 초록이다(#41·#54, 리뷰 M3).
+        assert "✅" not in txt, txt
+
+    def test_the_longname_path_is_measured_like_the_screen(self):
+        """화면은 longName 을 **먼저** 번역한다 — 안 보면 그걸로 풀린 행을
+        '한자 잔존' 으로 과대보고하고, miss 기록이 있으면 ❌ 로 올라가 운영자를
+        없는 버그로 보낸다(독립 리뷰 H1 실측·#35)."""
+        import bot.scripts.tw_enrich_probe as tp
+        rows = {r["ticker"]: r for r in tp.name_rows_diag(
+            [{"ticker": "6689.TW", "name": "伊雲谷"},
+             {"ticker": "2236.TW", "name": "百達-KY"}],
+            titles={"eCloudValley Digital Technology Co., Ltd.": "이클라우드밸리"},
+            names={}, miss={},
+            longnames={"6689.TW": "eCloudValley Digital Technology Co., Ltd.",
+                       "2236.TW": "Patec Precision Industry Co Ltd"})}
+        assert rows["6689.TW"]["branch"] == "by_longname"
+        assert "이클라우드밸리" in rows["6689.TW"]["label"]
+        assert rows["2236.TW"]["branch"] == "en_fallback"
+        txt = " ".join(tp.name_verdict(list(rows.values())))
+        assert "한글 1 · 영문 1 · 한자 잔존 0" in txt, txt
+        assert "✅ 한자로 남은 종목 없음" in txt, txt
+
+    def test_a_name_blocked_by_the_other_gate_is_not_called_never_asked(self):
+        """티커 관문(`translate_names_kr`)에 막힌 종목을 '아직 안 물었다' 로
+        말하면 고치려던 그 거짓말이 그대로다(리뷰 B1 실측)."""
+        import bot.scripts.tw_enrich_probe as tp
+        r = tp.name_rows_diag([{"ticker": "7642.TW", "name": "昶瑞機電"}],
+                              titles={}, names={}, longnames={},
+                              miss={"7642.TW": {"gate": "names", "retry": False,
+                                                "why": "모델이 번역을 못 냈습니다"}})[0]
+        assert r["branch"] == "rejected" and "names 관문" in r["label"], r
+        # 지문을 안 찍으면 `ver` 는 죽은 출력이고, 고친 뒤 다시 볼 때 어느
+        # 프롬프트 판인지 못 가른다(#364, 리뷰 L3).
+        r2 = tp.name_rows_diag([{"ticker": "7642.TW", "name": "昶瑞機電"}],
+                               titles={}, names={}, longnames={},
+                               miss={"7642.TW": {"gate": "names", "retry": False,
+                                                 "why": "거부", "ver": "abc1234567"}})[0]
+        assert "지문 abc1234567" in r2["label"], r2
+
+    def test_one_gate_still_retrying_means_it_can_still_change(self):
+        """하나라도 다시 물으면 화면은 바뀔 수 있다 — 그때 "기다려도 안 바뀐다"
+        고 하면 운영자가 엉뚱한 프롬프트를 고치러 간다(리뷰 B1)."""
+        import bot.scripts.tw_enrich_probe as tp
+        r = tp.name_rows_diag([{"ticker": "7642.TW", "name": "昶瑞機電"}],
+                              titles={}, names={}, longnames={},
+                              miss={"昶瑞機電": {"gate": "titles", "retry": False,
+                                                 "why": "거부"},
+                                    "7642.TW": {"gate": "names", "retry": True,
+                                                "why": "옛 지문"}})[0]
+        assert r["branch"] == "will_retry" and "names" in r["label"], r
+
+    def test_the_counts_are_not_just_labels(self):
+        """수를 안 집으면 소계를 빼먹는 변형이 통과한다 — 실제로 `한자 잔존`
+        에서 `never_asked` 를 빼는 변형이 **거짓 ✅** 를 만들었다(리뷰 H3 R2)."""
+        import bot.scripts.tw_enrich_probe as tp
+        rows = tp.name_rows_diag([{"ticker": "8038.TW", "name": "長園科"}],
+                                 titles={}, names={}, miss={}, longnames={})
+        txt = " ".join(tp.name_verdict(rows))
+        assert "한자 잔존 1" in txt, txt
+        assert "✅" not in txt, txt
+        by_ticker = tp.name_rows_diag([{"ticker": "3296.TW", "name": "承德"}],
+                                      titles={}, names={"3296.TW": "승덕"},
+                                      miss={}, longnames={})
+        assert "한글 1" in " ".join(tp.name_verdict(by_ticker))
+
+    def test_the_verdict_separates_permanent_from_waitable(self):
+        import bot.scripts.tw_enrich_probe as tp
+        txt = " ".join(tp.name_verdict(self._rows()))
+        assert "❌ 1종목은 기다려도 안 바뀐다" in txt, txt
+        assert "⚠️ 2종목은 다음 빌드가" in txt, txt      # 재시도 예정 + 미시도
+        # 몇 번 기다려야 하는지 — 한 빌드가 `_MAX_BATCH` 개씩만 묻는다(리뷰 L4).
+        import bot.chart_translate as _ct
+        assert f"최대 {_ct._MAX_BATCH}종목씩" in txt, txt
+        assert "ℹ️ 영문 1종목" in txt, txt
+        assert "총 6종목 · 한글 2 · 영문 1 · 한자 잔존 3" in txt, txt
+
+    def test_the_verdict_says_ok_only_when_no_han_is_left(self):
+        import bot.scripts.tw_enrich_probe as tp
+        rows = tp.name_rows_diag([{"ticker": "2330.TW", "name": "티에스엠씨"}],
+                                 titles={}, names={}, miss={})
+        assert any("✅" in ln for ln in tp.name_verdict(rows))
+        assert not any("✅" in ln for ln in tp.name_verdict(self._rows()))
+
+    def test_zero_rows_is_not_a_pass(self):
+        """대조 0건은 ✅ 가 아니다(#54)."""
+        import bot.scripts.tw_enrich_probe as tp
+        assert tp.name_verdict([]) == ["❓ 대조 0행 — 판정 불가"]
+
+    # ── 볼린저 --why ⑦ 가 거짓말하지 않는다 ────────────────────────────
+    def test_name_diag_carries_the_miss_record(self, ct, monkeypatch):
+        """계산해 둔 사유를 표시까지 배선하지 않으면 없는 것과 같다(#123 계열)."""
+        import json
+        import bot.bollinger_board as bb
+        fp = ct._prompt_fp(ct._TITLE_PROMPT)
+        ct._MISS_CACHE.write_text(json.dumps(
+            {"昶瑞機電": {"ver": fp, "why": "모델이 번역을 못 냈습니다"}},
+            ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False: {})
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda names, cache_only=False: {})
+        nd = bb.name_diag([{"ticker": "7642.TW", "name": "昶瑞機電"}], "TW")
+        assert nd["han_after"] == 1
+        assert nd["miss"]["昶瑞機電"]["retry"] is False, nd.get("miss")
+
+    def test_the_why_stops_promising_the_next_build_for_a_rejected_name(self):
+        """옛 판은 갈래와 무관하게 "3시간 빌드의 LLM 번역이 채운다" 였다 —
+        거부 기록이 있으면 **영영 안 채운다**(#55). 사용자가 같은 화면을 다섯
+        번 넘게 다시 돌린 이유다."""
+        import bot.bollinger_board as bb
+        rejected = bb.name_stuck_lines(
+            {"samples": ["7642.TW 昶瑞機電"],
+             "miss": {"昶瑞機電": {"why": "모델이 번역을 못 냈습니다",
+                                   "retry": False}}})
+        txt = " ".join(rejected)
+        assert "다시 묻지 않는다" in txt and "프롬프트를 고치면" in txt, txt
+        assert "다음 빌드의 LLM 번역이 채운다" not in txt, txt
+        assert "모델이 번역을 못 냈습니다" in txt, "사유 원문을 버렸다(#292)"
+        never = bb.name_stuck_lines({"samples": ["8038.TW 長園科"], "miss": {}})
+        assert "다음 빌드의 LLM 번역이 채운다" in " ".join(never)
+
+    def test_the_why_counts_every_stuck_name_not_just_the_first_eight(self):
+        """총계(`han_after`)와 소계(갈래별)가 다른 모집단이면 9번째부터 조용히
+        사라진다(#45, 리뷰 M2 실측 12 → 8)."""
+        import bot.bollinger_board as bb
+        stuck = [f"{i}.TW 漢字{i}" for i in range(12)]
+        out = bb.name_stuck_lines({"stuck_all": stuck, "samples": stuck[:8],
+                                   "miss": {}})
+        assert "12종목은 아직 한 번도 안 물었다" in " ".join(out), out
+        assert "(외 7종목)" in " ".join(out), out       # 예시는 5개만 적고 밝힌다
+
+    def test_the_why_says_how_many_rejected_names_it_did_not_list(self):
+        """예시는 5개만 적는다 — 자른 사실을 안 말하면 총계와 소계가 갈린다
+        (#45, 리뷰 M2b)."""
+        import bot.bollinger_board as bb
+        stuck = [f"{i}.TW 漢字{i}" for i in range(9)]
+        miss = {f"漢字{i}": {"gate": "titles", "retry": False, "why": "거부"}
+                for i in range(9)}
+        out = " ".join(bb.name_stuck_lines({"stuck_all": stuck, "miss": miss}))
+        assert "9종목은 이미 물었고 거부됐다" in out, out
+        assert "(외 4종목)" in out, out
+
+    def test_the_why_reads_both_gates(self):
+        """볼린저 화면도 관문이 둘이다 — 티커 키 기록을 놓치면 'never_asked'
+        로 말한다(리뷰 B1)."""
+        import bot.bollinger_board as bb
+        out = " ".join(bb.name_stuck_lines(
+            {"stuck_all": ["7642.TW 昶瑞機電"],
+             "miss": {"7642.TW": {"gate": "names", "retry": False, "why": "거부"}}}))
+        assert "이미 물었고 거부됐다" in out and "names 관문" in out, out
+
+    def test_the_why_says_it_cannot_judge_when_the_record_is_unreadable(self):
+        import bot.bollinger_board as bb
+        out = bb.name_stuck_lines({"samples": ["7642.TW 昶瑞機電"],
+                                   "miss_error": "OSError: boom"})
+        assert out and "판정 불가" in out[0] and "boom" in out[0]
+
+    def test_no_stuck_name_means_no_line(self):
+        import bot.bollinger_board as bb
+        assert bb.name_stuck_lines({"samples": [], "miss": {}}) == []
+
+    def test_the_why_section_is_wired_to_the_branch_helper(self):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20). `_why` 는 보드
+        전체를 받아야 돌아 값으로 못 태우므로 AST 로 호출을 센다(#274 —
+        인자를 넘기되 엉뚱한 값을 넘기는 변형은 이 검사 밖이다)."""
+        import ast
+        import inspect
+        import bot.bollinger_board as bb
+        tree = ast.parse(inspect.getsource(bb._why))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "name_stuck_lines"]
+        assert calls, "_why 가 갈래 함수를 부르지 않는다"
+        # ⚠️ 주석을 지우고 본다 — 이 fix 를 설명하는 주석에 그 문구가 들어
+        # 있어 첫 판은 **멀쩡한 코드를 틀렸다고** 했다(#59b, 실측).
+        from pathlib import Path as _P
+        body = _audit_source_wo_docs(_P("bot/bollinger_board.py"))
+        assert "3시간 빌드의 LLM 번역이 채운다" not in body, \
+            "옛 무조건 문구가 코드에 남아 있다"
+
+    def test_the_probe_section_is_wired(self):
+        """⑥ 이 `main` 에서 실제로 돌고 판정을 찍는지(#252·#291)."""
+        import ast
+        import inspect
+        import bot.scripts.tw_enrich_probe as tp
+        tree = ast.parse(inspect.getsource(tp.main))
+        names = {getattr(n.func, "id", "") for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)}
+        assert {"name_rows_diag", "name_verdict"} <= names, sorted(names)
+        # ⚠️ `"cache_only=True" in src` 로 재면 **옆 호출이 대신 만족**시켜
+        # 한 호출만 과금 경로로 여는 변형이 통과한다(#75, 실측). 번역 호출
+        # **전부**가 그 인자를 받는지 AST 로 본다(이름 열거 금지, #24).
+        tcalls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                  and getattr(n.func, "id", "").startswith("translate_")]
+        assert tcalls, "⑥ 이 번역 캐시를 조회하지 않는다"
+        for c in tcalls:
+            ok = [k for k in c.keywords if k.arg == "cache_only"
+                  and isinstance(k.value, ast.Constant) and k.value.value is True]
+            assert ok, (f"{getattr(c.func, 'id', '?')} 가 과금 경로를 연다"
+                        " — 진단이 돈을 쓴다(#312·#321)")

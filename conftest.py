@@ -182,6 +182,12 @@ def _redirect_disk_caches() -> list:
         # 상세 캐시(목표가·투자의견)는 렌더 경로가 디스크에 굽는다 — 함수
         # 스코프 fixture 로는 `pytest bot/tests` 프로세스가 안 덮인다(#344).
         ("bot.naver_research_client", "_CACHE_DIR", "naver_research"),
+        # 번역 캐시 3종 — `make test` 가 운영 `~/.tradingagents/translate_miss.json`
+        # 을 **읽고**(진단 테스트) 깨진 파일이면 정리본을 **쓴다**(독립 리뷰
+        # 2026-09-17 H2 실측). 위 주석이 적은 대로 관측했으니 한 줄씩 더한다.
+        ("bot.chart_translate", "_MISS_CACHE", "translate_miss.json"),
+        ("bot.chart_translate", "_CACHE", "chart_title_kr.json"),
+        ("bot.chart_translate", "_NAME_KR_CACHE", "names_kr.json"),
     )
     done = []
     for mod, attr, leaf in targets:

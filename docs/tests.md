@@ -527,6 +527,57 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
   이라 보드 각주는 그대로다(#375).
 - (d) 유니버스가 '정규장 무버 ~200종목' 이라 전 상장이 아니다.
 
+## 대만 한글명 — "왜 아직 한자인가" 를 종목별로 (2026-09-17, #380)
+
+사용자 "최대한 한글화 한것 맞지? 5번은 넘게 이거 돌리는듯하네". 거부된 번역은
+`translate_miss.json` 에 **프롬프트 지문**과 함께 남아 같은 프롬프트로는 다시 묻지
+않는데(#348 비용 유계), 진단은 갈래와 무관하게 "3시간 빌드의 LLM 번역이 채운다" 고
+말해 왔다(#55) — 그래서 기다려도 안 바뀌고 같은 화면을 다시 돌리게 된다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| `miss_diag` 가 **이 프롬프트로 재시도하나**를 말한다 | ✅ 자동 | `test_miss_diag_tells_whether_this_prompt_would_retry` |
+| 기록이 없는 것을 지어내지 않는다 · 진단이 기록을 **안 건드린다**(#264) | ✅ 자동 | 같은 테스트 |
+| 지문은 **인자로 준 프롬프트**에서 뜬다(#38) | ✅ 자동 | `test_miss_diag_reads_the_prompt_it_is_asked_about` |
+| 갈래를 이름으로(거부/재시도/미시도/영문/이름미확인/세 캐시) | ✅ 자동 | `test_every_branch_gets_its_own_sentence` |
+| **관문이 둘**이다 — 이름 키(titles)·티커 키(names), 지문도 다르다 | ✅ 자동 | `test_the_two_gates_have_different_keys_and_different_prompts`(리뷰 B1) |
+| 다른 관문에 막힌 종목을 '아직 안 물었다' 로 말하지 않는다 | ✅ 자동 | `test_a_name_blocked_by_the_other_gate_is_not_called_never_asked` |
+| 한 관문이라도 다시 물으면 "다시 묻는다"(#82) | ✅ 자동 | `test_one_gate_still_retrying_means_it_can_still_change` |
+| 화면처럼 **longName 을 먼저** 본다(캐시만 · yfinance 0) | ✅ 자동 | `test_the_longname_path_is_measured_like_the_screen` · `test_the_name_section_feeds_the_longname_cache_into_the_branches`(배선, #20) |
+| 요약의 **수**를 집는다(소계를 빼면 거짓 ✅ 가 된다) | ✅ 자동 | `test_the_counts_are_not_just_labels`(리뷰 H3 R2) |
+| 종목별 줄이 실제로 찍힌다(⑥ 의 존재 이유) | ✅ 자동 | `test_the_name_section_prints_a_line_per_ticker_and_the_counts`(리뷰 H3 R9) |
+| 거부 사유에 **지문**을 적는다(#364) | ✅ 자동 | `test_a_name_blocked_by_the_other_gate_is_not_called_never_asked` |
+| 몇 번 기다릴지 — 한 빌드 `_MAX_BATCH` 개 상한을 적는다 | ✅ 자동 | `test_the_verdict_separates_permanent_from_waitable`(리뷰 L4) |
+| 총계·소계가 **같은 모집단**(#45) + 자른 사실을 말한다 | ✅ 자동 | `test_the_why_counts_every_stuck_name_not_just_the_first_eight` · `test_the_why_says_how_many_rejected_names_it_did_not_list`(리뷰 M2) |
+| 볼린저 ⑦ 도 관문 둘을 본다 | ✅ 자동 | `test_the_why_reads_both_gates` |
+| 어느 **캐시**가 풀었는지 구분(캐시가 둘이던 사고 #330) | ✅ 자동 | `test_the_ticker_cache_wins_over_the_title_cache` |
+| 판정이 **영구**와 **기다리면 됨**을 가른다(#82·#260) | ✅ 자동 | `test_the_verdict_separates_permanent_from_waitable` |
+| 한자가 남아 있으면 ✅ 를 찍지 않는다 | ✅ 자동 | `test_the_verdict_says_ok_only_when_no_han_is_left` |
+| 대조 0행은 ✅ 가 아니다(#54) | ✅ 자동 | `test_zero_rows_is_not_a_pass` |
+| `name_diag` 가 miss 기록을 **싣는다**(#123 계열) | ✅ 자동 | `test_name_diag_carries_the_miss_record` |
+| `--why ⑦` 이 거부 건에 "다음 빌드가 채운다" 를 **안 적는다** | ✅ 자동 | `test_the_why_stops_promising_the_next_build_for_a_rejected_name` |
+| 기록을 못 읽으면 **판정 불가**라고 말한다 | ✅ 자동 | `test_the_why_says_it_cannot_judge_when_the_record_is_unreadable` |
+| 한자가 없으면 줄을 안 만든다(늘 뜨는 경고 금지 #25·#260) | ✅ 자동 | `test_no_stuck_name_means_no_line` |
+| `_why` 배선 + 옛 무조건 문구 제거(주석 걷어내고, #59b) | ✅ 자동 | `test_the_why_section_is_wired_to_the_branch_helper` |
+| 프로브 ⑥ 배선 + **모든** 번역 호출이 `cache_only=True`(#312·#321) | ✅ 자동 | `test_the_probe_section_is_wired` — 부분문자열로 재면 옆 호출이 만족시킨다(#75, 실측) |
+| 인자 모드의 코드를 **영문 폴백으로 오분류하지 않는다**(#35·#292) | ✅ 자동 | `test_the_argument_mode_name_is_not_mistaken_for_an_english_fallback` — 배포전 셀프리뷰가 잡았다 |
+| 진단이 **돈을 안 쓴다** + ⑥ 이 캐시를 실제로 조회한다(반대 증거 #25·#291) | ✅ 자동 | `TestTwEnrichProbe20260910::test_default_run_never_translates_never_slow_never_network` — 옛 계약(번역 함수 호출 0)을 #222 로 다시 썼다 |
+
+모두 `tests/test_regression.py::TestTwKoreanNameStuckDiag20260917`(프로브 `main` 을 태우는 셋은 `TestTwEnrichProbe20260910`). 내가 돌린 뮤테이션 18종 + **독립 리뷰가 찾은 통과 뮤테이션 10종** + 리뷰 fix 되돌리기 18종이 지금은 전부 발화한다 — 커버리지 주장이 아니라 그때까지 재 본 목록이다(#286).
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **모델이 왜 거부했는지**는 안 잰다 — 기록엔 답 24자만 남는다. 프롬프트를
+  고치는 결정은 그 표본을 사람이 보고 한다.
+- (b) longName 은 **영구 캐시에 있는 것만** 본다(`allow_slow=False`) — 캐시에
+  없는 티커는 화면(백그라운드 enrich)이 나중에 채울 수 있고 ⑥ 은 그때까지
+  한자로 센다. 과소가 아니라 **과대** 방향이므로 ❌ 가 없으면 화면도 깨끗하다.
+- (c) 갈래는 **원천 native 명 + 캐시**로 정한다 — 렌더가 또 다른 경로로 이름을
+  바꾸면(오늘은 longName·native·티커 셋이 전부다) 이 표와 갈린다.
+- (d) `miss_diag` 는 LLM·네트워크를 안 쓰고 기록을 **의미상** 바꾸지 않지만,
+  파일이 깨진 UTF-8 이면 공용 캐시 독자가 정리본을 쓴다(#331·#284, 리뷰 M1).
+- (e) `latin` 갈래(원천 이름이 애초에 라틴)는 TWSE/TPEx 가 中文만 주므로 **무인자
+  경로에선 발화한 적이 없다** — 인자 모드·다른 원천에 대비한 갈래다(#291 미측정).
+
 ## 대만 종목명 한글화 — 번역 판정·실패 기록 (2026-09-17, #376)
 
 사용자 "대만 급등급락이랑 신고가에 한글화 안된것들 처리해줘" — `百達-KY`·
