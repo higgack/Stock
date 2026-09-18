@@ -61,6 +61,7 @@
 """
 from __future__ import annotations
 
+import html as _html
 import json as _json
 import logging
 import re
@@ -672,6 +673,18 @@ def _parse_single(text: str) -> tuple[float, str] | None:
 # 것이라 개선 대상이 아니다. CLAUDE.md Automation-first.
 _MISS_LOG = _Path.home() / ".tradingagents" / "backlog_misses.jsonl"
 _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 증가 방지
+# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 240)을
+# 담는다 — 여기서 더 자르면 헤더가 잘려 **고칠 근거가 사라진다**(#156·#350
+# '자르는 자리가 다음 결정을 가리지 않는가').
+_EXCERPT_CAP = 400
+# 텔레그램 단일 메시지 한도(4096 UTF-16). 발췌를 붙이다 넘기면 메시지가
+# **통째로 안 간다** — 예산 안에서만 싣고 나머지는 CLI 가 전부 보여준다.
+_DM_LIMIT = 4000
+_DM_EX_WIDTH = 200
+# 갈래 수 — 발췌가 짧으면 6갈래가 다 실리고, 길면(escape 가 `<` 를 4배로
+# 늘린다) 위 예산이 잘라 낸다. 4 로 두면 최악의 발췌에서도 한도에 안 닿아
+# 예산 분기에 **발화 경로가 없다**(#291).
+_EX_SAMPLE_N = 6
 
 # 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
 # SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
@@ -950,8 +963,72 @@ def legacy_notice(rows: list, now: float | None = None) -> str:
             "다음 조회부터 새 어휘로 다시 쌓입니다.")
 
 
+def miss_key(rec: dict) -> tuple:
+    """기록 한 줄의 **신원** — 같은 종목·분기·사유·상세는 한 줄이다.
+
+    ⚠️ 줄 **전체**를 비교하면(옛 `line in old`) 필드를 하나 더하는 순간
+    같은 미스가 두 줄로 쌓여 총계가 부푼다(#45 총계와 소계가 다른 모집단).
+    신원은 표기가 아니라 필드로 정한다.
+    """
+    if not isinstance(rec, dict):
+        return ()
+    return (norm_miss_ticker(rec.get("ticker")), rec.get("year"),
+            rec.get("reprt"), rec.get("reason"), rec.get("detail") or "")
+
+
+def excerpt_samples(rows: list, limit: int = _EX_SAMPLE_N) -> list[dict]:
+    """갈래마다 **원문 발췌 한 건**, 큰 갈래부터.
+
+    ⚠️ 히스토그램만으론 파서를 못 고친다 — 같은 보고서가 범위(#105)·관문
+    (#107)·어휘(#109)·창(#275) 넷을 연달아 오진하게 만든 이유가 '원문이
+    없어서'다. 보고서와 CLI 가 **같은 선택기**를 써야 통계가 안 갈린다(#38).
+    """
+    groups: dict[str, list] = {}
+    for r in rows:
+        if not isinstance(r, dict) or r.get(_TOMB_KEY):
+            continue
+        groups.setdefault(r.get("detail") or r.get("reason") or "?", []).append(r)
+    out = []
+    for kind, items in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        pick = next((i for i in items if i.get("ex")), None)
+        if pick is None:
+            continue            # 이 갈래엔 아직 발췌가 없다 — 지어내지 않는다
+        out.append({"kind": kind, "n": len(items),
+                    "ticker": norm_miss_ticker(pick.get("ticker")),
+                    "year": pick.get("year"), "reprt": pick.get("reprt"),
+                    "ex": str(pick.get("ex") or "")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def excerpt_missing_note(rows: list) -> str:
+    """발췌 없는 기록을 **사유별로** 센 한 줄. 없으면 빈 문자열 — 0 건이면
+    말하지 않는다(늘 뜨는 경고는 아무것도 안 재는 것과 같다, #25·#260).
+
+    ⚠️ 원인을 하나로 단정하지 않는다(#165). '발췌 도입 전에 쌓인 줄' 은
+    `형식미지원` 계열엔 맞지만 `시계열이상` 은 **원문 없이** 기록되므로
+    (`quarterly_infographic` 이 조립된 시계열만 보고 남긴다) 영원히 발췌가
+    없다 — "다음 조회부터 붙습니다" 가 거짓이 된다(#55). 갈래를 이름으로
+    말하면 읽는 쪽이 어느 쪽인지 안다(#82).
+    """
+    from collections import Counter
+    by = Counter(r.get("reason") or "?" for r in rows
+                 if isinstance(r, dict) and not r.get(_TOMB_KEY)
+                 and not r.get("ex"))
+    if not by:
+        return ""
+    inner = " · ".join(f"{k} {n}" for k, n in by.most_common())
+    return f"발췌 없는 기록 {sum(by.values())}건({inner})"
+
+
+def _u16len(s: str) -> int:
+    """텔레그램이 세는 단위(UTF-16 코드유닛)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
 def _log_miss(ticker: str, year, reprt_code, reason: str,
-              detail: str = "") -> None:
+              detail: str = "", excerpt: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
     if reason in ("미공시", "명시적미공시"):
         return                      # 원천에 값이 없다 — 개선 대상 아님
@@ -962,13 +1039,20 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         if detail:
             # 사유만으론 뭘 고쳐야 할지 모른다(#93) — 상세를 같이 남긴다.
             rec["detail"] = detail
+        if excerpt:
+            # ⚠️ 상세까지 남겨도 **어떤 열 구성인지**는 원문만 답한다 — 발췌를
+            # 여기서 버리면 보고서를 받을 때마다 운영자가 `--ticker` 로 다시
+            # 받아야 하고(§Automation-first: 운영자 반복명령을 요구하는 fix 는
+            # 잘못된 fix), 그 왕복이 없으면 히스토그램만 보고 파서를 고치게
+            # 된다 — 이 보고서가 그렇게 네 번 오진을 냈다(#105·#107·#109·#275).
+            rec["ex"] = excerpt[:_EXCERPT_CAP]
         line = _json.dumps(rec, ensure_ascii=False)
-        old = []
-        if _MISS_LOG.exists():
-            old = _MISS_LOG.read_text(encoding="utf-8").splitlines()[-_MISS_CAP:]
+        raw = (_MISS_LOG.read_text(encoding="utf-8")
+               if _MISS_LOG.exists() else "")
+        old = raw.splitlines()[-_MISS_CAP:]
         # 옛 어휘 줄은 **쓰는 김에 걷어낸다**. 남겨 두면 4000줄 캡이 돌 때까지
-        # 보고서를 지배하고, 표기가 달라 중복기록 방지(`line in old`)도 무력해
-        # 같은 건이 두 줄로 쌓인다. 파서 지문(`_parse_sig`)이 바뀌면 캐시가
+        # 보고서를 지배하고, 어휘가 달라 아래 신원 비교(`miss_key`)로도
+        # 합쳐지지 않아 같은 건이 두 줄로 쌓인다. 파서 지문(`_parse_sig`)이 바뀌면 캐시가
         # 무효라 다음 조회에서 새 어휘로 다시 쌓인다 — 잃는 정보가 없다.
         keep = [ln for ln in old if is_current_vocab(ln)]
         dropped = len(old) - len(keep)
@@ -982,9 +1066,19 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
             old.append(_json.dumps(
                 {"dv": _DETAIL_VOCAB, _TOMB_KEY: prev + dropped,
                  "at": int(time.time())}, ensure_ascii=False))
-        if line in old:
-            return                  # 같은 종목·분기 중복 기록 안 함
-        _MISS_LOG.write_text("\n".join(old + [line]) + "\n", encoding="utf-8")
+        if not dropped and line in old:
+            return                  # 같은 줄이 이미 있다 — mtime 도 안 건드린다
+        # ⚠️ 신원이 같은 **옛 줄은 이 줄이 대신한다**. 줄 전체 비교만 두면
+        # 발췌 같은 필드를 더하는 순간 같은 미스가 두 줄로 쌓여 보고서의
+        # 건수가 부푼다(#45).
+        key = miss_key(rec)
+        kept = []
+        for ln in old:
+            r = parse_miss_line(ln)
+            if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
+                continue
+            kept.append(ln)
+        _MISS_LOG.write_text("\n".join(kept + [line]) + "\n", encoding="utf-8")
     except Exception as exc:
         log.debug("dart_backlog: 미스 로그 실패: %s", exc)
 
@@ -1090,8 +1184,34 @@ def review_text() -> str:
         out += [f"· {d}: {n}건" for d, n in det.most_common(8)]
     out += ["", "<b>종목</b> (상위 10)"]
     out += [f"· {t} ×{n}" for t, n in tick.most_common(10)]
-    out += ["", "이 목록을 Claude 에게 그대로 붙여넣으면 파서를 확장합니다.",
-            "원문 확인: <code>backlog_misses --ticker &lt;코드&gt;</code>"]
+    tail = []
+    no_ex = excerpt_missing_note(rows)
+    if no_ex:
+        # 발췌 없는 줄을 침묵으로 두면 '원문이 없는 갈래' 로 읽힌다(#43·#54).
+        tail += ["", f"⚠️ {no_ex}"]
+    tail += ["", "이 목록을 Claude 에게 그대로 붙여넣으면 파서를 확장합니다.",
+             "원문 확인: <code>backlog_misses --ticker &lt;코드&gt;</code>"]
+    samples = excerpt_samples(rows)
+    if samples:
+        head = ["", "<b>원문 발췌</b> (갈래마다 1건 — 파서를 고칠 유일한 근거)"]
+        body: list[str] = []
+        # ⚠️ 한도를 넘기면 메시지가 **통째로** 안 간다 — 예산 안에서만 싣고,
+        # 실은 개수는 사실대로 말한다(#45 자른 사실을 밝힐 것).
+        budget = _DM_LIMIT - _u16len("\n".join(out + tail))
+        for sm in samples:
+            ex = _html.escape(sm["ex"][:_DM_EX_WIDTH])
+            blk = (f"· [{_html.escape(str(sm['kind']))}] {sm['ticker']} "
+                   f"{sm.get('year')}/{sm.get('reprt')}\n<code>{ex}</code>")
+            if _u16len("\n".join(head + body + [blk])) > budget:
+                break
+            body.append(blk)
+        if body:
+            if len(body) < len(samples):
+                body.append(f"… 갈래 {len(samples) - len(body)}개는 길이 한도로 "
+                            "생략 — 무인자 <code>backlog_misses</code> 에서 "
+                            "전부 보입니다.")
+            out += head + body
+    out += tail
     return "\n".join(out)
 
 
@@ -1195,10 +1315,11 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
         why = diagnose(text or "")
         det = diagnose_detail(text or "")
+        ex = backlog_excerpt(text or "")
         if out is not None:
             out["detail"] = det
-            out["excerpt"] = backlog_excerpt(text or "")
-        _log_miss(ticker, year, reprt_code, why, det)
+            out["excerpt"] = ex
+        _log_miss(ticker, year, reprt_code, why, det, ex)
         # 사유만 돌려주면 "단위없음 15건"에서 멈춰 다음 수를 못 정한다 —
         # 상세를 붙여 감사 히스토그램이 곧 작업 목록이 되게 한다(#93).
         _why = f"{why} · {det}" if det else why

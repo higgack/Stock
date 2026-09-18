@@ -32,6 +32,8 @@ import sys
 from collections import Counter, defaultdict
 
 from bot.dart_backlog import _TOMB_KEY, is_current_vocab as _cur
+from bot.dart_backlog import excerpt_missing_note as _exmiss
+from bot.dart_backlog import excerpt_samples as _samples
 from bot.dart_backlog import legacy_notice as _legnote
 from bot.dart_backlog import norm_miss_ticker as _norm
 from bot.dart_backlog import parse_miss_line as _pline
@@ -76,6 +78,17 @@ def summarize() -> int:
             qs = " ".join(f"{i.get('year')}/{i.get('reprt')}"
                           for i in items if _norm(i.get("ticker")) == t)
             print(f"    {t:12s} {n}회  {qs}")
+    # 보고서와 **같은 선택기**를 쓴다 — 복제하면 둘이 다른 갈래를 집는다(#38).
+    samples = _samples(rows, limit=8)
+    if samples:
+        print("\n■ 원문 발췌 (갈래마다 1건 — 파서를 고칠 근거)")
+        for sm in samples:
+            print(f"\n[{sm['kind']}] {sm['n']}건 · {sm['ticker']} "
+                  f"{sm['year']}/{sm['reprt']}")
+            print(f"    {sm['ex']}")
+    no_ex = _exmiss(rows)
+    if no_ex:
+        print(f"\n⚠️ {no_ex}")
     print("\n→ `형식미지원`·`검산실패` 가 새 형식 신호다. 해당 종목을 "
           "`--ticker` 로 다시 보거나 backlog_format_probe 로 원문을 뜬다.")
     return 0

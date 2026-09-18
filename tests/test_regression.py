@@ -71480,3 +71480,158 @@ class TestDartInvestmentNoticeUnparsed20260917:
             # 부분문자열 판정은 원문에서 뽑은 줄까지 문다 — 미파싱 배지,
             # df-mcap 스타일, 시총 중복 방지 셋이 같은 병이었다.
             assert '"시가총액" in' not in src, f
+
+
+class TestBacklogMissExcerpt20260918:
+    """보고서가 **원문 발췌**를 싣는다 — 히스토그램만으론 파서를 못 고친다.
+
+    2026-09-18 격주 보고서가 `형식미지원 18건` + 관문 히스토그램만 주고
+    "이 목록을 Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었다.
+    그런데 같은 보고서가 범위(#105)·관문(#107)·어휘(#109)·창(#275) 넷을
+    연달아 오진하게 만든 이유가 '원문이 없어서'이고, #111 은 "낮은 커버리지를
+    보면 파서를 더 짜기 전에 **표본 원문부터** 볼 것" 으로 끝난다.
+    `backlog_excerpt` 는 이미 미스 시점에 계산되는데 `_log_miss` 가 그걸
+    버려서, 보고서를 받을 때마다 운영자가 `--ticker` 를 10번 돌려야 했다
+    (§Automation-first: 운영자 반복명령을 요구하는 fix 는 잘못된 fix).
+    """
+
+    class _Dart:
+        api_key = "k"
+
+        def find_periodic_reports(self, *a, **k):
+            return [{"rcept_no": "R1"}]
+
+    # 파서가 거부하는(관문에서 막히는) 실제 모양 — 잔고 라벨은 있고 헤더에
+    # 기초·납품 열이 없다. 발췌가 비면 이 테스트들이 아무것도 안 잰다(#54).
+    TEXT = ("가나다 " * 40 + "구 분 주요 고객 수주잔고 합 계 1,234,567 "
+            + "라마바 " * 40)
+
+    def _stub_doc(self, monkeypatch, text):
+        import sys
+        import types
+        monkeypatch.setitem(
+            sys.modules, "bot.dart_feed",
+            types.SimpleNamespace(
+                _DOC_TEXT_MAX_FULL=2,
+                _fetch_doc_text=lambda rn, key, max_bytes=0: text))
+
+    def _rows(self, bl):
+        return [bl.parse_miss_line(x) for x in
+                bl._MISS_LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    def test_log_miss_persists_the_excerpt(self, tmp_path, monkeypatch):
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주잔고 " + "가" * 900)
+        rec = self._rows(bl)[0]
+        assert rec["ex"].startswith("구 분 수주잔고 "), rec
+        # 상한은 있되 헤더가 잘려 근거가 사라지면 안 된다(#156·#350).
+        assert len(rec["ex"]) == bl._EXCERPT_CAP >= 360
+
+    def test_adding_the_excerpt_does_not_double_count_an_existing_miss(
+            self, tmp_path, monkeypatch):
+        """줄 **전체**를 비교하던 옛 중복 방지(`line in old`)는 필드를 하나
+        더하는 순간 같은 미스를 두 줄로 쌓는다 — 보고서의 '막힌 조회 N건' 이
+        부풀고 상세 히스토그램도 갈라진다(#45)."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음")
+        bl._log_miss("000670", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주잔고 1,234")
+        rows = self._rows(bl)
+        assert len(rows) == 1, rows
+        assert rows[0].get("ex"), rows          # 새 줄이 옛 줄을 대신한다
+        assert "막힌 조회 1건" in bl.review_text()
+
+    def test_probe_hands_the_excerpt_to_the_log(self, tmp_path, monkeypatch):
+        """배선 — 발췌를 계산해 놓고 기록에 안 넘기면 없는 것과 같다(#20)."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        self._stub_doc(monkeypatch, self.TEXT)
+        val, _why = bl.backlog_probe(self._Dart(), "000670.KS", 2026, "11013")
+        assert val is None, "픽스처가 파싱에 성공해 미스 경로를 안 탔다"
+        rec = self._rows(bl)[0]
+        assert rec.get("ex") == bl.backlog_excerpt(self.TEXT), rec
+        assert "수주잔고" in rec["ex"], rec
+
+    def test_report_shows_one_excerpt_per_kind_and_escapes_it(
+            self, tmp_path, monkeypatch):
+        """화면 배선 + 규칙 7 — 발췌는 DART 원문이라 `<`/`>` 가 섞이면
+        parse_mode=HTML 메시지가 통째로 깨진다."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "수주 <b>잔고</b> & 기말 > 0")
+        bl._log_miss("091340.KQ", 2026, "11012", "형식미지원",
+                     "헤더는 통과 · 합계행 없음", "구 분 수주총액 기납품액")
+        out = bl.review_text()
+        assert "원문 발췌" in out, out
+        assert "&lt;b&gt;잔고&lt;/b&gt; &amp; 기말 &gt; 0" in out, out
+        assert "<b>잔고" not in out, out
+        # 갈래마다 하나 — 두 갈래가 둘 다 실린다.
+        assert "구 분 수주총액 기납품액" in out, out
+
+    def test_report_says_how_many_rows_have_no_excerpt(self, tmp_path,
+                                                       monkeypatch):
+        """발췌 없는 줄을 침묵으로 두면 '원문이 없는 갈래' 로 읽힌다 —
+        실제로는 발췌를 남기기 전에 쌓인 줄이다(#43·#54)."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음")
+        bl._log_miss("091340.KQ", 2026, "11012", "형식미지원", "멀다",
+                     "구 분 수주총액")
+        out = bl.review_text()
+        # ⚠️ 원인을 하나로 단정하지 않는다 — `시계열이상` 은 원문 없이
+        # 기록되므로(`quarterly_infographic`) "다음 조회부터 붙습니다" 가
+        # 거짓이다(#55·#165). 갈래를 이름으로 말한다(#82).
+        assert "발췌 없는 기록 1건(형식미지원 1)" in out, out
+        assert "다음 조회부터 붙" not in out, out
+        # 전부 발췌가 있으면 말하지 않는다 — 늘 뜨는 경고는 아무것도 안
+        # 재는 것과 같다(#25·#260).
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주잔고 1")
+        assert "발췌 없는 기록" not in bl.review_text()
+
+    def test_report_stays_within_the_telegram_limit(self, tmp_path,
+                                                    monkeypatch):
+        """한도(4096 UTF-16)를 넘기면 메시지가 **통째로 안 간다**. 예산 안
+        에서만 싣고, 실은 개수는 사실대로 말한다(#45 자른 사실을 밝힐 것).
+
+        ⚠️ escape 가 길이를 4배까지 늘린다 — `<` 만으로 채운 발췌가 그
+        최악이고, 이 픽스처가 없으면 예산 분기에 **발화 경로가 없다**(#291).
+        """
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for i in range(bl._EX_SAMPLE_N + 2):
+            bl._log_miss(f"00000{i}.KS", 2026, "11013", "형식미지원",
+                         f"갈래{i}", "<" * 400)
+        out = bl.review_text()
+        assert bl._u16len(out) <= 4096, bl._u16len(out)
+        assert "길이 한도로 생략" in out, out
+
+    def test_cli_prints_the_same_excerpts_the_report_shows(
+            self, tmp_path, monkeypatch, capsys):
+        """감사(CLI)와 화면이 **같은 선택기**를 써야 둘이 다른 갈래를 집지
+        않는다(#38). 그리고 고르기만 하고 찍지 않으면 없는 것과 같다.
+
+        ⚠️ 호출 여부(AST)로만 재면 **게이트만 끄는 변형이 통과**한다 —
+        `if False:` 를 넣어도 호출 노드와 print 노드는 그대로 남는다(#141).
+        실제로 돌려 **출력**을 본다(#20·#313). `summarize` 는 읽기 전용·
+        네트워크 0 이라 태워도 안전하다.
+        """
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주총액 기납품액 수주잔고 합 계 1,234")
+        bl._log_miss("091340.KQ", 2026, "11012", "형식미지원", "멀다")
+        assert bm.summarize() == 0
+        out = capsys.readouterr().out
+        assert "원문 발췌" in out and "구 분 수주총액 기납품액" in out, out
+        assert "발췌 없는 기록 1건(형식미지원 1)" in out, out
+        # 보고서가 고른 갈래와 같은 갈래여야 한다.
+        rows = self._rows(bl)
+        for sm in bl.excerpt_samples(rows):
+            assert sm["ex"][:40] in out, (sm, out)
