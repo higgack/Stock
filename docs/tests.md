@@ -963,6 +963,34 @@ in`/`not in` 부분문자열 판정 자체를 금지한다(독스트링·주석�
 태우지 않는다). 그리고 출처 분류의 정확성은 **repo CSV 를 읽을 수 있을 때만**
 참이다 — 못 읽으면 판정 불가로 빠지지, 오버레이 쪽으로 분류되지 않는다.
 
+### 수주잔고 파서 — 첫 실물 라운드 (2026-09-18, 발췌가 실제로 일했다)
+`tests/test_regression.py::TestBacklogRollingTable20260918`
+
+발췌를 싣자 **첫 라운드에서 18건이 갈렸다**. 픽스처는 VM 실측 발췌 그대로다(#155).
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 4열 롤링 표(`전기말·신규계약·매출인식·당반기말`)를 받는다 — 391710 실측 | ✅ 자동 | `test_rolling_four_column_table_is_parsed` |
+| 항등식(기초+신규−인식=기말)이 **유일한 열 배정 가드**(#106) | ✅ 자동 | `test_a_rolling_row_that_fails_the_identity_is_refused` |
+| 합계행이 있으면 그 행만 — 부문 행과 같이 더하면 두 배 | ✅ 자동 | `test_rolling_total_row_is_not_double_counted` |
+| 합계행이 없으면 검산 통과 행의 기말을 **합한다** | ✅ 자동 | `test_rows_without_a_total_are_summed` |
+| 4열 아닌 줄은 건너뛴다(안 그러면 파서가 통째로 죽고 조용히 미수집) | ✅ 자동 | `test_rows_that_are_not_four_columns_are_skipped` |
+| 기말 ≤ 0 은 안 받는다 | ✅ 자동 | `test_a_non_positive_closing_balance_is_refused` |
+| 시작 열·인식 열이 **헤더에 같이** 없으면 안 집는다(#57·#76) | ✅ 자동 | `test_a_table_without_an_opening_column_is_not_taken` |
+| 원천이 **빈 표**(전부 `-`)를 내면 파서 개선 여지가 아니다(#93·#111) | ✅ 자동 | `test_an_empty_backlog_table_is_not_a_parser_gap` |
+| 값이 있는 표는 여전히 개선 여지다 — 반대 증거(#25·#146) | ✅ 자동 | `test_a_table_with_numbers_is_still_a_parser_gap` |
+| 새 형식을 더해도 옛 형식이 안 깨진다(#59·#80 선택기 순서) | ✅ 자동 | `test_existing_formats_still_parse` |
+
+⚠️ **표본은 갈래마다 1건이다.** 9건을 한 형태로 묶은 건 발췌 하나의 근거이고,
+나머지 8건이 같은 형태인지는 다음 보고서가 말한다 — 표본 하나로 "갈래를 다
+고쳤다" 고 말하지 않는다(#111·#165).
+
+⚠️ 남은 7건은 **원문을 더 봐야 한다**: 000670(영풍) 4건은 `수주총액·기납품액·
+수주잔고` 각각에 수량/금액 2단 헤더가 붙은 6열 표이고 잔고가 **음수**다(실측
+245,858 − 264,255 = −18,396). 078340·144960 3건은 발췌에 `매출실적` 만
+보여 원천 부재일 수 있다. 결정적인 `합 계` 행이 발췌 창 밖이라 `_EXCERPT_CAP`
+을 600 으로 넓혔다(#156·#350 자르는 자리가 다음 결정을 가리면 안 된다).
+
 ### 수주잔고 격주 보고서 — **원문 발췌**를 싣는다 (2026-09-18)
 `tests/test_regression.py::TestBacklogMissExcerpt20260918`
 

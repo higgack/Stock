@@ -518,6 +518,58 @@ def _parse_open_close(text: str) -> tuple[float, str] | None:
     return None
 
 
+# 형태 M — `전기말 / 신규계약 / 매출인식 / 당반기말` **4열 롤링** 표.
+# 2026-09-18 원문 실측(391710 씨아이에스): 격주 리뷰가 '헤더에 기초·수주총액
+# 열 없음' 으로 9건을 묶어 냈고, 발췌를 보니 헤더가 `구분 전기말 신규계약
+# 매출인식 당반기말` 이었다 — `_BAL_LABELS` 의 `기말` 이 **전기말·당반기말
+# 양쪽에** 걸려 잔고 열은 찾았는데 시작 열(`기초`·`수주총액`)이 없어 1번
+# 관문에서 막혔다. 어구를 늘리는 대신 **항등식이 있는 형태**로 받는다.
+_ROLL_NEW = re.compile(r"신\s*규\s*(?:계약|수주)")
+_ROLL_OPEN = re.compile(r"전\s*(?:반|분)?\s*기\s*말|기\s*초")
+_ROLL_RECOG = re.compile(r"(?:매출|수익)\s*인식|매\s*출\s*액|납\s*품\s*액?")
+_ROLL_CLOSE = re.compile(r"당\s*(?:반|분)?\s*기\s*말|기\s*말|수주잔고|수주잔액")
+
+
+def _roll_ok(r: list) -> bool:
+    """기초 + 신규 − 인식 ≈ 기말. **열을 잘못 집는 것을 막는 유일한 가드**다
+    (#106 열 뜻을 추측해 배정하면 스케일이 아니라 의미가 틀리고, 그건 검산도
+    못 잡는다). 실측 391710: 7,058 + 1,718 − 4,761 = 4,015 (정확히 일치)."""
+    if len(r) != 4 or r[3] <= 0:
+        return False
+    exp = r[0] + r[1] - r[2]
+    return abs(exp - r[3]) <= _TOL * max(abs(r[3]), abs(exp), 1.0)
+
+
+def _parse_rolling(text: str) -> tuple[float, str] | None:
+    """형태 M — 기초·신규·인식·기말 4열. 검산은 행마다 `_roll_ok`.
+
+    ⚠️ 합계행이 있으면 **그 행만** 쓴다 — 부문 행과 같이 더하면 두 배가
+    된다. 합계가 없으면 검산을 통과한 행들의 기말을 합한다(형태 K 와 같은
+    규약). 통과한 행이 하나도 없으면 표가 아니라고 보고 포기한다.
+    """
+    for m in _ROLL_NEW.finditer(text):
+        head = text[max(0, m.start() - 80):m.start()]
+        tail = text[m.end():m.end() + 80]
+        cm = _ROLL_CLOSE.search(tail)
+        if not _ROLL_OPEN.search(head) or not _ROLL_RECOG.search(tail) or not cm:
+            continue
+        mult = _unit_mult(text, m.start())
+        if mult is None:
+            continue
+        seg = _cut_table(text[m.end() + cm.end():][:6000])
+        tm = re.search(r"합\s*계", seg)
+        if tm:
+            total = _row_values(seg, tm.end())[:4]
+            if not _roll_ok(total):
+                continue
+            return total[3] * mult, "표·기초신규인식기말"
+        good = [r for r in _runs(seg) if _roll_ok(r)]
+        if not good:
+            continue
+        return sum(r[3] for r in good) * mult, "표·기초신규인식기말"
+    return None
+
+
 def _parse_project_rows(text: str) -> tuple[float, str] | None:
     """형태 K — `기본도급액·완성공사액·계약잔액` 3열이 **합계행 없이** 사업
     구분별로 나열되는 표(한전KPS).
@@ -676,7 +728,10 @@ _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 
 # 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 240)을
 # 담는다 — 여기서 더 자르면 헤더가 잘려 **고칠 근거가 사라진다**(#156·#350
 # '자르는 자리가 다음 결정을 가리지 않는가').
-_EXCERPT_CAP = 400
+# ⚠️ 2026-09-18 첫 실물 라운드에서 **결정적인 줄이 창 밖이었다** — 영풍
+# (000670)의 `합 계` 행이 발췌 끝을 넘어가 '합계행 3값(검산실패)' 의 근거를
+# 볼 수 없었다. 자르는 자리가 다음 결정을 가리면 안 된다(#156·#350).
+_EXCERPT_CAP = 600
 # 텔레그램 단일 메시지 한도는 4096 UTF-16 이고, 우리는 그보다 낮은 값을
 # **보낼 메시지 전체**에 건다 — 넘기면 메시지가 통째로 안 가고, 그 실패는
 # `_periodic_backlog_review` 의 `log.exception` 에만 남아 **화면에는 아무
@@ -755,7 +810,31 @@ def diagnose(text: str) -> str:
         return "단위없음"
     if not any(re.search(r"합\s*계", text[p:p + 2500]) for p in with_unit):
         return "합계없음"
+    if all(_empty_backlog_table(text, p) for p in with_unit):
+        # 원천이 표 **틀만** 내고 칸을 전부 `-` 로 뒀다. 파서로 해결할 수
+        # 없으므로 개선 여지가 아니다 — '형식미지원' 으로 세면 다음 작업
+        # 목록이 통째로 틀린다(#93·#109·#111).
+        return "명시적미공시"
     return "형식미지원"
+
+
+def _empty_backlog_table(text: str, at: int) -> bool:
+    """그 자리의 수주 표가 **숫자 한 칸 없이 `-` 뿐**인가.
+
+    2026-09-18 원문 실측(091340): `품목 수주일자 납기 수주총액 기납품액
+    수주잔고 수량 금액 … - - - - - - 합 계 - - - - - -` — 회사가 표 틀만
+    내고 값을 안 썼다. 옛 판은 이걸 `형식미지원`(= 파서 개선 여지)으로 세어
+    격주 리뷰의 작업 목록을 부풀렸다.
+
+    ⚠️ 헤더의 연도·기수(`제29기`)나 단위 캡션이 숫자로 잡히지 않게 **합계
+    라벨 뒤**만 본다 — 거기가 값이 들어갈 자리다.
+    """
+    seg = text[at:at + 2500]
+    tm = re.search(r"합\s*계", seg)
+    if not tm:
+        return False
+    after = seg[tm.end():tm.end() + 120]
+    return not _row_values(seg, tm.end()) and "-" in after
 
 
 def diagnose_detail(text: str) -> str:
@@ -892,7 +971,7 @@ def _gate_stage(text: str, spots: list[int]) -> str:
     return best
 
 
-def backlog_excerpt(text: str, width: int = 240) -> str:
+def backlog_excerpt(text: str, width: int = 400) -> str:
     """미수집 종목의 **잔고 표 주변 원문** 한 조각.
 
     ⚠️ 사유 히스토그램은 '무엇이 많은가'까지만 말한다 — 실제로 어떤 열
@@ -1230,6 +1309,7 @@ def parse_backlog(text: str) -> dict | None:
     _fns = (_parse_table, _parse_domestic_export,
             _parse_balance_column, _parse_transposed,
             _parse_open_close, _parse_contract_table, _parse_project_rows,
+            _parse_rolling,
             _parse_xbrl, _parse_single, _parse_prose)
     # ⚠️ **지배회사 구간을 먼저** 훑는다. 전체를 훑으면 종속회사 표가 먼저
     # 걸려 본사 잔고 자리에 자회사 값이 들어간다(위 주석의 실측 사례).

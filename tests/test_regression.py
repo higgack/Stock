@@ -72209,3 +72209,134 @@ class TestBacklogMissExcerpt20260918:
         out2 = capsys.readouterr().out
         assert out2.count("[갈래") == 9, out2          # 개수로 안 자른다
         assert out2.index("[힣많은갈래]") < out2.index("[갈래0]"), out2
+
+
+class TestBacklogRollingTable20260918:
+    """격주 리뷰가 **원문 발췌**를 싣기 시작하자(#387) 첫 라운드에서 두 갈래가
+    갈렸다 — 픽스처는 2026-09-18 VM 실측 발췌 그대로다(#155).
+
+    ⚠️ 이 클래스가 다루는 건 **9건 중 1건의 원문**이다. 나머지 8건이 같은
+    형태인지는 다음 보고서가 말한다 — 표본 하나로 '갈래를 다 고쳤다' 고
+    말하지 않는다(#111·#165).
+    """
+
+    # 391710 씨아이에스 2026/11012 — `구분 전기말 신규계약 매출인식 당반기말`
+    ROLL = ("(단위 : 백만원) 주요거래처 제6기(당반기) 매출액 비중 A사 2,492 "
+            "18.4% B사 830 6.1% C사 780 5.8% D사 753 5.6% E사 699 5.2% "
+            "라. 수주상황 (단위 : 백만원 ) 구분 전기말 신규계약 매출인식 당반기말 "
+            "스마트팩토리로봇물류 7,058 1,718 4,761 4,015 "
+            "※ 당사는 스마트팩토리 및 로봇물류 사업부 이외에 제어SW 및 "
+            "IT인프라 사업부의 경우 상품 및 용역을 제공하는데까지 소요되는 "
+            "리드타임이 길지가 않아, 고객사에서 요구하는 시점에 PO(구매주문서)를 "
+            "접수하여 진행하고 있습니다. 5. 위험관리 및 파생거래 가. 위험관리")
+
+    # 091340 2026/11012 — 표 **틀만** 있고 칸이 전부 `-`
+    EMPTY = ("13,998 내수 11,587 16,071 16,072 합계 138,863 310,238 330,070 "
+             "주) 연결재무제표 기준으로 작성되었습니다. "
+             "나. 수주 실적 (단위 : 백만원) 품목 수주일자 납기 수주총액 "
+             "기납품액 수주잔고 수량 금액 수량 금액 수량 금액 "
+             "- - - - - - - - - - - - - - - - - - 합 계 - - - - - - "
+             "5. 위험관리 및 파생거래 시장위험과 위험관리(연결기준)")
+
+    def test_rolling_four_column_table_is_parsed(self):
+        """`기말` 이 **전기말·당반기말 양쪽에** 걸려 잔고 열은 찾았는데 시작
+        열(`기초`·`수주총액`)이 없어 1번 관문에서 막혔다 — 어구를 늘리는
+        대신 **항등식이 있는 형태**로 받는다(#57 문턱을 내릴 땐 다른 축의
+        증거를 같이 요구할 것)."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self.ROLL)
+        assert got and got["value"] == 4015 * 1_000_000, got
+        assert got["form"] == "표·기초신규인식기말", got
+
+    def test_a_rolling_row_that_fails_the_identity_is_refused(self):
+        """열 뜻을 추측해 배정하면 스케일이 아니라 **의미**가 틀리고, 그건
+        검산도 못 잡는다(#106). 항등식이 유일한 가드다."""
+        from bot.dart_backlog import parse_backlog
+        bad = self.ROLL.replace("7,058 1,718 4,761 4,015",
+                                "7,058 1,718 4,761 9,999")
+        assert parse_backlog(bad) is None
+
+    def test_rolling_total_row_is_not_double_counted(self):
+        """합계행이 있으면 **그 행만** 쓴다 — 부문 행과 같이 더하면 두 배다."""
+        from bot.dart_backlog import parse_backlog
+        seg = ("라. 수주상황 (단위 : 백만원) 구분 전기말 신규계약 매출인식 "
+               "당반기말 A부문 100 50 30 120 B부문 200 60 40 220 "
+               "합 계 300 110 70 340 ※ 주석")
+        got = parse_backlog(seg)
+        assert got and got["value"] == 340 * 1_000_000, got
+
+    def test_rows_that_are_not_four_columns_are_skipped(self):
+        """표 안에 4열이 아닌 줄(각주 번호·수량만 있는 행)이 섞이면 그 줄은
+        건너뛴다 — 안 건너뛰면 `r[3]` 에서 터져 파서가 통째로 죽고, 그 실패는
+        `parse_backlog` 의 except 가 삼켜 **조용히** 미수집이 된다(#12·#291
+        이 가드는 이 픽스처가 없으면 발화 경로가 없다)."""
+        from bot.dart_backlog import parse_backlog
+        # ⚠️ `_runs` 는 **콤마 없는 토큰을 숫자로 안 센다**(연도·절번호에서
+        # 끊으려고) — 픽스처도 원문처럼 콤마를 쓴다(#155).
+        seg = ("라. 수주상황 (단위 : 백만원) 구분 전기말 신규계약 매출인식 "
+               "당반기말 수량 12,345 34,567 A부문 1,100 1,050 1,030 1,120 "
+               "비고 9,999 ※ 주석")
+        got = parse_backlog(seg)
+        assert got and got["value"] == 1120 * 1_000_000, got
+
+    def test_rows_without_a_total_are_summed(self):
+        """합계행이 없으면 검산을 통과한 행들의 **기말을 합한다**(형태 K 와
+        같은 규약) — 첫 행만 쓰면 부문이 여럿인 회사가 조용히 작게 나온다."""
+        from bot.dart_backlog import parse_backlog
+        seg = ("라. 수주상황 (단위 : 백만원) 구분 전기말 신규계약 매출인식 "
+               "당반기말 A부문 1,100 1,050 1,030 1,120 "
+               "B부문 2,200 1,300 1,000 2,500 ※ 주석")
+        got = parse_backlog(seg)
+        assert got and got["value"] == (1120 + 2500) * 1_000_000, got
+
+    def test_a_non_positive_closing_balance_is_refused(self):
+        """기말이 0 이하면 받지 않는다 — 항등식은 맞아도 '잔고' 로 화면에
+        실을 값이 아니다. 실측 000670(영풍)은 기납품이 수주총액을 넘어
+        **음수 잔고**가 나오는데, 그건 이 형태가 아니라 2단 헤더 표라 여기서
+        다루지 않는다(그 4건은 아직 원문을 더 봐야 한다, #111·#165)."""
+        from bot.dart_backlog import parse_backlog
+        seg = ("라. 수주상황 (단위 : 백만원) 구분 전기말 신규계약 매출인식 "
+               "당반기말 A부문 1,000 1,000 2,000 0 ※ 주석")
+        assert parse_backlog(seg) is None
+
+    def test_a_table_without_an_opening_column_is_not_taken(self):
+        """`신규계약` 이라는 낱말만으로 표를 집으면 안 된다 — 시작 열과 인식
+        열이 **헤더에 같이** 있어야 4열의 뜻이 정해진다(#57·#76 어구 점수가
+        높아도 구조가 아니면 데이터가 아니다)."""
+        from bot.dart_backlog import parse_backlog
+        # 시작 열이 없다 — 4열의 첫 칸이 무엇인지 정해지지 않는다.
+        no_open = ("라. 매출실적 (단위 : 백만원) 구분 신규계약 당반기말 "
+                   "A부문 1,100 1,050 1,030 1,120 ※ 주석")
+        assert parse_backlog(no_open) is None, "시작 열 없이 받았다"
+        # 인식 열이 없다 — 셋째 칸이 차감인지 가산인지 모른다.
+        no_recog = ("라. 수주상황 (단위 : 백만원) 구분 전기말 신규계약 "
+                    "당반기말 A부문 1,100 1,050 1,030 1,120 ※ 주석")
+        assert parse_backlog(no_recog) is None, "인식 열 없이 받았다"
+
+    def test_an_empty_backlog_table_is_not_a_parser_gap(self):
+        """회사가 표 **틀만** 내고 칸을 전부 `-` 로 뒀다. 옛 판은 이걸
+        `형식미지원`(= 파서 개선 여지)으로 세어 격주 리뷰의 작업 목록을
+        부풀렸다 — 고칠 게 없는 걸 고칠 것으로 세면 다음 라운드가 통째로
+        틀린다(#93·#109·#111)."""
+        from bot.dart_backlog import diagnose, parse_backlog
+        assert parse_backlog(self.EMPTY) is None
+        assert diagnose(self.EMPTY) == "명시적미공시"
+
+    def test_a_table_with_numbers_is_still_a_parser_gap(self):
+        """반대 증거 — 값이 있는 표를 '미공시' 로 내리면 진짜 개선 여지가
+        사라진다(#25 '있다' 만 묻는 검사는 눈이 멀고, #146 증상이 아니라
+        원인으로 거를 것)."""
+        from bot.dart_backlog import diagnose
+        filled = self.EMPTY.replace("합 계 - - - - - -", "합 계 1 2 3 4 5 6")
+        assert diagnose(filled) == "형식미지원", diagnose(filled)
+
+    def test_existing_formats_still_parse(self):
+        """새 형식을 더할 때 옛 형식이 안 깨지는지 — 선택기 순서가 바뀌면
+        같은 문서에서 다른 표가 이긴다(#59·#80)."""
+        from bot.dart_backlog import parse_backlog
+        plain = ("가. 수주상황 (단위 : 백만원) 구 분 수주총액 기납품액 "
+                 "수주잔고 A사업 10,000 4,000 6,000 B사업 5,000 1,000 4,000 "
+                 "합 계 15,000 5,000 10,000 ※ 주석")
+        got = parse_backlog(plain)
+        assert got and got["value"] == 10_000 * 1_000_000, got
+        assert got["form"] == "표·합계행", got
