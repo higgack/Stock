@@ -962,3 +962,106 @@ in`/`not in` 부분문자열 판정 자체를 금지한다(독스트링·주석�
 **못 보는 축**(#274): `_notify` 의 전송 실패 로그는 값으로 재지 않는다(curl 을
 태우지 않는다). 그리고 출처 분류의 정확성은 **repo CSV 를 읽을 수 있을 때만**
 참이다 — 못 읽으면 판정 불가로 빠지지, 오버레이 쪽으로 분류되지 않는다.
+
+### 수주잔고 격주 보고서 — **원문 발췌**를 싣는다 (2026-09-18)
+`tests/test_regression.py::TestBacklogMissExcerpt20260918`
+
+2026-09-18 보고서가 `형식미지원 18건` + 관문 히스토그램만 주고 "이 목록을
+Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었다. 그런데 **같은
+보고서**가 범위(#105)·관문(#107)·어휘(#109)·창(#275) 넷을 연달아 오진하게
+만든 이유가 '원문이 없어서' 이고, #111 은 "낮은 커버리지를 보면 파서를 더
+짜기 전에 **표본 원문부터** 볼 것" 으로 끝난다. `backlog_excerpt` 는 이미
+미스 시점에 계산되는데 `_log_miss` 가 그걸 버려, 보고서를 받을 때마다
+운영자가 `--ticker` 를 종목 수만큼 돌려야 했다(§Automation-first).
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| `_log_miss` 가 발췌를 `ex` 로 남긴다 — 상한은 있되 헤더를 안 자른다(#156·#350) | ✅ 자동 | `test_log_miss_persists_the_excerpt` |
+| 필드를 더해도 같은 미스가 **두 줄로 안 쌓인다** — 신원은 필드로(#45) | ✅ 자동 | `test_adding_the_excerpt_does_not_double_count_an_existing_miss` |
+| 파서를 고친 뒤 재조회하면 **새 관측이 옛 발췌를 대체**하고, 사유가 다르면 따로 남는다(#18) | ✅ 자동 | `test_a_reparsed_miss_replaces_the_stale_excerpt` |
+| `backlog_probe` 가 계산한 발췌를 **기록에 넘긴다**(#20 배선) | ✅ 자동 | `test_probe_hands_the_excerpt_to_the_log` |
+| 보고서가 갈래마다 1건을 싣고 `<`/`>`/`&` 를 escape · 발췌 없는 갈래는 **블록이 없다** · 앞 200자만 싣고 그 사실을 말한다 | ✅ 자동 | `test_report_shows_one_excerpt_per_kind_and_escapes_it` |
+| 상세 히스토그램 줄도 escape 한다 — 한 메시지에서 한쪽만 raw 면 `<` 하나에 보고서가 통째로 안 간다(규칙 7·#38) | ✅ 자동 | `test_detail_histogram_is_escaped_too` |
+| 발췌 없는 줄은 **사유별로 세어** 말하고(원인 단정 금지, #82·#165) 0 이면 침묵(#25·#260) | ✅ 자동 | `test_report_says_how_many_rows_have_no_excerpt` |
+| 예산은 **보낼 메시지 전체**(머리말·생략줄·꼬리말 포함)를 잰다 | ✅ 자동 | `test_budget_counts_the_whole_message_it_will_send` |
+| 갈래 **개수로는 안 자른다** — 예산이 남으면 전부 싣는다(#45) | ✅ 자동 | `test_report_does_not_cap_kinds_when_the_budget_allows` |
+| 예산이 자른 갈래 수를 사실대로 말한다(#45) | ✅ 자동 | `test_report_stays_within_the_telegram_limit` |
+| 발췌 블록이 **기록 날짜**(KST 명시계산, 규칙 10a)를 적는다 — 옛 관측인지 구별(#43·#114) | ✅ 자동 | `test_excerpt_block_says_when_it_was_recorded` |
+| 원장은 tmp+`os.replace` 로 갈아끼운다 — truncate 쓰기는 읽는 쪽에 찢긴 파일을 준다(#379·#384) | ✅ 자동 | `test_ledger_is_replaced_atomically` |
+| 인쇄되는 명령은 **그대로 붙여넣어 돈다**(#278) + `&&` escape(규칙 7) | ✅ 자동 | `test_printed_commands_are_runnable_as_is` |
+| 공개 선택기가 묘비를 안 세고, 길이는 UTF-16 으로 잰다 | ✅ 자동 | `test_public_selectors_skip_tombstones_and_count_utf16` |
+| CLI 가 보고서와 **같은 선택기**로 같은 발췌를 **전부**, 큰 갈래부터 찍는다(#38) | ✅ 자동 | `test_cli_prints_the_same_excerpts_the_report_shows` |
+| `--refill` 이 발췌 없는 줄만, **신원으로 중복 없이** 고른다(#61) | ✅ 자동 | `test_refill_targets_are_deduped_and_exclude_rows_that_have_one` |
+| 되메워 **값이 나오면 그 줄을 지운다** — 안 지우면 '막힌 조회 N건' 이 영원히 부푼다(#45) | ✅ 자동 | `test_drop_miss_removes_only_that_row` · `test_refill_fills_excerpts_and_drops_resolved_rows` |
+| 상한으로 자른 사실·키 없음(rc=1)을 말한다(#45·#54·#82) | ✅ 자동 | `test_refill_says_what_it_did_not_do` |
+| `시계열이상` 사유는 **단일 출처**라 되메우기가 그 신호를 안 지운다(#38) | ✅ 자동 | `test_series_anomaly_reason_has_one_source` |
+| 모든 경로가 **코드 지문**을 먼저 찍고, 모르는 플래그는 거절한다(rc=2) | ✅ 자동 | `test_cli_says_which_build_it_is_and_rejects_unknown_flags` |
+| 지문이 **출력을 만드는 두 파일**을 덮고 소스가 바뀌면 값이 바뀐다(#364·#286) | ✅ 자동 | `test_build_fingerprint_covers_the_sources_that_make_the_output` |
+| `make test` 가 **운영 미스 원장**을 안 건드린다 — conftest 리다이렉트(#30·#312·#344) | ✅ 자동 | `test_production_disk_caches_are_redirected` |
+| 되메우기는 **원문을 읽었을 때만** 옛 줄을 지운다 — 조회 실패·원문 미수신은 보존 | ✅ 자동 | `test_refill_keeps_the_old_row_when_it_could_not_read_the_document` |
+| 되메우기가 **캐시를 우회**한다(#35) — 캐시 히트면 새 줄이 안 써진다 | ✅ 자동 | `test_refill_bypasses_the_parse_cache` |
+| 원문 없는 줄은 **뒤로 밀고 따로 센다**(상한 선점 금지, #171) | ✅ 자동 | `test_refill_puts_rows_without_a_document_last_and_counts_them_apart` |
+| 상한은 **문구가 아니라 호출 수**로 지켜진다(#313·#66) | ✅ 자동 | `test_refill_cap_is_enforced_by_behaviour_not_just_the_wording` |
+| `--refill <비정수·음수·0>` 을 갈래로 거절(#82·#132) | ✅ 자동 | `test_refill_rejects_a_bad_cap_and_says_why` |
+| 아는 플래그인데 **인자가 모자라도** 거절 — 옛 판은 조용히 요약을 찍었다 | ✅ 자동 | `test_known_flags_with_missing_arguments_are_rejected` |
+| 되메울 게 없으면 **왜 없는지**(옛 어휘) 말한다(#38·#82) | ✅ 자동 | `test_refill_says_when_only_legacy_rows_remain` |
+| 발췌가 **하나도 없어도** 메시지가 한도 안이고 줄인 사실을 말한다 | ✅ 자동 | `test_report_fits_even_when_no_excerpt_exists` |
+
+⚠️ 2026-09-18 독립 리뷰가 잡은 두 축이 여기 들어 있다. (a) 옛 판은 갈래를
+`_EX_SAMPLE_N=6` 으로 **조용히** 잘랐다 — 실측 10갈래 → 6개 표시, 생략 문구
+없음, 메시지는 1294/4096 으로 여유 만만이었다. 갈래가 6을 넘는 건 예외가
+아니라 기본값이다(`_far_msg` 가 캡션 원문과 `{gap}자` 를 detail 에 박는다).
+(b) 예산을 따로 계산해 두면 그 식의 피연산자(머리말)를 빼는 변형이 안 잡히고
+실제로 **4,106 u16** 가 나갔다 — 이제 `trial` 이 보낼 메시지 전체를 재고,
+테스트는 4096 이 아니라 **`_DM_LIMIT`** 으로 재며 잘린 뒤 남는 여유가 한
+블록보다 작은지까지 본다(안 그러면 40~90 u16 과소평가가 슬랙에 흡수된다).
+
+⚠️ `html.escape` 는 기본이 `quote=True` 라 `'` → `&#x27;`(**6배**)다. 최악
+픽스처는 `<`(4배)가 아니라 따옴표다.
+
+⚠️ CLI 계약은 **출력으로** 잰다 — 호출 여부(AST)로만 재면 `if False:` 로
+게이트만 끄는 변형이 통과한다(#141, 실측 SURVIVED 1건 → 출력 단언으로 교체).
+정렬 계약도 **크기 순서와 이름 순서가 어긋나는** 픽스처여야 발화한다(#91c).
+
+⚠️ 뮤테이션이 문법을 깨면 전 테스트가 빨간불이라 '잡힘' 처럼 보인다 —
+실측 1건(`sorted(...)` 앵커가 `):` 를 삼켰다). 통과·실패 어느 쪽이든 그
+자리를 실제로 쳤는지 볼 것(#267).
+
+⚠️ 2026-09-18 실측 — 배포 **전에** `--refill` 을 안내했더니 VM 의 옛
+체크아웃이 그 플래그를 무시하고 `summarize()` 로 떨어져, 출력이 옛 판과 한
+글자도 다르지 않았다(#371 "진단 도구를 심어 놓고 돌려 달라고 말하려면 그게
+VM 에 도달하는 경로가 있는지부터 답할 것" 의 재발). 그래서 모든 경로가
+**코드 지문**을 먼저 찍고 모르는 플래그는 rc=2 로 거절한다 — 옛 판에는 배너
+자체가 없으므로 그 부재가 곧 신호다(#11·#364).
+
+⚠️ `--refill` 은 이 스크립트의 **유일한 쓰기 경로**다(원장에 발췌를 되메운다)
+— 모듈 독스트링의 "읽기 전용" 을 전체에 대한 주장으로 두면 거짓이 된다(#55·#286).
+발췌 없는 줄은 그 종목·분기를 누군가 다시 열 때까지 영원히 근거가 없고 격주
+보고서는 2주에 한 번이므로, 운영자가 한 번에 되메울 수 있어야 한다
+(§Automation-first). 사유가 달라지면 옛 줄은 **방금 다시 재서 반증된 관측**
+이므로 지운다.
+
+⚠️⚠️ 2026-09-18 **2차 독립 리뷰가 배포를 막았다**(Blocking 1). 첫 판의
+`--refill` 은 "사유가 달라졌으면 옛 줄을 지운다" 였는데, `backlog_probe` 는
+자기 예외를 삼켜 `오류:…` 를 돌려주고(그 경로에선 새 줄이 **안** 써진다)
+DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 번이 게이트 분류를
+지웠다 — 실측 원장 3줄 → **0줄**, 화면은 그동안 "되메움 3건 · 이제 발췌를 볼
+수 있다". 이제 프로브가 `doc_len` 으로 "이번에 읽었나" 를 싣고, 읽었을 때만
+옛 줄이 물러난다. 갈래는 되메움 / 원문 여전히 없음 / 조회 실패 셋으로 나뉜다.
+
+⚠️ 2026-09-18 배포전 스모크가 잡은 것 — `make test` 가 `backlog_probe` 를
+태우면서 운영 원장(`~/.tradingagents/backlog_misses.jsonl`)에 **가짜 티커**를
+남기고 있었다(`X`·`005930` 이 픽스처 본문 "수주잔고 없음" 과 함께). 그 원장이
+곧 격주 DM 이라 운영자는 그걸 진짜 미스로 읽고 없는 버그를 쫓는다 — 발췌를
+싣게 된 이번 변경이 그 오염을 '파서를 고칠 유일한 근거' 로 **승격**시켜 더
+나빠졌다. 루트 `conftest.py` 의 import 시점 리다이렉트에 한 줄 더했다(함수
+스코프 fixture 로는 daemon 스레드·`pytest bot/tests` 프로세스를 못 덮는다).
+
+**못 보는 축**(#274): 발췌 **내용이 파서를 고치기에 충분한가**는 기계가
+못 잰다 — 창(앞 120 + 뒤 240)이 헤더를 담는지는 실제 원문에서만 확인된다.
+원자 교체 단언은 **구조**만 재지 동시 쓰기의 read-modify-write 유실(선재)은
+재지 않는다. 그리고 발췌가 없는 갈래는 둘이다 — `형식미지원` 류는 발췌
+도입 전에 쌓인 줄이라 그 종목·분기를 **다시 조회할 때**(24h 캐시 만료 후)
+붙지만, `시계열이상`(`quarterly_infographic` 이 조립된 시계열만 보고 남긴다)은
+**원문 없이** 기록되므로 영원히 없다. 그래서 문구가 원인을 단정하지 않고
+사유를 이름으로 센다(#55·#82·#165).

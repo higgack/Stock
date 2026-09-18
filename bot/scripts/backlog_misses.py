@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""수주잔고 파서 미스 요약 — 읽기 전용·네트워크 0.
+"""수주잔고 파서 미스 요약 — 기본은 읽기 전용·네트워크 0.
+
+⚠️ 예외는 `--ticker`·`--sweep`·`--explain`(원문을 다시 받는다)과
+`--refill`(원문을 받아 **원장에 발췌를 되메운다**) 이다. '읽기 전용' 을
+전체에 대한 주장으로 적으면 거짓이 된다(#55·#286).
 
 `bot/dart_backlog._log_miss` 가 남긴 `~/.tradingagents/backlog_misses.jsonl` 를
 사유별로 묶어 보여준다. **실사용이 곧 프로브**라는 설계의 수확 도구다 —
@@ -19,6 +23,9 @@
         → `본문없음 0자` 일 때 원문 수신을 해부한다(HTTP 상태·바이트수·zip 엔트리).
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --list 012450.KS 2026 11013
         → 그 분기 전후의 정기공시 원시 목록을 넓은 창으로 찍는다(창 밖 정정 확인).
+    cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --refill
+        → 발췌가 없는 미스(발췌 기록 배포 전에 쌓인 줄)를 **다시 조회해**
+          원문 발췌를 되메운다. 값이 나오면 그 줄은 지운다. 기본 40건 상한.
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --sweep
     # 값이 **틀린** 종목의 파싱 근거(어느 표를 잡았나):
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --explain 047810
@@ -32,17 +39,22 @@ import sys
 from collections import Counter, defaultdict
 
 from bot.dart_backlog import _TOMB_KEY, is_current_vocab as _cur
+from bot.dart_backlog import excerpt_missing_note as _exmiss
+from bot.dart_backlog import excerpt_samples as _samples
 from bot.dart_backlog import legacy_notice as _legnote
 from bot.dart_backlog import norm_miss_ticker as _norm
 from bot.dart_backlog import parse_miss_line as _pline
 
 
-def summarize() -> int:
+def _load_rows():
+    """원장 → (현행 어휘 행, 전체 레코드, 옛 어휘 건수).
+
+    `summarize` 와 `refill` 이 **같은 술어**를 써야 둘이 다른 모집단을
+    보지 않는다(#35·#38·#45)."""
     from bot.dart_backlog import _MISS_LOG
-    if not _MISS_LOG.exists():
-        print(f"기록 없음 ({_MISS_LOG}) — 아직 막힌 종목이 없거나 조회 이력이 없다.")
-        return 0
     rows, legacy, all_rec = [], 0, []
+    if not _MISS_LOG.exists():
+        return rows, all_rec, legacy
     for ln in _MISS_LOG.read_text(encoding="utf-8").splitlines():
         if not ln.strip():
             continue
@@ -58,6 +70,114 @@ def summarize() -> int:
             continue
         rows.append(rec)
     legacy += sum(int(r[_TOMB_KEY]) for r in all_rec if r.get(_TOMB_KEY))
+    return rows, all_rec, legacy
+
+
+def refill(cap: int = 40) -> int:
+    """발췌가 없는 미스를 **다시 조회해** 원문 발췌를 되메운다.
+
+    ⚠️ 원장을 쓴다(이 스크립트의 유일한 쓰기 경로) — 그게 목적이다.
+    ⚠️ 바깥 원천을 미스 1건당 정기보고서 1건씩 받는다. 상한을 두고,
+    **자른 사실을 말한다**(#45). 한 줄씩 즉시 찍는다 — 수십 분짜리를
+    파이프로 받으면 끝날 때까지 아무것도 안 보인다(#103).
+
+    ⚠️⚠️ **옛 줄은 이번에 원문을 읽었을 때만 지운다**(2026-09-18 독립 리뷰
+    B1 실측): 첫 판은 "사유가 달라졌으면 지운다" 였는데, `backlog_probe` 는
+    자기 예외를 삼켜 `오류:XxxError` 를 돌려주고(그 경로에선 새 줄이 **안**
+    써진다) DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 번이
+    게이트 분류(이 보고서의 존재 이유)를 지웠다 — 실측 3줄 → **0줄**.
+    프로브가 실은 `doc_len` 으로 "읽었나" 를 가른다.
+    """
+    from bot.dart_backlog import (MISS_NO_DOC, backlog_probe, drop_miss,
+                                  refill_targets)
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    if not dart:
+        print("❌ DART_API_KEY 없음 — 원문을 못 받으면 되메울 수 없다.")
+        return 1
+    rows, _all, legacy = _load_rows()
+    todo = refill_targets(rows)
+    if not todo:
+        # 원장이 전부 옛 어휘면 '없다' 가 아니라 **왜 없는지**다(#82·#43).
+        print("되메울 줄 없음 — 발췌 없는 미스가 없다."
+              + (f" (옛 어휘 {legacy}건은 세지 않는다 — 다음 조회부터 "
+                 "새 어휘로 쌓인다)" if legacy else ""))
+        return 0
+    cut = max(0, len(todo) - cap)
+    todo = todo[:cap]
+    print(f"■ 발췌 되메우기 {len(todo)}건 (종목당 정기보고서 1건 다운로드)"
+          + (f" · 상한 {cap} 로 {cut}건은 이번에 안 한다" if cut else ""),
+          flush=True)
+    print("=" * 84, flush=True)
+    filled = solved = same = nodoc = failed = 0
+    for i, r in enumerate(todo, 1):
+        tk, yr, rc = r.get("ticker"), r.get("year"), r.get("reprt")
+        was = r.get("reason")
+        # ⚠️ `out=` 을 넘겨 **캐시를 우회**한다 — 이 모듈의 규율이다(#35:
+        # 감사·프로브는 화면 캐시를 타지 않는다). 캐시 히트면 `_log_miss` 가
+        # 아예 안 돌아, 옛 줄만 지우고 아무것도 안 쓰는 경로가 열린다.
+        box: dict = {}
+        try:
+            val, why = backlog_probe(dart, tk, yr, rc, out=box)
+        except Exception as exc:                               # noqa: BLE001
+            failed += 1
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ "
+                  f"{type(exc).__name__}: {exc} — 옛 줄은 그대로 둔다",
+                  flush=True)
+            continue
+        if val is not None:
+            solved += 1
+            drop_miss(tk, yr, rc, was)
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ✅ 해소 "
+                  f"{val/1e12:.3f}조 — 원장에서 지웠다", flush=True)
+            continue
+        now = (why or "").split(" · ")[0]
+        if not box:
+            # 프로브가 내부에서 실패했다 — 새 줄이 안 써졌으므로 옛 관측을
+            # 반증할 근거가 없다. 지우지도, 되메움으로 세지도 않는다.
+            failed += 1
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ {why} — "
+                  "옛 줄은 그대로 둔다", flush=True)
+            continue
+        if not box.get("doc_len") or now == MISS_NO_DOC:
+            # 원문을 못 받았다(원천 장애·일일한도·`status=014`). 파싱 판정을
+            # 갱신할 근거가 없으므로 **옛 줄을 지우지 않는다**.
+            # ⚠️ 그런데 `_log_miss` 가 방금 `원문미제공` 줄을 **새로** 썼다 —
+            # 사유가 달라 신원이 다르기 때문이다. 그대로 두면 같은 분기가 두
+            # 건으로 세어지므로(#45) 이 실행이 만든 그 줄만 도로 지운다.
+            if now != was:
+                drop_miss(tk, yr, rc, now)
+            nodoc += 1
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ⏳ 원문 여전히 없음 "
+                  f"({why}) — 옛 줄은 그대로 둔다", flush=True)
+            continue
+        # 여기부터는 **원문을 읽었다**. 사유가 그대로면 `_log_miss` 가 같은
+        # 신원의 줄을 대체했고, 달라졌으면 옛 줄은 방금 반증된 관측이다(#45).
+        filled += 1
+        if now == was:
+            same += 1
+        else:
+            drop_miss(tk, yr, rc, was)
+        print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ↻ {why}"
+              + ("" if now == was else f"  ⚠️ 사유 바뀜(옛 줄 {was} 는 지웠다)"),
+              flush=True)
+    print("=" * 84, flush=True)
+    print(f"■ 되메움 {filled}건(같은 사유 {same}) · 해소 {solved}건"
+          + (f" · 원문 여전히 없음 {nodoc}건" if nodoc else "")
+          + (f" · 조회 실패 {failed}건" if failed else "")
+          + (f" · 남은 {cut}건은 다시 실행" if cut else ""))
+    # ⚠️ 아무것도 못 붙였으면 "이제 볼 수 있다" 고 말하지 않는다(#54·#165).
+    print("→ 이제 `backlog_misses` 로 원문 발췌를 볼 수 있다." if filled else
+          "→ 이번 실행으로 붙은 발췌는 없다 — 위 갈래가 사유다.")
+    return 0
+
+
+def summarize() -> int:
+    from bot.dart_backlog import _MISS_LOG
+    if not _MISS_LOG.exists():
+        print(f"기록 없음 ({_MISS_LOG}) — 아직 막힌 종목이 없거나 조회 이력이 없다.")
+        return 0
+    rows, all_rec, legacy = _load_rows()
     if legacy:
         print("⚠️ " + (_legnote(all_rec) or f"옛 어휘 {legacy}건 제외"))
     if not rows:
@@ -76,6 +196,19 @@ def summarize() -> int:
             qs = " ".join(f"{i.get('year')}/{i.get('reprt')}"
                           for i in items if _norm(i.get("ticker")) == t)
             print(f"    {t:12s} {n}회  {qs}")
+    # 보고서와 **같은 선택기**를 쓴다 — 복제하면 둘이 다른 갈래를 집는다(#38).
+    # 개수로 자르지 않는다 — 자를 거면 자른 수를 말해야 하고(#45),
+    # 보고서가 '전부 보여준다' 고 가리키는 곳이 바로 여기다.
+    samples = _samples(rows)
+    if samples:
+        print("\n■ 원문 발췌 (갈래마다 1건 — 파서를 고칠 근거)")
+        for sm in samples:
+            print(f"\n[{sm['kind']}] {sm['n']}건 · {sm['ticker']} "
+                  f"{sm['year']}/{sm['reprt']}")
+            print(f"    {sm['ex']}")
+    no_ex = _exmiss(rows)
+    if no_ex:
+        print(f"\n⚠️ {no_ex}")
     print("\n→ `형식미지원`·`검산실패` 가 새 형식 신호다. 해당 종목을 "
           "`--ticker` 로 다시 보거나 backlog_format_probe 로 원문을 뜬다.")
     return 0
@@ -387,6 +520,64 @@ def explain(ticker: str) -> int:
     return 0
 
 
+# 이 도구의 출력을 만드는 소스 — 배너가 **덮는 범위**다. 하나만 재면
+# 나머지를 고친 배포에서 지문이 안 변해 '낡은 체크아웃' 을 못 가른다(#364).
+_SIG_FILES = ("bot/scripts/backlog_misses.py", "bot/dart_backlog.py")
+_FLAGS = ("--ticker", "--doc", "--list", "--explain", "--refill", "--sweep")
+_USAGE_ARGS = {"--ticker": "<코드>", "--doc": "<접수번호>",
+               "--list": "<코드> <연도> <보고서코드>", "--explain": "<코드>"}
+
+
+def _positive_int(raw):
+    """`--refill N` 의 N — 양의 정수만. 아니면 None.
+
+    ⚠️ 옛 판은 `int(argv[2])` 라 비정수에 **원시 트레이스백**이 났고(#82·#132),
+    음수는 `todo[:-5]` 로 **뒤 5건을 잘라내면서** "상한 -5 로 13건은 이번에
+    안 한다" 는 거짓 산수를 찍었다(독립 리뷰 M-5·L1 실측).
+    """
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def build_banner(root=None) -> str:
+    """첫 줄 배너 — **이 도구를 만든 소스의 지문**.
+
+    ⚠️ 왜 필요한가(2026-09-18 실측): `--refill` 을 배포 전에 안내했더니
+    VM 의 옛 체크아웃에서 그 플래그가 **조용히 `summarize()` 로 떨어져**
+    출력이 옛 판과 한 글자도 다르지 않았다 — 사용자도 나도 "고친 게 안
+    먹었나" 와 "아직 배포가 안 됐나" 를 가를 수 없었다(#11·#364·#371).
+    배포 시각이 아니라 소스 지문을 찍는다(손 버전은 여섯 번 졌다, #119).
+
+    ⚠️ **못 보는 축**(#274): `_SIG_FILES` 밖은 안 덮는다 — `--ticker`·
+    `--sweep`·`--explain` 의 출력은 `dart_client`·`dart_feed`·`dart_quarterly`
+    가 만든다. 회귀는 (a) 이 두 파일이 목록에 있고 (b) 지문이 소스에 반응하고
+    (c) `_FLAGS` 가 `main` 의 디스패치와 같은지까지만 본다 — **import 대조는
+    없다**. #365 는 전이 폐포로 풀었지만 여기선 그러지 않았다(비용). 그러니
+    "출력을 만드는 모든 소스를 덮는다" 고 **주장하지 않는다**(#286).
+    """
+    import hashlib
+    import pathlib
+    # ⚠️ `root` 는 **테스트 전용 손잡이**다 — 지문이 소스에 반응하는지 재려면
+    # 소스를 바꿔 봐야 하는데, 레포 파일에 쓰면 내용을 되돌려도 **mtime 이
+    # 남아** 배포 drift 가드가 돌고 있는 프로세스를 전부 stale 로 찍는다
+    # (#365 가 그 사고다). 복사본에 대고 잰다.
+    root = pathlib.Path(root) if root else pathlib.Path(
+        __file__).resolve().parents[2]
+    try:
+        h = hashlib.sha1()
+        for rel in _SIG_FILES:
+            h.update((root / rel).read_bytes())
+        sig = h.hexdigest()[:10]
+    except Exception as exc:                                   # noqa: BLE001
+        # 못 구하면 **모른다고 말한다** — 조용히 비우면 낡은 체크아웃이
+        # 신선한 것과 구별되지 않는다(#54·#43).
+        sig = f"지문불가({type(exc).__name__})"
+    return f"# backlog_misses · 코드 지문 {sig} · 서브커맨드 {len(_FLAGS)}종"
+
+
 def main(argv: list[str]) -> int:
     # ⚠️ **파이프로 태우면 stdout 이 블록 버퍼링된다.** 이 스크립트들은
     # 수십 분 도는 진단이라 `| tee` 로 받는 게 정상 사용인데, 그러면 버퍼가
@@ -396,15 +587,48 @@ def main(argv: list[str]) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
-    if len(argv) > 2 and argv[1] == "--ticker":
+    print(build_banner(), flush=True)
+    # ⚠️ 모르는 플래그는 **거절한다**. 옛 판은 조용히 `summarize()` 로
+    # 떨어져, 아직 배포 안 된 서브커맨드를 부르면 **다른 명령의 출력이
+    # 성공처럼** 나왔다(2026-09-18 `--refill` 실측). 오타도 같은 함정이다.
+    if len(argv) > 1 and argv[1].startswith("-") and argv[1] not in _FLAGS:
+        print(f"❌ 모르는 옵션 {argv[1]} — 이 체크아웃이 아는 것: "
+              + " ".join(_FLAGS))
+        print("   (배포 전 브랜치의 새 서브커맨드일 수 있다 — 위 코드 지문 확인)")
+        return 2
+    # ⚠️ **아는 플래그인데 인자가 모자란 경우도 거절한다.** 옛 판은 아래
+    # `len(argv) > N` 조건을 전부 빗나가 조용히 `summarize()` 로 떨어졌다 —
+    # `--ticker`(인자 없음)·`--list 012450.KS 2026`(reprt 누락, 흔한 오타)가
+    # 전부 rc=0 으로 **원장 요약**을 성공처럼 찍었다(독립 리뷰 H2 실측).
+    # 그건 이 배너·가드가 막으려던 바로 그 증상이다(#11·#364·#371).
+    need = {"--ticker": 1, "--doc": 1, "--list": 3, "--explain": 1}
+    flag = argv[1] if len(argv) > 1 else ""
+    if flag in need and len(argv) - 2 < need[flag]:
+        print(f"❌ {flag} 에 인자가 모자란다 — {need[flag]}개 필요, "
+              f"{max(0, len(argv) - 2)}개 받음")
+        print(f"   사용법: {flag} " + _USAGE_ARGS[flag])
+        return 2
+    if flag and not flag.startswith("-"):
+        # 플래그 없는 위치인자도 거절한다 — `backlog_misses 005930` 이
+        # 조용히 전체 요약을 찍으면 '그 종목을 봤다' 로 읽힌다(#82).
+        print(f"❌ 위치인자 {flag} 는 안 받는다 — 종목을 보려면 "
+              f"`--ticker {flag}`")
+        return 2
+    if flag == "--ticker":
         return per_quarter(argv[2])
-    if len(argv) > 2 and argv[1] == "--doc":
+    if flag == "--doc":
         return doc_probe(argv[2])
-    if len(argv) > 4 and argv[1] == "--list":
+    if flag == "--list":
         return list_probe(argv[2], argv[3], argv[4])
-    if len(argv) > 2 and argv[1] == "--explain":
+    if flag == "--explain":
         return explain(argv[2])
-    if len(argv) > 1 and argv[1] == "--sweep":
+    if flag == "--refill":
+        cap = _positive_int(argv[2]) if len(argv) > 2 else 40
+        if cap is None:
+            print(f"❌ --refill 상한이 양의 정수가 아니다: {argv[2]}")
+            return 2
+        return refill(cap)
+    if flag == "--sweep":
         return sweep(argv[2:])
     return summarize()
 

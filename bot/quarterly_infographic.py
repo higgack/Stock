@@ -401,8 +401,11 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
         qs[-1].setdefault("_meta", {})["backlog_spread"] = round(
             max(_vals) / min(_vals), 1)
         try:
-            from bot.dart_backlog import _log_miss
-            _log_miss(ticker, qs[-1]["year"], qs[-1]["reprt_code"], "시계열이상")
+            from bot.dart_backlog import MISS_SERIES_ANOMALY, _log_miss
+            # ⚠️ 사유 문자열은 `dart_backlog` 이 단일 출처다 — 여기에 리터럴로
+            # 적으면 되메우기가 이 줄을 '원문 있는 미스' 로 오인한다(#38).
+            _log_miss(ticker, qs[-1]["year"], qs[-1]["reprt_code"],
+                      MISS_SERIES_ANOMALY)
         except Exception as exc:
             log.debug("quarterly_infographic: backlog spread log: %s", exc)
 

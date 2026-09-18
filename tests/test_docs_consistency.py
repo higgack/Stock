@@ -241,14 +241,29 @@ def test_injected_rules_file_stays_within_budget():
     ⚠️ 상한을 파일 크기에 바싹 붙이면 **무관한 커밋이 문서 단언 하나에 막힌다**
     (#67·#275 — 옛 판의 '여유 3일' 참사). 접을 것이 0인데도 넘으면 그때는
     상한을 올릴 게 아니라 **새 항목의 크기 정책**(항목당 상한 등)을 물어야 한다 —
-    증가의 주동력은 옛 항목이 아니라 매일 들어오는 새 항목이다."""
+    증가의 주동력은 옛 항목이 아니라 매일 들어오는 새 항목이다.
+
+    **2026-09-18 — 상한 330,000 → 331,000(1회성) + 항목당 상한 도입.** 위 ⚠️ 가
+    물으라고 한 그 질문의 답이다(사용자 "항목당 크기 상한"). 그날 예산이 걸렸을
+    때 접을 차례는 **0개**였고, 비최근 항목 69개가 900자를 넘는데도 그런 이유는
+    `keep_clauses` 가 그 절들을 전부 **규칙**으로 판정하기 때문이다(#287 애매하면
+    남긴다 — 그 판정은 옳다). 즉 접기 지렛대는 소진됐고 남는 손잡이는 **새
+    항목의 크기**뿐이라, `_ENTRY_CAP`(900자, #387 부터 ratchet)을 회귀로 심고
+    상한은 그 정책이 서는 자리만큼 **한 번** 올렸다. ⚠️ 첫 판은 331,000
+    이었는데 #387 자체가 719자를 써 여유가 **382자**만 남았다 — 다음 항목
+    하나에 무관한 커밋이 막히고 그때 `due()` 는 0이라 처방이 없다(독립 리뷰
+    H3 실측, 이 docstring 위쪽이 경고한 '여유 3일' 참사와 같은 형태 #67·#275).
+    그래서 **현재 크기 + 항목당 상한 1개분**으로 다시 잡았다(330,6xx + 900 →
+    331,600). 이 산식은 다음에도 같다: 올릴 땐 현재 크기를 재고 한 항목분만.
+    ⚠️ 항목당 상한은 예산을 **되찾지 못한다** — 증가 속도만 늦춘다. 상한이 다시
+    걸리면 접기도 크기도 아닌 다른 답(예: 섹션 분리)을 물을 것."""
     from bot.scripts import claude_md_fold as fold
     n = len(_CLAUDE.read_text(encoding="utf-8"))
-    if n > 330_000:
+    if n > 331_600:
         _, sec, _ = fold.split_mistakes(_CLAUDE.read_text(encoding="utf-8"))
         pending = fold.due(fold.parse_entries(sec), sec)
         assert False, (
-            f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(330,000)을 넘었다. "
+            f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(331,600)을 넘었다. "
             f"접을 차례 {len(pending)}개"
             + (" — `cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold "
                "--apply` 로 접을 것" if pending else
@@ -502,3 +517,66 @@ def test_old_entries_are_folded_not_left_to_grow():
         f"접을 차례인 오래된 항목이 {len(pending)}개 쌓였다 — "
         "`cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold --apply` "
         f"로 접을 것: {pending[:10]}")
+
+
+# 새 ⛔ 항목의 크기 상한 — 사용자 결정 2026-09-18("항목당 크기 상한").
+# 값의 근거(실측): 전체 386항목 중앙값 **13줄·616자**인데 최근 47개는 중앙값
+# **37줄·1,831자**(최대 5,963자)다 — 즉 증가의 주동력은 옛 항목이 아니라 새
+# 항목이고, 900자는 이 파일의 역사적 중앙값 언저리다.
+_ENTRY_CAP = 900
+# ratchet — 이 번호부터 적용한다. 옛 항목을 소급해 줄이면 REFERENCE 사본이
+# 없는 서사가 사라진다(#287 압축이 한정어를 떨어뜨리면 규칙이 강해진다).
+_ENTRY_CAP_FROM = 387
+
+
+def _entries_over_cap(sec: str) -> list:
+    """상한을 넘는 **새** 항목 [(번호, 자수)] — 본 테스트와 발화 테스트가
+    **같은 함수**를 쓴다. 인라인으로 재구현하면 본 테스트의 비교식을 무력화
+    하는 변형이 발화 테스트를 그대로 통과한다(#286 동어반복 · 실측 M31)."""
+    from bot.scripts import claude_md_fold as fold
+    over = []
+    for num, s, e in fold.parse_entries(sec):
+        if not num.isdigit() or int(num) < _ENTRY_CAP_FROM:
+            continue
+        body = sec[s:e].rstrip()
+        if len(body) > _ENTRY_CAP:
+            over.append((num, len(body)))
+    return over
+
+
+def test_new_mistake_entries_stay_within_the_per_entry_cap():
+    """새 ⛔ 항목은 **규칙 문장**만 여기 쓰고 서사는 `CLAUDE_REFERENCE.md` 로.
+
+    2026-09-18 예산 가드가 걸렸을 때(329,899/330,000 · 접을 차례 0개) 그
+    가드가 "상한을 올리지 말고 **새 항목 크기 정책**을 물을 것" 이라고 적어
+    둔 그 질문의 답이다. 접기 지렛대는 소진됐다 — 비최근 항목 69개가 900자를
+    넘는데도 `due()` 가 0 인 이유는 `keep_clauses` 가 그 절들을 전부 **규칙**
+    으로 판정하기 때문이고(#287 애매하면 남긴다), 그건 옳다. 그러면 남는
+    손잡이는 **새로 들어오는 항목의 크기**뿐이다.
+
+    ⚠️ 이 가드는 예산을 **되찾지 못한다** — 증가 속도만 늦춘다. 상한이 다시
+    걸리면 그때는 접기도 크기도 아닌 다른 답(예: 섹션 분리)을 물어야 한다.
+    """
+    from bot.scripts import claude_md_fold as fold
+    c = _CLAUDE.read_text(encoding="utf-8")
+    _, sec, _ = fold.split_mistakes(c)
+    over = _entries_over_cap(sec)
+    assert not over, (
+        f"새 실수 항목이 {_ENTRY_CAP}자를 넘었다 — 규칙 문장만 남기고 사건 "
+        f"서사는 CLAUDE_REFERENCE.md 로 옮길 것(사용자 2026-09-18): {over}")
+
+
+def test_the_per_entry_cap_would_actually_fire():
+    """가드가 **실제로 발화하는지** — 옛 항목만 보면 ratchet 때문에 영원히
+    빈 목록이라 아무것도 안 재는 가드가 된다(#291·#54).
+
+    그래서 합성 섹션으로 판정을 태운다: 상한 밖 번호는 통과하고, 상한 안
+    번호는 잡힌다.
+    """
+    long_body = "가" * (_ENTRY_CAP + 50)
+    sec = (f"{_ENTRY_CAP_FROM - 1}. **옛 항목**: {long_body}\n"
+           f"{_ENTRY_CAP_FROM}. **새 항목**: {long_body}\n")
+    assert [n for n, _ in _entries_over_cap(sec)] == [str(_ENTRY_CAP_FROM)]
+    # 상한 안쪽은 안 걸린다 — 반대 증거도 같이 잰다(#25).
+    ok = (f"{_ENTRY_CAP_FROM}. **짧은 항목**: " + "가" * 10 + "\n")
+    assert _entries_over_cap(ok) == []
