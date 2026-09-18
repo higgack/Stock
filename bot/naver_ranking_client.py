@@ -18,6 +18,8 @@ import logging
 import re
 import threading
 
+from bot import naver_diag as _nd
+
 log = logging.getLogger("bot.naver_ranking")
 
 _BASE = "https://m.stock.naver.com/front-api"
@@ -31,37 +33,43 @@ _H = {
 _SUFFIX = {"KOSPI": ".KS", "KOSDAQ": ".KQ"}
 
 
-def _get_stocks(url: str) -> list | None:
-    """네이버 front-api GET → result.stocks 리스트. graceful None.
+def _get_stocks2(url: str) -> tuple[list | None, str]:
+    """(result.stocks, 실패 사유) — 갈래를 **이름으로** 돌려준다(#82).
 
     ⚠️ 봉투가 두 종류 (VM 실측 2026-06-13):
       worldstock(해외): {isSuccess, detailCode, message, result:{stocks}}
       domestic(국내):   {result:{stocks}}  ← **isSuccess 없음**
     그래서 isSuccess 는 **명시적 False 일 때만** 거부(없으면 통과) — 옛 `not
-    isSuccess` 가드는 국내(isSuccess 부재)를 전부 거부해 52주/상한가가 0 이었음."""
-    try:
-        from bot.finviz_client import naver_paused
-        if naver_paused():       # NAVER_PAUSE → fetch skip(호출부 캐시·빈값 폴백)
-            return None
-    except Exception:
-        pass
-    try:
-        import requests
-        r = requests.get(url, headers=_H, timeout=12)
-        if r.status_code != 200:
-            return None
-        d = r.json()
-        if not isinstance(d, dict) or d.get("isSuccess") is False:
-            return None
-        res = d.get("result")
-        if isinstance(res, dict) and isinstance(res.get("stocks"), list):
-            return res["stocks"]
-        if isinstance(d.get("stocks"), list):       # 최상위 stocks 폴백
-            return d["stocks"]
-        return None
-    except Exception as exc:
-        log.warning("naver_ranking GET 실패: %s", exc)
-        return None
+    isSuccess` 가드는 국내(isSuccess 부재)를 전부 거부해 52주/상한가가 0 이었음.
+
+    ⚠️ 옛 판은 일시정지·403·429·타임아웃·구조변경을 **`None` 하나로 뭉갰다** —
+    그래서 급등·급락 페이지가 "(잠시 후 다시 시도해 주세요)" 만 적었고, 원천
+    장애와 우리 파서 문제가 같은 화면이 됐다(#82·#43·#52·#335 형제 위젯이 이미
+    겪은 그 병). 공용 `get_json` 을 쓰므로 갈래 어휘·마스킹·euc-kr 폴백이
+    형제와 같다(#38 복제하면 한쪽만 고쳐진다).
+    """
+    d, why = _nd.get_json(url, headers=_H, log=log, tag="naver_ranking", timeout=12)
+    if why:
+        return None, why
+    if not isinstance(d, dict):
+        return None, _nd.shape_reason("응답", d)
+    if d.get("isSuccess") is False:
+        # 원천이 **스스로 거절 사유를 적어 보낸다** — 버리면 상태코드조차 없다.
+        import json as _json
+
+        return None, (_nd.error_brief(_json.dumps(d, ensure_ascii=False))
+                      or "원천이 isSuccess=false 로 거절했습니다")
+    res = d.get("result")
+    if isinstance(res, dict) and isinstance(res.get("stocks"), list):
+        return res["stocks"], ""
+    if isinstance(d.get("stocks"), list):       # 최상위 stocks 폴백
+        return d["stocks"], ""
+    return None, _nd.shape_reason("stocks", res if res is not None else d)
+
+
+def _get_stocks(url: str) -> list | None:
+    """`_get_stocks2` 의 값만 — 사유가 필요 없는 옛 호출부용(#38 단일 출처)."""
+    return _get_stocks2(url)[0]
 
 
 def _signed_pct(s: dict):
@@ -140,18 +148,32 @@ def _world_row(s: dict) -> dict:
 _PAGE_SIZE = 50
 
 
-def _domestic_paged(sort_type: str, category: str = "all", max_items: int = 200) -> list:
-    """domestic 랭킹 — pageSize 상한(50) 때문에 여러 페이지 합산. graceful []."""
+def _domestic_paged2(sort_type: str, category: str = "all",
+                     max_items: int = 200) -> tuple[list, str]:
+    """(행, 사유) — domestic 랭킹. pageSize 상한(50) 때문에 여러 페이지 합산.
+
+    ⚠️ 사유는 **한 행도 못 받았을 때만** 낸다 — 2쪽에서 끊긴 것은 부분 수신이지
+    실패가 아니고, 그걸 실패로 적으면 정상 화면에 경고가 상시로 뜬다(#25·#260).
+    부분이라는 사실은 호출부가 행 수로 안다.
+    """
     out: list = []
+    why = ""
     for page in range(1, max_items // _PAGE_SIZE + 2):
-        st = _get_stocks(f"{_BASE}/domestic/stock/list?sortType={sort_type}"
-                         f"&category={category}&page={page}&pageSize={_PAGE_SIZE}")
+        st, w = _get_stocks2(f"{_BASE}/domestic/stock/list?sortType={sort_type}"
+                             f"&category={category}&page={page}&pageSize={_PAGE_SIZE}")
         if not st:
+            if not out:
+                why = w
             break
         out += st
         if len(st) < _PAGE_SIZE or len(out) >= max_items:
             break
-    return out
+    return out, why
+
+
+def _domestic_paged(sort_type: str, category: str = "all", max_items: int = 200) -> list:
+    """`_domestic_paged2` 의 행만 — 사유가 필요 없는 옛 호출부용(#38)."""
+    return _domestic_paged2(sort_type, category, max_items)[0]
 
 
 def fetch_world_ranking(exchange: str, sort_type: str, limit: int = 30) -> list:
@@ -747,16 +769,37 @@ def fetch_kr_highlow(limit: int = 200) -> dict:
 def fetch_kr_movers(limit: int = 30) -> dict:
     """KR 급등/급락 — 네이버 domestic 상승/하락 랭킹 top (상한가 한도 필터 없이,
     사용자 2026-06-14 'KR 상한가/하한가 → 급등/급락'). JP/CN/HK 무버 형태. 한글명·
-    시총·거래대금 native. ETF/ETN/스팩 제외. {up,down,ts,source}. graceful."""
+    시총·거래대금 native. ETF/ETN/스팩 제외. {up,down,ts,source,reason}. graceful.
+    `reason` 은 **둘 다 비었을 때만** 실린다(부분 수신은 실패가 아니다)."""
     from bot.finviz_client import _now_label
-    out = {"up": [], "down": [], "ts": _now_label(),
+    out = {"up": [], "down": [], "ts": _now_label(), "reason": "",
            "source": "네이버 증권 급등/급락(전종목·한글명·시총·거래대금)"}
-    up = _domestic_paged("up", max_items=max(limit, 50))
-    dn = _domestic_paged("down", max_items=max(limit, 50))
+    up, why_u = _domestic_paged2("up", max_items=max(limit, 50))
+    dn, why_d = _domestic_paged2("down", max_items=max(limit, 50))
     if up:
         out["up"] = [_kr_row(s) for s in up if _is_real_stock(s)][:limit]
     if dn:
         out["down"] = [_kr_row(s) for s in dn if _is_real_stock(s)][:limit]
+    # 화면이 빌 때만 사유를 싣고, **가장 행동 가능한** 것을 머리에 둔다
+    # (#275 '먼저 찾은 것'이 아니라 · #82 처방이 갈래마다 다르다).
+    # ⚠️ 갈래가 셋이다 — 못 받음(사유 있음) / 원천이 0건 / 원천은 줬는데
+    # **우리 필터**가 다 걸렀다. 옛 판은 뒤 둘을 사유 `""` 로 뭉개 화면이
+    # "사유 미기록 — 로그를 볼 것" 을 적었는데, 그 자리엔 로그도 안 남는다
+    # (독립 리뷰 2026-09-18 M3·L6 · #82·#54 · `naver_diag` 가 `empty` 를
+    # 네 갈래의 하나로 이미 이름 지어 뒀다).
+    # ⚠️ 판정은 **필터 뒤**에 한다 — 앞에서 하면 원천이 준 행이 전부 걸러진
+    # 날에도 사유가 비어 같은 침묵이 된다(#45 두 모집단).
+    if not out["up"] and not out["down"]:
+        fails = [w for w in (why_u, why_d) if w]
+        if fails:
+            out["reason"] = min(fails, key=_nd.reason_rank)
+        elif up or dn:
+            out["reason"] = (
+                f"원천이 {len(up) + len(dn)}행을 줬지만 전부 ETF·ETN·스팩 등"
+                "으로 걸러졌습니다 — 우리 필터(`_is_real_stock`)를 볼 것")
+        else:
+            out["reason"] = ("원천이 0건을 줬습니다 — 고칠 것이 없을 수 "
+                             "있습니다(원천 점검 대상)")
     return out
 
 

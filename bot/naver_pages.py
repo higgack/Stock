@@ -296,6 +296,7 @@ def render_highlow_page() -> str:
     from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_pct,
                                     stock_panel)
     data = None
+    why = ""            # 비었을 때 **왜** 비었나(#43·#82) — 화면이 말한다
     try:
         from bot.finviz_client import (_CACHE_DIR, _MOVERS_INTRA_TTL, _cache_write,
                                        _cached, _session_fresh)
@@ -313,6 +314,7 @@ def render_highlow_page() -> str:
             nv = stale
         else:
             nv = fetch_kr_movers()
+            why = str(nv.get("reason") or "")
             if nv.get("up") or nv.get("down"):
                 _cache_write(_cf, nv)
             elif stale is not None:
@@ -327,6 +329,10 @@ def render_highlow_page() -> str:
             data = nv
     except Exception as exc:
         log.warning("naver KR movers: %s", exc)
+        # ⚠️ 다른 사유 채널은 전부 `_sanitize`/`mask_secrets` 를 거치는데 이
+        # 자리만 예외 문자열을 날것으로 실었다 — URL·토큰이 예외 메시지에
+        # 들어오는 경로가 실재한다(§Secrets · 독립 리뷰 2026-09-18 L7).
+        why = why or _naver_diag.mask_secrets(f"렌더 경로 예외: {exc}")
 
     if data is not None:
         up = sort_by_pct(data["up"], gainers=True)      # 기본 등락률순(사용자 2026-06-15)
@@ -363,15 +369,26 @@ def render_highlow_page() -> str:
         if data.get("stale"):
             _m = data.get("stale_min")
             _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
-            _fresh_txt = f'저장분{f" ({_ago})" if _ago else ""} ⚠️'
+            # ⚠️ 저장분을 그리는 날이 **장애의 첫 24시간**이다(`_cached` TTL).
+            # 사유를 여기 안 실으면 새 사유 채널이 그 하루 동안 한 글자도
+            # 안 보이고, 사용자는 어제 값 위에서 "왜 안 바뀌나"를 묻는다
+            # (독립 리뷰 2026-09-18 M2 · #43·#38 형제 `render_kr_volume_page`
+            # 는 이미 `💾` 뒤에 사유를 적는다).
+            _fresh_txt = (f'저장분{f" ({_ago})" if _ago else ""} ⚠️'
+                          + (f' · {_html.escape(why)}' if why else ""))
         else:
             _fresh_txt = _mf("KR")
         sub = ("네이버 증권 급등/급락 · 업종=네이버 · "
                f"{_fresh_txt}{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
+    # ⚠️ 옛 판은 갈래와 무관하게 "(잠시 후 다시 시도해 주세요.)" 만 적었다 —
+    # 일시정지(우리가 껐다)·403/429(원천이 거절)·구조 변경(우리가 고칠 것)이
+    # 같은 화면이라 사용자가 "원천 문제냐"를 물어야 했다(#82·#43·#52). 형제
+    # 위젯(업종 등락·리서치·거래량 상위)은 이미 사유를 적는다(#38·#335).
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
-            '(잠시 후 다시 시도해 주세요.)</div>')
+            + (_html.escape(why) if why else '사유 미기록 — 로그를 볼 것')
+            + '</div>')
     return _shell("급등·급락", "네이버 증권 급등/급락", "highlow", body)
 
 

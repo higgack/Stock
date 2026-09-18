@@ -963,6 +963,38 @@ in`/`not in` 부분문자열 판정 자체를 금지한다(독스트링·주석�
 태우지 않는다). 그리고 출처 분류의 정확성은 **repo CSV 를 읽을 수 있을 때만**
 참이다 — 못 읽으면 판정 불가로 빠지지, 오버레이 쪽으로 분류되지 않는다.
 
+### 수주잔고 파서 — 첫 실물 라운드 (2026-09-18, 발췌가 실제로 일했다)
+`tests/test_regression.py::TestBacklogRollingTable20260918`
+
+발췌를 싣자 **첫 라운드에서 형태가 갈렸다** — 9건이 한 형태(4열 롤링)로 묶였고
+나머지 7건은 원문을 더 봐야 한다(아래 ⚠️). 두 수의 합을 '전부' 라고 적지
+않는다 — 보고서의 총계와 이 소계는 다른 모집단이다(#45). 픽스처는 VM 실측
+발췌 그대로다(#155).
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 4열 롤링 표(`전기말·신규계약·매출인식·당반기말`)를 받는다 — 391710 실측 | ✅ 자동 | `test_rolling_four_column_table_is_parsed` |
+| 항등식(기초+신규−인식=기말)이 **유일한 열 배정 가드**(#106) | ✅ 자동 | `test_a_rolling_row_that_fails_the_identity_is_refused` |
+| 합계행이 있으면 그 행만 — 부문 행과 같이 더하면 두 배 | ✅ 자동 | `test_rolling_total_row_is_not_double_counted` |
+| 합계행이 없으면 검산 통과 행의 기말을 **합한다** | ✅ 자동 | `test_rows_without_a_total_are_summed` |
+| 4열 아닌 줄은 건너뛴다(안 그러면 파서가 통째로 죽고 조용히 미수집) | ✅ 자동 | `test_rows_that_are_not_four_columns_are_skipped` |
+| 기말 ≤ 0 은 안 받는다 | ✅ 자동 | `test_a_non_positive_closing_balance_is_refused` |
+| 인식 열이 헤더에 없으면 안 집는다(#57·#76) | ✅ 자동 | `test_a_table_without_an_opening_column_is_not_taken` |
+| **시작 열**이 없으면 안 집는다 — 머리는 3열인데 행이 4값인 표(= 엉뚱한 표를 읽는 중) | ✅ 자동 | `TestBacklogReviewFollowups20260918::test_rolling_table_requires_an_opening_column` |
+| 원천이 **빈 표**(전부 `-`)를 내면 파서 개선 여지가 아니다(#93·#111) | ✅ 자동 | `test_an_empty_backlog_table_is_not_a_parser_gap` |
+| 값이 있는 표는 여전히 개선 여지다 — 반대 증거(#25·#146) | ✅ 자동 | `test_a_table_with_numbers_is_still_a_parser_gap` |
+| 새 형식을 더해도 옛 형식이 안 깨진다(#59·#80 선택기 순서) | ✅ 자동 | `test_existing_formats_still_parse` |
+
+⚠️ **표본은 갈래마다 1건이다.** 9건을 한 형태로 묶은 건 발췌 하나의 근거이고,
+나머지 8건이 같은 형태인지는 다음 보고서가 말한다 — 표본 하나로 "갈래를 다
+고쳤다" 고 말하지 않는다(#111·#165).
+
+⚠️ 남은 7건은 **원문을 더 봐야 한다**: 000670(영풍) 4건은 `수주총액·기납품액·
+수주잔고` 각각에 수량/금액 2단 헤더가 붙은 6열 표이고 잔고가 **음수**다(실측
+245,858 − 264,255 = −18,396). 078340·144960 3건은 발췌에 `매출실적` 만
+보여 원천 부재일 수 있다. 결정적인 `합 계` 행이 발췌 창 밖이라 `_EXCERPT_CAP`
+을 600 으로 넓혔다(#156·#350 자르는 자리가 다음 결정을 가리면 안 된다).
+
 ### 수주잔고 격주 보고서 — **원문 발췌**를 싣는다 (2026-09-18)
 `tests/test_regression.py::TestBacklogMissExcerpt20260918`
 
@@ -1065,3 +1097,87 @@ DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 �
 붙지만, `시계열이상`(`quarterly_infographic` 이 조립된 시계열만 보고 남긴다)은
 **원문 없이** 기록되므로 영원히 없다. 그래서 문구가 원인을 단정하지 않고
 사유를 이름으로 센다(#55·#82·#165).
+
+### 거래량 상위·급등급락 — 허용값 키 귀속 · 사유 채널 (2026-09-18)
+`tests/test_regression.py::TestSortKeyAttribution20260918` ·
+`TestFieldErrorsKeepEveryMessage20260918` · `TestVolumeLearnFailBranches20260918` ·
+`TestMoversPageStatesTheReason20260918`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 남의 키(`dividendSortType`)에 붙은 목록을 `sortType` 으로 배우지 않는다(#34) | ✅ 자동 | `test_other_keys_list_is_not_learned_as_ours` |
+| 옛 봉투(키가 구간 **안**)도 여전히 읽힌다 — 키 귀속이 테마 보드 경로를 죽였다(#73) | ✅ 자동 | `test_old_bracket_envelope_still_resolves_for_the_key` |
+| 키 매칭은 **토큰 경계** — 접두 형제(`sort` ⊂ `sortType`)로 태운다(#46·#91b) | ✅ 자동 | `test_key_match_is_token_bounded_not_substring` |
+| `fieldErrors[key]` 의 **모든** 사유를 남기고 열거를 앞세운다(#156·#350) | ✅ 자동 | `TestFieldErrorsKeepEveryMessage20260918` 5건 |
+| 학습 실패 사유가 갈래 넷을 **이름으로** 말한다(#82) | ✅ 자동 | `TestVolumeLearnFailBranches20260918` 4건 |
+| 배선 — 학습이 남의 키 값을 후보로 **불러 보지 않는다**(#20) | ✅ 자동 | `test_learner_does_not_send_another_keys_values` |
+| 급등·급락 빈 화면이 일시정지·HTTP·구조변경을 **갈래로** 적는다(#43·#82) | ✅ 자동 | `TestMoversPageStatesTheReason20260918` 3건 |
+| 사유는 HTML escape 를 거친다(규칙 7) | ✅ 자동 | `test_reason_is_escaped` |
+| **부분 수신은 실패가 아니다** — 2쪽에서 끊겨도 사유를 안 싣는다(#25·#260) | ✅ 자동 | `test_partial_page_is_not_reported_as_failure` |
+| 사유가 여럿이면 **가장 행동 가능한** 것을 싣는다(#275) | ✅ 자동 | `test_movers_reason_prefers_the_actionable_one` |
+| 성공 실행엔 사유가 안 실린다(반대 증거, #25) | ✅ 자동 | `test_success_carries_no_reason` |
+| 사유 **접두**(`… — 원천: `) 뒤의 첫 키도 구간 머리다 — 아니면 지목한 키를 '안 했다'고 말한다(#292) | ✅ 자동 | `test_the_first_key_head_survives_the_reason_prefix` |
+| 배선 — 학습 실패 문구가 **리터럴 갈래**를 말한다(부재가 아니라, #82·#20) | ✅ 자동 | `test_volume_learner_names_the_literal_branch_not_absence` |
+
+⚠️ 토큰 경계 가드는 **두 번 뮤테이션을 통과했다** — `dividendSortType` 은
+대문자 `S` 라 부분문자열로 바꿔도 `sortType` 과 안 겹치고, 구간 **머리**로만
+재는 픽스처는 본문 매칭 경로를 아예 안 탄다. 접두가 같은 형제(`sort`)와 키가
+구간 안에 있는 옛 봉투, 둘 다 있어야 발화한다(#91c).
+
+⚠️ 그리고 **손으로 적은 사유 픽스처 열둘이 전부 눈이 멀어 있었다** — 제품의
+사유는 `http_reason` 이 앞에 `원천이 HTTP 400 — 원천: ` 을 붙여 만드는데,
+구간 분해가 `·`·문두만 경계로 봐서 그 **첫 키**를 통째로 놓쳤다. 옛 봉투는
+허용값이 0종이 되고(테마 커버리지 계약 5건이 빨간불로 잡았다) 새 봉투는
+원천이 지목한 키를 "지목하지 않았습니다" 라고 말했다. 사유 픽스처는 **그
+접두를 붙이는 함수를 태워** 만들 것(#155·#20).
+
+
+#### 독립 리뷰 후속 (2026-09-18, 같은 날 2차)
+`tests/test_regression.py::TestReasonChannelFollowups20260918` ·
+`TestBacklogReviewFollowups20260918`
+
+리뷰가 뮤테이션 38종 중 **13종 생존**을 실측했다 — 값은 흐르는데 그 값을 쓰는
+자리(화면 문구·폴백 라벨·프로브 인자)를 아무도 안 잰 형태다(#20·#291).
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 사유가 **통째로** 잘리면 '우리가 잘랐다' 로 말한다 — 원천 탓 금지(#54·#165) | ✅ 자동 | `test_a_fully_truncated_reason_is_blamed_on_us_not_the_source` |
+| 온전한 사유엔 '잘렸다' 를 안 붙인다(반대 증거, #25·#260) | ✅ 자동 | `test_an_intact_reason_is_not_called_truncated` |
+| 같은 키가 두 번 오면 **이어 붙인다** — 목록이 실린 뒤엣것을 버리지 않는다(#45) | ✅ 자동 | `test_the_same_key_twice_keeps_the_segment_that_has_the_list` |
+| `isSuccess=false` 는 원천이 적어 보낸 문구를 그대로 싣는다(#325) | ✅ 자동 | `test_isSuccess_false_carries_the_sources_own_wording` |
+| 비-dict 응답은 **계약 변경**으로 이름 붙인다(#82) | ✅ 자동 | `test_a_non_dict_response_is_named_as_a_contract_change` |
+| 행을 받았는데 전부 걸러지면 **우리 필터**를 지목한다 — 0건과 다른 갈래(#82·#292) | ✅ 자동 | `test_all_rows_filtered_out_points_at_our_filter_not_the_source` · `test_zero_rows_from_the_source_is_named_separately` |
+| 저장분 폴백이 **왜** 낡았는지 같이 적는다(#43·#306) | ✅ 자동 | `test_stale_fallback_still_states_why_it_is_stale` |
+| 렌더 경로 예외 문구도 마스킹을 거친다(§Secrets) | ✅ 자동 | `test_render_path_exception_is_masked` |
+| 리터럴 갈래 문구가 **반대 증거**를 같이 적는다 — 같은 주소가 다른 값으로는 행을 준다(#165·#292) | ✅ 자동 | `test_the_literal_branch_states_the_counter_evidence` |
+| 프로브가 **우리 키로** 허용값을 읽는다 — 남의 목록을 후보로 적지 않는다(#35·#352) | ✅ 자동 | `test_probe_reads_the_allowed_values_with_our_key` · `test_probe_venue_section_attributes_the_list_to_the_probed_key` |
+| 각주 붙은 합계행(`합 계 (*) - 10,000 …`)은 여전히 **파서 갭**이다(#93·#111) | ✅ 자동 | `test_a_total_row_with_footnote_and_dashes_is_still_a_parser_gap` |
+| 미공시류로 재분류되면 **이미 쌓인 개선 여지 줄**을 지운다(§Automation-first) | ✅ 자동 | `test_reclassifying_to_undisclosed_clears_the_old_fixable_line` |
+| 그 정리는 신원(종목·연도·보고서)으로만 — 남의 줄을 안 지운다(#45) | ✅ 자동 | `test_reclassification_does_not_touch_other_tickers_or_quarters` |
+| 롤링 검산은 **형제 항등식**을 그대로 부른다 — 괄호 음수 인식을 받는다(#38) | ✅ 자동 | `test_rolling_check_accepts_parenthesised_negative_recognition` |
+| 발췌 창이 `합 계` 행에 닿는다 — 리터럴이 아니라 동작으로(#19·#156) | ✅ 자동 | `test_excerpt_window_reaches_the_total_row` |
+
+⚠️ **픽스처를 두 번 고쳐야 발화한 가드가 둘이다**(#91c): 시작 열 요구는 행이
+3값이면 `_roll_ok` 의 `len == 4` 가 대신 막아 '머리 3열 · 행 4값' 픽스처가
+필요했고, 프로브 키 귀속은 **키를 아무도 안 지목한** 봉투에선 `key=` 가
+무의미해 다른 키를 지목하는 봉투가 필요했다.
+
+**못 보는 축**(#274): (a) `expected_literal` 의 파이프 목록 가드는 유일한
+호출부(`learn_fail_reason`)가 `allowed_values` 가 이미 `()` 를 낸 뒤에만 도는
+탓에 **발화 경로가 없다** — 방어용으로만 남긴다(#291·#373). (b) 키 귀속은
+`k: v` 부분이 하나라도 있으면 **귀속 없는 열거를 버린다** — 원천이 키 이름을
+안 적기 시작하면 테마 프로브가 조용히 0종이 된다(의도한 #32 맞교환이고
+`learn_fail_reason` 이 그 사실을 말하지만, 그게 이 축의 한계다). (c)
+`size_cap_from` 의 `_LE_RE` 창(200자)은 열거를 앞세운 뒤 긴 사유가 앞에 오면
+상한을 못 읽는다 — 오늘 봉투는 필드당 사유가 하나라 잠복이다. (d)
+`_parse_rolling` 은 `_balance_matches` 의 **수주 문맥 게이트**(#109)를 안 거치고
+`_parse_xbrl` 보다 먼저 시도된다 — 신원·단위·헤더 3토큰을 다 요구하지만 우선순위
+변경의 표본은 하나다.
+
+**못 보는 축**(#274): (a) 한 구간이 우리 키와 남의 키를 **함께** 담고 그
+구간에 남의 목록만 있으면 `_key_scope` 는 못 가른다 — 실측 봉투 둘은 그
+모양이 아니다. (b) 거래량 보드가 **왜** 그 봉투를 받게 됐는지(원천 스키마가
+유니온으로 바뀌었나 · `fieldErrors` 둘째 사유를 우리가 버렸나)는 아직 재지
+못했다. 두 fix 가 어느 쪽이든 다음 VM 실행이 사유로 답한다(#82·#165). (c) 사유
+채널은 **급등·급락에만** 배선했다 — 52주 신고저·상한가 보드는 여전히
+`_get_stocks`(값만)를 쓰므로 빈 화면이 갈래를 말하지 않는다.

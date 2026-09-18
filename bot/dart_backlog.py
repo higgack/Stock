@@ -518,6 +518,63 @@ def _parse_open_close(text: str) -> tuple[float, str] | None:
     return None
 
 
+# 형태 M — `전기말 / 신규계약 / 매출인식 / 당반기말` **4열 롤링** 표.
+# 2026-09-18 원문 실측(391710 씨아이에스): 격주 리뷰가 '헤더에 기초·수주총액
+# 열 없음' 으로 9건을 묶어 냈고, 발췌를 보니 헤더가 `구분 전기말 신규계약
+# 매출인식 당반기말` 이었다 — `_BAL_LABELS` 의 `기말` 이 **전기말·당반기말
+# 양쪽에** 걸려 잔고 열은 찾았는데 시작 열(`기초`·`수주총액`)이 없어 1번
+# 관문에서 막혔다. 어구를 늘리는 대신 **항등식이 있는 형태**로 받는다.
+_ROLL_NEW = re.compile(r"신\s*규\s*(?:계약|수주)")
+_ROLL_OPEN = re.compile(r"전\s*(?:반|분)?\s*기\s*말|기\s*초")
+_ROLL_RECOG = re.compile(r"(?:매출|수익)\s*인식|매\s*출\s*액|납\s*품\s*액?")
+_ROLL_CLOSE = re.compile(r"당\s*(?:반|분)?\s*기\s*말|기\s*말|수주잔고|수주잔액")
+
+
+def _roll_ok(r: list) -> bool:
+    """기초 + 신규 − 인식 ≈ 기말. **열을 잘못 집는 것을 막는 유일한 가드**다
+    (#106 열 뜻을 추측해 배정하면 스케일이 아니라 의미가 틀리고, 그건 검산도
+    못 잡는다). 실측 391710: 7,058 + 1,718 − 4,761 = 4,015 (정확히 일치).
+
+    ⚠️ 항등식은 **형제(`_verify_exact`)를 그대로 부른다** — 처음엔 여기에
+    `a + b - c` 를 따로 적었는데, 형제는 이미 `a + b - abs(c)` 이고 그 이유를
+    적어 두고 있었다(기납품액을 `(12,248,487)` 처럼 괄호 음수로 적는 회사가
+    있다 — HD현대중공업 실측). 같은 항등식을 두 곳에 적으면 한쪽만 고쳐져
+    그런 회사가 이 형태에서만 거부된다(#38, 독립 리뷰 2026-09-18 M4 —
+    뮤테이션이 그 갈라짐을 증명했다: 어느 쪽으로 바꿔도 회귀가 통과했다).
+    """
+    return len(r) == 4 and _verify_exact(r) is not None
+
+
+def _parse_rolling(text: str) -> tuple[float, str] | None:
+    """형태 M — 기초·신규·인식·기말 4열. 검산은 행마다 `_roll_ok`.
+
+    ⚠️ 합계행이 있으면 **그 행만** 쓴다 — 부문 행과 같이 더하면 두 배가
+    된다. 합계가 없으면 검산을 통과한 행들의 기말을 합한다(형태 K 와 같은
+    규약). 통과한 행이 하나도 없으면 표가 아니라고 보고 포기한다.
+    """
+    for m in _ROLL_NEW.finditer(text):
+        head = text[max(0, m.start() - 80):m.start()]
+        tail = text[m.end():m.end() + 80]
+        cm = _ROLL_CLOSE.search(tail)
+        if not _ROLL_OPEN.search(head) or not _ROLL_RECOG.search(tail) or not cm:
+            continue
+        mult = _unit_mult(text, m.start())
+        if mult is None:
+            continue
+        seg = _cut_table(text[m.end() + cm.end():][:6000])
+        tm = re.search(r"합\s*계", seg)
+        if tm:
+            total = _row_values(seg, tm.end())[:4]
+            if not _roll_ok(total):
+                continue
+            return total[3] * mult, "표·기초신규인식기말"
+        good = [r for r in _runs(seg) if _roll_ok(r)]
+        if not good:
+            continue
+        return sum(r[3] for r in good) * mult, "표·기초신규인식기말"
+    return None
+
+
 def _parse_project_rows(text: str) -> tuple[float, str] | None:
     """형태 K — `기본도급액·완성공사액·계약잔액` 3열이 **합계행 없이** 사업
     구분별로 나열되는 표(한전KPS).
@@ -673,10 +730,13 @@ def _parse_single(text: str) -> tuple[float, str] | None:
 # 것이라 개선 대상이 아니다. CLAUDE.md Automation-first.
 _MISS_LOG = _Path.home() / ".tradingagents" / "backlog_misses.jsonl"
 _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 증가 방지
-# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 240)을
+# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 400)을
 # 담는다 — 여기서 더 자르면 헤더가 잘려 **고칠 근거가 사라진다**(#156·#350
 # '자르는 자리가 다음 결정을 가리지 않는가').
-_EXCERPT_CAP = 400
+# ⚠️ 2026-09-18 첫 실물 라운드에서 **결정적인 줄이 창 밖이었다** — 영풍
+# (000670)의 `합 계` 행이 발췌 끝을 넘어가 '합계행 3값(검산실패)' 의 근거를
+# 볼 수 없었다. 자르는 자리가 다음 결정을 가리면 안 된다(#156·#350).
+_EXCERPT_CAP = 600
 # 텔레그램 단일 메시지 한도는 4096 UTF-16 이고, 우리는 그보다 낮은 값을
 # **보낼 메시지 전체**에 건다 — 넘기면 메시지가 통째로 안 가고, 그 실패는
 # `_periodic_backlog_review` 의 `log.exception` 에만 남아 **화면에는 아무
@@ -755,7 +815,39 @@ def diagnose(text: str) -> str:
         return "단위없음"
     if not any(re.search(r"합\s*계", text[p:p + 2500]) for p in with_unit):
         return "합계없음"
+    if all(_empty_backlog_table(text, p) for p in with_unit):
+        # 원천이 표 **틀만** 내고 칸을 전부 `-` 로 뒀다. 파서로 해결할 수
+        # 없으므로 개선 여지가 아니다 — '형식미지원' 으로 세면 다음 작업
+        # 목록이 통째로 틀린다(#93·#109·#111).
+        return "명시적미공시"
     return "형식미지원"
+
+
+def _empty_backlog_table(text: str, at: int) -> bool:
+    """그 자리의 수주 표가 **숫자 한 칸 없이 `-` 뿐**인가.
+
+    2026-09-18 원문 실측(091340): `품목 수주일자 납기 수주총액 기납품액
+    수주잔고 수량 금액 … - - - - - - 합 계 - - - - - -` — 회사가 표 틀만
+    내고 값을 안 썼다. 옛 판은 이걸 `형식미지원`(= 파서 개선 여지)으로 세어
+    격주 리뷰의 작업 목록을 부풀렸다.
+
+    ⚠️ 헤더의 연도·기수(`제29기`)나 단위 캡션이 숫자로 잡히지 않게 **합계
+    라벨 뒤**만 본다 — 거기가 값이 들어갈 자리다.
+
+    ⚠️⚠️ 숫자 유무는 `_row_values` 가 아니라 `_first_run` 으로 센다 — 전자는
+    **앞의 비숫자 토큰에서 즉시 끊겨** 빈 행을 돌려주고(그 함정은 `_first_run`
+    독스트링이 케이씨텍 실측으로 이미 적어 뒀다), 합계 라벨에 각주가 붙는
+    회사(`합 계 (*) - 10,000 - 4,000 - 6,000`)가 실재한다. 그 조합이면 값이
+    가득한 표가 '명시적미공시' 로 분류되고, 그 사유는 `_log_miss` 가 기록
+    자체를 건너뛰므로 **진짜 파서 갭이 원장에서 통째로 사라진다**(#93·#109·
+    #111 이 세우려 한 '개선 여지' 계수의 정반대, 독립 리뷰 2026-09-18 H1).
+    """
+    seg = text[at:at + 2500]
+    tm = re.search(r"합\s*계", seg)
+    if not tm:
+        return False
+    after = seg[tm.end():tm.end() + 120]
+    return not _first_run(after) and "-" in after
 
 
 def diagnose_detail(text: str) -> str:
@@ -892,7 +984,7 @@ def _gate_stage(text: str, spots: list[int]) -> str:
     return best
 
 
-def backlog_excerpt(text: str, width: int = 240) -> str:
+def backlog_excerpt(text: str, width: int = 400) -> str:
     """미수집 종목의 **잔고 표 주변 원문** 한 조각.
 
     ⚠️ 사유 히스토그램은 '무엇이 많은가'까지만 말한다 — 실제로 어떤 열
@@ -1136,10 +1228,54 @@ def _write_ledger(body: str) -> None:
     tmp.replace(_MISS_LOG)
 
 
+# 파서로는 못 고치는 사유 — 원천에 값이 없거나(미공시류) 원문을 못 받았거나
+# 원문 경로가 아니다. **여집합이 개선 여지**라, `diagnose` 가 새 관문 사유를
+# 내면 자동으로 '고칠 것' 으로 분류된다(#24 목록을 우리가 들면 새 항목을 못 잡는다).
+NON_FIXABLE_REASONS = ("미공시", "명시적미공시", MISS_NO_DOC, MISS_SERIES_ANOMALY)
+
+
+def drop_fixable(ticker, year, reprt_code) -> int:
+    """그 종목·분기의 **개선 여지 줄**을 지운다. 지운 줄 수.
+
+    ⚠️ `drop_miss` 는 사유까지 신원으로 보므로(`miss_key`) 재분류를 못 덮는다 —
+    같은 건이 `형식미지원` 과 새 사유로 두 줄이 되거나, 새 사유가 기록되지 않는
+    분류(미공시류)면 옛 줄만 남아 보고서가 계속 그걸 '고칠 수 있는 것' 으로
+    센다(독립 리뷰 2026-09-18 H2 실측). 여기서는 사유를 **여집합**으로 보고
+    신원(종목·연도·보고서)으로만 지운다.
+    """
+    if not _MISS_LOG.exists():
+        return 0
+    want = (norm_miss_ticker(ticker), year, reprt_code)
+    raw = _MISS_LOG.read_text(encoding="utf-8")
+    kept, n = [], 0
+    for ln in raw.splitlines():
+        r = parse_miss_line(ln)
+        if (r is not None and not r.get(_TOMB_KEY)
+                and (norm_miss_ticker(r.get("ticker")), r.get("year"),
+                     r.get("reprt")) == want
+                and r.get("reason") not in NON_FIXABLE_REASONS):
+            n += 1
+            continue
+        kept.append(ln)
+    if n:
+        _write_ledger(("\n".join(kept) + "\n") if kept else "")
+    return n
+
+
 def _log_miss(ticker: str, year, reprt_code, reason: str,
               detail: str = "", excerpt: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
     if reason in ("미공시", "명시적미공시"):
+        # ⚠️ 그냥 돌아가면 **이미 쌓인 개선 여지 줄이 그대로 남는다** —
+        # `miss_key` 에 사유가 들어가므로 새 분류가 옛 줄을 덮지 않고, 격주
+        # 보고서는 다음 사람이 `--refill` 을 손으로 돌릴 때까지 그 건을 계속
+        # '고칠 수 있는 것' 으로 센다(§Automation-first 운영자 반복명령을
+        # 요구하는 fix 는 잘못된 fix · #11 배포완료 ≠ 화면에 보임 · #45).
+        # 독립 리뷰 2026-09-18 H2 가 원장 실측으로 재현했다.
+        try:
+            drop_fixable(ticker, year, reprt_code)
+        except Exception:                                   # noqa: BLE001
+            log.debug("backlog miss 재분류 정리 실패 %s", ticker, exc_info=True)
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -1230,6 +1366,7 @@ def parse_backlog(text: str) -> dict | None:
     _fns = (_parse_table, _parse_domestic_export,
             _parse_balance_column, _parse_transposed,
             _parse_open_close, _parse_contract_table, _parse_project_rows,
+            _parse_rolling,
             _parse_xbrl, _parse_single, _parse_prose)
     # ⚠️ **지배회사 구간을 먼저** 훑는다. 전체를 훑으면 종속회사 표가 먼저
     # 걸려 본사 잔고 자리에 자회사 값이 들어간다(위 주석의 실측 사례).

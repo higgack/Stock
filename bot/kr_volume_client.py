@@ -102,6 +102,45 @@ def volume_sort_candidates(allowed: tuple) -> tuple:
     return tuple(sorted(allowed or (), key=_rank))
 
 
+_SORT_KEY = "sortType"
+
+
+def learn_fail_reason(why: str, key: str = _SORT_KEY) -> str:
+    """허용값을 못 배운 이유를 **갈래 이름으로**(순수). 처방이 전부 다르다(#82).
+
+    갈래 넷:
+    - 원천이 그 키에 **리터럴 하나**를 기대한다고 말함 — 목록이 아니므로 배울
+      수 없다(실측 2026-09-18: `expected "dividend"`. zod 판별 유니온으로
+      보이지만 **그건 우리가 재지 않았다**, #165).
+    - 적어 보냈는데 **우리가 잘랐다**(#156·#350) — 원천을 고치러 가면 안 된다.
+    - 다른 키들만 지목 — 남의 목록을 배우면 그 값이 영원히 거절된다.
+    - 거절 자체가 없음 — 이 엔드포인트가 그 키를 검증하지 않는 것으로 보인다.
+    """
+    from bot.naver_sector_client import (expected_literal, list_truncated,
+                                         names_key)
+    lit = expected_literal(why, key)
+    if lit:
+        # ⚠️ 이 응답을 "이 키는 늘 그 리터럴이어야 한다" 로 적으면 거짓이다 —
+        # 같은 주소(`_LIST`)를 `naver_ranking_client._domestic_paged` 가
+        # `sortType=up|down|high52week|low52week` 로 부르고 #373 실측이 같은
+        # 엔드포인트에서 `quantTop` 30행을 받았다. 즉 이 응답은 **그 미끼가
+        # 받은 한 갈래**이지 스키마 전체가 아니다(#165·#292 틀린 라벨은 라벨이
+        # 없는 것보다 나쁘다). 반대 증거를 같은 줄에 적는다.
+        return (f'원천이 미끼 값에 대해 {key} 에 리터럴 하나를 기대한다고 '
+                f'답했습니다(expected "{lit}") — 다만 같은 주소가 다른 '
+                f"{key} 값으로는 행을 주므로 이 응답은 그 키의 스키마 전체가 "
+                f"아닙니다(판별 유니온의 한 갈래로 보이지만 그건 재지 "
+                f"않았습니다). 허용값 목록은 이 응답에서 배울 수 없습니다 · "
+                f"원문: {why}")
+    if list_truncated(why):
+        return "원천이 허용값을 적어 보냈지만 사유 길이 제한에 잘렸습니다"
+    if names_key(why, key) is False:
+        return (f"원천이 거절 사유에서 {key} 를 지목하지 않았습니다 — 남의 키에 "
+                f"붙은 목록은 배우지 않습니다 · 원문: {why}")
+    return (why or f"원천이 미끼 값을 거절하지 않았습니다 — 이 엔드포인트는 "
+            f"{key} 을 검증하지 않는 것으로 보입니다")
+
+
 def is_volume_desc(rows: list, min_rows: int = 10) -> bool:
     """이 행들이 **누적 거래량 내림차순**인가(순수) — '거래량 상위'의 정의다.
 
@@ -223,14 +262,17 @@ def _learn_sort_type(force: bool = False) -> tuple[str, str, list]:
             return str(c["sort"]), "", []
     else:
         _cache_write(_SORT_CACHE, {})
-    from bot.naver_sector_client import allowed_values, list_truncated
+    from bot.naver_sector_client import allowed_values
     rows, why = _fetch(_PARAM_JUNK, 1)
-    vals = allowed_values(why)
+    # ⚠️ **어느 키의 목록인지 가려서** 배운다(2026-09-18). 같은 응답이 여러 키를
+    # 함께 거절하면 옛 판은 항목 수로만 겨뤄 남의 목록을 배웠다 — 실측 사유
+    # `sortType: Invalid input: expected "dividend" · dividendSortType: Invalid
+    # option: expected one of "rate"|"value"` 에서 `rate|value` 를 `sortType`
+    # 으로 보내 원천이 영원히 400 을 냈다(#34 한 자리가 두 뜻을 대표하면 한쪽은
+    # 반드시 거짓말 · #352 의 재발 — 그때는 부분문자열, 여기선 키 무시).
+    vals = allowed_values(why, key=_SORT_KEY)
     if not vals:
-        if list_truncated(why):
-            return "", "원천이 허용값을 적어 보냈지만 사유 길이 제한에 잘렸습니다", rows
-        return "", (why or "원천이 미끼 값을 거절하지 않았습니다 — "
-                    "이 엔드포인트는 sortType 을 검증하지 않는 것으로 보입니다"), rows
+        return "", learn_fail_reason(why), rows
     # 확정이 안 되는 상태에서 매 렌더 7콜을 쏘지 않는다(#346·#116). 진단·
     # 재학습(`force`)은 이 냉각을 타지 않는다 — 프로브는 계속 재야 한다(#345c).
     if not force:

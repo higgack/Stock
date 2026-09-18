@@ -118,15 +118,20 @@ def _section_control():
 
 def _section_sorts():
     print("\n② 거래량 상위의 정렬 키 — 허용값을 원천에게 묻는다")
-    from bot.naver_sector_client import allowed_values, list_truncated
+    from bot.naver_sector_client import allowed_values
     _d, why = _get(_LIST, sortType="__probe__", category="all", page=1, pageSize=5)
-    vals = allowed_values(why)
+    # ⚠️ 제품(`kr_volume_client._learn_sort_type`)과 **같은 귀속**으로 읽는다 —
+    # 감사가 화면과 다른 것을 배우면 통계가 갈린다(#35·#38). 그리고 사유 갈래도
+    # 제품의 술어를 그대로 부른다(리터럴 기대 / 잘림 / 남의 키 / 거절 없음, #82).
+    vals = allowed_values(why, key="sortType")
     if not vals:
+        from bot.kr_volume_client import learn_fail_reason
+        from bot.naver_sector_client import list_truncated
+        print(f"   ❌ 허용값을 못 읽었습니다 — {learn_fail_reason(why)}")
         if list_truncated(why):
-            print("   ❌ 허용값 목록이 사유 길이 제한에 잘렸습니다 — "
-                  "`naver_diag._sanitize` 한도를 올려 다시 재야 합니다.")
-        else:
-            print(f"   ❌ 허용값을 못 읽었습니다 — {why or '거절되지 않음'}")
+            # 갈래마다 **처방**이 다르고, 이 자리의 독자는 프로브를 돌리는
+            # 사람이다 — 제품 문구는 '무엇이' 까지만 말한다(#82).
+            print("   ⇒ `naver_diag._sanitize` 한도를 올려 다시 재야 합니다.")
         return ()
     print(f"   ✅ 원천이 밝힌 허용값 {len(vals)}종: {', '.join(vals)}")
     return vals
@@ -420,7 +425,9 @@ def _section_venue_params() -> None:
             n is not None and base_n is not None) else ""
         print(f"   {key:<20} {verdict}{extra}"
               + (f" — {why}" if why and status != 200 else ""))
-        vals = allowed_values(why) if status and status != 200 else ()
+        # 후보마다 **그 키의** 목록만 — 옛 판은 같은 응답의 남의 목록을
+        # 이 후보의 허용값으로 적었다(#352 의 재발, #46).
+        vals = allowed_values(why, key=key) if status and status != 200 else ()
         if vals:
             print(f"       원천이 밝힌 허용값 {len(vals)}종: {', '.join(vals)}")
     if stop:
