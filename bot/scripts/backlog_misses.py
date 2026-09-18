@@ -481,6 +481,44 @@ def explain(ticker: str) -> int:
     return 0
 
 
+# 이 도구의 출력을 만드는 소스 — 배너가 **덮는 범위**다. 하나만 재면
+# 나머지를 고친 배포에서 지문이 안 변해 '낡은 체크아웃' 을 못 가른다(#364).
+_SIG_FILES = ("bot/scripts/backlog_misses.py", "bot/dart_backlog.py")
+_FLAGS = ("--ticker", "--doc", "--list", "--explain", "--refill", "--sweep")
+
+
+def build_banner(root=None) -> str:
+    """첫 줄 배너 — **이 도구를 만든 소스의 지문**.
+
+    ⚠️ 왜 필요한가(2026-09-18 실측): `--refill` 을 배포 전에 안내했더니
+    VM 의 옛 체크아웃에서 그 플래그가 **조용히 `summarize()` 로 떨어져**
+    출력이 옛 판과 한 글자도 다르지 않았다 — 사용자도 나도 "고친 게 안
+    먹었나" 와 "아직 배포가 안 됐나" 를 가를 수 없었다(#11·#364·#371).
+    배포 시각이 아니라 소스 지문을 찍는다(손 버전은 여섯 번 졌다, #119).
+
+    ⚠️ **못 보는 축**(#274): `_SIG_FILES` 밖의 모듈(`dart_client` 등)은
+    안 덮는다. 회귀가 그 목록이 실제 import 와 어긋나지 않는지 본다.
+    """
+    import hashlib
+    import pathlib
+    # ⚠️ `root` 는 **테스트 전용 손잡이**다 — 지문이 소스에 반응하는지 재려면
+    # 소스를 바꿔 봐야 하는데, 레포 파일에 쓰면 내용을 되돌려도 **mtime 이
+    # 남아** 배포 drift 가드가 돌고 있는 프로세스를 전부 stale 로 찍는다
+    # (#365 가 그 사고다). 복사본에 대고 잰다.
+    root = pathlib.Path(root) if root else pathlib.Path(
+        __file__).resolve().parents[2]
+    try:
+        h = hashlib.sha1()
+        for rel in _SIG_FILES:
+            h.update((root / rel).read_bytes())
+        sig = h.hexdigest()[:10]
+    except Exception as exc:                                   # noqa: BLE001
+        # 못 구하면 **모른다고 말한다** — 조용히 비우면 낡은 체크아웃이
+        # 신선한 것과 구별되지 않는다(#54·#43).
+        sig = f"지문불가({type(exc).__name__})"
+    return f"# backlog_misses · 코드 지문 {sig} · 서브커맨드 {len(_FLAGS)}종"
+
+
 def main(argv: list[str]) -> int:
     # ⚠️ **파이프로 태우면 stdout 이 블록 버퍼링된다.** 이 스크립트들은
     # 수십 분 도는 진단이라 `| tee` 로 받는 게 정상 사용인데, 그러면 버퍼가
@@ -490,6 +528,15 @@ def main(argv: list[str]) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+    print(build_banner(), flush=True)
+    # ⚠️ 모르는 플래그는 **거절한다**. 옛 판은 조용히 `summarize()` 로
+    # 떨어져, 아직 배포 안 된 서브커맨드를 부르면 **다른 명령의 출력이
+    # 성공처럼** 나왔다(2026-09-18 `--refill` 실측). 오타도 같은 함정이다.
+    if len(argv) > 1 and argv[1].startswith("-") and argv[1] not in _FLAGS:
+        print(f"❌ 모르는 옵션 {argv[1]} — 이 체크아웃이 아는 것: "
+              + " ".join(_FLAGS))
+        print("   (배포 전 브랜치의 새 서브커맨드일 수 있다 — 위 코드 지문 확인)")
+        return 2
     if len(argv) > 2 and argv[1] == "--ticker":
         return per_quarter(argv[2])
     if len(argv) > 2 and argv[1] == "--doc":

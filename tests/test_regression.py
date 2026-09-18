@@ -71807,6 +71807,68 @@ class TestBacklogMissExcerpt20260918:
         names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
         assert "MISS_SERIES_ANOMALY" in names, "단일 출처를 안 쓴다"
 
+    def test_cli_says_which_build_it_is_and_rejects_unknown_flags(
+            self, tmp_path, monkeypatch, capsys):
+        """옛 체크아웃에서 새 서브커맨드를 부르면 **조용히 다른 명령이 돈다**.
+
+        2026-09-18 실측: 배포 전에 `--refill` 을 안내했더니 VM 의 옛 판이
+        그 플래그를 무시하고 `summarize()` 로 떨어져, 출력이 옛 판과 한
+        글자도 다르지 않았다 — 사용자도 나도 "고친 게 안 먹었나" 와 "아직
+        배포가 안 됐나" 를 가를 수 없었다(#11·#364·#371).
+
+        그래서 (a) 모든 경로가 **코드 지문**을 먼저 찍고 (b) 모르는 플래그는
+        거절한다. 지문은 옛 판에는 아예 없으므로 그 자체가 신호다.
+        """
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        assert bm.main(["backlog_misses", "--nope"]) == 2
+        out = capsys.readouterr().out
+        assert "코드 지문" in out.splitlines()[0], out
+        assert "--nope" in out and "--refill" in out, out
+        # 정상 경로도 같은 배너를 찍는다 — 한 경로에만 달면 그 경로의
+        # 증상만 설명한다(#359).
+        assert bm.main(["backlog_misses"]) == 0
+        assert "코드 지문" in capsys.readouterr().out.splitlines()[0]
+
+    def test_build_fingerprint_covers_the_sources_that_make_the_output(
+            self, tmp_path, monkeypatch):
+        """지문이 **한 파일만** 재면 나머지를 고친 배포에서 값이 안 변해
+        낡은 체크아웃을 못 가른다(#364 가 그 사각을 적어 둔 그대로).
+
+        `--refill` 의 판정은 `dart_backlog` 에 산다 — 그 파일이 목록에
+        없으면 이 배너는 **침묵보다 나쁜 과대 주장**이 된다(#286).
+        """
+        import ast
+        import inspect
+
+        from bot.scripts import backlog_misses as bm
+
+        assert "bot/dart_backlog.py" in bm._SIG_FILES
+        assert "bot/scripts/backlog_misses.py" in bm._SIG_FILES
+        # 소스가 바뀌면 값이 **실제로** 바뀌는지 — 상수를 돌려주는 변형이
+        # 통과하면 가드가 눈이 먼 것이다(#91b·#198).
+        # ⚠️ 레포 파일에 쓰지 않는다 — 내용을 되돌려도 **mtime 이 남아**
+        # 배포 drift 가드가 돌고 있는 프로세스를 전부 stale 로 찍는다(#365).
+        import pathlib
+        repo = pathlib.Path("bot/dart_backlog.py").resolve().parents[1]
+        for rel in bm._SIG_FILES:
+            dst = tmp_path / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes((repo / rel).read_bytes())
+        base = bm.build_banner(tmp_path)
+        assert base == bm.build_banner(), "복사본 지문이 실물과 달라졌다"
+        tgt = tmp_path / "bot" / "dart_backlog.py"
+        tgt.write_bytes(tgt.read_bytes() + b"\n# probe\n")
+        assert bm.build_banner(tmp_path) != base
+        # 서브커맨드 목록과 디스패치가 갈리면 배너가 거짓말한다(#38).
+        src = inspect.getsource(bm.main)
+        lits = {c.value for c in ast.walk(ast.parse(src))
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                and c.value.startswith("--")}
+        assert lits == set(bm._FLAGS), (lits, bm._FLAGS)
+
     def test_refill_targets_are_deduped_and_exclude_rows_that_have_one(self):
         """되메울 대상은 발췌 없는 줄뿐이고 **신원으로 중복을 없앤다** —
         같은 줄을 두 번 조회하면 그만큼 바깥 원천을 두드린다(#61)."""
