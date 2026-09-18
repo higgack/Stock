@@ -26105,9 +26105,23 @@ class TestBacklogSeriesSanity20260818:
         assert not any("격차" in n[0] for n in _footnotes({}, [])), "무조건 뜬다"
 
     def test_explain_mode_shows_which_table_was_matched(self):
-        """값만 봐서는 파서를 못 고친다 — **어느 표를 왜 골랐는지** 봐야 한다."""
+        """값만 봐서는 파서를 못 고친다 — **어느 표를 왜 골랐는지** 봐야 한다.
+
+        ⚠️ 2026-09-18 다시 씀(#19·#222): 옛 판은 `'argv[1] == "--explain"'`
+        이라는 **소스 문자열**을 박아, 디스패치를 `flag = argv[1]` 로 묶는
+        리팩터에 멀쩡한 코드를 틀렸다고 했다. 계약은 "그 모드가 배선돼 있다"
+        이지 그 표현이 아니다 — `main` 을 태워 **결과**로 잰다(#313).
+        """
         src = open("bot/scripts/backlog_misses.py", encoding="utf-8").read()
-        assert 'argv[1] == "--explain"' in src, "모드가 배선되지 않았다"
+        from bot.scripts import backlog_misses as bm
+        seen = []
+        _orig = bm.explain
+        try:
+            bm.explain = lambda tk: (seen.append(tk), 0)[1]
+            assert bm.main(["x", "--explain", "047810"]) == 0
+        finally:
+            bm.explain = _orig
+        assert seen == ["047810"], seen
         i = src.index("def explain(")
         blk = src[i:src.index("\ndef main(", i)]
         assert "parse_backlog(text)" in blk, "선택된 형식을 안 찍는다"
@@ -71969,6 +71983,191 @@ class TestBacklogMissExcerpt20260918:
         out = capsys.readouterr().out
         assert "상한 1 로 2건은 이번에 안 한다" in out, out
         assert "남은 2건은 다시 실행" in out, out
+
+    def _refill_env(self, monkeypatch, texts, calls=None):
+        """`refill` 을 태우는 하네스 — 원천만 스텁한다(#155)."""
+        import sys as _sys
+        import types
+
+        def _fetch(rn, key, max_bytes=0):
+            if calls is not None:
+                calls.append(rn)
+            got = texts.get(rn)
+            if isinstance(got, Exception):
+                raise got
+            return got or ""
+
+        class _D:
+            api_key = "k"
+
+            def find_periodic_reports(self, ticker, *a, **k):
+                return [{"rcept_no": str(ticker).split(".")[0]}]
+
+        monkeypatch.setitem(
+            _sys.modules, "bot.dart_feed",
+            types.SimpleNamespace(_DOC_TEXT_MAX_FULL=2, _fetch_doc_text=_fetch))
+        monkeypatch.setattr("bot.dart_client.get_dart", lambda *a, **k: _D())
+
+    def test_refill_keeps_the_old_row_when_it_could_not_read_the_document(
+            self, tmp_path, monkeypatch, capsys):
+        """되메우기가 **읽지도 못한 채 옛 줄을 지우면** 게이트 분류가 사라진다.
+
+        2026-09-18 독립 리뷰 B1 실측: 첫 판은 "사유가 달라졌으면 지운다"
+        였는데 `backlog_probe` 는 자기 예외를 삼켜 `오류:…` 를 돌려주고(그
+        경로에선 새 줄이 **안** 써진다), DART 일일한도는 예외 없이 빈 문서를
+        준다. 그래서 장애 한 번에 원장 3줄이 **0줄**이 됐다 — 화면은 그동안
+        "되메움 3건 · 이제 발췌를 볼 수 있다" 라고 말했다.
+        """
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음")
+        bl._log_miss("091340.KQ", 2026, "11012", "형식미지원", "멀다")
+        # ① 원문 자체가 안 온다(한도초과·status=014) ② 프로브가 예외를 삼킨다
+        self._refill_env(monkeypatch,
+                         {"000670": "", "091340": RuntimeError("boom")})
+        assert bm.refill() == 0
+        out = capsys.readouterr().out
+        rows = self._rows(bl)
+        assert sorted(r["ticker"] for r in rows) == ["000670", "091340"], rows
+        assert all(r["reason"] == "형식미지원" for r in rows), rows
+        assert "옛 줄은 그대로 둔다" in out, out
+        # ⚠️ 두 갈래는 **처방이 다르다**(#82): 원문이 없는 것은 기다리는
+        # 일이고, 조회가 실패한 것은 다시 도는 일이다. 한 통에 담으면
+        # 운영자가 어느 쪽인지 모른다 — 계수로 갈렸는지 잰다.
+        assert "원문 여전히 없음 1건" in out, out
+        assert "조회 실패 1건" in out, out
+        # 되메우지 못했으면 **되메웠다고 말하지 않는다**(#54·#165).
+        assert "되메움 0건" in out, out
+        assert "이제" not in out.split("=" * 84)[-1], out
+
+    def test_refill_bypasses_the_parse_cache(self, tmp_path, monkeypatch,
+                                             capsys):
+        """`out=` 없이 부르면 24시간 디스크 캐시를 타 `_log_miss` 가 아예 안
+        돌고, 그러면 옛 줄만 지우고 아무것도 안 쓰는 경로가 열린다 — 이
+        모듈이 스스로 적어 둔 규율(#35: 감사·프로브는 캐시를 안 탄다)이다."""
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음")
+        calls: list = []
+        self._refill_env(monkeypatch, {"000670": self.TEXT}, calls)
+        # 화면 경로(`out=None`)를 먼저 태워 24시간 디스크 캐시를 데운다.
+        import bot.dart_client as dc
+        bl.backlog_probe(dc.get_dart(), "000670", 2026, "11013")
+        assert len(calls) == 1
+        assert bm.refill() == 0
+        capsys.readouterr()
+        assert len(calls) == 2, f"되메우기가 캐시를 탔다: {calls}"
+
+    def test_refill_puts_rows_without_a_document_last_and_counts_them_apart(
+            self, tmp_path, monkeypatch, capsys):
+        """원문이 없는 줄은 발췌가 **구조적으로** 안 붙는다 — 상한을 선점하면
+        진짜 되메울 줄이 영영 못 걸린다(독립 리뷰 H1). 지우지는 않는다:
+        원천이 나중에 문서를 주면 그때 붙는다(#171)."""
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", bl.MISS_NO_DOC)
+        bl._log_miss("091340.KQ", 2026, "11012", "형식미지원", "멀다")
+        assert [r["ticker"] for r in bl.refill_targets(self._rows(bl))] == [
+            "091340", "000670"]
+        self._refill_env(monkeypatch, {"000670": "", "091340": self.TEXT})
+        assert bm.refill() == 0
+        out = capsys.readouterr().out
+        assert "원문 여전히 없음 1건" in out, out
+        assert "되메움 1건" in out, out
+
+    def test_refill_cap_is_enforced_by_behaviour_not_just_the_wording(
+            self, tmp_path, monkeypatch, capsys):
+        """상한은 **비용 계약**이다(미스 1건당 정기보고서 1건). 문구만 재면
+        `todo[:cap]` 을 통째로 지워도 통과한다(독립 리뷰 M-2 실측 SURVIVED).
+        """
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for i in range(5):
+            bl._log_miss(f"00000{i}.KS", 2026, "11013", "형식미지원", "캡션없음")
+        calls: list = []
+        self._refill_env(monkeypatch, {f"00000{i}": self.TEXT
+                                       for i in range(5)}, calls)
+        assert bm.refill(2) == 0
+        out = capsys.readouterr().out
+        assert len(calls) == 2, f"상한을 안 지켰다: {calls}"
+        assert "상한 2 로 3건은 이번에 안 한다" in out, out
+
+    def test_refill_rejects_a_bad_cap_and_says_why(self, tmp_path,
+                                                   monkeypatch, capsys):
+        """`int(argv[2])` 는 비정수에 **원시 트레이스백**을 냈고, 음수는
+        `todo[:-5]` 로 뒤를 잘라내면서 거짓 산수를 찍었다(M-5·L1 실측)."""
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for raw in ("abc", "-5", "0"):
+            assert bm.main(["x", "--refill", raw]) == 2, raw
+            assert "양의 정수가 아니다" in capsys.readouterr().out
+
+    def test_known_flags_with_missing_arguments_are_rejected(
+            self, tmp_path, monkeypatch, capsys):
+        """아는 플래그인데 인자가 모자라면 옛 판은 조용히 `summarize()` 로
+        떨어져 **원장 요약을 성공처럼** 찍었다 — 이 배너·가드가 막으려던 바로
+        그 증상이다(독립 리뷰 H2 실측: `--ticker`·`--list A 2026` 전부 rc=0).
+        """
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for argv in (["x", "--ticker"], ["x", "--doc"], ["x", "--explain"],
+                     ["x", "--list", "012450.KS", "2026"]):
+            assert bm.main(argv) == 2, argv
+            out = capsys.readouterr().out
+            assert "인자가 모자란다" in out and "사용법" in out, out
+            assert "수주잔고 파서 미스" not in out, out
+        # 플래그 없는 위치인자도 마찬가지다.
+        assert bm.main(["x", "005930"]) == 2
+        assert "--ticker 005930" in capsys.readouterr().out
+
+    def test_refill_says_when_only_legacy_rows_remain(self, tmp_path,
+                                                      monkeypatch, capsys):
+        """'없다' 가 아니라 **왜 없는지** 말한다 — `summarize` 는 옛 어휘를
+        말하는데 `refill` 만 침묵했다(#38·#82·L3)."""
+        import json
+
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        log = tmp_path / "m.jsonl"
+        log.write_text(json.dumps(
+            {"ticker": "000670", "year": 2026, "reprt": "11013",
+             "reason": "형식미지원", "dv": "옛판"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        monkeypatch.setattr("bot.dart_client.get_dart",
+                            lambda *a, **k: type("D", (), {"api_key": "k"})())
+        assert bm.refill() == 0
+        assert "옛 어휘 1건" in capsys.readouterr().out
+
+    def test_report_fits_even_when_no_excerpt_exists(self, tmp_path,
+                                                     monkeypatch):
+        """예산 검사가 발췌 루프 **안에만** 있으면, 발췌가 하나도 없을 때
+        상세 8줄(DART 캡션 원문 + `'`→`&#x27;` 6배)만으로 한도를 넘긴다 —
+        독립 리뷰 실측 4,173 u16, 생략 문구도 없었다(M-1)."""
+        from bot import dart_backlog as bl
+
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for i in range(8):
+            bl._log_miss(f"00000{i}.KS", 2026, "11013", "형식미지원",
+                         f"금액캡션 멀다 {chr(39) * 75} {i}")
+        out = bl.review_text()
+        assert bl._u16len(out) <= bl._DM_LIMIT, bl._u16len(out)
+        assert "길이 한도로" in out, out
+        # 꼬리말(다음 수를 정하는 줄)은 안 덜어낸다.
+        assert "원문 확인" in out, out
 
     def test_cli_prints_the_same_excerpts_the_report_shows(
             self, tmp_path, monkeypatch, capsys):

@@ -249,16 +249,21 @@ def test_injected_rules_file_stays_within_budget():
     `keep_clauses` 가 그 절들을 전부 **규칙**으로 판정하기 때문이다(#287 애매하면
     남긴다 — 그 판정은 옳다). 즉 접기 지렛대는 소진됐고 남는 손잡이는 **새
     항목의 크기**뿐이라, `_ENTRY_CAP`(900자, #387 부터 ratchet)을 회귀로 심고
-    상한은 그 정책이 서는 자리만큼 **한 번** 올렸다(+1,000 = 새 항목 한 개분).
+    상한은 그 정책이 서는 자리만큼 **한 번** 올렸다. ⚠️ 첫 판은 331,000
+    이었는데 #387 자체가 719자를 써 여유가 **382자**만 남았다 — 다음 항목
+    하나에 무관한 커밋이 막히고 그때 `due()` 는 0이라 처방이 없다(독립 리뷰
+    H3 실측, 이 docstring 위쪽이 경고한 '여유 3일' 참사와 같은 형태 #67·#275).
+    그래서 **현재 크기 + 항목당 상한 1개분**으로 다시 잡았다(330,6xx + 900 →
+    331,600). 이 산식은 다음에도 같다: 올릴 땐 현재 크기를 재고 한 항목분만.
     ⚠️ 항목당 상한은 예산을 **되찾지 못한다** — 증가 속도만 늦춘다. 상한이 다시
     걸리면 접기도 크기도 아닌 다른 답(예: 섹션 분리)을 물을 것."""
     from bot.scripts import claude_md_fold as fold
     n = len(_CLAUDE.read_text(encoding="utf-8"))
-    if n > 331_000:
+    if n > 331_600:
         _, sec, _ = fold.split_mistakes(_CLAUDE.read_text(encoding="utf-8"))
         pending = fold.due(fold.parse_entries(sec), sec)
         assert False, (
-            f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(331,000)을 넘었다. "
+            f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(331,600)을 넘었다. "
             f"접을 차례 {len(pending)}개"
             + (" — `cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold "
                "--apply` 로 접을 것" if pending else
@@ -524,6 +529,21 @@ _ENTRY_CAP = 900
 _ENTRY_CAP_FROM = 387
 
 
+def _entries_over_cap(sec: str) -> list:
+    """상한을 넘는 **새** 항목 [(번호, 자수)] — 본 테스트와 발화 테스트가
+    **같은 함수**를 쓴다. 인라인으로 재구현하면 본 테스트의 비교식을 무력화
+    하는 변형이 발화 테스트를 그대로 통과한다(#286 동어반복 · 실측 M31)."""
+    from bot.scripts import claude_md_fold as fold
+    over = []
+    for num, s, e in fold.parse_entries(sec):
+        if not num.isdigit() or int(num) < _ENTRY_CAP_FROM:
+            continue
+        body = sec[s:e].rstrip()
+        if len(body) > _ENTRY_CAP:
+            over.append((num, len(body)))
+    return over
+
+
 def test_new_mistake_entries_stay_within_the_per_entry_cap():
     """새 ⛔ 항목은 **규칙 문장**만 여기 쓰고 서사는 `CLAUDE_REFERENCE.md` 로.
 
@@ -540,13 +560,7 @@ def test_new_mistake_entries_stay_within_the_per_entry_cap():
     from bot.scripts import claude_md_fold as fold
     c = _CLAUDE.read_text(encoding="utf-8")
     _, sec, _ = fold.split_mistakes(c)
-    over = []
-    for num, s, e in fold.parse_entries(sec):
-        if not num.isdigit() or int(num) < _ENTRY_CAP_FROM:
-            continue
-        body = sec[s:e].rstrip()
-        if len(body) > _ENTRY_CAP:
-            over.append((num, len(body)))
+    over = _entries_over_cap(sec)
     assert not over, (
         f"새 실수 항목이 {_ENTRY_CAP}자를 넘었다 — 규칙 문장만 남기고 사건 "
         f"서사는 CLAUDE_REFERENCE.md 로 옮길 것(사용자 2026-09-18): {over}")
@@ -559,13 +573,10 @@ def test_the_per_entry_cap_would_actually_fire():
     그래서 합성 섹션으로 판정을 태운다: 상한 밖 번호는 통과하고, 상한 안
     번호는 잡힌다.
     """
-    from bot.scripts import claude_md_fold as fold
     long_body = "가" * (_ENTRY_CAP + 50)
     sec = (f"{_ENTRY_CAP_FROM - 1}. **옛 항목**: {long_body}\n"
            f"{_ENTRY_CAP_FROM}. **새 항목**: {long_body}\n")
-    got = []
-    for num, s, e in fold.parse_entries(sec):
-        if num.isdigit() and int(num) >= _ENTRY_CAP_FROM \
-                and len(sec[s:e].rstrip()) > _ENTRY_CAP:
-            got.append(num)
-    assert got == [str(_ENTRY_CAP_FROM)], got
+    assert [n for n, _ in _entries_over_cap(sec)] == [str(_ENTRY_CAP_FROM)]
+    # 상한 안쪽은 안 걸린다 — 반대 증거도 같이 잰다(#25).
+    ok = (f"{_ENTRY_CAP_FROM}. **짧은 항목**: " + "가" * 10 + "\n")
+    assert _entries_over_cap(ok) == []

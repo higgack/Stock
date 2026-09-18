@@ -998,6 +998,14 @@ Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었
 | 모든 경로가 **코드 지문**을 먼저 찍고, 모르는 플래그는 거절한다(rc=2) | ✅ 자동 | `test_cli_says_which_build_it_is_and_rejects_unknown_flags` |
 | 지문이 **출력을 만드는 두 파일**을 덮고 소스가 바뀌면 값이 바뀐다(#364·#286) | ✅ 자동 | `test_build_fingerprint_covers_the_sources_that_make_the_output` |
 | `make test` 가 **운영 미스 원장**을 안 건드린다 — conftest 리다이렉트(#30·#312·#344) | ✅ 자동 | `test_production_disk_caches_are_redirected` |
+| 되메우기는 **원문을 읽었을 때만** 옛 줄을 지운다 — 조회 실패·원문 미수신은 보존 | ✅ 자동 | `test_refill_keeps_the_old_row_when_it_could_not_read_the_document` |
+| 되메우기가 **캐시를 우회**한다(#35) — 캐시 히트면 새 줄이 안 써진다 | ✅ 자동 | `test_refill_bypasses_the_parse_cache` |
+| 원문 없는 줄은 **뒤로 밀고 따로 센다**(상한 선점 금지, #171) | ✅ 자동 | `test_refill_puts_rows_without_a_document_last_and_counts_them_apart` |
+| 상한은 **문구가 아니라 호출 수**로 지켜진다(#313·#66) | ✅ 자동 | `test_refill_cap_is_enforced_by_behaviour_not_just_the_wording` |
+| `--refill <비정수·음수·0>` 을 갈래로 거절(#82·#132) | ✅ 자동 | `test_refill_rejects_a_bad_cap_and_says_why` |
+| 아는 플래그인데 **인자가 모자라도** 거절 — 옛 판은 조용히 요약을 찍었다 | ✅ 자동 | `test_known_flags_with_missing_arguments_are_rejected` |
+| 되메울 게 없으면 **왜 없는지**(옛 어휘) 말한다(#38·#82) | ✅ 자동 | `test_refill_says_when_only_legacy_rows_remain` |
+| 발췌가 **하나도 없어도** 메시지가 한도 안이고 줄인 사실을 말한다 | ✅ 자동 | `test_report_fits_even_when_no_excerpt_exists` |
 
 ⚠️ 2026-09-18 독립 리뷰가 잡은 두 축이 여기 들어 있다. (a) 옛 판은 갈래를
 `_EX_SAMPLE_N=6` 으로 **조용히** 잘랐다 — 실측 10갈래 → 6개 표시, 생략 문구
@@ -1032,6 +1040,14 @@ VM 에 도달하는 경로가 있는지부터 답할 것" 의 재발). 그래서
 보고서는 2주에 한 번이므로, 운영자가 한 번에 되메울 수 있어야 한다
 (§Automation-first). 사유가 달라지면 옛 줄은 **방금 다시 재서 반증된 관측**
 이므로 지운다.
+
+⚠️⚠️ 2026-09-18 **2차 독립 리뷰가 배포를 막았다**(Blocking 1). 첫 판의
+`--refill` 은 "사유가 달라졌으면 옛 줄을 지운다" 였는데, `backlog_probe` 는
+자기 예외를 삼켜 `오류:…` 를 돌려주고(그 경로에선 새 줄이 **안** 써진다)
+DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 번이 게이트 분류를
+지웠다 — 실측 원장 3줄 → **0줄**, 화면은 그동안 "되메움 3건 · 이제 발췌를 볼
+수 있다". 이제 프로브가 `doc_len` 으로 "이번에 읽었나" 를 싣고, 읽었을 때만
+옛 줄이 물러난다. 갈래는 되메움 / 원문 여전히 없음 / 조회 실패 셋으로 나뉜다.
 
 ⚠️ 2026-09-18 배포전 스모크가 잡은 것 — `make test` 가 `backlog_probe` 를
 태우면서 운영 원장(`~/.tradingagents/backlog_misses.jsonl`)에 **가짜 티커**를

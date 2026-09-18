@@ -678,8 +678,10 @@ _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 
 # '자르는 자리가 다음 결정을 가리지 않는가').
 _EXCERPT_CAP = 400
 # 텔레그램 단일 메시지 한도는 4096 UTF-16 이고, 우리는 그보다 낮은 값을
-# **보낼 메시지 전체**에 건다 — 넘기면 메시지가 통째로 안 가고 그 실패는
-# `_periodic_backlog_review` 의 except 가 삼켜 **아무 신호도 안 남는다**.
+# **보낼 메시지 전체**에 건다 — 넘기면 메시지가 통째로 안 가고, 그 실패는
+# `_periodic_backlog_review` 의 `log.exception` 에만 남아 **화면에는 아무
+# 신호도 안 온다**(로그엔 남는다 — 안 재고 '아무 데도 안 남는다' 고 적으면
+# 그게 #165 다).
 # ⚠️ 갈래 개수로는 자르지 않는다. 개수 상한을 따로 두면 예산이 남아도는데도
 # 조용히 버리고, 그 버린 수는 '길이 한도로 생략' 계수에 안 잡혀 보고서가
 # "전부 봤다"고 거짓말한다(2026-09-18 독립 리뷰 실측: 10갈래 → 6개 표시 ·
@@ -694,6 +696,10 @@ _CLI_CMD = "cd ~/stock &amp;&amp; .venv/bin/python -m bot.scripts.backlog_misses
 # 아니다(다시 조회하면 그 자리에 파싱 사유가 들어와 이 신호를 지운다).
 # ⚠️ 문자열을 두 곳에 적으면 한쪽만 바뀌어 그 규칙이 조용히 죽는다(#38).
 MISS_SERIES_ANOMALY = "시계열이상"
+# 원문을 **못 받은** 사유. 되메우기가 이걸 옛 관측의 반증으로 쓰면 안 된다 —
+# 문서를 안 읽었으므로 파싱 판정을 갱신할 근거가 없고, DART 일일한도 한 번이
+# 게이트 분류(이 보고서의 존재 이유)를 통째로 지운다(2026-09-18 독립 리뷰 B1).
+MISS_NO_DOC = "원문미제공"
 
 # 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
 # SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
@@ -732,7 +738,7 @@ def diagnose(text: str) -> str:
         # (`--list` 로 확대 창까지 훑어 정정 부재를 확인, 2026-08-18).
         # 여러 종목에서 몰리면 키 권한·일일한도 같은 계정 문제일 수 있으므로
         # 격주 리포트에 **보여야 한다**.
-        return "원문미제공"
+        return MISS_NO_DOC
     hits = len(_balance_matches(text))
     if not hits:
         return "미공시"
@@ -770,7 +776,7 @@ def diagnose_detail(text: str) -> str:
     # 분류는 "원문이 안 쓴다고 밝힘" 인데 상세는 단위 얘기를 하니 읽는
     # 사람이 '단위를 더 지원하면 되나' 로 오해한다(#93 의 반대 방향:
     # 행동으로 이어지지 **않는** 상세는 노이즈다).
-    if diagnose(text) in ("미공시", "명시적미공시", "원문미제공"):
+    if diagnose(text) in ("미공시", "명시적미공시", MISS_NO_DOC):
         return ""
     spots = _balance_spots(text)
     if not spots:
@@ -1087,6 +1093,10 @@ def refill_targets(rows: list) -> list[dict]:
             continue
         seen.add(k)
         out.append(r)
+    # ⚠️ 원문을 못 받은 줄은 **뒤로 민다**. 되메울 원문이 없으니 상한(예산)을
+    # 선점하면 진짜 되메울 줄이 영영 안 걸린다(2026-09-18 독립 리뷰 H1).
+    # 지우지는 않는다 — 원천이 나중에 문서를 주면 그때 붙는다(#171).
+    out.sort(key=lambda r: r.get("reason") == MISS_NO_DOC)
     return out
 
 
@@ -1179,8 +1189,6 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
                 continue
             kept.append(ln)
         body = "\n".join(kept + [line]) + "\n"
-        if body == raw:
-            return                  # 바뀐 게 없다 — mtime 도 안 건드린다
         # ⚠️ 남는 축: read-modify-write 라 **동시 쓰기의 유실**은 그대로다
         # (선재 — 원장은 진단용이고 다음 조회가 다시 남긴다).
         _write_ledger(body)
@@ -1245,6 +1253,36 @@ def _cut_note(n: int) -> str:
     """길이 한도로 못 실은 갈래 수 — 자른 사실과 **전부 보는 법**을 말한다(#45)."""
     return (f"… 갈래 {n}개는 길이 한도로 생략 — "
             f"<code>{_CLI_CMD}</code> 가 전부 보여줍니다.")
+
+
+def _fit_message(body: list, tail: list) -> str:
+    """한도를 넘으면 목록 줄(`· …`)을 뒤에서부터 덜어내고 **덜어낸 수를 말한다**.
+
+    ⚠️ 예산 검사가 발췌 루프 **안에만** 있으면 발췌가 하나도 없을 때
+    상세 8줄만으로 한도를 넘긴다(독립 리뷰 실측 4,173 u16). 여기서 한 번 더 잰다.
+    ⚠️ 꼬리말(안내·명령)은 안 덜어낸다 — 그게 다음 수를 정하는 줄이다.
+    ⚠️ 더 못 줄이면 그대로 내보낸다 — 그때는 '줄였다' 고 말하지 않는다(#165).
+    """
+    def _n(rows):
+        return _u16len("\n".join(rows))
+
+    cut = 0
+    while _n(body + ["", _trim_note(cut + 1)] + tail) > _DM_LIMIT:
+        # 뒤에서부터 덜어낸다 — 앞쪽이 요약(건수·사유)이라 더 중요하다.
+        drop = next((i for i in range(len(body) - 1, -1, -1)
+                     if body[i].startswith("· ")), None)
+        if drop is None:
+            break
+        body.pop(drop)
+        cut += 1
+    if not cut:
+        return "\n".join(body + tail)
+    return "\n".join(body + ["", _trim_note(cut)] + tail)
+
+
+def _trim_note(n: int) -> str:
+    return (f"… 길이 한도로 {n}줄 생략 — <code>{_CLI_CMD}</code> 가 전부 "
+            "보여줍니다.")
 
 
 def review_text() -> str:
@@ -1327,8 +1365,8 @@ def review_text() -> str:
             if len(body) < len(samples):
                 body.append(_cut_note(len(samples) - len(body)))
             out += head + body
-    out += tail
-    return "\n".join(out)
+    # ⚠️ 꼬리말은 따로 넘긴다 — 한도를 넘으면 목록만 덜어내고 안내는 남긴다.
+    return _fit_message(out, tail)
 
 
 # 파싱 결과 디스크 캐시 — `tables_rolling`(dart_production) 과 같은 규약.
@@ -1435,6 +1473,9 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         if out is not None:
             out["detail"] = det
             out["excerpt"] = ex
+            # ⚠️ 되메우기는 "이번에 원문을 **읽었나**" 를 알아야 한다 —
+            # 안 읽었으면 옛 관측을 반증할 근거가 없다(독립 리뷰 B1).
+            out["doc_len"] = len(text or "")
         _log_miss(ticker, year, reprt_code, why, det, ex)
         # 사유만 돌려주면 "단위없음 15건"에서 멈춰 다음 수를 못 정한다 —
         # 상세를 붙여 감사 히스토그램이 곧 작업 목록이 되게 한다(#93).

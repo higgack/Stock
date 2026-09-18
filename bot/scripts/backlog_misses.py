@@ -80,17 +80,28 @@ def refill(cap: int = 40) -> int:
     ⚠️ 바깥 원천을 미스 1건당 정기보고서 1건씩 받는다. 상한을 두고,
     **자른 사실을 말한다**(#45). 한 줄씩 즉시 찍는다 — 수십 분짜리를
     파이프로 받으면 끝날 때까지 아무것도 안 보인다(#103).
+
+    ⚠️⚠️ **옛 줄은 이번에 원문을 읽었을 때만 지운다**(2026-09-18 독립 리뷰
+    B1 실측): 첫 판은 "사유가 달라졌으면 지운다" 였는데, `backlog_probe` 는
+    자기 예외를 삼켜 `오류:XxxError` 를 돌려주고(그 경로에선 새 줄이 **안**
+    써진다) DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 번이
+    게이트 분류(이 보고서의 존재 이유)를 지웠다 — 실측 3줄 → **0줄**.
+    프로브가 실은 `doc_len` 으로 "읽었나" 를 가른다.
     """
-    from bot.dart_backlog import backlog_probe, drop_miss, refill_targets
+    from bot.dart_backlog import (MISS_NO_DOC, backlog_probe, drop_miss,
+                                  refill_targets)
     from bot.dart_client import get_dart
     dart = get_dart()
     if not dart:
         print("❌ DART_API_KEY 없음 — 원문을 못 받으면 되메울 수 없다.")
         return 1
-    rows, _all, _legacy = _load_rows()
+    rows, _all, legacy = _load_rows()
     todo = refill_targets(rows)
     if not todo:
-        print("되메울 줄 없음 — 발췌 없는 미스가 없다.")
+        # 원장이 전부 옛 어휘면 '없다' 가 아니라 **왜 없는지**다(#82·#43).
+        print("되메울 줄 없음 — 발췌 없는 미스가 없다."
+              + (f" (옛 어휘 {legacy}건은 세지 않는다 — 다음 조회부터 "
+                 "새 어휘로 쌓인다)" if legacy else ""))
         return 0
     cut = max(0, len(todo) - cap)
     todo = todo[:cap]
@@ -98,15 +109,21 @@ def refill(cap: int = 40) -> int:
           + (f" · 상한 {cap} 로 {cut}건은 이번에 안 한다" if cut else ""),
           flush=True)
     print("=" * 84, flush=True)
-    filled = solved = same = 0
+    filled = solved = same = nodoc = failed = 0
     for i, r in enumerate(todo, 1):
         tk, yr, rc = r.get("ticker"), r.get("year"), r.get("reprt")
         was = r.get("reason")
+        # ⚠️ `out=` 을 넘겨 **캐시를 우회**한다 — 이 모듈의 규율이다(#35:
+        # 감사·프로브는 화면 캐시를 타지 않는다). 캐시 히트면 `_log_miss` 가
+        # 아예 안 돌아, 옛 줄만 지우고 아무것도 안 쓰는 경로가 열린다.
+        box: dict = {}
         try:
-            val, why = backlog_probe(dart, tk, yr, rc)
+            val, why = backlog_probe(dart, tk, yr, rc, out=box)
         except Exception as exc:                               # noqa: BLE001
+            failed += 1
             print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ "
-                  f"{type(exc).__name__}: {exc}", flush=True)
+                  f"{type(exc).__name__}: {exc} — 옛 줄은 그대로 둔다",
+                  flush=True)
             continue
         if val is not None:
             solved += 1
@@ -114,10 +131,28 @@ def refill(cap: int = 40) -> int:
             print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ✅ 해소 "
                   f"{val/1e12:.3f}조 — 원장에서 지웠다", flush=True)
             continue
-        # 사유가 그대로면 `_log_miss` 가 같은 신원의 줄을 **대체**했다.
-        # 달라졌으면 새 줄이 따로 생겼고, 옛 줄은 **방금 다시 재서 반증된
-        # 관측**이다 — 안 지우면 같은 분기가 두 건으로 세어진다(#45).
         now = (why or "").split(" · ")[0]
+        if not box:
+            # 프로브가 내부에서 실패했다 — 새 줄이 안 써졌으므로 옛 관측을
+            # 반증할 근거가 없다. 지우지도, 되메움으로 세지도 않는다.
+            failed += 1
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ {why} — "
+                  "옛 줄은 그대로 둔다", flush=True)
+            continue
+        if not box.get("doc_len") or now == MISS_NO_DOC:
+            # 원문을 못 받았다(원천 장애·일일한도·`status=014`). 파싱 판정을
+            # 갱신할 근거가 없으므로 **옛 줄을 지우지 않는다**.
+            # ⚠️ 그런데 `_log_miss` 가 방금 `원문미제공` 줄을 **새로** 썼다 —
+            # 사유가 달라 신원이 다르기 때문이다. 그대로 두면 같은 분기가 두
+            # 건으로 세어지므로(#45) 이 실행이 만든 그 줄만 도로 지운다.
+            if now != was:
+                drop_miss(tk, yr, rc, now)
+            nodoc += 1
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ⏳ 원문 여전히 없음 "
+                  f"({why}) — 옛 줄은 그대로 둔다", flush=True)
+            continue
+        # 여기부터는 **원문을 읽었다**. 사유가 그대로면 `_log_miss` 가 같은
+        # 신원의 줄을 대체했고, 달라졌으면 옛 줄은 방금 반증된 관측이다(#45).
         filled += 1
         if now == was:
             same += 1
@@ -128,8 +163,12 @@ def refill(cap: int = 40) -> int:
               flush=True)
     print("=" * 84, flush=True)
     print(f"■ 되메움 {filled}건(같은 사유 {same}) · 해소 {solved}건"
+          + (f" · 원문 여전히 없음 {nodoc}건" if nodoc else "")
+          + (f" · 조회 실패 {failed}건" if failed else "")
           + (f" · 남은 {cut}건은 다시 실행" if cut else ""))
-    print("→ 이제 `backlog_misses` 로 원문 발췌를 볼 수 있다.")
+    # ⚠️ 아무것도 못 붙였으면 "이제 볼 수 있다" 고 말하지 않는다(#54·#165).
+    print("→ 이제 `backlog_misses` 로 원문 발췌를 볼 수 있다." if filled else
+          "→ 이번 실행으로 붙은 발췌는 없다 — 위 갈래가 사유다.")
     return 0
 
 
@@ -485,6 +524,22 @@ def explain(ticker: str) -> int:
 # 나머지를 고친 배포에서 지문이 안 변해 '낡은 체크아웃' 을 못 가른다(#364).
 _SIG_FILES = ("bot/scripts/backlog_misses.py", "bot/dart_backlog.py")
 _FLAGS = ("--ticker", "--doc", "--list", "--explain", "--refill", "--sweep")
+_USAGE_ARGS = {"--ticker": "<코드>", "--doc": "<접수번호>",
+               "--list": "<코드> <연도> <보고서코드>", "--explain": "<코드>"}
+
+
+def _positive_int(raw):
+    """`--refill N` 의 N — 양의 정수만. 아니면 None.
+
+    ⚠️ 옛 판은 `int(argv[2])` 라 비정수에 **원시 트레이스백**이 났고(#82·#132),
+    음수는 `todo[:-5]` 로 **뒤 5건을 잘라내면서** "상한 -5 로 13건은 이번에
+    안 한다" 는 거짓 산수를 찍었다(독립 리뷰 M-5·L1 실측).
+    """
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def build_banner(root=None) -> str:
@@ -496,8 +551,12 @@ def build_banner(root=None) -> str:
     먹었나" 와 "아직 배포가 안 됐나" 를 가를 수 없었다(#11·#364·#371).
     배포 시각이 아니라 소스 지문을 찍는다(손 버전은 여섯 번 졌다, #119).
 
-    ⚠️ **못 보는 축**(#274): `_SIG_FILES` 밖의 모듈(`dart_client` 등)은
-    안 덮는다. 회귀가 그 목록이 실제 import 와 어긋나지 않는지 본다.
+    ⚠️ **못 보는 축**(#274): `_SIG_FILES` 밖은 안 덮는다 — `--ticker`·
+    `--sweep`·`--explain` 의 출력은 `dart_client`·`dart_feed`·`dart_quarterly`
+    가 만든다. 회귀는 (a) 이 두 파일이 목록에 있고 (b) 지문이 소스에 반응하고
+    (c) `_FLAGS` 가 `main` 의 디스패치와 같은지까지만 본다 — **import 대조는
+    없다**. #365 는 전이 폐포로 풀었지만 여기선 그러지 않았다(비용). 그러니
+    "출력을 만드는 모든 소스를 덮는다" 고 **주장하지 않는다**(#286).
     """
     import hashlib
     import pathlib
@@ -537,17 +596,39 @@ def main(argv: list[str]) -> int:
               + " ".join(_FLAGS))
         print("   (배포 전 브랜치의 새 서브커맨드일 수 있다 — 위 코드 지문 확인)")
         return 2
-    if len(argv) > 2 and argv[1] == "--ticker":
+    # ⚠️ **아는 플래그인데 인자가 모자란 경우도 거절한다.** 옛 판은 아래
+    # `len(argv) > N` 조건을 전부 빗나가 조용히 `summarize()` 로 떨어졌다 —
+    # `--ticker`(인자 없음)·`--list 012450.KS 2026`(reprt 누락, 흔한 오타)가
+    # 전부 rc=0 으로 **원장 요약**을 성공처럼 찍었다(독립 리뷰 H2 실측).
+    # 그건 이 배너·가드가 막으려던 바로 그 증상이다(#11·#364·#371).
+    need = {"--ticker": 1, "--doc": 1, "--list": 3, "--explain": 1}
+    flag = argv[1] if len(argv) > 1 else ""
+    if flag in need and len(argv) - 2 < need[flag]:
+        print(f"❌ {flag} 에 인자가 모자란다 — {need[flag]}개 필요, "
+              f"{max(0, len(argv) - 2)}개 받음")
+        print(f"   사용법: {flag} " + _USAGE_ARGS[flag])
+        return 2
+    if flag and not flag.startswith("-"):
+        # 플래그 없는 위치인자도 거절한다 — `backlog_misses 005930` 이
+        # 조용히 전체 요약을 찍으면 '그 종목을 봤다' 로 읽힌다(#82).
+        print(f"❌ 위치인자 {flag} 는 안 받는다 — 종목을 보려면 "
+              f"`--ticker {flag}`")
+        return 2
+    if flag == "--ticker":
         return per_quarter(argv[2])
-    if len(argv) > 2 and argv[1] == "--doc":
+    if flag == "--doc":
         return doc_probe(argv[2])
-    if len(argv) > 4 and argv[1] == "--list":
+    if flag == "--list":
         return list_probe(argv[2], argv[3], argv[4])
-    if len(argv) > 2 and argv[1] == "--explain":
+    if flag == "--explain":
         return explain(argv[2])
-    if len(argv) > 1 and argv[1] == "--refill":
-        return refill(int(argv[2]) if len(argv) > 2 else 40)
-    if len(argv) > 1 and argv[1] == "--sweep":
+    if flag == "--refill":
+        cap = _positive_int(argv[2]) if len(argv) > 2 else 40
+        if cap is None:
+            print(f"❌ --refill 상한이 양의 정수가 아니다: {argv[2]}")
+            return 2
+        return refill(cap)
+    if flag == "--sweep":
         return sweep(argv[2:])
     return summarize()
 
