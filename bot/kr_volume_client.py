@@ -359,6 +359,55 @@ def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
     return out
 
 
+def _bulk_fallback(out: dict, notes: list) -> dict | None:
+    """네이버 목록을 못 받으면 KRX 벌크로 거래량 상위를 만든다(성공 시 out, 아니면 None).
+
+    이 보드는 2026-09-16 신설 이래 원천 400 으로 **한 번도 행을 못 냈다** —
+    학습이 실패하면 사유만 적고 끝났다(#325 사유를 갈라 적는 것으로 끝내지 말 것).
+    ⚠️ 저장분(`_stale`)보다 **먼저** 시도한다: 여기 오는 시점의 저장분은 최대
+    24시간 낡았고(`ttl=86400`), 지금 겪는 것은 블립이 아니라 구조적 거절이라
+    직전 세션 종가가 어제 캐시보다 낫다. 어느 쪽이든 **기준일을 화면이
+    말하므로** 사용자가 속지 않는다(#43·#136·#306).
+    ⚠️ KRX 벌크는 네이버 목록이 **안 주는** 고가·저가를 준다 — #374 에서 칸을
+    뺀 근거("원천이 안 준다")는 이 경로에선 성립하지 않으므로 그대로 싣는다.
+    """
+    from bot import kr_bulk_rank as _kb
+    from bot.naver_ranking_client import _paused_now
+    if _paused_now() or any(_nd.PAUSED in (n or "") for n in notes):
+        # ⚠️ **우리가 끈 것**은 장애가 아니다 — 형제(`naver_ranking_client.
+        # _kr_bulk_fallback`)는 이미 여기서 물러난다. 한쪽만 두면 `/naverpause`
+        # 중에 이 보드만 KIS zip·pykrx 를 두드리고 화면이 조용히 갈린다
+        # (#38 복제하면 한쪽만 고쳐진다 · #279·#345 일시정지는 판정 보류).
+        return None
+    try:
+        rows, asof, memo = _kb.kr_bulk_rows()
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("kr_volume KRX 폴백 예외: %s", exc)
+        notes.append(f"KRX 폴백 예외({type(exc).__name__})")
+        return None
+    if not rows:
+        notes.append(f"KRX 폴백도 비었습니다 — {memo}")
+        return None
+    top = _kb.sort_rows(rows, "vol", desc=True, limit=out["limit"])
+    out["rows"] = top
+    out["scanned"] = len(rows)
+    out["has_hl"] = any(r.get("high") is not None for r in top)
+    _hl: set = set()
+    for r in top:
+        _hl |= set(hl_key_candidates(r))
+    out["hl_keys"] = sorted(_hl)
+    out["fallback"] = True
+    out["asof"] = asof
+    out["sort"] = "거래량(KRX 벌크)"
+    out["source"] = f"{_kb.SOURCE_LABEL} · {asof} 종가 기준"
+    out["partial"] = False
+    notes.append(f"네이버 목록을 못 받아 KRX 벌크({asof} 종가)로 대체했습니다")
+    if memo:
+        notes.append(memo)
+    out["reason"] = " · ".join(n for n in notes if n)
+    return out
+
+
 def fetch_kr_volume_top(limit: int = 50) -> dict:
     """거래량 상위 — {rows, ts, sort, reason, has_hl, partial, …}. graceful."""
     from bot.finviz_client import _cache_write, _cached, _now_label
@@ -378,6 +427,7 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
     out: dict = {"rows": [], "ts": _now_label(), "sort": "", "reason": "",
                  "has_hl": False, "hl_keys": [], "partial": False, "limit": limit,
                  "scanned": 0, "excluded": 0, "stale": False,
+                 "fallback": False, "asof": "",
                  "source": "네이버 증권 거래량 상위(전종목·한글명)"}
     c = _cached(_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c.get("rows"):
@@ -392,7 +442,8 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
             notes.append("정렬 키를 못 배워 원천 기본 정렬로 보여 줍니다")
             _finish(out, probe_rows, notes, partial=True)
             return out                     # 부분/기본정렬은 캐시하지 않는다(#280)
-        return _stale(notes) or _finish(out, [], notes, partial=False)
+        return (_bulk_fallback(out, notes) or _stale(notes)
+                or _finish(out, [], notes, partial=False))
     out["sort"] = sort
     raw: list = []
     partial = False
@@ -420,7 +471,8 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
         if len(raw) >= want:
             break
     if not raw:
-        return _stale(notes) or _finish(out, [], notes, partial=False)
+        return (_bulk_fallback(out, notes) or _stale(notes)
+                or _finish(out, [], notes, partial=False))
     _finish(out, raw, notes, partial=partial)
     if out["rows"] and not partial:
         _cache_write(_CACHE, out)          # 부분은 굽지 않는다(#280)

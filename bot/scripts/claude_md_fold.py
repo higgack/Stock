@@ -2,6 +2,18 @@
 
     cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold            # 읽기 전용 점검
     cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold --apply 40 # 실제로 접기
+    cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold --relocate 150
+
+**두 모드의 계약이 다르다**(2026-09-18):
+  `--apply N`     접기  — 서사만 REFERENCE 로, **명령형 절은 CLAUDE.md 에 남긴다**.
+                          표식 `→ REFERENCE §실수 #N`.
+  `--relocate C`  이관  — 번호 ≤ C 인 항목의 **전문**을 REFERENCE 로, CLAUDE.md 엔
+                          **제목 절만** 남긴다. 표식 `⇒ REFERENCE §실수 #N`.
+                          접기로 더 못 줄일 때(오래된 항목은 거의 전부 명령형이라
+                          절감이 0 이다) 쓰는 다음 지렛대이고, 주입 파일에서 규칙을
+                          빼는 일이라 게이트가 둘이다 — **뒤 항목·§주제 색인이 그
+                          번호를 2회 이상 인용**(교훈이 이어졌다는 증거)하고, 굵은
+                          제목 절이 있을 것(없으면 남는 게 규칙이 아니라 조각이다).
 
 **왜 도구인가**(사용자 2026-09-12 "오래된 항목을 자동으로 접는다. 레퍼런스로"):
 CLAUDE.md 는 매 턴 전량 주입되는데 실측 증가율이 ≈6,500자/일이라, 상한을 올리는
@@ -39,6 +51,11 @@ _HEAD = "## ⛔ 과거 실수 — 반복 금지 (먼저 읽을 것)"
 _END = "## ⛔ UNIVERSAL CHANGES ONLY"
 _REF_HEAD = "## 실수 상세 — CLAUDE.md 에서 접은 서사 (2026-09-06 지시서 감사)"
 _POINTER = "→ REFERENCE §실수 #"
+# ⚠️ 이관은 **접기와 계약이 다르다** — 접기는 명령형 절을 CLAUDE.md 에 남기지만
+# 이관은 제목 절만 남긴다. 표식을 같이 쓰면 접기 계약 회귀(`test_folding_only_
+# drops_incident_narrative`)가 이관을 '규칙이 사라졌다' 로 오보한다(#34 한 라벨이
+# 두 뜻을 대표하면 한쪽은 반드시 거짓말). 읽는 사람도 한눈에 갈린다.
+_RELOCATED = "⇒ REFERENCE §실수 #"
 # ⚠️ `**` 를 요구하면 안 된다 — 굵게가 뒤에 오는 항목(#23 `23. 진단 스크립트는
 # **…**`)이 통째로 앞 항목에 합쳐진다(독립 리뷰 Blocking: 실제로 #23 이
 # CLAUDE.md 에서 사라지고 그 안의 `env_keys` 규칙이 유실됐다). 모양 관례에
@@ -270,6 +287,124 @@ def apply_folds(limit: int) -> tuple[int, int]:
     return done, saved
 
 
+
+# ── 이관(relocate) — 접기로는 더 못 줄이는 오래된 번호대 ─────────────────────
+# 사용자 2026-09-18 "오래된 번호대를 Reference 로 이동". 접기는 **서사만** 옮기고
+# 명령형 절을 남기므로, 오래된 항목처럼 거의 전부가 명령형인 글에서는 절감이 0 이다
+# (실측: `--apply` 대상 0개인 채 예산 여유 70자). 이관은 한 단계 더 나아가 항목
+# **전문**을 REFERENCE 로 옮기고 CLAUDE.md 에는 머리 줄만 남긴다.
+#
+# ⚠️ 그건 주입되는 파일에서 규칙을 빼는 일이라, 아무 항목에나 하면 #287 의 재발이다
+# (압축이 한정어를 떨어뜨려 이미 대체된 규칙이 살아남았다). 그래서 **그 항목의
+# 교훈이 다른 곳에 실재하는가**를 재고 통과한 것만 옮긴다:
+#   · 뒤 항목·§주제 색인이 그 번호를 **2회 이상 인용**한다(계열이 이어졌다는 증거)
+#   · 머리 줄은 **원문 그대로** 남긴다(다시 쓰지 않는다 — 이 도구의 원칙)
+# 인용이 없는 항목은 그 교훈을 아무도 안 이어받았다는 뜻이므로 **안 옮긴다**.
+_CITE_MIN = 2
+
+
+def cite_count(section: str, num: str, body: str = "") -> int:
+    """이 번호가 **자기 몸통 밖에서** 인용된 횟수.
+
+    ⚠️ `#1` 이 `#12`·`#150` 에 걸리면 안 된다(#46 위치·형태로 추정 금지 ·
+    #388 토큰 경계) — 뒤에 숫자가 오지 않는 자리만 센다.
+    ⚠️ 옛 판은 자기 인용을 **일괄 `-1`** 로 뺐는데, 그건 이미 접힌 항목
+    (`→ REFERENCE §실수 #N` 이 자기 번호를 품는다)에만 맞고 안 접힌 항목에는
+    틀린다 — 같은 게이트가 항목마다 다른 문턱이 되어 **재는 대상이 틀린다**
+    (#91b). 몸통을 받아 그 안의 것만 정확히 뺀다."""
+    pat = rf"#{re.escape(num)}(?![0-9a-z])"
+    return max(0, len(re.findall(pat, section)) - len(re.findall(pat, body)))
+
+
+def entry_title(body: str) -> str:
+    """항목의 **제목 절** — `N. **규칙 한 줄**(날짜 사건):` 까지, 원문 그대로.
+
+    ⚠️ 첫 **줄**로 자르면 안 된다 — 이 파일은 80칸에서 접히므로 줄 경계가
+    문장 경계와 무관하고, 그대로 두면 `… #23 을 고치며` 같은 **비문**이 남는다
+    (#354·#355 가 실측으로 기록한 그 손실). 이 파일의 모든 항목이 `**굵게**`
+    로 규칙을 적고 그 뒤 괄호에 사건을 적으므로, 그 괄호를 닫는 `:` 까지를
+    제목으로 본다.
+
+    ⚠️ 그 모양이 **아니면 빈 문자열**을 돌려주고 호출부가 이관을 포기한다 —
+    옛 서식(#1~#17)은 제목 절이 따로 없고 한 줄이 통째로 명령문이라, 잘라 내면
+    남는 것이 규칙이 아니라 조각이다(#11 `… 제시 + …` 로 끊겼다). 줄일 수
+    없으면 **안 줄이는 것**이 맞다(#32 억지로 만들지 말 것).
+    """
+    flat = " ".join(body.split())
+    if not re.match(r'^\d+[a-z]?\.\s+\*\*', flat):
+        return ""   # 굵은 제목이 없는 옛 서식(#1~#17 류)은 **옮기지 않는다**
+    # ⚠️ 첫 `:` 에서 무조건 자르면 **괄호·백틱 안의 콜론**에 걸린다 — #21b
+    # `(#18 의 반복 — 2026-08-19 하루에 세 번: peer_comps…)` 가 그래서 닫는
+    # 괄호 없이 잘렸다(독립 리뷰 2026-09-18 실측 4건). 후보를 콜론마다 늘려
+    # 가며 **괄호와 백틱이 닫힌** 첫 자리를 고르고, 끝내 안 닫히면 포기한다
+    # (줄일 수 없으면 안 줄이는 것이 맞다, #32·#29 빈칸이 틀린 라벨보다 낫다).
+    for m in re.finditer(r':', flat[:400]):
+        cand = flat[:m.end()]
+        if len(cand) < 8:
+            continue
+        if cand.count("(") == cand.count(")") and cand.count("`") % 2 == 0:
+            return cand
+    return ""
+
+
+def relocate_entry(num: str, body: str, section: str) -> tuple[str, str, int] | None:
+    """(새 본문, REFERENCE 절, 절감량) — 옮길 수 없으면 None."""
+    if _RELOCATED in body:
+        return None
+    if cite_count(section, num, body) < _CITE_MIN:
+        return None
+    head = entry_title(body)
+    if not head:
+        return None
+    new = f"{head} {_RELOCATED}{num}\n"
+    save = len(body) - len(new)
+    if save <= 0:
+        return None
+    ref = f"### 실수 #{num}\n\n{body.strip()}\n"
+    return new, ref, save
+
+
+def relocatable(section: str, cut: int) -> list[str]:
+    """번호 ≤ `cut` 이면서 이관 조건을 통과하는 번호들(오래된 것부터)."""
+    out = []
+    for num, s, e in parse_entries(section):
+        try:
+            n = int(re.sub(r'[a-z]$', '', num))
+        except ValueError:
+            continue
+        if n > cut:
+            continue
+        if relocate_entry(num, section[s:e], section) is not None:
+            out.append(num)
+    return out
+
+
+def apply_relocate(cut: int) -> tuple[int, int]:
+    """번호 ≤ `cut` 인 항목을 전문 이관 — (옮긴 수, 절감 자수)."""
+    txt = CLAUDE.read_text(encoding="utf-8")
+    ref = REFERENCE.read_text(encoding="utf-8")
+    pre, sec, post = split_mistakes(txt)
+    targets = relocatable(sec, cut)
+    done = saved = 0
+    for num in targets:                       # 매번 다시 파싱 — 오프셋이 밀린다
+        ents = {n: (s, e) for n, s, e in parse_entries(sec)}
+        if num not in ents:
+            continue
+        s, e = ents[num]
+        r = relocate_entry(num, sec[s:e], sec)
+        if r is None:
+            continue
+        new, blk, save = r
+        sec = sec[:s] + new + sec[e:]
+        ref = _insert_ref(ref, num, blk)
+        done += 1
+        saved += save
+    if done:
+        CLAUDE.write_text(pre + sec + post, encoding="utf-8")
+        REFERENCE.write_text(ref, encoding="utf-8")
+    return done, saved
+
+
 def check() -> int:
     txt = CLAUDE.read_text(encoding="utf-8")
     _, sec, _ = split_mistakes(txt)
@@ -297,6 +432,14 @@ def check() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--relocate" in argv:
+        i = argv.index("--relocate")
+        cut = int(argv[i + 1]) if i + 1 < len(argv) else 150
+        done, saved = apply_relocate(cut)
+        print(f"[claude_md_fold] 이관 {done}개 · 절감 {saved:,}자 "
+              f"→ {len(CLAUDE.read_text(encoding='utf-8')):,}자 "
+              f"(번호 ≤ {cut} · 인용 {_CITE_MIN}회 이상만)")
+        return 0
     if "--apply" in argv:
         i = argv.index("--apply")
         limit = int(argv[i + 1]) if len(argv) > i + 1 and argv[i + 1].isdigit() else 10**9

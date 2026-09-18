@@ -366,7 +366,17 @@ def render_highlow_page() -> str:
         # '장중 30초 갱신' 이라고 적는다. 저장분을 그리는 날 그 문구는 거짓이다
         # (#55 설명이 코드와 어긋나면 버그). 저장분이면 **잰 나이**를 적는다.
         from bot.highlow_render import movers_freshness as _mf
-        if data.get("stale"):
+        why = why or str(data.get("reason") or "")      # 캐시 경로엔 why 가 없다
+        if data.get("fallback") and not data.get("stale"):
+            # ⚠️ 폴백이면 `movers_freshness` 의 '장중 30초 갱신' 도, 제목의
+            # '네이버 증권 급등/급락' 도 **둘 다 거짓**이다(#55 설명이 코드와
+            # 어긋나면 버그). payload 가 밝힌 원천을 화면이 따른다(#136).
+            # ⚠️ `stale` 이 같이 참이면 **나이도 사실**이므로 아래 분기가 둘 다
+            # 적는다 — 폴백을 먼저 가로채면 몇 시간 전 저장분이 현재형으로
+            # 읽힌다(독립 리뷰 2026-09-18 · #45 두 모집단 · #306).
+            _fresh_txt = "⚠️ " + (_html.escape(why) if why
+                                  else "네이버 목록을 못 받아 KRX 벌크로 대체")
+        elif data.get("stale"):
             _m = data.get("stale_min")
             _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
             # ⚠️ 저장분을 그리는 날이 **장애의 첫 24시간**이다(`_cached` TTL).
@@ -378,7 +388,9 @@ def render_highlow_page() -> str:
                           + (f' · {_html.escape(why)}' if why else ""))
         else:
             _fresh_txt = _mf("KR")
-        sub = ("네이버 증권 급등/급락 · 업종=네이버 · "
+        _head = _html.escape(str(data.get("source")
+                                   or "네이버 증권 급등/급락"))
+        sub = (f"{_head} · 업종=네이버 · "
                f"{_fresh_txt}{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
@@ -453,9 +465,18 @@ def render_kr_volume_page() -> str:
                     # 원천이 안 주면 **칸 자체를 뺀다**(사용자 2026-09-17).
                     show_hl=bool(d.get("has_hl"))) + HL_SORT_JS)
     ph = phase("KRX", now_kst())[1]
-    sub = ("네이버 증권 거래량 상위 · 업종=네이버 · 전일대비=정규장 등락률 · "
-           "거래량·거래대금=당일 누적 · 2분 주기 갱신"
-           + (f" · 정렬 키 {_html.escape(str(d.get('sort')))}" if d.get("sort") else "")
-           + f" · KRX {_html.escape(ph)}"
-           + (f" · {ts} 기준" if ts else ""))
+    # ⚠️ 폴백이면 '당일 누적 · 2분 주기 갱신' 이 거짓이다 — 그 값은 해당
+    # 거래일 **확정치**다(#55·#34 라벨에 기준을 박을 것 · #136).
+    if d.get("fallback"):
+        sub = (_html.escape(str(d.get("source") or "KRX 벌크"))
+               + " · 업종=네이버 · 전일대비·거래량·거래대금=해당 거래일 확정치"
+               "(장중 실시간 아님)"
+               + f" · KRX {_html.escape(ph)}"
+               + (f" · {ts} 기준" if ts else ""))
+    else:
+        sub = ("네이버 증권 거래량 상위 · 업종=네이버 · 전일대비=정규장 등락률 · "
+               "거래량·거래대금=당일 누적 · 2분 주기 갱신"
+               + (f" · 정렬 키 {_html.escape(str(d.get('sort')))}" if d.get("sort") else "")
+               + f" · KRX {_html.escape(ph)}"
+               + (f" · {ts} 기준" if ts else ""))
     return _shell("🇰🇷 거래량 상위", sub, "krvolume", body)

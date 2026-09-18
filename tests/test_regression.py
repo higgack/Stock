@@ -73002,3 +73002,616 @@ class TestReasonChannelFollowups20260918:
         out = capsys.readouterr().out
         assert "all, kospi" not in out, out
         assert "허용값" not in out, out
+
+
+class TestKrBoardsFallBackToKrxWhenNaverRejects20260919:
+    """네이버 `front-api/domestic/stock/list` 가 400 인 동안 급등·급락과 거래량
+    상위가 **빈 화면**이었다(사용자 2026-09-18 "제대로 쭉 잘 되다가 왜 그러는거야").
+
+    같은 죽은 엔드포인트를 쓰는 형제(52주 신고저)는 pykrx 폴백이 있어 살아
+    있었다 — 폴백이 없는 두 보드만 죽은 것이다(#51 비대칭이 단서 · #136 폴백
+    조건은 '실패했나' 가 아니라 '요구를 충족했나').
+
+    ⚠️ 재현 테스트가 먼저다(§Pre-commit 9) — 이 클래스는 fix 이전에 **실패**해야
+    한다. 그 확인 없이 통과하면 무엇도 재지 않은 것이다(#291).
+    """
+
+    _R400 = ('원천이 HTTP 400 — 원천: sortType: Invalid input: expected '
+             '"dividend" · dividendSortType: Invalid option: expected one of '
+             '"rate"|"value" (invalid_value,invalid_value)')
+
+    @staticmethod
+    def _bulk_rows():
+        return [
+            {"ticker": "005930.KS", "name": "삼성전자", "price": 74000.0,
+             "pct": 3.2, "vol": 12_000_000.0, "value": 8880.0, "mcap": 4_400_000.0,
+             "high": 74500.0, "low": 72800.0, "ind": None},
+            {"ticker": "000660.KS", "name": "SK하이닉스", "price": 260000.0,
+             "pct": -2.1, "vol": 3_000_000.0, "value": 7800.0, "mcap": 1_890_000.0,
+             "high": 266000.0, "low": 258000.0, "ind": None},
+        ]
+
+    def test_movers_falls_back_when_source_rejects_every_sort(self, monkeypatch):
+        import bot.kr_bulk_rank as kb
+        import bot.naver_ranking_client as nrc
+
+        monkeypatch.setattr(nrc, "_get_stocks2", lambda url: (None, self._R400))
+        monkeypatch.setattr(kb, "kr_bulk_rows",
+                            lambda **kw: (self._bulk_rows(), "2026-09-18", ""))
+        out = nrc.fetch_kr_movers(limit=5)
+        assert out["up"] and out["down"], out.get("reason")
+        # 가장 많이 오른 쪽 머리가 실제로 상승이어야 한다(정렬 방향 계약)
+        assert out["up"][0]["pct"] > 0, out["up"]
+        assert out["down"][0]["pct"] < 0, out["down"]
+
+    def test_movers_fallback_names_its_source_on_screen(self, monkeypatch):
+        """값만 채우고 **어디서 왔는지 안 말하면** 화면이 거짓말한다 — 장중에
+        전일 종가 랭킹을 '네이버 급등/급락' 이라 적게 된다(#43·#136·#34)."""
+        import bot.kr_bulk_rank as kb
+        import bot.naver_ranking_client as nrc
+
+        monkeypatch.setattr(nrc, "_get_stocks2", lambda url: (None, self._R400))
+        monkeypatch.setattr(kb, "kr_bulk_rows",
+                            lambda **kw: (self._bulk_rows(), "2026-09-18", ""))
+        out = nrc.fetch_kr_movers(limit=5)
+        assert out.get("fallback") is True, out
+        assert "KRX" in str(out.get("source")), out.get("source")
+        assert "2026-09-18" in str(out.get("source", "")) + str(out.get("asof", "")), out
+
+    def test_movers_still_reports_reason_when_fallback_also_empty(self, monkeypatch):
+        """폴백까지 비면 **두 사유를 다 말한다** — 한쪽만 적으면 운영자가 엉뚱한
+        원천을 고치러 간다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다)."""
+        import bot.kr_bulk_rank as kb
+        import bot.naver_ranking_client as nrc
+
+        monkeypatch.setattr(nrc, "_get_stocks2", lambda url: (None, self._R400))
+        monkeypatch.setattr(kb, "kr_bulk_rows",
+                            lambda **kw: ([], "", "KRX 자격증명 없음(.env 의 KRX_ID/KRX_PW)"))
+        out = nrc.fetch_kr_movers(limit=5)
+        assert not out["up"] and not out["down"]
+        r = out["reason"]
+        assert "HTTP 400" in r, r
+        assert "KRX 자격증명" in r, r
+
+    def test_volume_board_falls_back_when_sort_cannot_be_learned(self, monkeypatch):
+        import bot.kr_bulk_rank as kb
+        import bot.kr_volume_client as kv
+
+        monkeypatch.setattr(kv, "_cached", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(kv, "learn_sort_type",
+                            lambda **kw: ("", "원천이 미끼 값에 대해…", []))
+        monkeypatch.setattr(kb, "kr_bulk_rows",
+                            lambda **kw: (self._bulk_rows(), "2026-09-18", ""))
+        out = kv.fetch_kr_volume_top(limit=5)
+        assert out["rows"], out.get("reason")
+        assert out.get("fallback") is True, out
+        # 거래량 내림차순 — 이 보드의 존재 이유다
+        vols = [r["vol"] for r in out["rows"]]
+        assert vols == sorted(vols, reverse=True), vols
+
+    def test_volume_fallback_carries_high_low(self, monkeypatch):
+        """KRX 벌크는 네이버 목록이 **안 주는** 고가·저가를 준다(#374 에서 칸을
+        뺀 그 이유가 폴백 경로에서는 성립하지 않는다) — 있으면 실어야 한다."""
+        import bot.kr_bulk_rank as kb
+        import bot.kr_volume_client as kv
+
+        monkeypatch.setattr(kv, "_cached", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(kv, "learn_sort_type", lambda **kw: ("", "x", []))
+        monkeypatch.setattr(kb, "kr_bulk_rows",
+                            lambda **kw: (self._bulk_rows(), "2026-09-18", ""))
+        out = kv.fetch_kr_volume_top(limit=5)
+        assert out.get("has_hl") is True, out
+        assert out["rows"][0].get("high") and out["rows"][0].get("low"), out["rows"][0]
+
+
+class TestKrBulkRankModule20260919:
+    """`bot.kr_bulk_rank` 자체 — 배선 테스트는 `kr_bulk_rows` 를 스텁하므로
+    이 모듈은 아무도 안 잰다(#20 헬퍼만 재면 배선을, 배선만 재면 헬퍼를 놓친다).
+
+    ⚠️ 픽스처는 **pykrx 가 실제로 내는 모양**(pandas DataFrame · index=6자리
+    코드 · 한글 컬럼)이다(#155) — 손으로 만든 dict 로 재면 컬럼 이름을 틀려도
+    전부 green 이다.
+    """
+
+    @staticmethod
+    def _frames():
+        import pandas as pd
+        chg = pd.DataFrame(
+            {"종목명": ["삼성전자", "SK하이닉스", "아무개스팩1호", "장전종목"],
+             "시가": [73000, 262000, 2000, 0],
+             "종가": [74000, 260000, 2010, 0],
+             "변동폭": [1000, -2000, 10, 0],
+             "등락률": [1.37, -0.76, 0.5, 0.0],
+             "거래량": [12_000_000, 3_000_000, 1000, 0],
+             "거래대금": [888_000_000_000, 780_000_000_000, 2_010_000, 0]},
+            index=["005930", "000660", "444440", "111111"])
+        ohlcv = pd.DataFrame(
+            {"시가": [73000, 262000, 2000, 0], "고가": [74500, 266000, 2050, 0],
+             "저가": [72800, 258000, 1990, 0], "종가": [74000, 260000, 2010, 0],
+             "거래량": [12_000_000, 3_000_000, 1000, 0],
+             "거래대금": [888_000_000_000, 780_000_000_000, 2_010_000, 0],
+             "등락률": [1.37, -0.76, 0.5, 0.0]},
+            index=["005930", "000660", "444440", "111111"])
+        cap = pd.DataFrame(
+            {"종가": [74000, 260000, 2010, 0],
+             "시가총액": [440_000_000_000_000, 189_000_000_000_000,
+                          20_100_000_000, 0],
+             "거래량": [12_000_000, 3_000_000, 1000, 0],
+             "거래대금": [888_000_000_000, 780_000_000_000, 2_010_000, 0],
+             "상장주식수": [5_900_000_000, 728_000_000, 10_000_000, 0]},
+            index=["005930", "000660", "444440", "111111"])
+        return chg, ohlcv, cap
+
+    @classmethod
+    def _stock(cls, **over):
+        chg, ohlcv, cap = cls._frames()
+
+        class _S:
+            @staticmethod
+            def get_market_price_change_by_ticker(f, t, market=None):
+                return chg
+
+            @staticmethod
+            def get_market_ohlcv_by_ticker(d, market=None):
+                return ohlcv
+
+            @staticmethod
+            def get_market_cap_by_ticker(d, market=None):
+                return cap
+        for k, v in over.items():
+            setattr(_S, k, v)
+        return _S
+
+    @staticmethod
+    def _names():
+        return {"005930": ("삼성전자", ".KS"), "000660": ("SK하이닉스", ".KS"),
+                "444440": ("아무개스팩1호", ".KQ")}
+
+    def test_rows_carry_schema_units_and_suffix(self, monkeypatch):
+        import bot.kr_bulk_rank as kb
+        monkeypatch.setattr(kb, "_pykrx", lambda: (self._stock(), ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda: (self._names(), ""))
+        rows, asof, memo = kb._kr_bulk_rows_uncached(3)
+        by = {r["ticker"]: r for r in rows}
+        assert "005930.KS" in by, by.keys()
+        r = by["005930.KS"]
+        assert r["name"] == "삼성전자"
+        assert r["price"] == 74000.0 and r["pct"] == 1.37
+        # 거래대금·시총은 **억(원)** — `_kr_row` 와 같은 규약이라야 같은 렌더러가
+        # 같은 숫자를 그린다(#34·#38). 8,880억 · 440만억(=4,400조)
+        assert r["value"] == 8880.0, r["value"]
+        assert r["mcap"] == 4_400_000.0, r["mcap"]
+        assert r["high"] == 74500.0 and r["low"] == 72800.0
+        assert asof and len(asof) == 10, asof
+
+    def test_spac_excluded_and_premarket_zero_dropped(self, monkeypatch):
+        """장전 KRX 는 그날 행을 **0 값 placeholder** 로 준다 — 0 을 가격으로
+        실으면 등락률 랭킹이 통째로 거짓이 된다(#326·#280·#235)."""
+        import bot.kr_bulk_rank as kb
+        monkeypatch.setattr(kb, "_pykrx", lambda: (self._stock(), ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda: (self._names(), ""))
+        rows, _asof, _memo = kb._kr_bulk_rows_uncached(3)
+        tks = {r["ticker"] for r in rows}
+        assert not any(t.startswith("444440") for t in tks), tks   # 스팩
+        assert not any(t.startswith("111111") for t in tks), tks   # 0 placeholder
+
+    def test_missing_market_arg_is_named_not_silent(self, monkeypatch):
+        """옛 pykrx 는 `market` 인자가 없어 **코스닥이 통째로 빠진다**(#190
+        실측) — 조용히 넘어가면 유니버스가 반쪽인 걸 아무도 모른다(#43·#82)."""
+        import bot.kr_bulk_rank as kb
+
+        chg, ohlcv, cap = self._frames()
+
+        def _old_sig(f, t):          # market= 를 못 받는 옛 시그니처
+            return chg
+        st = self._stock(get_market_price_change_by_ticker=staticmethod(_old_sig))
+        monkeypatch.setattr(kb, "_pykrx", lambda: (st, ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda: (self._names(), ""))
+        rows, _asof, memo = kb._kr_bulk_rows_uncached(3)
+        assert rows, "옛 시그니처로도 행은 나와야 한다"
+        assert "코스닥 누락" in memo, memo
+
+    def test_unnamed_codes_are_counted_not_silently_shown(self, monkeypatch):
+        """이름을 못 붙인 수를 **세어 말한다** — 코드만 뜬 화면은 수집 실패로
+        읽힌다(#43·#54 대조 0건은 통과가 아니다)."""
+        import bot.kr_bulk_rank as kb
+
+        chg, ohlcv, cap = self._frames()
+        chg2 = chg.drop(columns=["종목명"])
+        st = self._stock(get_market_price_change_by_ticker=staticmethod(
+            lambda f, t, market=None: chg2))
+        monkeypatch.setattr(kb, "_pykrx", lambda: (st, ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda: ({}, ""))
+        rows, _asof, memo = kb._kr_bulk_rows_uncached(3)
+        assert rows and all(r["name"] == r["ticker"].split(".")[0] for r in rows)
+        assert "종목명 미확보" in memo, memo
+
+    def test_no_pykrx_names_the_branch(self, monkeypatch):
+        import bot.kr_bulk_rank as kb
+        monkeypatch.setattr(kb, "_pykrx",
+                            lambda: (None, "KRX 자격증명 없음(.env 의 KRX_ID/KRX_PW)"))
+        rows, asof, why = kb._kr_bulk_rows_uncached(3)
+        assert rows == [] and asof == ""
+        assert "KRX 자격증명" in why, why
+
+    def test_sort_rows_drops_missing_keys_instead_of_reading_them_as_zero(self):
+        """결측을 0 으로 읽으면 **하락 TOP 이 결측으로 채워진다**(#235·#297)."""
+        import bot.kr_bulk_rank as kb
+        rows = [{"pct": None, "value": 1, "name": "결측"},
+                {"pct": -5.0, "value": 2, "name": "하락"},
+                {"pct": 3.0, "value": 3, "name": "상승"}]
+        down = kb.sort_rows(rows, "pct", desc=False, limit=2)
+        assert [r["name"] for r in down] == ["하락", "상승"], down
+
+    def test_empty_result_is_not_cached(self, monkeypatch):
+        """원천 장애 한 번이 10분 빈 화면이 되면 안 된다(#161·#280·#303)."""
+        import bot.finviz_client as fv
+        import bot.kr_bulk_rank as kb
+        wrote: list = []
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda n, v: wrote.append(n))
+        monkeypatch.setattr(kb, "_kr_bulk_rows_uncached",
+                            lambda mb: ([], "", "원천 장애"))
+        rows, _a, why = kb.kr_bulk_rows()
+        assert rows == [] and why == "원천 장애"
+        assert wrote == [], wrote
+
+
+class TestKrFallbackBoardsTellTheTruthOnScreen20260919:
+    """payload 에 `fallback`·`source` 를 싣는 것만으론 절반이다 — **화면이 그걸
+    읽는지**를 재야 한다(#20 배선은 태워야 보인다 · #55 설명이 코드와 어긋나면
+    버그). 폴백일 때 옛 부제는 '네이버 증권 급등/급락 · 장중 30초 갱신' ·
+    '거래량·거래대금=당일 누적 · 2분 주기 갱신' 이라고 적는데 **둘 다 거짓**이다.
+    """
+
+    _ROWS = [{"ticker": "005930.KS", "name": "삼성전자", "price": 74000.0,
+              "pct": 1.37, "vol": 12_000_000.0, "value": 8880.0,
+              "mcap": 4_400_000.0, "high": 74500.0, "low": 72800.0, "ind": None}]
+
+    def test_movers_page_names_krx_and_drops_the_30s_claim(self, monkeypatch):
+        import bot.finviz_client as fv
+        import bot.naver_pages as np_
+        import bot.naver_ranking_client as nrc
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(nrc, "fetch_kr_movers", lambda *a, **k: {
+            "up": self._ROWS, "down": self._ROWS, "ts": "09-19 05:00",
+            "fallback": True, "asof": "2026-09-18",
+            "source": "KRX 벌크 종가(pykrx·KIS 마스터) · 2026-09-18 종가 기준",
+            "reason": "네이버 목록을 못 받아 KRX 벌크로 대체했습니다"})
+        html = np_.render_highlow_page()
+        assert "KRX 벌크" in html and "2026-09-18" in html, html[:900]
+        assert "30초" not in html.split("<body")[-1][:2000], "폴백인데 '30초 갱신'"
+
+    def test_volume_page_names_krx_and_drops_the_live_claim(self, monkeypatch):
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np_
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda **k: {
+            "rows": self._ROWS, "ts": "09-19 05:00", "sort": "거래량(KRX 벌크)",
+            "reason": "네이버 목록을 못 받아 KRX 벌크(2026-09-18 종가)로 대체했습니다",
+            "has_hl": True, "fallback": True, "asof": "2026-09-18",
+            "source": "KRX 벌크 종가(pykrx·KIS 마스터) · 2026-09-18 종가 기준"})
+        html = np_.render_kr_volume_page()
+        assert "KRX 벌크" in html, html[:900]
+        assert "당일 누적" not in html, "폴백인데 '당일 누적' 이라 적었다"
+        assert "2분 주기 갱신" not in html, "폴백인데 '2분 주기 갱신' 이라 적었다"
+
+    def test_normal_path_keeps_the_naver_labels(self, monkeypatch):
+        """반대 증거 — 폴백이 아닐 때 라벨이 바뀌면 그것도 거짓말이다(#25)."""
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np_
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda **k: {
+            "rows": self._ROWS, "ts": "09-19 05:00", "sort": "quantTop",
+            "reason": "", "has_hl": False, "fallback": False, "asof": ""})
+        html = np_.render_kr_volume_page()
+        assert "네이버 증권 거래량 상위" in html
+        assert "당일 누적" in html and "KRX 벌크" not in html
+
+
+class TestKrBoardsAuditAndShapeProbe20260919:
+    """2026-09-18 두 보드가 빈 화면이었는데 **어떤 감사도 한 마디도 안 했다**
+    — 사용자가 눈으로 보고 먼저 물었다(#52·#303). 그 침묵을 막는 가드."""
+
+    def test_verdict_splits_fixable_from_source_outage(self):
+        """❌ 는 **우리가 고칠 것**만 가리켜야 한다 — 폴백으로 값이 보이는데
+        ❌ 를 내면 매일 못 고칠 ❌ 가 진짜를 가린다(#260·#25)."""
+        from bot.scripts.kr_boards_audit import board_verdict
+        assert board_verdict("급등·급락", 60, False, "").startswith("✅")
+        assert board_verdict("급등·급락", 60, True, "KRX 벌크").startswith("⚠️")
+        assert board_verdict("급등·급락", 0, False, "HTTP 400").startswith("❌")
+        # 0행인데 사유가 없어도 ✅ 로 새면 안 된다(#54)
+        assert board_verdict("거래량 상위", 0, False, "").startswith("❌")
+
+    def test_audit_is_registered_in_the_daily_sweep(self):
+        """감사를 만들어 놓고 **등록을 안 하면** 없는 것과 같다(#24·#54)."""
+        from bot.audit_sweep import AUDITS
+        mods = {m for _n, m, _c in AUDITS}
+        assert "bot.scripts.kr_boards_audit" in mods, sorted(mods)
+        cad = {m: c for _n, m, c in AUDITS}["bot.scripts.kr_boards_audit"]
+        assert cad == "daily", cad
+
+    def test_audit_main_uses_the_verdict_and_summary_has_no_glyph(self, monkeypatch,
+                                                                  capsys):
+        """요약은 **세기만** 한다 — 판정 글자를 요약에 쓰면 sweep 이 같은 결함을
+        두 번 센다(#250·#268·#289). 그리고 배선을 안 재면 `main` 이 판정을
+        안 써도 통과한다(#20)."""
+        import bot.kr_volume_client as kv
+        import bot.naver_ranking_client as nrc
+        import bot.source_health as sh
+        monkeypatch.setattr(nrc, "fetch_kr_movers",
+                            lambda **k: {"up": [], "down": [], "reason": "HTTP 400"})
+        monkeypatch.setattr(kv, "fetch_kr_volume_top",
+                            lambda **k: {"rows": [], "reason": "HTTP 400"})
+        monkeypatch.setattr(sh, "_naver_domestic", lambda: (False, "HTTP 400"))
+        from bot.scripts.kr_boards_audit import main
+        rc = main()
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert "❌ 급등·급락" in out and "❌ 거래량 상위" in out, out
+        summary = [ln for ln in out.splitlines() if "요약:" in ln]
+        assert summary, out
+        assert not any(g in summary[0] for g in ("❌", "⚠️", "✅")), summary[0]
+
+    def test_shape_verdict_never_calls_a_dead_address_healthy(self):
+        """다섯 모양 전부 0행이면 ✅ 가 아니다 — 갈래마다 처방이 다르다(#82·#54)."""
+        from bot.naver_diag import http_reason
+        from bot.scripts.kr_board_probe import shape_verdict
+        # ⚠️ 픽스처는 **제품이 실제로 내는 사유 문자열**이어야 한다 — `"400"`
+        # 같은 손글씨는 `status_from` 이 못 읽어 갈래 판정을 통째로 건너뛴다(#155).
+        r400 = http_reason(400, 120, body=b'{"detail":"sortType"}')
+        assert shape_verdict([]).startswith("❓")
+        assert shape_verdict([("현행(대조군)", 0, r400),
+                              ("dividend 갈래", 0, r400)]).startswith("❌")
+        v = shape_verdict([("현행(대조군)", 0, r400), ("dividend 갈래", 5, "")])
+        assert v.startswith("❌") and "배당 랭킹 전용" in v, v
+        v2 = shape_verdict([("현행(대조군)", 5, ""), ("dividend 갈래", 0, r400)])
+        assert v2.startswith("✅") and "현행(대조군)" in v2, v2
+
+    def test_probe_runs_shape_section_when_control_group_is_dead(self, monkeypatch,
+                                                                 capsys):
+        """대조군이 죽으면 ② 이후는 전부 판정 불가다 — 그때 **무엇이 거절되는지**
+        부터 재야 한다(#143·#109). 배선을 안 재면 섹션을 지워도 통과한다(#20)."""
+        import bot.scripts.kr_board_probe as kb
+        called: list = []
+        monkeypatch.setattr(kb, "_section_control", lambda: False)
+        monkeypatch.setattr(kb, "_section_shape",
+                            lambda: called.append("shape"))
+        monkeypatch.setattr(kb, "_section_sorts", lambda: ())
+        monkeypatch.setattr(kb, "_section_venue", lambda: None)
+        monkeypatch.setattr(kb, "_section_nxt_universe", lambda: None)
+        monkeypatch.setattr(kb, "_section_venue_params", lambda: None)
+        monkeypatch.setattr(kb, "_banner", lambda: True)
+        kb.main()
+        capsys.readouterr()
+        assert called == ["shape"], called
+
+
+class TestClaudeMdRelocate20260919:
+    """`--relocate` — 접기로 더 못 줄이는 오래된 번호대를 전문 이관(사용자
+    2026-09-18 "오래된 번호대를 Reference 로 이동").
+
+    주입되는 파일에서 규칙을 빼는 일이라 #287(압축이 한정어를 떨어뜨려 이미
+    대체된 규칙이 살아남았다)의 재발 위험이 실재한다 — 그래서 게이트 둘을
+    **값으로** 못박는다: 교훈이 다른 곳에 실재하는가(인용 ≥2), 그리고 남기는
+    제목은 다시 쓴 것이 아니라 **원문 부분문자열**인가.
+    """
+
+    _SEC = (
+        "1. 옛 서식은 굵은 제목이 없다(그래서 안 옮긴다).\n"
+        "2. **자주 인용되는 규칙**(2026-01-01 사건): 서사가 길게 이어지고\n"
+        "   여러 줄로 접힌다. ⚠️ 그리고 명령형 절도 있다 — 그럴 것.\n"
+        "3. **아무도 안 이어받은 규칙**(2026-01-02 사건): 이 번호는 뒤에서\n"
+        "   인용되지 않는다.\n"
+        "4. **뒤 항목**(2026-01-03): #2 를 인용한다.\n"
+        "5. **또 다른 뒤 항목**(2026-01-04): #2 를 한 번 더 인용한다.\n"
+    )
+
+    def test_only_entries_whose_lesson_survived_elsewhere_are_moved(self):
+        from bot.scripts.claude_md_fold import relocatable
+        got = relocatable(self._SEC, 5)
+        assert got == ["2"], got          # #1 굵은제목 없음 · #3 인용 0회
+
+    def test_kept_title_is_verbatim_not_a_rewrite(self):
+        """이 도구의 원칙은 '다시 쓰지 않는다' 다 — 남기는 줄은 원문에 **그대로**
+        있어야 한다(#287 손실은 사람이 다시 쓸 때 생긴다)."""
+        from bot.scripts.claude_md_fold import entry_title
+        body = self._SEC.split("2. ")[1]
+        body = "2. " + body.split("\n3. ")[0]
+        t = entry_title(body)
+        assert t, body
+        assert " ".join(t.split()) in " ".join(body.split()), (t, body)
+        assert t.endswith(":"), t
+
+    def test_legacy_entries_without_a_bold_title_are_left_alone(self):
+        """제목 절이 없는 옛 서식은 잘라 내면 규칙이 아니라 **조각**이 남는다
+        (#11 이 `… 제시 + …` 로 끊겼다) — 줄일 수 없으면 안 줄인다(#32)."""
+        from bot.scripts.claude_md_fold import entry_title, relocate_entry
+        legacy = "1. 옛 서식은 굵은 제목이 없다(그래서 안 옮긴다).\n"
+        assert entry_title(legacy) == ""
+        assert relocate_entry("1", legacy, self._SEC + "#1 #1 #1") is None
+
+    def test_cite_count_respects_token_boundaries(self):
+        """`#1` 이 `#12`·`#150` 에 걸리면 인용 게이트가 통째로 거짓이 된다
+        (#46 위치·형태로 추정 금지 · #388 토큰 경계)."""
+        from bot.scripts.claude_md_fold import cite_count
+        sec = "1. 제목\n#12 #150 #1b 그리고 #1 하나"
+        # `#1` 하나만 진짜 인용 — 나머지 셋은 다른 번호다
+        assert cite_count(sec, "1") == 1, cite_count(sec, "1")
+        # 자기 몸통 안의 포인터는 인용이 아니다(접힌 항목이 자기 번호를 품는다)
+        body = "1. 제목 → REFERENCE §실수 #1\n"
+        assert cite_count(sec + body, "1", body) == 1
+
+    def test_every_relocated_entry_has_its_full_text_in_reference(self):
+        """살아 있는 파일 계약 — 포인터만 남은 항목의 **전문**이 REFERENCE 에
+        실재해야 한다. 하나라도 없으면 그 규칙은 어디에도 없다(#287·#286)."""
+        from bot.scripts.claude_md_fold import (CLAUDE, REFERENCE, _RELOCATED,
+                                                parse_entries, split_mistakes)
+        _pre, sec, _post = split_mistakes(CLAUDE.read_text(encoding="utf-8"))
+        ref = REFERENCE.read_text(encoding="utf-8")
+        moved = [(n, sec[a:b]) for n, a, b in parse_entries(sec)
+                 if _RELOCATED in sec[a:b]]
+        assert len(moved) >= 20, f"이관 항목이 {len(moved)}개뿐 — 눈먼 가드"
+        missing = [n for n, _b in moved if f"### 실수 #{n}\n" not in ref]
+        assert not missing, missing
+        # 그리고 남은 제목 절은 **다시 쓴 것이 아니라** 원문 부분문자열이어야
+        # 한다 — #287 손실은 사람이 다시 쓸 때 생긴다.
+        norm = lambda t: " ".join(t.split())
+        ref_n = norm(ref)
+        bad = []
+        for n, body in moved:
+            title = norm(body).split(_RELOCATED)[0].strip()
+            if title and title not in ref_n:
+                bad.append((n, title[:60]))
+        assert not bad, bad
+
+
+class TestKrFallbackReviewFollowups20260919:
+    """독립 리뷰 2026-09-18 9건 반영 — 각 fix 가 **실제로 발화하는** 상태를
+    픽스처로 만들어 태운다(#91·#291 발화 경로 없는 가드는 가드가 아니다)."""
+
+    def test_universe_comes_from_the_full_listing_not_index_members(self, monkeypatch):
+        """`_rung_kis()` 는 KOSPI200+KOSDAQ150(~350) 뿐이다 — 전 종목 랭킹에
+        쓰면 나머지가 접미사 없는 맨 코드가 되어 `/lookup/123456` 이 미국
+        심볼로 해석된다(독립 리뷰 실측)."""
+        import bot.bollinger_board as bb
+        import bot.kr_bulk_rank as kb
+        seen: list = []
+
+        def _rows(book, raw=None):
+            seen.append(book)
+            return ([{"code": "005930", "name": "삼성전자", "member": True}]
+                    if book == "kospi"
+                    else [{"code": "444440", "name": "비지수종목", "member": False}]), "ok"
+        monkeypatch.setattr(bb, "_kis_master_rows", _rows)
+        names, why = kb._kis_names()
+        assert seen == ["kospi", "kosdaq"] or set(seen) == {"kospi", "kosdaq"}, seen
+        # 지수에 **없는** 종목도 이름·접미사를 받아야 한다
+        assert names.get("444440") == ("비지수종목", ".KQ"), names
+        assert names.get("005930") == ("삼성전자", ".KS"), names
+        assert why is not None
+
+    def test_pct_uses_value_fallback_so_ohlcv_only_rows_survive(self, monkeypatch):
+        """컬럼 **유무**로 가르면 한 프레임에만 있는 종목이 pct 를 잃고 급등·
+        급락 두 목록에서 통째로 사라진다(독립 리뷰)."""
+        import pandas as pd
+        import bot.kr_bulk_rank as kb
+        chg = pd.DataFrame({"종목명": ["가"], "종가": [100], "등락률": [1.0],
+                            "거래량": [10], "거래대금": [1000]}, index=["000001"])
+        ohlcv = pd.DataFrame(
+            {"시가": [200, 300], "고가": [210, 310], "저가": [190, 290],
+             "종가": [200, 300], "거래량": [20, 30], "거래대금": [2000, 3000],
+             "등락률": [2.0, -3.0]}, index=["000001", "000002"])
+
+        class _S:
+            get_market_price_change_by_ticker = staticmethod(lambda f, t, market=None: chg)
+            get_market_ohlcv_by_ticker = staticmethod(lambda d, market=None: ohlcv)
+            get_market_cap_by_ticker = staticmethod(lambda d, market=None: None)
+        monkeypatch.setattr(kb, "_pykrx", lambda: (_S(), ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda: ({}, ""))
+        monkeypatch.setattr(kb, "today_is_final", lambda now: True)
+        rows, _a, _m = kb._kr_bulk_rows_uncached(3)
+        by = {r["ticker"].split(".")[0]: r for r in rows}
+        assert "000002" in by, by.keys()
+        assert by["000002"]["pct"] == -3.0, by["000002"]
+
+    def test_pick_keeps_a_legitimate_zero(self):
+        """`a or b` 는 등락률 0% 를 '없음' 으로 바꾼다(#235·#242)."""
+        from bot.kr_bulk_rank import _pick
+        assert _pick(0.0, 5.0) == 0.0
+        assert _pick(None, 5.0) == 5.0
+        assert _pick(None, None) is None
+
+    def test_intraday_is_not_called_a_close(self):
+        """장중 값을 '종가'·'확정치' 라 적으면 화면이 거짓말한다(#34·#55)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from bot.kr_bulk_rank import today_is_final
+        kst = ZoneInfo("Asia/Seoul")
+        assert not today_is_final(datetime(2026, 9, 18, 11, 0, tzinfo=kst))
+        assert today_is_final(datetime(2026, 9, 18, 16, 30, tzinfo=kst))
+        # 새벽은 `after_close` 지만 **오늘은 아직 거래가 없다**
+        assert not today_is_final(datetime(2026, 9, 18, 7, 0, tzinfo=kst))
+
+    def test_render_path_has_a_budget(self, monkeypatch):
+        """콜드 미스면 KIS zip 2개 + pykrx 3콜이 렌더 안에서 동기로 붙는다 —
+        예산을 넘기면 비우고 백그라운드가 예열한다(#116)."""
+        import threading
+        import bot.finviz_client as fv
+        import bot.kr_bulk_rank as kb
+        started = threading.Event()
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(kb, "_BUDGET", 0.2)
+
+        def _slow(mb):
+            started.set()
+            threading.Event().wait(3)
+            return ([{"ticker": "x"}], "2026-09-18", "")
+        monkeypatch.setattr(kb, "_kr_bulk_rows_uncached", _slow)
+        rows, asof, why = kb.kr_bulk_rows()
+        assert started.wait(2), "작업이 시작도 안 했다 — 재는 대상이 틀렸다"
+        assert rows == [] and asof == ""
+        assert "초를 넘겨" in why, why
+
+    def test_volume_fallback_stands_down_while_naver_is_paused(self, monkeypatch):
+        """우리가 끈 것은 장애가 아니다 — 형제(무버)는 이미 물러나는데 이쪽만
+        KIS zip·pykrx 를 두드리고 있었다(#38·#279·#345)."""
+        import bot.kr_bulk_rank as kb
+        import bot.kr_volume_client as kv
+        from bot.naver_diag import PAUSED
+        called: list = []
+        monkeypatch.setattr(kb, "kr_bulk_rows",
+                            lambda **k: called.append(1) or ([], "", ""))
+        assert kv._bulk_fallback({"limit": 5}, [PAUSED]) is None
+        assert called == [], "일시정지 중에 폴백이 원천을 두드렸다"
+
+    def test_audit_does_not_raise_an_unfixable_error_for_a_paused_source(self):
+        """운영자가 끈 것에 ❌ 를 내면 끄는 동안 매일 못 고칠 ❌ 가 쌓인다(#260)."""
+        from bot.naver_diag import PAUSED
+        from bot.scripts.kr_boards_audit import board_verdict
+        v = board_verdict("급등·급락", 0, False, PAUSED)
+        assert not v.startswith("❌"), v
+        assert "꺼 뒀습니다" in v, v
+
+    def test_shape_verdict_does_not_blame_the_address_on_a_pause_or_timeout(self):
+        """일시정지·타임아웃·429 는 '주소가 죽었다' 와 처방이 정반대다(#82·#165)."""
+        from bot.scripts.kr_board_probe import shape_verdict
+        v = shape_verdict([("현행(대조군)", 0, "네이버 호출 일시정지 중"),
+                           ("dividend 갈래", 0, "원천이 응답하지 않습니다(timeout)")])
+        assert v.startswith("❓"), v
+        v2 = shape_verdict([("현행(대조군)", 0, "원천이 HTTP 400 — …"),
+                            ("dividend 갈래", 0, "원천이 HTTP 400 — …")])
+        assert v2.startswith("❌"), v2
+
+    def test_stale_fallback_still_reports_its_age(self, monkeypatch):
+        """캐시된 폴백을 몇 시간 뒤 재생하면서 나이를 안 적으면 현재형으로
+        읽힌다 — 폴백 분기가 stale 분기를 가로채면 안 된다(#45·#306)."""
+        import bot.finviz_client as fv
+        import bot.naver_pages as np_
+        import bot.naver_ranking_client as nrc
+        rows = [{"ticker": "005930.KS", "name": "삼성전자", "price": 1.0,
+                 "pct": 1.0, "vol": 1.0, "value": 1.0, "mcap": 1.0, "ind": None}]
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(nrc, "fetch_kr_movers", lambda *a, **k: {
+            "up": rows, "down": rows, "ts": "", "fallback": True, "stale": True,
+            "stale_min": 400, "asof": "2026-09-17",
+            "source": "KRX 벌크 종가(pykrx·KIS 마스터) · 2026-09-17 종가 기준",
+            "reason": "네이버 목록을 못 받아 KRX 벌크로 대체했습니다"})
+        html = np_.render_highlow_page()
+        assert "저장분" in html, html[:800]
+        assert "KRX 벌크" in html, html[:800]
+
+    def test_entry_title_does_not_cut_inside_parentheses(self):
+        """괄호 안의 콜론에서 자르면 닫는 괄호 없는 **조각**이 남는다(실측 4건)."""
+        from bot.scripts.claude_md_fold import entry_title
+        inner = ("21b. **파싱 결과를 캐시하면 안 바뀐다**(#18 의 반복 — "
+                 "2026-08-19 하루에 세 번: peer_comps·FRED·FnGuide): 파서를 "
+                 "고쳤는데 출력이 안 변하면 캐시부터 의심할 것.\n")
+        t = entry_title(inner)
+        assert t.count("(") == t.count(")"), t          # 괄호 안 콜론을 넘어갔다
+        assert t.endswith(":") and "FnGuide)" in t, t
+        # 균형 잡힌 콜론이 **아예 없으면** 빈 문자열 = 이관 포기(#32)
+        none_ = ("22. **제목만 있고 콜론이 괄호 안에만 있다**(하루에 세 번: "
+                 "a·b·c).\n")
+        assert entry_title(none_) == "", entry_title(none_)
