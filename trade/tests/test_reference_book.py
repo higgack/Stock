@@ -450,3 +450,83 @@ class CatalogGuardTests(unittest.TestCase):
                          f"_THEME_MTI_PIN MTI6 가 카탈로그에 없음: {r['pin_orphan']}")
         self.assertEqual(r["theme_orphan"], [],
                          f"_THEME_ROWS HS 미해석 테마: {r['theme_orphan']}")
+
+    # ── 고아 출처 갈래(2026-09-18 월례 점검) ──
+    # 실측: repo 큐레이션 CSV 159키 고아 0 · 월례 DM 이 보고한 고아 290개는
+    # 전부 대시보드 '반영' 오버레이(KG 후보의 자유서술 품목명: `2nm공정`·
+    # `bts(방탄소년단)`·`cctv` …)였는데, 메시지는 "연계표가 바뀐 거면 키를
+    # 교정" 한 줄만 적어 운영자를 엉뚱한 fix 로 보냈다(#82·#45·#292).
+
+    def _overlay(self, td, rows: str):
+        """런타임 오버레이 CSV 를 심고 경로를 가리킨다(운영 HOME 격리)."""
+        from trade import mti_companies as mc
+        p = Path(td) / "reinforce_runtime.csv"
+        p.write_text("품목,DART추가후보상장사\n" + rows, encoding="utf-8-sig")
+        mc._REINFORCE_APPROVED_CACHE = None
+        return mock.patch.object(mc, "_runtime_reinforce_path", lambda: p)
+
+    def test_scan_splits_orphans_by_source(self):
+        """오버레이가 들인 고아는 '반영 적재분' 으로 분류되고, 갈래 둘은
+        배타·전수(합 = 전체)여야 한다(#45). 수집기를 통째로 태운다(#20)."""
+        from trade import mti_companies as mc
+        from trade.scripts import catalog_guard
+        with tempfile.TemporaryDirectory() as td:
+            with self._overlay(td, "2nm공정,삼성전자\n"):
+                r = catalog_guard.scan()
+            mc._REINFORCE_APPROVED_CACHE = None       # 전역 캐시 복원
+        if not r:
+            self.skipTest("카탈로그 미존재(테스트 환경)")
+        self.assertTrue(r["reinforce_src_known"])
+        self.assertIn("2nm공정", r["reinforce_orphan_overlay"])
+        self.assertEqual(r["reinforce_orphan_repo"], [],
+                         f"큐레이션 CSV 고아: {r['reinforce_orphan_repo']}")
+        self.assertEqual(sorted(r["reinforce_orphan_repo"]
+                                + r["reinforce_orphan_overlay"]),
+                         sorted(r["reinforce_orphan"]))
+        self.assertEqual(r["n_reinforce_repo"] + 1, r["n_reinforce"])
+
+    def test_message_overlay_orphans_do_not_blame_the_linkage_table(self):
+        """'반영' 적재분만 고아면 **연계표 rename 처방을 적지 않는다** —
+        그게 이 라운드에 고친 거짓 안내다(#292)."""
+        from trade.scripts import catalog_guard
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 456,
+            "n_reinforce_repo": 166, "reinforce_src_known": True,
+            "reinforce_orphan": ["2nm공정"], "reinforce_orphan_repo": [],
+            "reinforce_orphan_overlay": ["2nm공정"],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        self.assertIn("반영", msg)
+        self.assertIn("_ITEM_ALIAS", msg)
+        self.assertNotIn("연계표 rename 의심", msg)
+        self.assertIn("큐레이션 CSV 166", msg)         # 머리가 두 모집단을 나눈다
+
+    def test_message_repo_orphans_ask_for_key_correction(self):
+        """큐레이션 CSV 고아면 종전 처방(연계표 rename → 키 교정)을 적고,
+        오버레이 처방은 안 적는다(#82 갈래마다 처방이 다르다)."""
+        from trade.scripts import catalog_guard
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 160,
+            "n_reinforce_repo": 160, "reinforce_src_known": True,
+            "reinforce_orphan": ["옛품목명"], "reinforce_orphan_repo": ["옛품목명"],
+            "reinforce_orphan_overlay": [],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        self.assertIn("연계표 rename 의심", msg)
+        self.assertIn("큐레이션 CSV", msg)
+        self.assertNotIn("_ITEM_ALIAS", msg)
+
+    def test_message_marks_unknown_source_instead_of_guessing(self):
+        """큐레이션 CSV 를 못 읽으면 '출처 판정 불가' 로 적는다 — 조용히 한쪽
+        갈래로 분류하면 처방이 틀린다(#54·#165). 발화 경로 확인(#291)."""
+        from trade.scripts import catalog_guard
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 456,
+            "n_reinforce_repo": 0, "reinforce_src_known": False,
+            "reinforce_orphan": ["2nm공정"], "reinforce_orphan_repo": [],
+            "reinforce_orphan_overlay": [],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        self.assertIn("출처 판정 불가", msg)
+        self.assertIn("연계표 rename 의심", msg)       # 보수적으로 교정 안내
+        self.assertNotIn("큐레이션 CSV 0 +", msg)      # 모르는 수를 머리에 적지 않는다
