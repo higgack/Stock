@@ -941,3 +941,24 @@ in`/`not in` 부분문자열 판정 자체를 금지한다(독스트링·주석�
 **다른 갈래**다 — 파서 갭인지 원문 미수신(`status=014`)인지는
 `cd ~/stock && .venv/bin/python -m bot.dart_feed --why 티케이지애강` 이
 답한다(#264·#265 — 조회 키는 **접수번호 또는 회사명**이지 종목코드가 아니다).
+
+### 연계표 정합 가드 — 고아의 **출처**를 가른다 (2026-09-18, 실수 #386)
+`trade/tests/test_reference_book.py::CatalogGuardTests`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| repo 큐레이션 CSV 키는 카탈로그에 전부 있다 — 운영 HOME 격리 후(#30·#294) | ✅ 자동 | `test_curation_keys_in_catalog` |
+| `scan()` 이 고아를 repo/오버레이로 가르고 둘은 **배타·전수**(#45) — 수집기 E2E(#20) | ✅ 자동 | `test_scan_splits_orphans_by_source` |
+| 큐레이션 CSV 를 못 읽으면 한쪽으로 분류하지 말고 **판정 불가**(#54·#291 발화 경로) | ✅ 자동 | `test_scan_marks_source_unknown_when_curation_csv_is_unreadable` |
+| '반영' 적재분만 고아면 **연계표 rename 처방을 안 적는다**(#292 틀린 라벨) | ✅ 자동 | `test_message_overlay_orphans_do_not_blame_the_linkage_table` |
+| 큐레이션 CSV 고아면 종전 처방(키 교정)만 적는다(#82 갈래마다 처방) | ✅ 자동 | `test_message_repo_orphans_ask_for_key_correction` |
+| 출처 불명이면 머리줄에 **모르는 수를 안 적는다** | ✅ 자동 | `test_message_marks_unknown_source_instead_of_guessing` |
+| 목록은 30개에서 자르고 **자른 수를 말한다** + 키를 escape 한다(규칙 7) | ✅ 자동 | `test_message_truncates_long_lists_and_says_how_many_it_cut` |
+
+⚠️ 불릿 단언은 `_bullet()` 로 **그 한 줄만 잘라서** 잰다 — 메시지 전체에서 재면
+머리줄(`reinforce 456품목(큐레이션 CSV 166 + …)`)·처방줄이 불릿 단언을 대신
+만족시켜 뮤테이션이 통과한다(#55·#75, 독립 리뷰 실측 3종).
+
+**못 보는 축**(#274): `_notify` 의 전송 실패 로그는 값으로 재지 않는다(curl 을
+태우지 않는다). 그리고 출처 분류의 정확성은 **repo CSV 를 읽을 수 있을 때만**
+참이다 — 못 읽으면 판정 불가로 빠지지, 오버레이 쪽으로 분류되지 않는다.

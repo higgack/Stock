@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import html as _html
 import logging
 import os
 import re
@@ -76,11 +77,21 @@ def scan() -> dict:
     # 연계표와 무관하다(_ITEM_ALIAS 매핑 대상이거나, 대응 품목이 없으면 카드
     # 미부착이 정상). 2026-09-18 실측: repo 159키 고아 0 · 보고된 고아 290개는
     # 전부 오버레이였는데 메시지는 '연계표가 바뀐 거면' 하나만 적고 있었다.
-    src_known = True
+    # ⚠️ `_merge` 가 `except Exception: pass` 라 **읽기 실패가 예외로 안 온다** —
+    # 못 읽은 세계에서 repo_keys 가 빈 집합이 되어 진짜 rename 고아가 전부
+    # '반영 적재분'('교정 대상 아님')으로 분류된다. 이 라운드가 고치려던 오보가
+    # 부호만 반대로 살아 있던 것(독립 리뷰 2026-09-18 실측) → **빈 결과 자체를
+    # 실패 신호**로 본다(#54 판정 불가 · #291 발화 경로 없는 가드는 가드가 아니다).
+    _csv = mc._approved_csv_path()
+    repo_keys, src_known = set(), True
     try:
         repo_keys = set(mc.load_reinforce_approved(     # path= → 캐시·오버레이 우회
-            path=str(mc._approved_csv_path())))
-    except Exception as exc:                            # 못 읽으면 판정 불가(#54)
+            path=str(_csv)))
+        if not repo_keys:
+            src_known = False
+            log.warning("큐레이션 CSV 에서 한 키도 못 읽었다(%s) — 고아 출처 판정 불가",
+                        _csv)
+    except Exception as exc:                            # 방어(현재 도달 거의 불가)
         log.warning("큐레이션 CSV 읽기 실패 — 고아 출처 판정 불가: %s", exc)
         repo_keys, src_known = set(), False
     orphan_repo = [k for k in reinforce_orphan if k in repo_keys] if src_known else []
@@ -142,7 +153,8 @@ def _build_message(r: dict) -> str:
            + (f"(큐레이션 CSV {_nrepo} + '반영'이 더한 {_nov})"
               if r.get("reinforce_src_known") else ""))
     head = (f"📋 <b>연계표 정합 점검</b> (월례)\n"
-            f"보유 연계표: <b>{r['version']}</b> · MTI품목 {r['n_mti']}개 · "
+            f"보유 연계표: <b>{_html.escape(str(r['version']))}</b> · "
+            f"MTI품목 {r['n_mti']}개 · "
             f"{_rf}"
             f"{hs_line}\n"
             f"신규 연계표 확인: KITA stat.kita.net 자료실 — Claude 세션서 "
@@ -153,7 +165,10 @@ def _build_message(r: dict) -> str:
     # reinforce 고아는 **출처별로** 적는다 — 처방이 정반대라 한 줄로 뭉치면
     # 운영자를 엉뚱한 fix 로 보낸다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
     def _list(keys, n=30):
-        return ", ".join(keys[:n]) + (f" 외 {len(keys)-n}" if len(keys) > n else "")
+        # ⚠️ 키는 운영자·LLM 이 들이는 자유서술이라 escape 필수(규칙 7) — 미닫힘
+        # `<b>` 하나가 Telegram 400 을 내고 그 달 DM 이 통째로 사라진다.
+        return (", ".join(_html.escape(str(k)) for k in keys[:n])
+                + (f" 외 {len(keys)-n}" if len(keys) > n else ""))
 
     if ro and not r.get("reinforce_src_known"):
         body.append("• reinforce 품목키(→customs 카드 미부착, <b>출처 판정 불가</b> "
@@ -166,10 +181,9 @@ def _build_message(r: dict) -> str:
                     "(→customs 카드 미부착): "
                     + _list(r["reinforce_orphan_overlay"]))
     if po:
-        body.append("• _THEME_MTI_PIN MTI6(존재X): " + ", ".join(po))
+        body.append("• _THEME_MTI_PIN MTI6(존재X): " + _list(po, 1000))
     if to:
-        body.append("• _THEME_ROWS HS 미해석 테마: " + ", ".join(to[:20])
-                    + (f" 외 {len(to)-20}" if len(to) > 20 else ""))
+        body.append("• _THEME_ROWS HS 미해석 테마: " + _list(to, 20))
     if r.get("reinforce_orphan_repo") or not r.get("reinforce_src_known") or po or to:
         body.append("→ 큐레이션 CSV·핀·테마 고아 = <b>연계표 rename 의심</b>: "
                     "키(MTI품목명)를 신규 카탈로그명으로 교정 요청.")
@@ -192,7 +206,7 @@ def _notify(text: str) -> None:
         log.info("notify skipped: no TRADE_BOT_TOKEN / operator chat_id")
         return
     try:
-        subprocess.run(
+        p = subprocess.run(
             ["curl", "-s", "-m", "10", "-X", "POST",
              f"https://api.telegram.org/bot{token}/sendMessage",
              "--data-urlencode", f"chat_id={chat_id}",
@@ -200,6 +214,11 @@ def _notify(text: str) -> None:
              "--data-urlencode", "parse_mode=HTML"],
             timeout=15, check=False, capture_output=True,
         )
+        # ⚠️ 응답을 버리면 전송 실패가 완전히 조용하다 — HTML 파싱 오류(규칙 7)로
+        # 400 이 나도 그 달 점검이 없었던 일이 된다(#12 silent-fail 금지).
+        out = (p.stdout or b"").decode("utf-8", "replace")
+        if p.returncode != 0 or '"ok":true' not in out:
+            log.warning("notify 실패(rc=%s): %s", p.returncode, out[:300])
     except Exception as e:
         log.warning("notify failed: %s", e)
 

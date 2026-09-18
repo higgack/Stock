@@ -921,7 +921,8 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
     HOME) 를 **병합** — 오버레이 mtime 변하면 캐시 재빌드(버튼 반영이 수출입
     대시보드에 즉시 반영, 프로세스 재시작 불요). 품목키는 _ITEM_ALIAS 로 canonical
     정규화 후 병합(자유서술형→카탈로그 품목명, catalog_guard 고아 축소).
-    path 지정 시 캐시·오버레이 우회(테스트)."""
+    path 지정 시 캐시·오버레이 우회 — 테스트뿐 아니라 **운영 경로**도 쓴다
+    (`catalog_guard.scan` 이 고아의 출처를 repo/오버레이로 가를 때, #45)."""
     global _REINFORCE_APPROVED_CACHE, _REINFORCE_OVERLAY_MTIME
     import csv
     from pathlib import Path
