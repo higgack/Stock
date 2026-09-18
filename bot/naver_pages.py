@@ -329,7 +329,10 @@ def render_highlow_page() -> str:
             data = nv
     except Exception as exc:
         log.warning("naver KR movers: %s", exc)
-        why = why or f"렌더 경로 예외: {exc}"
+        # ⚠️ 다른 사유 채널은 전부 `_sanitize`/`mask_secrets` 를 거치는데 이
+        # 자리만 예외 문자열을 날것으로 실었다 — URL·토큰이 예외 메시지에
+        # 들어오는 경로가 실재한다(§Secrets · 독립 리뷰 2026-09-18 L7).
+        why = why or _naver_diag.mask_secrets(f"렌더 경로 예외: {exc}")
 
     if data is not None:
         up = sort_by_pct(data["up"], gainers=True)      # 기본 등락률순(사용자 2026-06-15)
@@ -366,7 +369,13 @@ def render_highlow_page() -> str:
         if data.get("stale"):
             _m = data.get("stale_min")
             _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
-            _fresh_txt = f'저장분{f" ({_ago})" if _ago else ""} ⚠️'
+            # ⚠️ 저장분을 그리는 날이 **장애의 첫 24시간**이다(`_cached` TTL).
+            # 사유를 여기 안 실으면 새 사유 채널이 그 하루 동안 한 글자도
+            # 안 보이고, 사용자는 어제 값 위에서 "왜 안 바뀌나"를 묻는다
+            # (독립 리뷰 2026-09-18 M2 · #43·#38 형제 `render_kr_volume_page`
+            # 는 이미 `💾` 뒤에 사유를 적는다).
+            _fresh_txt = (f'저장분{f" ({_ago})" if _ago else ""} ⚠️'
+                          + (f' · {_html.escape(why)}' if why else ""))
         else:
             _fresh_txt = _mf("KR")
         sub = ("네이버 증권 급등/급락 · 업종=네이버 · "

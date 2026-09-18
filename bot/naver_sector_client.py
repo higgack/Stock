@@ -1679,6 +1679,10 @@ _QUOTED_RE = re.compile(r'"([^"\n]{1,60})"')
 # 통째로 안 잡혀 "원천이 그 키를 지목하지 않았습니다" 라는 **거짓 사유**가
 # 나간다(2026-09-18 실측 — 옛 봉투의 `detail` 이 그렇게 사라졌다, #292).
 # 본문 안의 `유효하지 않은 sortType:` 은 앞이 공백이라 머리가 되지 않는다.
+# ⚠️ 못 보는 축(#274): 그건 **그 문자열에 대해서만** 참이다 — `: ` 바로 뒤에
+# 오는 ASCII 낱말은 무엇이든 머리가 되므로, 원천이 문구를 `detail: 값:
+# allowed: […]` 처럼 바꾸면 소유 구간이 거기서 잘린다(독립 리뷰 2026-09-18
+# L3 이 합성으로 재현). 실측 봉투 둘은 그 모양이 아니다.
 _KEYED_SEG_RE = re.compile(r"(?:^|·|\n|:)\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
 
@@ -1688,7 +1692,13 @@ def _keyed_segments(text: str) -> dict:
     ms = list(_KEYED_SEG_RE.finditer(text))
     for i, m in enumerate(ms):
         end = ms[i + 1].start() if i + 1 < len(ms) else len(text)
-        out.setdefault(m.group(1), text[m.end():end])
+        seg = text[m.end():end]
+        # ⚠️ 같은 키가 **두 번** 올 수 있다 — `error_brief` 는 `result` 와
+        # `message` 양쪽의 `fieldErrors` 를 이어 붙이므로 한 키에 두 구간이
+        # 생기고, 옛 `setdefault` 는 먼저 온 쪽만 남겨 **목록이 실린 뒤엣것을
+        # 버렸다**(독립 리뷰 2026-09-18 M5 실측: 허용값이 () 가 됐다).
+        # 이어 붙이면 어느 쪽에 있든 읽힌다(#45 한 키의 두 구간은 한 모집단).
+        out[m.group(1)] = (out[m.group(1)] + "\n" + seg) if m.group(1) in out else seg
     return out
 
 
@@ -1847,7 +1857,16 @@ def list_truncated(brief: str) -> bool:
     if _PIPED_RE.search(s) and s.rstrip().endswith(("…", "...")):
         return True
     head = s.rfind("[")
-    return head >= 0 and "]" not in s[head:]
+    if head >= 0 and "]" not in s[head:]:
+        return True
+    # ⚠️ 사유가 **통째로** 잘리면 위 둘 다 못 본다 — 남은 꼬리에 온전한
+    # 파이프 목록도, 열린 `[` 도 없기 때문이다. 그런데 그때 잘려 나간 것이
+    # 하필 우리 키의 구간이면 `names_key` 가 False 가 되어 화면이 "원천이
+    # 그 키를 지목하지 않았습니다" 라고 **원천 탓**을 한다(독립 리뷰
+    # 2026-09-18 M1 실측: 필드 둘 × 사유 여럿이면 300자 한도를 넘는다 —
+    # `_field_msgs` 가 사유를 길게 만든 뒤 도달 가능해졌다).
+    # '우리가 잘랐다' 는 정직한 판정 불가가 틀린 귀속보다 낫다(#54·#165).
+    return s.rstrip().endswith(("…", "..."))
 
 
 def theme_ids(rows: object) -> set:

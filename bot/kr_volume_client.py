@@ -120,8 +120,17 @@ def learn_fail_reason(why: str, key: str = _SORT_KEY) -> str:
                                          names_key)
     lit = expected_literal(why, key)
     if lit:
-        return (f'원천이 {key} 에 목록이 아니라 리터럴 하나를 기대한다고 '
-                f'말했습니다(expected "{lit}") — 허용값을 배울 수 없습니다 · '
+        # ⚠️ 이 응답을 "이 키는 늘 그 리터럴이어야 한다" 로 적으면 거짓이다 —
+        # 같은 주소(`_LIST`)를 `naver_ranking_client._domestic_paged` 가
+        # `sortType=up|down|high52week|low52week` 로 부르고 #373 실측이 같은
+        # 엔드포인트에서 `quantTop` 30행을 받았다. 즉 이 응답은 **그 미끼가
+        # 받은 한 갈래**이지 스키마 전체가 아니다(#165·#292 틀린 라벨은 라벨이
+        # 없는 것보다 나쁘다). 반대 증거를 같은 줄에 적는다.
+        return (f'원천이 미끼 값에 대해 {key} 에 리터럴 하나를 기대한다고 '
+                f'답했습니다(expected "{lit}") — 다만 같은 주소가 다른 '
+                f"{key} 값으로는 행을 주므로 이 응답은 그 키의 스키마 전체가 "
+                f"아닙니다(판별 유니온의 한 갈래로 보이지만 그건 재지 "
+                f"않았습니다). 허용값 목록은 이 응답에서 배울 수 없습니다 · "
                 f"원문: {why}")
     if list_truncated(why):
         return "원천이 허용값을 적어 보냈지만 사유 길이 제한에 잘렸습니다"

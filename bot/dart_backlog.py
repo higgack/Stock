@@ -533,11 +533,16 @@ _ROLL_CLOSE = re.compile(r"당\s*(?:반|분)?\s*기\s*말|기\s*말|수주잔고
 def _roll_ok(r: list) -> bool:
     """기초 + 신규 − 인식 ≈ 기말. **열을 잘못 집는 것을 막는 유일한 가드**다
     (#106 열 뜻을 추측해 배정하면 스케일이 아니라 의미가 틀리고, 그건 검산도
-    못 잡는다). 실측 391710: 7,058 + 1,718 − 4,761 = 4,015 (정확히 일치)."""
-    if len(r) != 4 or r[3] <= 0:
-        return False
-    exp = r[0] + r[1] - r[2]
-    return abs(exp - r[3]) <= _TOL * max(abs(r[3]), abs(exp), 1.0)
+    못 잡는다). 실측 391710: 7,058 + 1,718 − 4,761 = 4,015 (정확히 일치).
+
+    ⚠️ 항등식은 **형제(`_verify_exact`)를 그대로 부른다** — 처음엔 여기에
+    `a + b - c` 를 따로 적었는데, 형제는 이미 `a + b - abs(c)` 이고 그 이유를
+    적어 두고 있었다(기납품액을 `(12,248,487)` 처럼 괄호 음수로 적는 회사가
+    있다 — HD현대중공업 실측). 같은 항등식을 두 곳에 적으면 한쪽만 고쳐져
+    그런 회사가 이 형태에서만 거부된다(#38, 독립 리뷰 2026-09-18 M4 —
+    뮤테이션이 그 갈라짐을 증명했다: 어느 쪽으로 바꿔도 회귀가 통과했다).
+    """
+    return len(r) == 4 and _verify_exact(r) is not None
 
 
 def _parse_rolling(text: str) -> tuple[float, str] | None:
@@ -725,7 +730,7 @@ def _parse_single(text: str) -> tuple[float, str] | None:
 # 것이라 개선 대상이 아니다. CLAUDE.md Automation-first.
 _MISS_LOG = _Path.home() / ".tradingagents" / "backlog_misses.jsonl"
 _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 증가 방지
-# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 240)을
+# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 400)을
 # 담는다 — 여기서 더 자르면 헤더가 잘려 **고칠 근거가 사라진다**(#156·#350
 # '자르는 자리가 다음 결정을 가리지 않는가').
 # ⚠️ 2026-09-18 첫 실물 라운드에서 **결정적인 줄이 창 밖이었다** — 영풍
@@ -828,13 +833,21 @@ def _empty_backlog_table(text: str, at: int) -> bool:
 
     ⚠️ 헤더의 연도·기수(`제29기`)나 단위 캡션이 숫자로 잡히지 않게 **합계
     라벨 뒤**만 본다 — 거기가 값이 들어갈 자리다.
+
+    ⚠️⚠️ 숫자 유무는 `_row_values` 가 아니라 `_first_run` 으로 센다 — 전자는
+    **앞의 비숫자 토큰에서 즉시 끊겨** 빈 행을 돌려주고(그 함정은 `_first_run`
+    독스트링이 케이씨텍 실측으로 이미 적어 뒀다), 합계 라벨에 각주가 붙는
+    회사(`합 계 (*) - 10,000 - 4,000 - 6,000`)가 실재한다. 그 조합이면 값이
+    가득한 표가 '명시적미공시' 로 분류되고, 그 사유는 `_log_miss` 가 기록
+    자체를 건너뛰므로 **진짜 파서 갭이 원장에서 통째로 사라진다**(#93·#109·
+    #111 이 세우려 한 '개선 여지' 계수의 정반대, 독립 리뷰 2026-09-18 H1).
     """
     seg = text[at:at + 2500]
     tm = re.search(r"합\s*계", seg)
     if not tm:
         return False
     after = seg[tm.end():tm.end() + 120]
-    return not _row_values(seg, tm.end()) and "-" in after
+    return not _first_run(after) and "-" in after
 
 
 def diagnose_detail(text: str) -> str:
@@ -1215,10 +1228,54 @@ def _write_ledger(body: str) -> None:
     tmp.replace(_MISS_LOG)
 
 
+# 파서로는 못 고치는 사유 — 원천에 값이 없거나(미공시류) 원문을 못 받았거나
+# 원문 경로가 아니다. **여집합이 개선 여지**라, `diagnose` 가 새 관문 사유를
+# 내면 자동으로 '고칠 것' 으로 분류된다(#24 목록을 우리가 들면 새 항목을 못 잡는다).
+NON_FIXABLE_REASONS = ("미공시", "명시적미공시", MISS_NO_DOC, MISS_SERIES_ANOMALY)
+
+
+def drop_fixable(ticker, year, reprt_code) -> int:
+    """그 종목·분기의 **개선 여지 줄**을 지운다. 지운 줄 수.
+
+    ⚠️ `drop_miss` 는 사유까지 신원으로 보므로(`miss_key`) 재분류를 못 덮는다 —
+    같은 건이 `형식미지원` 과 새 사유로 두 줄이 되거나, 새 사유가 기록되지 않는
+    분류(미공시류)면 옛 줄만 남아 보고서가 계속 그걸 '고칠 수 있는 것' 으로
+    센다(독립 리뷰 2026-09-18 H2 실측). 여기서는 사유를 **여집합**으로 보고
+    신원(종목·연도·보고서)으로만 지운다.
+    """
+    if not _MISS_LOG.exists():
+        return 0
+    want = (norm_miss_ticker(ticker), year, reprt_code)
+    raw = _MISS_LOG.read_text(encoding="utf-8")
+    kept, n = [], 0
+    for ln in raw.splitlines():
+        r = parse_miss_line(ln)
+        if (r is not None and not r.get(_TOMB_KEY)
+                and (norm_miss_ticker(r.get("ticker")), r.get("year"),
+                     r.get("reprt")) == want
+                and r.get("reason") not in NON_FIXABLE_REASONS):
+            n += 1
+            continue
+        kept.append(ln)
+    if n:
+        _write_ledger(("\n".join(kept) + "\n") if kept else "")
+    return n
+
+
 def _log_miss(ticker: str, year, reprt_code, reason: str,
               detail: str = "", excerpt: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
     if reason in ("미공시", "명시적미공시"):
+        # ⚠️ 그냥 돌아가면 **이미 쌓인 개선 여지 줄이 그대로 남는다** —
+        # `miss_key` 에 사유가 들어가므로 새 분류가 옛 줄을 덮지 않고, 격주
+        # 보고서는 다음 사람이 `--refill` 을 손으로 돌릴 때까지 그 건을 계속
+        # '고칠 수 있는 것' 으로 센다(§Automation-first 운영자 반복명령을
+        # 요구하는 fix 는 잘못된 fix · #11 배포완료 ≠ 화면에 보임 · #45).
+        # 독립 리뷰 2026-09-18 H2 가 원장 실측으로 재현했다.
+        try:
+            drop_fixable(ticker, year, reprt_code)
+        except Exception:                                   # noqa: BLE001
+            log.debug("backlog miss 재분류 정리 실패 %s", ticker, exc_info=True)
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)

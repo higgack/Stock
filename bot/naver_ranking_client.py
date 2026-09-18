@@ -776,15 +776,30 @@ def fetch_kr_movers(limit: int = 30) -> dict:
            "source": "네이버 증권 급등/급락(전종목·한글명·시총·거래대금)"}
     up, why_u = _domestic_paged2("up", max_items=max(limit, 50))
     dn, why_d = _domestic_paged2("down", max_items=max(limit, 50))
-    # 둘 다 비었을 때만 사유를 싣고, **가장 행동 가능한** 것을 머리에 둔다
-    # (#275 '먼저 찾은 것'이 아니라 · #82 처방이 갈래마다 다르다).
-    if not up and not dn:
-        fails = [w for w in (why_u, why_d) if w]
-        out["reason"] = min(fails, key=_nd.reason_rank) if fails else ""
     if up:
         out["up"] = [_kr_row(s) for s in up if _is_real_stock(s)][:limit]
     if dn:
         out["down"] = [_kr_row(s) for s in dn if _is_real_stock(s)][:limit]
+    # 화면이 빌 때만 사유를 싣고, **가장 행동 가능한** 것을 머리에 둔다
+    # (#275 '먼저 찾은 것'이 아니라 · #82 처방이 갈래마다 다르다).
+    # ⚠️ 갈래가 셋이다 — 못 받음(사유 있음) / 원천이 0건 / 원천은 줬는데
+    # **우리 필터**가 다 걸렀다. 옛 판은 뒤 둘을 사유 `""` 로 뭉개 화면이
+    # "사유 미기록 — 로그를 볼 것" 을 적었는데, 그 자리엔 로그도 안 남는다
+    # (독립 리뷰 2026-09-18 M3·L6 · #82·#54 · `naver_diag` 가 `empty` 를
+    # 네 갈래의 하나로 이미 이름 지어 뒀다).
+    # ⚠️ 판정은 **필터 뒤**에 한다 — 앞에서 하면 원천이 준 행이 전부 걸러진
+    # 날에도 사유가 비어 같은 침묵이 된다(#45 두 모집단).
+    if not out["up"] and not out["down"]:
+        fails = [w for w in (why_u, why_d) if w]
+        if fails:
+            out["reason"] = min(fails, key=_nd.reason_rank)
+        elif up or dn:
+            out["reason"] = (
+                f"원천이 {len(up) + len(dn)}행을 줬지만 전부 ETF·ETN·스팩 등"
+                "으로 걸러졌습니다 — 우리 필터(`_is_real_stock`)를 볼 것")
+        else:
+            out["reason"] = ("원천이 0건을 줬습니다 — 고칠 것이 없을 수 "
+                             "있습니다(원천 점검 대상)")
     return out
 
 
