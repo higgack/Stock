@@ -139,7 +139,7 @@ def _build_message(r: dict) -> str:
     _nrepo = r.get("n_reinforce_repo", 0)
     _nov = max(r["n_reinforce"] - _nrepo, 0)
     _rf = (f"reinforce {r['n_reinforce']}품목"
-           + (f"(큐레이션 CSV {_nrepo} + '반영' 적재 {_nov})"
+           + (f"(큐레이션 CSV {_nrepo} + '반영'이 더한 {_nov})"
               if r.get("reinforce_src_known") else ""))
     head = (f"📋 <b>연계표 정합 점검</b> (월례)\n"
             f"보유 연계표: <b>{r['version']}</b> · MTI품목 {r['n_mti']}개 · "
