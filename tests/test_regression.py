@@ -17160,12 +17160,16 @@ class TestNaverKrRanking:
         import re
         import bot.naver_ranking_client as nr
 
+        # 2026-09-18: `_domestic_paged` 가 사유를 나르는 `_domestic_paged2` 로
+        # 위임하면서 **스텁 대상이 바뀌었다**(#183 시그니처가 바뀌면 스텁이
+        # 무너진다). 계약은 그대로 — `pageSize=50` + 짧은 쪽에서 멈춤.
         def fake(url):
             assert "pageSize=50" in url, url           # 200 금지
             p = int(re.search(r"page=(\d+)", url).group(1))
-            return ([{"itemCode": str(i)} for i in range(50)] if p == 1
+            rows = ([{"itemCode": str(i)} for i in range(50)] if p == 1
                     else [{"itemCode": "x"}] if p == 2 else None)
-        monkeypatch.setattr(nr, "_get_stocks", fake)
+            return rows, ("" if rows else "원천이 행을 주지 않았습니다")
+        monkeypatch.setattr(nr, "_get_stocks2", fake)
         out = nr._domestic_paged("up", max_items=200)
         assert len(out) == 51                          # 50(page1) + 1(page2 short→stop)
         # 소스에 실제 pageSize=200 호출 없음(주석 제외)
@@ -17178,11 +17182,18 @@ class TestNaverKrRanking:
         import requests
         import bot.naver_ranking_client as nr
 
+        # 2026-09-18: `_get_stocks` 가 공용 `_nd.get_json` 을 쓰면서 응답 객체가
+        # `.content` 를 요구한다(본문을 버리면 원천이 적어 보낸 거절 사유가
+        # 사라진다, #325). 계약은 그대로 — **isSuccess 는 명시적 False 일 때만**
+        # 거부한다(#155 픽스처는 원천이 실제로 보내는 모양대로).
         class _Resp:
             status_code = 200
 
             def __init__(self, p):
                 self._p = p
+                import json as _j
+
+                self.content = _j.dumps(p).encode()
 
             def json(self):
                 return self._p
@@ -72340,3 +72351,332 @@ class TestBacklogRollingTable20260918:
         got = parse_backlog(plain)
         assert got and got["value"] == 10_000 * 1_000_000, got
         assert got["form"] == "표·합계행", got
+
+
+class TestSortKeyAttribution20260918:
+    """거래량 상위가 죽은 원인 — 허용값을 **어느 키의 것인지 가리지 않고** 배웠다.
+
+    2026-09-18 화면이 적은 원천 사유:
+    ``sortType: Invalid input: expected "dividend" · dividendSortType: Invalid
+    option: expected one of "rate"|"value" (invalid_value,invalid_value)``
+    — 옛 판은 **항목 수로만** 겨뤄 `rate|value`(남의 키)를 배웠고, 그 값을
+    `sortType` 으로 보내니 원천이 영원히 400 을 냈다(#34 한 자리가 두 뜻을
+    대표하면 한쪽은 반드시 거짓말 · #352 의 재발 — 그때는 부분문자열이 원인,
+    여기선 키 무시가 원인).
+    """
+
+    REAL = ('sortType: Invalid input: expected "dividend" · dividendSortType: '
+            'Invalid option: expected one of "rate"|"value" '
+            '(invalid_value,invalid_value)')
+    # 2026-09-12 VM 실측 봉투 — 테마 보드가 이 모양에서 12종을 배웠다.
+    OLD = ('detail: 유효하지 않은 sortType: [__probe__]. 허용값: [changeRate, '
+           'fallCnt, name, type] · title: Bad Request · status: 400')
+
+    def test_other_keys_list_is_not_learned_as_ours(self):
+        from bot.naver_sector_client import allowed_values
+        assert allowed_values(self.REAL, key="sortType") == ()
+
+    def test_the_key_that_owns_the_list_still_gets_it(self):
+        from bot.naver_sector_client import allowed_values
+        assert allowed_values(self.REAL, key="dividendSortType") == ("rate", "value")
+
+    def test_key_match_is_token_bounded_not_substring(self):
+        """`dividendSortType` 은 `sortType` 을 부분문자열로 담는다(#46).
+
+        ⚠️ 구간 **머리**로만 재는 픽스처는 이 가드를 못 태운다 — 부분문자열로
+        바꿔도 통과한다(뮤테이션 실측). 키 이름이 구간 **안**에 있는 옛 봉투
+        모양이어야 발화한다(#91c 깨지는 값까지 밀어 볼 것).
+        """
+        from bot.naver_sector_client import allowed_values
+        only_div = 'dividendSortType: Invalid option: expected one of "rate"|"value"'
+        assert allowed_values(only_div, key="sortType") == ()
+        assert allowed_values(only_div, key="dividendSortType") == ("rate", "value")
+        inside = ('detail: 유효하지 않은 dividendSortType: [rate, value] · '
+                  'title: Bad Request')
+        assert allowed_values(inside, key="sortType") == ()
+        assert allowed_values(inside, key="dividendSortType") == ("rate", "value")
+        # ⚠️ 위 둘은 대소문자가 달라(`…SortType`) 부분문자열로 바꿔도 통과한다
+        # (뮤테이션 실측 2회). **접두가 같은 형제**(`sort` ⊂ `sortType`)여야
+        # 이 가드가 실제로 발화한다 — `classify_param_probe` 가 같은 이유로
+        # 토큰 경계를 쓴다(#46·#91b 재는 대상이 맞나).
+        pref = 'detail: 유효하지 않은 sortType: [changeRate, name] · title: X'
+        assert allowed_values(pref, key="sort") == ()
+        assert allowed_values(pref, key="sortType") == ("changeRate", "name")
+
+    def test_old_bracket_envelope_still_resolves_for_the_key(self):
+        """키 귀속을 넣자 **옛 봉투가 통째로 () 가 됐다**(그 구간 머리는
+        `detail` 이고 키는 구간 **안**에 있다) — 테마 보드가 12종을 배우던
+        경로가 죽는다. 봉투가 두 벌이면 키를 찾는 자리도 두 군데다(#73)."""
+        from bot.naver_sector_client import allowed_values
+        assert allowed_values(self.OLD, key="sortType") == (
+            "changeRate", "fallCnt", "name", "type")
+        assert allowed_values(self.OLD, key="dividendSortType") == ()
+
+    def test_no_key_attribution_at_all_keeps_old_behaviour(self):
+        """구간 머리가 없는 사유(원천이 키를 안 나눔)는 전문을 훑는다."""
+        from bot.naver_sector_client import allowed_values
+        bare = 'Invalid option: expected one of "marketValue"|"up"|"down"'
+        assert allowed_values(bare, key="sortType") == ("marketValue", "up", "down")
+
+    def test_names_key_three_states(self):
+        from bot.naver_sector_client import names_key
+        assert names_key(self.REAL, "sortType") is True
+        assert names_key(self.OLD, "sortType") is True
+        assert names_key('category: Invalid option: expected one of "all"|"kospi"',
+                         "sortType") is False
+        assert names_key('Invalid option: expected one of "a"|"b"', "sortType") is None
+
+    def test_expected_literal_is_attributed_too(self):
+        from bot.naver_sector_client import expected_literal
+        assert expected_literal(self.REAL, "sortType") == "dividend"
+        assert expected_literal(self.REAL, "dividendSortType") == ""
+
+    @staticmethod
+    def _via_pipeline(body: bytes) -> str:
+        """제품이 실제로 만드는 **사유 문자열**(접두 포함)로 되돌린다.
+
+        ⚠️ 완성된 사유를 손으로 적은 픽스처는 `http_reason` 이 앞에 붙이는
+        `원천이 HTTP 400 — 원천: ` 을 한 번도 안 태운다 — 위 픽스처들이 전부
+        그래서, 첫 구간 머리가 통째로 사라지는 결함을 열두 개가 다 놓쳤다
+        (#155 픽스처는 원천이 실제로 내는 모양대로 · #20).
+        """
+        from bot import naver_diag as nd
+        return nd.http_reason(400, 9, body=body)
+
+    def test_the_first_key_head_survives_the_reason_prefix(self):
+        """접두 뒤의 **첫 키**도 구간 머리다 — 아니면 거짓 사유가 나간다.
+
+        `_KEYED_SEG_RE` 가 `·`·줄바꿈·문두만 경계로 보던 판에서는 접두
+        (`… — 원천: `) 뒤의 `detail`/`sortType` 이 머리가 되지 못해, 원천이
+        **지목한** 키를 "지목하지 않았습니다" 라고 말했다(#292 틀린 라벨은
+        라벨이 없는 것보다 나쁘다). 옛 봉투는 그 탓에 허용값이 통째로 0종이
+        되어 테마 보드 커버리지 계약 5건이 빨간불이었다.
+        """
+        import json
+
+        from bot.naver_sector_client import allowed_values, names_key
+
+        old = self._via_pipeline(json.dumps(
+            {"detailCode": "HttpError", "message": "Bad Request",
+             "result": json.dumps(
+                 {"title": "Bad Request", "status": 400,
+                  "detail": "유효하지 않은 sortType: [__probe__]. "
+                            "허용값: [changeRate, fallCnt, name, type]"},
+                 ensure_ascii=False)}, ensure_ascii=False).encode())
+        assert allowed_values(old, key="sortType") == (
+            "changeRate", "fallCnt", "name", "type"), old
+        assert names_key(old, "sortType") is True, old
+
+        real = self._via_pipeline(json.dumps(
+            {"detailCode": "invalid_value,invalid_value",
+             "message": json.dumps({"formErrors": [], "fieldErrors": {
+                 "sortType": ['Invalid input: expected "dividend"'],
+                 "dividendSortType": [
+                     'Invalid option: expected one of "rate"|"value"']}})},
+            ensure_ascii=False).encode())
+        # 남의 목록은 여전히 안 배운다(이 커밋의 본래 계약).
+        assert allowed_values(real, key="sortType") == (), real
+        assert allowed_values(real, key="dividendSortType") == (
+            "rate", "value"), real
+        # 그런데 원천은 우리 키를 **지목했다** — 사유가 그렇게 말해야 한다.
+        assert names_key(real, "sortType") is True, real
+
+    def test_volume_learner_names_the_literal_branch_not_absence(self):
+        """배선까지: 화면·로그가 받는 문장이 사실이어야 한다(#82·#292).
+
+        순수 함수만 재면 호출부가 여전히 "지목하지 않았습니다" 를 찍어도
+        통과한다(#20).
+        """
+        import json
+
+        from bot.kr_volume_client import learn_fail_reason
+
+        why = self._via_pipeline(json.dumps(
+            {"detailCode": "invalid_value,invalid_value",
+             "message": json.dumps({"formErrors": [], "fieldErrors": {
+                 "sortType": ['Invalid input: expected "dividend"'],
+                 "dividendSortType": [
+                     'Invalid option: expected one of "rate"|"value"']}})},
+            ensure_ascii=False).encode())
+        msg = learn_fail_reason(why)
+        assert "리터럴 하나를 기대한다" in msg and 'expected "dividend"' in msg, msg
+        assert "지목하지 않았습니다" not in msg, msg
+
+
+class TestFieldErrorsKeepEveryMessage20260918:
+    """`fieldErrors[key]` 의 **첫 사유만** 남기고 나머지를 버리고 있었다.
+
+    zod 유니온은 같은 필드에 가지마다 사유를 붙인다 — 한쪽은 리터럴 하나를
+    기대하고 다른 쪽은 enum 전체를 적는데, 첫 것만 보면 **스키마를 적은 사유가
+    통째로 사라진다**(#156·#338·#350 자르는 자리가 다음 결정을 가리지 않는가 —
+    이번엔 길이가 아니라 **인덱스**로 잘랐다).
+    """
+
+    @staticmethod
+    def _body(msgs):
+        import json
+        return json.dumps({"detailCode": "invalid_value,invalid_value",
+                           "message": json.dumps({"formErrors": [],
+                                                  "fieldErrors": {"sortType": msgs}})},
+                          ensure_ascii=False)
+
+    def test_second_message_survives(self):
+        from bot.naver_diag import error_brief
+        b = error_brief(self._body(['Invalid input: expected "dividend"',
+                                    'Invalid option: expected one of "quantTop"|"up"']))
+        assert "quantTop" in b, b
+        assert "dividend" in b, b
+
+    def test_enum_bearing_message_comes_first(self):
+        """자르기는 늘 꼬리를 먹으므로 목록이 앞이어야 한다(#350)."""
+        from bot.naver_diag import error_brief
+        b = error_brief(self._body(['Invalid input: expected "dividend"',
+                                    'Invalid option: expected one of "quantTop"|"up"']))
+        assert b.index("quantTop") < b.index("dividend"), b
+
+    def test_the_list_is_then_learnable_for_that_key(self):
+        from bot.naver_diag import error_brief
+        from bot.naver_sector_client import allowed_values
+        b = error_brief(self._body(['Invalid input: expected "dividend"',
+                                    'Invalid option: expected one of '
+                                    '"quantTop"|"priceTop"|"up"']))
+        assert allowed_values(b, key="sortType") == ("quantTop", "priceTop", "up")
+
+    def test_single_message_field_is_unchanged(self):
+        from bot.naver_diag import error_brief
+        b = error_brief(self._body(["Number must be less than or equal to 200"]))
+        assert "sortType: Number must be less than or equal to 200" in b, b
+
+    def test_per_field_cap_is_bounded(self):
+        """상한이 없으면 큰 사유가 한 줄을 통째로 먹는다(#71)."""
+        from bot.naver_diag import _FIELD_MSG_CAP, error_brief
+        b = error_brief(self._body([f"m{i}" for i in range(9)]))
+        assert b.count(" / ") == _FIELD_MSG_CAP - 1, b
+        assert "m8" not in b, b
+
+
+class TestVolumeLearnFailBranches20260918:
+    """허용값을 못 배운 이유는 **갈래가 넷이고 처방이 전부 다르다**(#82)."""
+
+    def test_literal_branch_names_what_the_source_expects(self):
+        from bot.kr_volume_client import learn_fail_reason
+        r = learn_fail_reason(TestSortKeyAttribution20260918.REAL)
+        assert "리터럴" in r and 'expected "dividend"' in r, r
+
+    def test_other_keys_only_branch_says_we_did_not_learn_theirs(self):
+        from bot.kr_volume_client import learn_fail_reason
+        r = learn_fail_reason('category: Invalid option: expected one of "all"|"kospi"')
+        assert "지목하지 않았" in r, r
+
+    def test_truncated_branch_is_not_blamed_on_the_source(self):
+        from bot.kr_volume_client import learn_fail_reason
+        r = learn_fail_reason('sortType: Invalid option: expected one of "a"|"b"…')
+        assert "잘렸" in r, r
+
+    def test_no_rejection_branch(self):
+        from bot.kr_volume_client import learn_fail_reason
+        assert "검증하지 않는" in learn_fail_reason("")
+
+    def test_learner_does_not_send_another_keys_values(self, monkeypatch, tmp_path):
+        """배선 — 학습이 `rate`/`value` 를 후보로 **불러 보지 않는다**(#20).
+
+        헬퍼만 재면 호출부가 여전히 `allowed_values(why)`(키 없이)를 부르는
+        변형을 못 잡는다.
+        """
+        import bot.kr_volume_client as kv
+        calls: list = []
+
+        def _fake_fetch(sort_type, page, size=None):
+            calls.append(sort_type)
+            return [], TestSortKeyAttribution20260918.REAL
+
+        monkeypatch.setattr(kv, "_fetch", _fake_fetch)
+        monkeypatch.setattr(kv, "_CACHE_DIR", tmp_path, raising=False)
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        sort, why, _rows = kv._learn_sort_type(force=True)
+        assert sort == "", sort
+        assert calls == [kv._PARAM_JUNK], calls    # 미끼 1콜 — 후보 시도 0
+        assert "리터럴" in why, why
+
+
+class TestMoversPageStatesTheReason20260918:
+    """급등·급락이 "(잠시 후 다시 시도해 주세요.)" 만 적어 사용자가 "원천 문제냐"를
+    물어야 했다 — `_get_stocks` 가 일시정지·403·429·구조변경을 `None` 하나로
+    뭉갰기 때문이다(#82·#43·#52. 형제 위젯은 이미 사유를 적는다, #38·#335)."""
+
+    @staticmethod
+    def _render(monkeypatch, ret):
+        import bot.finviz_client as fv
+        import bot.naver_diag as nd
+        import bot.naver_pages as np
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nd, "get_json", lambda *a, **k: ret)
+        return np.render_highlow_page()
+
+    def test_paused_is_named(self, monkeypatch):
+        import bot.naver_diag as nd
+        html = self._render(monkeypatch, (None, nd.PAUSED))
+        assert "naverpause" in html, html[-400:]
+
+    def test_http_status_is_named(self, monkeypatch):
+        import bot.naver_diag as nd
+        html = self._render(monkeypatch, (None, nd.http_reason(429, 120)))
+        assert "429" in html, html[-400:]
+
+    def test_shape_change_is_named_as_ours_to_fix(self, monkeypatch):
+        html = self._render(monkeypatch, ({"result": {"items": []}}, ""))
+        assert "계약 변경" in html, html[-400:]
+        assert "잠시 후 다시 시도" not in html, html[-400:]
+
+    def test_reason_is_escaped(self, monkeypatch):
+        html = self._render(monkeypatch, (None, "원천 <b>거절</b> & 종료"))
+        assert "<b>거절</b>" not in html
+        assert "&lt;b&gt;" in html, html[-400:]
+
+    def test_partial_page_is_not_reported_as_failure(self, monkeypatch):
+        """2쪽에서 끊긴 것은 부분 수신이지 실패가 아니다 — 사유를 실으면
+        정상 화면에 경고가 상시로 뜬다(#25·#260)."""
+        import bot.naver_diag as nd
+        import bot.naver_ranking_client as nr
+        seen: list = []
+
+        def _fake(url, **kw):
+            seen.append(url)
+            if "page=1" in url:
+                return ({"result": {"stocks": [{"itemCode": "005930"}] * 50}}, "")
+            return (None, nd.http_reason(429, 120))
+
+        monkeypatch.setattr(nd, "get_json", _fake)
+        rows, why = nr._domestic_paged2("up", max_items=200)
+        assert len(rows) == 50 and why == "", (len(rows), why)
+
+    def test_first_page_failure_carries_the_reason(self, monkeypatch):
+        import bot.naver_diag as nd
+        import bot.naver_ranking_client as nr
+        monkeypatch.setattr(nd, "get_json",
+                            lambda *a, **k: (None, nd.http_reason(403, 9)))
+        rows, why = nr._domestic_paged2("up", max_items=200)
+        assert rows == [] and "403" in why, (rows, why)
+
+    def test_movers_reason_prefers_the_actionable_one(self, monkeypatch):
+        """일시정지(안 물어본 것)와 404(주소가 없다)가 같이 나면 앞엣것이 먼저다."""
+        import bot.naver_diag as nd
+        import bot.naver_ranking_client as nr
+        order = iter([(None, nd.http_reason(404, 3)), (None, nd.PAUSED)])
+        monkeypatch.setattr(nd, "get_json", lambda *a, **k: next(order))
+        d = nr.fetch_kr_movers(limit=5)
+        assert d["reason"] == nd.PAUSED, d["reason"]
+
+    def test_success_carries_no_reason(self, monkeypatch):
+        import bot.naver_diag as nd
+        import bot.naver_ranking_client as nr
+        row = {"itemCode": "005930", "name": "삼성전자", "stockExchangeType": "KOSPI",
+               "currentPrice": "70,000", "fluctuationsRatio": "1.5",
+               "fluctuationsType": "RISING", "stockEndType": "stock"}
+        monkeypatch.setattr(nd, "get_json",
+                            lambda *a, **k: ({"result": {"stocks": [row]}}, ""))
+        d = nr.fetch_kr_movers(limit=5)
+        assert d["reason"] == "", d["reason"]
+        assert d["up"], d

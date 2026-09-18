@@ -94,6 +94,33 @@ def _sanitize(txt: str, limit: int) -> str:
 REQUEST_SHAPE_4XX = (400, 413, 414, 422)
 
 
+_FIELD_MSG_CAP = 3          # 한 필드의 사유가 길어도 상한이 있어야 한다(#71)
+
+
+def _field_msgs(v: object) -> str:
+    """한 필드에 붙은 사유들 → 한 덩이(순수). **열거를 앞세운다**.
+
+    ⚠️ 옛 판은 `v[0]` 로 **첫 사유만** 남기고 나머지를 버렸다. zod 가 유니온
+    스키마를 거절하면 같은 필드에 가지마다 사유가 붙는데(한쪽은 리터럴 하나를
+    기대하고 다른 쪽은 enum 전체를 적는다), 첫 것만 보면 **스키마를 적은 사유가
+    통째로 사라진다** — 이 함수가 막으려던 바로 그 실패의 인덱스판이다
+    (#156·#338·#350 자르는 자리가 다음 결정을 가리지 않는가).
+    ⚠️ 우리가 이 원천에서 **그 모양을 실제로 본 적은 없다**(2026-09-18 거래량
+    보드 400 은 두 필드에 각 1건이었다). 그래서 이건 관측된 버그의 fix 가
+    아니라 **버리는 코드를 없앤 것**이고, 다음 실측이 스스로 답한다(#165·#82).
+    """
+    if not isinstance(v, list):
+        return str(v)
+    msgs = [str(x) for x in v if x not in (None, "")]
+    if not msgs:
+        return str(v)
+    # 목록을 적은 사유가 먼저 — 자르기는 늘 꼬리를 먹는다(#350 "결정적인 것을
+    # 앞에 둔다"). 그 안에서는 원천이 준 순서를 지킨다.
+    enum_ish = [m for m in msgs if '"' in m and ("|" in m or "[" in m)]
+    rest = [m for m in msgs if m not in enum_ish]
+    return " / ".join((enum_ish + rest)[:_FIELD_MSG_CAP])
+
+
 def error_brief(body: object) -> str:
     """네이버 오류 봉투 → **결정적 사실을 앞세운** 한 줄(순수). 못 읽으면 "".
 
@@ -155,14 +182,12 @@ def error_brief(body: object) -> str:
         fe0 = detail.get("fieldErrors")
         if isinstance(fe0, dict):
             for k, v in fe0.items():
-                one = v[0] if isinstance(v, list) and v else v
-                parts.append(f"{k}: {one}")
+                parts.append(f"{k}: {_field_msgs(v)}")
     if isinstance(msg, dict):
         fe = msg.get("fieldErrors")
         if isinstance(fe, dict):
             for k, v in fe.items():
-                one = v[0] if isinstance(v, list) and v else v
-                parts.append(f"{k}: {one}")
+                parts.append(f"{k}: {_field_msgs(v)}")
         form = msg.get("formErrors")
         if isinstance(form, list):
             parts.extend(str(x) for x in form if x)

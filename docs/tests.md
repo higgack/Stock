@@ -1093,3 +1093,44 @@ DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 �
 붙지만, `시계열이상`(`quarterly_infographic` 이 조립된 시계열만 보고 남긴다)은
 **원문 없이** 기록되므로 영원히 없다. 그래서 문구가 원인을 단정하지 않고
 사유를 이름으로 센다(#55·#82·#165).
+
+### 거래량 상위·급등급락 — 허용값 키 귀속 · 사유 채널 (2026-09-18)
+`tests/test_regression.py::TestSortKeyAttribution20260918` ·
+`TestFieldErrorsKeepEveryMessage20260918` · `TestVolumeLearnFailBranches20260918` ·
+`TestMoversPageStatesTheReason20260918`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 남의 키(`dividendSortType`)에 붙은 목록을 `sortType` 으로 배우지 않는다(#34) | ✅ 자동 | `test_other_keys_list_is_not_learned_as_ours` |
+| 옛 봉투(키가 구간 **안**)도 여전히 읽힌다 — 키 귀속이 테마 보드 경로를 죽였다(#73) | ✅ 자동 | `test_old_bracket_envelope_still_resolves_for_the_key` |
+| 키 매칭은 **토큰 경계** — 접두 형제(`sort` ⊂ `sortType`)로 태운다(#46·#91b) | ✅ 자동 | `test_key_match_is_token_bounded_not_substring` |
+| `fieldErrors[key]` 의 **모든** 사유를 남기고 열거를 앞세운다(#156·#350) | ✅ 자동 | `TestFieldErrorsKeepEveryMessage20260918` 5건 |
+| 학습 실패 사유가 갈래 넷을 **이름으로** 말한다(#82) | ✅ 자동 | `TestVolumeLearnFailBranches20260918` 4건 |
+| 배선 — 학습이 남의 키 값을 후보로 **불러 보지 않는다**(#20) | ✅ 자동 | `test_learner_does_not_send_another_keys_values` |
+| 급등·급락 빈 화면이 일시정지·HTTP·구조변경을 **갈래로** 적는다(#43·#82) | ✅ 자동 | `TestMoversPageStatesTheReason20260918` 3건 |
+| 사유는 HTML escape 를 거친다(규칙 7) | ✅ 자동 | `test_reason_is_escaped` |
+| **부분 수신은 실패가 아니다** — 2쪽에서 끊겨도 사유를 안 싣는다(#25·#260) | ✅ 자동 | `test_partial_page_is_not_reported_as_failure` |
+| 사유가 여럿이면 **가장 행동 가능한** 것을 싣는다(#275) | ✅ 자동 | `test_movers_reason_prefers_the_actionable_one` |
+| 성공 실행엔 사유가 안 실린다(반대 증거, #25) | ✅ 자동 | `test_success_carries_no_reason` |
+| 사유 **접두**(`… — 원천: `) 뒤의 첫 키도 구간 머리다 — 아니면 지목한 키를 '안 했다'고 말한다(#292) | ✅ 자동 | `test_the_first_key_head_survives_the_reason_prefix` |
+| 배선 — 학습 실패 문구가 **리터럴 갈래**를 말한다(부재가 아니라, #82·#20) | ✅ 자동 | `test_volume_learner_names_the_literal_branch_not_absence` |
+
+⚠️ 토큰 경계 가드는 **두 번 뮤테이션을 통과했다** — `dividendSortType` 은
+대문자 `S` 라 부분문자열로 바꿔도 `sortType` 과 안 겹치고, 구간 **머리**로만
+재는 픽스처는 본문 매칭 경로를 아예 안 탄다. 접두가 같은 형제(`sort`)와 키가
+구간 안에 있는 옛 봉투, 둘 다 있어야 발화한다(#91c).
+
+⚠️ 그리고 **손으로 적은 사유 픽스처 열둘이 전부 눈이 멀어 있었다** — 제품의
+사유는 `http_reason` 이 앞에 `원천이 HTTP 400 — 원천: ` 을 붙여 만드는데,
+구간 분해가 `·`·문두만 경계로 봐서 그 **첫 키**를 통째로 놓쳤다. 옛 봉투는
+허용값이 0종이 되고(테마 커버리지 계약 5건이 빨간불로 잡았다) 새 봉투는
+원천이 지목한 키를 "지목하지 않았습니다" 라고 말했다. 사유 픽스처는 **그
+접두를 붙이는 함수를 태워** 만들 것(#155·#20).
+
+**못 보는 축**(#274): (a) 한 구간이 우리 키와 남의 키를 **함께** 담고 그
+구간에 남의 목록만 있으면 `_key_scope` 는 못 가른다 — 실측 봉투 둘은 그
+모양이 아니다. (b) 거래량 보드가 **왜** 그 봉투를 받게 됐는지(원천 스키마가
+유니온으로 바뀌었나 · `fieldErrors` 둘째 사유를 우리가 버렸나)는 아직 재지
+못했다. 두 fix 가 어느 쪽이든 다음 VM 실행이 사유로 답한다(#82·#165). (c) 사유
+채널은 **급등·급락에만** 배선했다 — 52주 신고저·상한가 보드는 여전히
+`_get_stocks`(값만)를 쓰므로 빈 화면이 갈래를 말하지 않는다.

@@ -296,6 +296,7 @@ def render_highlow_page() -> str:
     from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_pct,
                                     stock_panel)
     data = None
+    why = ""            # 비었을 때 **왜** 비었나(#43·#82) — 화면이 말한다
     try:
         from bot.finviz_client import (_CACHE_DIR, _MOVERS_INTRA_TTL, _cache_write,
                                        _cached, _session_fresh)
@@ -313,6 +314,7 @@ def render_highlow_page() -> str:
             nv = stale
         else:
             nv = fetch_kr_movers()
+            why = str(nv.get("reason") or "")
             if nv.get("up") or nv.get("down"):
                 _cache_write(_cf, nv)
             elif stale is not None:
@@ -327,6 +329,7 @@ def render_highlow_page() -> str:
             data = nv
     except Exception as exc:
         log.warning("naver KR movers: %s", exc)
+        why = why or f"렌더 경로 예외: {exc}"
 
     if data is not None:
         up = sort_by_pct(data["up"], gainers=True)      # 기본 등락률순(사용자 2026-06-15)
@@ -370,8 +373,13 @@ def render_highlow_page() -> str:
                f"{_fresh_txt}{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
+    # ⚠️ 옛 판은 갈래와 무관하게 "(잠시 후 다시 시도해 주세요.)" 만 적었다 —
+    # 일시정지(우리가 껐다)·403/429(원천이 거절)·구조 변경(우리가 고칠 것)이
+    # 같은 화면이라 사용자가 "원천 문제냐"를 물어야 했다(#82·#43·#52). 형제
+    # 위젯(업종 등락·리서치·거래량 상위)은 이미 사유를 적는다(#38·#335).
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
-            '(잠시 후 다시 시도해 주세요.)</div>')
+            + (_html.escape(why) if why else '사유 미기록 — 로그를 볼 것')
+            + '</div>')
     return _shell("급등·급락", "네이버 증권 급등/급락", "highlow", body)
 
 

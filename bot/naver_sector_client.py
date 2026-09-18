@@ -1670,7 +1670,98 @@ _PIPED_RE = re.compile(r'"(?:[^"\n]{1,60})"(?:\s*\|\s*"(?:[^"\n]{1,60})")+')
 _QUOTED_RE = re.compile(r'"([^"\n]{1,60})"')
 
 
-def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
+# 사유 한 덩이에서 **키가 붙은 구간**을 가른다. `error_brief` 는 ` · ` 로
+# 잇고, 원천은 각 구간을 `<키>: …` 로 시작한다(실측 2026-09-18 거래량 보드:
+# `sortType: Invalid input: expected "dividend" · dividendSortType: Invalid
+# option: expected one of "rate"|"value"`).
+# ⚠️ `:` 도 경계다 — `http_reason` 이 사유 앞에 `원천이 HTTP 400 — 원천: ` 을
+# 붙이므로 **첫 구간 머리**가 `·` 가 아니라 `: ` 뒤에 온다. 그걸 빼면 첫 키가
+# 통째로 안 잡혀 "원천이 그 키를 지목하지 않았습니다" 라는 **거짓 사유**가
+# 나간다(2026-09-18 실측 — 옛 봉투의 `detail` 이 그렇게 사라졌다, #292).
+# 본문 안의 `유효하지 않은 sortType:` 은 앞이 공백이라 머리가 되지 않는다.
+_KEYED_SEG_RE = re.compile(r"(?:^|·|\n|:)\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
+
+
+def _keyed_segments(text: str) -> dict:
+    """{키: 그 키에 붙은 구간}. 키가 없는 앞부분은 버린다."""
+    out: dict = {}
+    ms = list(_KEYED_SEG_RE.finditer(text))
+    for i, m in enumerate(ms):
+        end = ms[i + 1].start() if i + 1 < len(ms) else len(text)
+        out.setdefault(m.group(1), text[m.end():end])
+    return out
+
+
+def _tok_re(key: str):
+    """토큰 경계 매처 — 접두가 같은 형제(`sort` ⊂ `sortType`)를 가른다.
+
+    ⚠️ `dividendSortType` 은 **이 가드가 없어도** `sortType` 과 안 겹친다
+    (대문자 `S`) — 실제로 뮤테이션이 두 번 통과해 그걸 알았다. 발화 경로는
+    `sort`·`page`(⊂ `pageSize`) 같은 **접두 형제**이고, `classify_param_probe`
+    가 같은 이유로 토큰 경계를 쓴다(#46·#91b 재는 대상이 맞나).
+    대소문자는 구별한다 — 이 원천의 키는 camelCase 라 `sorttype` 이 같은
+    키라는 보장이 없다(#165)."""
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])")
+
+
+def _key_scope(text: str, key: str | None):
+    """그 키에 대해 원천이 말한 부분만. 아무 말도 안 했으면 None(순수).
+
+    봉투가 두 벌이라 **키를 찾는 자리도 두 군데**다(#73):
+    (a) 새 봉투는 키가 **구간 머리**다 — ``sortType: Invalid input: … ·
+        dividendSortType: Invalid option: …``.
+    (b) 옛 봉투는 키가 구간 **안**에 있다 — ``detail: 유효하지 않은
+        sortType: [changeRate, …] · title: Bad Request``. 여기서 구간 머리는
+        `detail` 이므로 (a) 만 보면 테마 보드가 12종을 배우던 경로가 통째로
+        죽는다(실측 2026-09-18 — 키 귀속을 넣자마자 옛 봉투가 () 가 됐다).
+
+    None 은 '원천이 다른 키들만 지목했다' 는 뜻이다 — 남의 목록을 배우느니
+    빈손이 낫다(#32 · #165). 키 귀속이 아예 없는 사유(구간 머리 0개)는
+    옛 동작 그대로 전문을 돌려준다.
+
+    ⚠️ 못 보는 축(#274): 한 구간이 **우리 키와 남의 키를 함께** 담고 그 구간에
+    남의 목록만 있으면 이 함수는 못 가른다. 실측 봉투 둘은 그 모양이 아니다.
+    """
+    if not key:
+        return text
+    segs = _keyed_segments(text)
+    if not segs:
+        return text
+    if key in segs:
+        return segs[key]
+    kre = _tok_re(key)
+    hits = [v for k, v in segs.items() if kre.search(v)]
+    return "\n".join(hits) if hits else None
+
+
+def names_key(brief: str, key: str):
+    """원천이 그 키를 **지목했나**(순수). True/False/None(키 귀속 자체가 없음).
+
+    False 는 '다른 키들만 말했다' 는 뜻이라 처방이 다르다 — 그 응답에서
+    허용값을 배우면 남의 키 목록을 우리 키로 보내게 된다(2026-09-18 거래량
+    보드가 그래서 영원히 400 이었다, #82 갈래는 이름으로).
+    """
+    text = str(brief or "")
+    if not _keyed_segments(text):
+        return None
+    return _key_scope(text, str(key or "")) is not None
+
+
+def expected_literal(brief: str, key: str) -> str:
+    """원천이 그 키에 **단일 값**을 기대한다고 말했으면 그 값. 아니면 "".
+
+    2026-09-18 실측: `sortType: Invalid input: expected "dividend"` — 목록이
+    아니라 리터럴 하나다(zod 판별 유니온의 한 가지). 이건 '허용값 목록' 이
+    아니므로 배우면 안 되지만, **무엇을 기대하는지**는 운영자에게 사실이다
+    (#43 침묵이 최악).
+    """
+    seg = _key_scope(str(brief or ""), str(key or "")) or ""
+    m = re.search(r'expected\s+"([^"\n]{1,60})"\s*(?:$|[·,)])', seg)
+    return m.group(1) if m and not _PIPED_RE.search(seg) else ""
+
+
+def allowed_values(brief: str, junk: str = _PARAM_JUNK,
+                   key: str | None = None) -> tuple:
     """원천의 거절 사유 → 그 키의 **허용값 목록**(순수). 못 읽으면 ().
 
     VM 실측(2026-09-12) `sortType=__probe__` 응답:
@@ -1692,6 +1783,23 @@ def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
     목록이라 부를 수 없으므로 받지 않는다(#54 대조 0건은 통과가 아니다).
     """
     text = str(brief or "")
+    if key:
+        # ⚠️ **어느 키의 목록인지 가린다.** 2026-09-18 거래량 보드가 그래서
+        # 죽어 있었다: 같은 응답이 `sortType`(단일 리터럴)과
+        # `dividendSortType`("rate"|"value")을 함께 거절했는데, 옛 판은
+        # **항목 수로만** 겨뤄 남의 키 목록을 배웠다. 그 값을 `sortType` 으로
+        # 보내니 원천이 영원히 400 을 냈다(#352 의 재발 — 그때는 부분문자열
+        # 매칭이 원인이었고 여기선 키 무시가 원인이다).
+        # ⚠️ 구간 머리의 키는 **정확히** 비교하고 구간 안은 토큰 경계로 본다 —
+        # `page` 가 `pageSize` 오류에, `sort` 가 `sortType` 오류에 걸리면 같은
+        # 병이 다른 키에서 재발한다(#46).
+        scoped = _key_scope(text, key)
+        if scoped is None:
+            # 원천이 키를 나눠 말했는데 그 어디에도 우리 키가 없다 = 이 응답은
+            # 그 키에 대해 아무 말도 안 했다. 남의 목록을 배우느니 빈손이
+            # 낫다(#32 · #165).
+            return ()
+        text = scoped
     best: tuple = ()
     # 파이프로 이은 따옴표 목록이 먼저다 — 괄호 목록과 달리 구분자가
     # 명시적이라 문장이 섞일 여지가 없다.
@@ -1816,7 +1924,9 @@ def probe_sorts(url: str = "", size: int = 0) -> list:
     # ② 허용값은 **원천에게 묻는다** — 목록을 우리가 적으면 원천이 늘렸을 때
     #    영영 안 보인다(#24 열거형 가드는 새 항목을 못 잡는다).
     _r, why_j = _get2_json(url, params={"pageSize": size, "sortType": _PARAM_JUNK})
-    vals = allowed_values(why_j)
+    # 키를 가려서 읽는다 — 같은 응답이 다른 파라미터도 거절하면 남의 목록을
+    # 이 키의 허용값으로 적게 된다(2026-09-18 거래량 보드가 그래서 죽었다, #38).
+    vals = allowed_values(why_j, key="sortType")
     if not vals:
         if list_truncated(why_j):
             # 원천은 선언했는데 **우리가 잘랐다** — 원천을 고치러 가면 안 된다.
