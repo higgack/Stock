@@ -5,8 +5,11 @@
 스크립트는 연계표(카탈로그)에 없는 큐레이션 키를 찾아 운영자에게 DM 한다.
 
 점검 3종:
-  1) reinforce_approved.csv 품목키  → 카탈로그 MTI품목명(node["name"])에 존재?
-     (없으면 build_rows 의 _reinforce_for(node["name"]) 가 영영 매칭 안 됨)
+  1) reinforce 품목키(repo CSV + 대시보드 '반영' 오버레이) → 카탈로그 MTI품목명
+     (node["name"])에 존재? (없으면 build_rows 의 _reinforce_for 가 영영 매칭 안 됨)
+     ⚠️ 고아는 **출처별로** 보고한다(2026-09-18) — repo 큐레이션 CSV 고아만
+     '연계표 rename' 의심이고, 오버레이 고아는 KG 후보의 자유서술 품목명이라
+     연계표와 무관하다(_ITEM_ALIAS 매핑 대상 / 대응 품목 없으면 미부착이 정상).
   2) _THEME_MTI_PIN 값(MTI6)         → 카탈로그 MTI6 에 존재?
   3) _THEME_ROWS HS                  → hs6_to_mti6 로 1개 이상 MTI6 해석?(핀 있으면 면제)
 
@@ -21,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import html as _html
 import logging
 import os
 import re
@@ -65,8 +69,34 @@ def scan() -> dict:
 
     # 1) reinforce 키
     mc._REINFORCE_APPROVED_CACHE = None
-    reinforce = mc.load_reinforce_approved()          # {정규화품목키: [회사]}
+    reinforce = mc.load_reinforce_approved()          # repo CSV + 런타임 오버레이 병합
     reinforce_orphan = sorted(k for k in reinforce if _norm(k) not in valid_names)
+    # ⚠️ 고아의 **출처**를 가른다 — 처방이 정반대다(#82·#45 한 수에 두 모집단을
+    # 담지 말 것). repo 큐레이션 CSV 키가 고아면 연계표 rename 의심(키 교정),
+    # 대시보드 '반영' 오버레이 키가 고아면 KG 후보의 **자유서술 품목명**이라
+    # 연계표와 무관하다(_ITEM_ALIAS 매핑 대상이거나, 대응 품목이 없으면 카드
+    # 미부착이 정상). 2026-09-18 실측: repo 159키 고아 0 · 보고된 고아 290개는
+    # 전부 오버레이였는데 메시지는 '연계표가 바뀐 거면' 하나만 적고 있었다.
+    # ⚠️ `_merge` 가 `except Exception: pass` 라 **읽기 실패가 예외로 안 온다** —
+    # 못 읽은 세계에서 repo_keys 가 빈 집합이 되어 진짜 rename 고아가 전부
+    # '반영 적재분'('교정 대상 아님')으로 분류된다. 이 라운드가 고치려던 오보가
+    # 부호만 반대로 살아 있던 것(독립 리뷰 2026-09-18 실측) → **빈 결과 자체를
+    # 실패 신호**로 본다(#54 판정 불가 · #291 발화 경로 없는 가드는 가드가 아니다).
+    _csv = mc._approved_csv_path()
+    repo_keys, src_known = set(), True
+    try:
+        repo_keys = set(mc.load_reinforce_approved(     # path= → 캐시·오버레이 우회
+            path=str(_csv)))
+        if not repo_keys:
+            src_known = False
+            log.warning("큐레이션 CSV 에서 한 키도 못 읽었다(%s) — 고아 출처 판정 불가",
+                        _csv)
+    except Exception as exc:                            # 방어(현재 도달 거의 불가)
+        log.warning("큐레이션 CSV 읽기 실패 — 고아 출처 판정 불가: %s", exc)
+        repo_keys, src_known = set(), False
+    orphan_repo = [k for k in reinforce_orphan if k in repo_keys] if src_known else []
+    orphan_overlay = ([k for k in reinforce_orphan if k not in repo_keys]
+                      if src_known else [])
 
     # 2) _THEME_MTI_PIN 값(MTI6)
     pin_orphan = sorted({m6 for vals in mc._THEME_MTI_PIN.values()
@@ -90,9 +120,14 @@ def scan() -> dict:
 
     return {"version": _catalog_version(),
             "reinforce_orphan": reinforce_orphan,
+            "reinforce_orphan_repo": orphan_repo,
+            "reinforce_orphan_overlay": orphan_overlay,
+            "reinforce_src_known": src_known,
             "pin_orphan": pin_orphan,
             "theme_orphan": sorted(theme_orphan),
-            "n_reinforce": len(reinforce), "n_mti": len(valid_mti6),
+            "n_reinforce": len(reinforce),
+            "n_reinforce_repo": len(repo_keys) if src_known else 0,
+            "n_mti": len(valid_mti6),
             "hs_names_effective": hsv.get("effective", ""),
             "hs_names_rows": hsv.get("rows", "")}
 
@@ -112,24 +147,50 @@ def _build_message(r: dict) -> str:
         hs_line += ("\n⚠️ <b>HS품목명 신규본 확인</b>: data.go.kr '관세청_HS부호 단위별 "
                     "품목명'(매년 1.1자 발효) 받아 build_hs_names 재적재 권장 "
                     f"(보유 {_eff[:4] if _eff != '미적재' else '없음'} → 올해 {_cur_y}).")
+    _nrepo = r.get("n_reinforce_repo", 0)
+    _nov = max(r["n_reinforce"] - _nrepo, 0)
+    _rf = (f"reinforce {r['n_reinforce']}품목"
+           + (f"(큐레이션 CSV {_nrepo} + '반영'이 더한 {_nov})"
+              if r.get("reinforce_src_known") else ""))
     head = (f"📋 <b>연계표 정합 점검</b> (월례)\n"
-            f"보유 연계표: <b>{r['version']}</b> · MTI품목 {r['n_mti']}개 · "
-            f"reinforce {r['n_reinforce']}품목"
+            f"보유 연계표: <b>{_html.escape(str(r['version']))}</b> · "
+            f"MTI품목 {r['n_mti']}개 · "
+            f"{_rf}"
             f"{hs_line}\n"
             f"신규 연계표 확인: KITA stat.kita.net 자료실 — Claude 세션서 "
             f"'연계표 웹확인' 요청(꼼꼼한 웹검색).")
     if not n_orphan:
         return head + "\n\n✅ 카탈로그에 없는 큐레이션 키 0 — 정합 OK."
     body = [f"\n\n⚠️ <b>카탈로그에 없는 키 {n_orphan}개</b> (연계표 갱신 시 silent drop 위험):"]
-    if ro:
-        body.append("• reinforce 품목키(→customs 카드 미부착): " + ", ".join(ro[:30])
-                    + (f" 외 {len(ro)-30}" if len(ro) > 30 else ""))
+    # reinforce 고아는 **출처별로** 적는다 — 처방이 정반대라 한 줄로 뭉치면
+    # 운영자를 엉뚱한 fix 로 보낸다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+    def _list(keys, n=30):
+        # ⚠️ 키는 운영자·LLM 이 들이는 자유서술이라 escape 필수(규칙 7) — 미닫힘
+        # `<b>` 하나가 Telegram 400 을 내고 그 달 DM 이 통째로 사라진다.
+        return (", ".join(_html.escape(str(k)) for k in keys[:n])
+                + (f" 외 {len(keys)-n}" if len(keys) > n else ""))
+
+    if ro and not r.get("reinforce_src_known"):
+        body.append("• reinforce 품목키(→customs 카드 미부착, <b>출처 판정 불가</b> "
+                    "— 큐레이션 CSV 를 못 읽었다): " + _list(ro))
+    if r.get("reinforce_orphan_repo"):
+        body.append("• reinforce 품목키 — <b>큐레이션 CSV</b>(→customs 카드 미부착): "
+                    + _list(r["reinforce_orphan_repo"]))
+    if r.get("reinforce_orphan_overlay"):
+        body.append("• reinforce 품목키 — <b>대시보드 '반영' 적재분</b>"
+                    "(→customs 카드 미부착): "
+                    + _list(r["reinforce_orphan_overlay"]))
     if po:
-        body.append("• _THEME_MTI_PIN MTI6(존재X): " + ", ".join(po))
+        body.append("• _THEME_MTI_PIN MTI6(존재X): " + _list(po, 1000))
     if to:
-        body.append("• _THEME_ROWS HS 미해석 테마: " + ", ".join(to[:20])
-                    + (f" 외 {len(to)-20}" if len(to) > 20 else ""))
-    body.append("→ 연계표가 바뀐 거면 키(MTI품목명)를 신규 카탈로그명으로 교정 요청.")
+        body.append("• _THEME_ROWS HS 미해석 테마: " + _list(to, 20))
+    if r.get("reinforce_orphan_repo") or not r.get("reinforce_src_known") or po or to:
+        body.append("→ 큐레이션 CSV·핀·테마 고아 = <b>연계표 rename 의심</b>: "
+                    "키(MTI품목명)를 신규 카탈로그명으로 교정 요청.")
+    if r.get("reinforce_orphan_overlay"):
+        body.append("→ '반영' 적재분 고아 = KG 후보의 <b>자유서술 품목명</b>이라 "
+                    "연계표와 무관: _ITEM_ALIAS 에 카탈로그 품목명으로 매핑하거나, "
+                    "대응 품목이 없으면 카드 미부착이 정상(교정 대상 아님).")
     return head + "\n".join(body)
 
 
@@ -145,7 +206,7 @@ def _notify(text: str) -> None:
         log.info("notify skipped: no TRADE_BOT_TOKEN / operator chat_id")
         return
     try:
-        subprocess.run(
+        p = subprocess.run(
             ["curl", "-s", "-m", "10", "-X", "POST",
              f"https://api.telegram.org/bot{token}/sendMessage",
              "--data-urlencode", f"chat_id={chat_id}",
@@ -153,6 +214,11 @@ def _notify(text: str) -> None:
              "--data-urlencode", "parse_mode=HTML"],
             timeout=15, check=False, capture_output=True,
         )
+        # ⚠️ 응답을 버리면 전송 실패가 완전히 조용하다 — HTML 파싱 오류(규칙 7)로
+        # 400 이 나도 그 달 점검이 없었던 일이 된다(#12 silent-fail 금지).
+        out = (p.stdout or b"").decode("utf-8", "replace")
+        if p.returncode != 0 or '"ok":true' not in out:
+            log.warning("notify 실패(rc=%s): %s", p.returncode, out[:300])
     except Exception as e:
         log.warning("notify failed: %s", e)
 

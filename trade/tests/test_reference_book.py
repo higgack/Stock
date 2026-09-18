@@ -3,6 +3,7 @@
 파일·store.db·연계표 없이 build_rows(조립)·render_page(HTML) 가드 — mti_map/
 mti_companies monkeypatch."""
 
+import contextlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -440,13 +441,167 @@ class CatalogGuardTests(unittest.TestCase):
     없는 키를 들이면 이 테스트가 잡는다(회귀 가드)."""
 
     def test_curation_keys_in_catalog(self):
+        """⚠️ 운영 HOME(`~/.trade/reinforce_runtime.csv`)을 **격리**한다 — 대시보드
+        '반영' 버튼이 들인 자유서술 키는 repo 가 통제하는 모집단이 아니라, 안 막으면
+        운영자 VM 에서 이 게이트가 남의 데이터로 빨간불이 된다(#30·#294·#344)."""
+        import os
+        from trade import mti_companies as mc
         from trade.scripts import catalog_guard
-        r = catalog_guard.scan()
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.dict(os.environ, {"TRADE_DATA_DIR": td}):
+            mc._REINFORCE_APPROVED_CACHE = None
+            try:
+                r = catalog_guard.scan()
+            finally:
+                mc._REINFORCE_APPROVED_CACHE = None
         if not r:
             self.skipTest("카탈로그 미존재(테스트 환경)")
         self.assertEqual(r["reinforce_orphan"], [],
                          f"reinforce 키가 카탈로그에 없음: {r['reinforce_orphan']}")
+        self.assertEqual(r["reinforce_orphan_repo"], [],   # repo 모집단만(#45)
+                         f"큐레이션 CSV 키가 카탈로그에 없음: {r['reinforce_orphan_repo']}")
         self.assertEqual(r["pin_orphan"], [],
                          f"_THEME_MTI_PIN MTI6 가 카탈로그에 없음: {r['pin_orphan']}")
         self.assertEqual(r["theme_orphan"], [],
                          f"_THEME_ROWS HS 미해석 테마: {r['theme_orphan']}")
+
+    # ── 고아 출처 갈래(2026-09-18 월례 점검) ──
+    # 실측: repo 큐레이션 CSV 159키 고아 0 · 월례 DM 이 보고한 고아 290개는
+    # 전부 대시보드 '반영' 오버레이(KG 후보의 자유서술 품목명: `2nm공정`·
+    # `bts(방탄소년단)`·`cctv` …)였는데, 메시지는 "연계표가 바뀐 거면 키를
+    # 교정" 한 줄만 적어 운영자를 엉뚱한 fix 로 보냈다(#82·#45·#292).
+
+    @contextlib.contextmanager
+    def _overlay(self, td, rows: str):
+        """런타임 오버레이 CSV 를 심고 경로를 가리킨다(운영 HOME 격리).
+        ⚠️ 전역 캐시는 **finally 로** 되돌린다 — 본문이 던지면 스텁이 채운 캐시가
+        다음 테스트로 새어 단독 green·전체 red 가 된다(#30·#130)."""
+        from trade import mti_companies as mc
+        p = Path(td) / "reinforce_runtime.csv"
+        p.write_text("품목,DART추가후보상장사\n" + rows, encoding="utf-8-sig")
+        mc._REINFORCE_APPROVED_CACHE = None
+        try:
+            with mock.patch.object(mc, "_runtime_reinforce_path", lambda: p):
+                yield p
+        finally:
+            mc._REINFORCE_APPROVED_CACHE = None
+
+    def _bullets(self, msg: str) -> list[str]:
+        return [ln for ln in msg.split("\n") if ln.startswith("• ")]
+
+    def _bullet(self, msg: str, needle: str) -> str:
+        """그 **불릿 한 줄**만 잘라 낸다 — 페이지 전체에서 재면 머리줄
+        (`큐레이션 CSV 166 + …`)·처방줄이 불릿 단언을 대신 만족시킨다(#55·#75)."""
+        hits = [ln for ln in self._bullets(msg) if needle in ln]
+        self.assertEqual(len(hits), 1, f"'{needle}' 불릿 {len(hits)}개:\n{msg}")
+        return hits[0]
+
+    def test_scan_splits_orphans_by_source(self):
+        """오버레이가 들인 고아는 '반영 적재분' 으로 분류되고, 갈래 둘은
+        배타·전수(합 = 전체)여야 한다(#45). 수집기를 통째로 태운다(#20)."""
+        from trade.scripts import catalog_guard
+        with tempfile.TemporaryDirectory() as td, \
+                self._overlay(td, "2nm공정,삼성전자\n"):
+            r = catalog_guard.scan()
+        if not r:
+            self.skipTest("카탈로그 미존재(테스트 환경)")
+        self.assertTrue(r["reinforce_src_known"])
+        self.assertIn("2nm공정", r["reinforce_orphan_overlay"])
+        self.assertEqual(r["reinforce_orphan_repo"], [],
+                         f"큐레이션 CSV 고아: {r['reinforce_orphan_repo']}")
+        self.assertEqual(sorted(r["reinforce_orphan_repo"]
+                                + r["reinforce_orphan_overlay"]),
+                         sorted(r["reinforce_orphan"]))
+        self.assertEqual(r["n_reinforce_repo"] + 1, r["n_reinforce"])
+
+    def test_message_overlay_orphans_do_not_blame_the_linkage_table(self):
+        """'반영' 적재분만 고아면 **연계표 rename 처방을 적지 않는다** —
+        그게 이 라운드에 고친 거짓 안내다(#292)."""
+        from trade.scripts import catalog_guard
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 456,
+            "n_reinforce_repo": 166, "reinforce_src_known": True,
+            "reinforce_orphan": ["2nm공정"], "reinforce_orphan_repo": [],
+            "reinforce_orphan_overlay": ["2nm공정"],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        b = self._bullet(msg, "2nm공정")               # 머리줄 말고 그 불릿만(#55)
+        self.assertIn("'반영' 적재분", b)
+        self.assertNotIn("큐레이션 CSV", b)
+        self.assertNotIn("출처 판정 불가", b)
+        self.assertIn("_ITEM_ALIAS", msg)
+        self.assertNotIn("연계표 rename 의심", msg)
+        # 머리줄이 총계를 두 모집단으로 분해한다(#45·#202 — 값으로 보여야 납득된다)
+        self.assertIn("reinforce 456품목(큐레이션 CSV 166 + '반영'이 더한 290)", msg)
+
+    def test_message_repo_orphans_ask_for_key_correction(self):
+        """큐레이션 CSV 고아면 종전 처방(연계표 rename → 키 교정)을 적고,
+        오버레이 처방은 안 적는다(#82 갈래마다 처방이 다르다)."""
+        from trade.scripts import catalog_guard
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 160,
+            "n_reinforce_repo": 160, "reinforce_src_known": True,
+            "reinforce_orphan": ["옛품목명"], "reinforce_orphan_repo": ["옛품목명"],
+            "reinforce_orphan_overlay": [],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        b = self._bullet(msg, "옛품목명")
+        self.assertIn("큐레이션 CSV", b)
+        self.assertNotIn("반영", b)
+        self.assertIn("연계표 rename 의심", msg)
+        self.assertNotIn("_ITEM_ALIAS", msg)
+
+    def test_message_marks_unknown_source_instead_of_guessing(self):
+        """큐레이션 CSV 를 못 읽으면 '출처 판정 불가' 로 적는다 — 조용히 한쪽
+        갈래로 분류하면 처방이 틀린다(#54·#165). 발화 경로 확인(#291)."""
+        from trade.scripts import catalog_guard
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 456,
+            "n_reinforce_repo": 0, "reinforce_src_known": False,
+            "reinforce_orphan": ["2nm공정"], "reinforce_orphan_repo": [],
+            "reinforce_orphan_overlay": [],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        b = self._bullet(msg, "2nm공정")
+        self.assertIn("출처 판정 불가", b)
+        self.assertNotIn("'반영' 적재분", b)
+        self.assertIn("연계표 rename 의심", msg)       # 보수적으로 교정 안내
+        self.assertNotIn("(큐레이션 CSV", msg)         # 모르는 수를 머리에 적지 않는다
+
+    def test_scan_marks_source_unknown_when_curation_csv_is_unreadable(self):
+        """큐레이션 CSV 를 못 읽으면 조용히 '반영 적재분'으로 분류하지 않고
+        **판정 불가**로 남긴다 — `_merge` 가 예외를 삼켜(#12) 읽기 실패가 예외로
+        안 오므로 **빈 결과 자체가 실패 신호**다. 발화 경로 확인(#291·#20)."""
+        from trade import mti_companies as mc
+        from trade.scripts import catalog_guard
+        with tempfile.TemporaryDirectory() as td, \
+                self._overlay(td, "2nm공정,삼성전자\n"), \
+                mock.patch.object(mc, "_approved_csv_path",
+                                  lambda: Path(td) / "없는파일.csv"):
+            r = catalog_guard.scan()
+        if not r:
+            self.skipTest("카탈로그 미존재(테스트 환경)")
+        self.assertFalse(r["reinforce_src_known"])
+        self.assertEqual(r["reinforce_orphan_repo"], [])
+        self.assertEqual(r["reinforce_orphan_overlay"], [])
+        self.assertIn("2nm공정", r["reinforce_orphan"])
+        self.assertIn("출처 판정 불가", catalog_guard._build_message(r))
+
+    def test_message_truncates_long_lists_and_says_how_many_it_cut(self):
+        """목록은 30개에서 자르고 **자른 사실**을 적는다 — 침묵하면 그게 전부인
+        줄 안다(#45). 그리고 키는 자유서술이라 escape 를 거친다(규칙 7)."""
+        from trade.scripts import catalog_guard
+        # ⚠️ 미닫힘 태그를 **잘리는 꼬리**에 두면 escape 를 지워도 단언이 통과한다
+        # — 실리는 30개 안에 둬야 그 가드가 실제로 발화한다(#75·#91c).
+        keys = ["<b>미닫힘"] + [f"품목{i:02d}" for i in range(35)]
+        msg = catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 200,
+            "n_reinforce_repo": 164, "reinforce_src_known": True,
+            "reinforce_orphan": keys, "reinforce_orphan_repo": [],
+            "reinforce_orphan_overlay": keys,
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+        b = self._bullet(msg, "품목00")
+        self.assertIn("외 6", b)                       # 36개 중 30개만 실었다
+        self.assertNotIn("품목34", b)
+        self.assertNotIn("<b>미닫힘", msg)             # escape 안 하면 DM 이 400
