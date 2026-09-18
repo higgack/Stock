@@ -978,24 +978,45 @@ Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었
 |---|---|---|
 | `_log_miss` 가 발췌를 `ex` 로 남긴다 — 상한은 있되 헤더를 안 자른다(#156·#350) | ✅ 자동 | `test_log_miss_persists_the_excerpt` |
 | 필드를 더해도 같은 미스가 **두 줄로 안 쌓인다** — 신원은 필드로(#45) | ✅ 자동 | `test_adding_the_excerpt_does_not_double_count_an_existing_miss` |
+| 파서를 고친 뒤 재조회하면 **새 관측이 옛 발췌를 대체**하고, 사유가 다르면 따로 남는다(#18) | ✅ 자동 | `test_a_reparsed_miss_replaces_the_stale_excerpt` |
 | `backlog_probe` 가 계산한 발췌를 **기록에 넘긴다**(#20 배선) | ✅ 자동 | `test_probe_hands_the_excerpt_to_the_log` |
-| 보고서가 갈래마다 1건을 싣고 `<`/`>`/`&` 를 escape 한다(규칙 7) | ✅ 자동 | `test_report_shows_one_excerpt_per_kind_and_escapes_it` |
+| 보고서가 갈래마다 1건을 싣고 `<`/`>`/`&` 를 escape · 발췌 없는 갈래는 **블록이 없다** · 앞 200자만 싣고 그 사실을 말한다 | ✅ 자동 | `test_report_shows_one_excerpt_per_kind_and_escapes_it` |
+| 상세 히스토그램 줄도 escape 한다 — 한 메시지에서 한쪽만 raw 면 `<` 하나에 보고서가 통째로 안 간다(규칙 7·#38) | ✅ 자동 | `test_detail_histogram_is_escaped_too` |
 | 발췌 없는 줄은 **사유별로 세어** 말하고(원인 단정 금지, #82·#165) 0 이면 침묵(#25·#260) | ✅ 자동 | `test_report_says_how_many_rows_have_no_excerpt` |
-| 4096 UTF-16 예산 안에서만 싣고 **자른 갈래 수를 말한다**(#45) | ✅ 자동 | `test_report_stays_within_the_telegram_limit` |
-| CLI 가 보고서와 **같은 선택기**로 같은 발췌를 찍는다(#38) | ✅ 자동 | `test_cli_prints_the_same_excerpts_the_report_shows` |
+| 예산은 **보낼 메시지 전체**(머리말·생략줄·꼬리말 포함)를 잰다 | ✅ 자동 | `test_budget_counts_the_whole_message_it_will_send` |
+| 갈래 **개수로는 안 자른다** — 예산이 남으면 전부 싣는다(#45) | ✅ 자동 | `test_report_does_not_cap_kinds_when_the_budget_allows` |
+| 예산이 자른 갈래 수를 사실대로 말한다(#45) | ✅ 자동 | `test_report_stays_within_the_telegram_limit` |
+| 발췌 블록이 **기록 날짜**(KST 명시계산, 규칙 10a)를 적는다 — 옛 관측인지 구별(#43·#114) | ✅ 자동 | `test_excerpt_block_says_when_it_was_recorded` |
+| 원장은 tmp+`os.replace` 로 갈아끼운다 — truncate 쓰기는 읽는 쪽에 찢긴 파일을 준다(#379·#384) | ✅ 자동 | `test_ledger_is_replaced_atomically` |
+| 인쇄되는 명령은 **그대로 붙여넣어 돈다**(#278) + `&&` escape(규칙 7) | ✅ 자동 | `test_printed_commands_are_runnable_as_is` |
+| 공개 선택기가 묘비를 안 세고, 길이는 UTF-16 으로 잰다 | ✅ 자동 | `test_public_selectors_skip_tombstones_and_count_utf16` |
+| CLI 가 보고서와 **같은 선택기**로 같은 발췌를 **전부**, 큰 갈래부터 찍는다(#38) | ✅ 자동 | `test_cli_prints_the_same_excerpts_the_report_shows` |
 
-⚠️ 예산 분기는 **발췌가 짧으면 도달 불가**다 — escape 가 `<` 를 4배로 늘리는
-최악 픽스처(`"<" * 400` × 갈래 8개)여야 발화한다. `_EX_SAMPLE_N` 을 4 로
-두면 최악에서도 한도에 안 닿아 그 가드가 아무것도 안 잰다(#291).
+⚠️ 2026-09-18 독립 리뷰가 잡은 두 축이 여기 들어 있다. (a) 옛 판은 갈래를
+`_EX_SAMPLE_N=6` 으로 **조용히** 잘랐다 — 실측 10갈래 → 6개 표시, 생략 문구
+없음, 메시지는 1294/4096 으로 여유 만만이었다. 갈래가 6을 넘는 건 예외가
+아니라 기본값이다(`_far_msg` 가 캡션 원문과 `{gap}자` 를 detail 에 박는다).
+(b) 예산을 따로 계산해 두면 그 식의 피연산자(머리말)를 빼는 변형이 안 잡히고
+실제로 **4,106 u16** 가 나갔다 — 이제 `trial` 이 보낼 메시지 전체를 재고,
+테스트는 4096 이 아니라 **`_DM_LIMIT`** 으로 재며 잘린 뒤 남는 여유가 한
+블록보다 작은지까지 본다(안 그러면 40~90 u16 과소평가가 슬랙에 흡수된다).
+
+⚠️ `html.escape` 는 기본이 `quote=True` 라 `'` → `&#x27;`(**6배**)다. 최악
+픽스처는 `<`(4배)가 아니라 따옴표다.
 
 ⚠️ CLI 계약은 **출력으로** 잰다 — 호출 여부(AST)로만 재면 `if False:` 로
 게이트만 끄는 변형이 통과한다(#141, 실측 SURVIVED 1건 → 출력 단언으로 교체).
+정렬 계약도 **크기 순서와 이름 순서가 어긋나는** 픽스처여야 발화한다(#91c).
 
-⚠️ 발췌가 없는 갈래가 둘이다 — `형식미지원` 류는 발췌 도입 전에 쌓인
-줄이라 다음 조회에서 붙지만, `시계열이상`(`quarterly_infographic` 이 조립된
-시계열만 보고 남긴다)은 **원문 없이** 기록되므로 영원히 없다. 그래서 문구가
-원인을 단정하지 않고 사유를 이름으로 센다(#55·#82·#165).
+⚠️ 뮤테이션이 문법을 깨면 전 테스트가 빨간불이라 '잡힘' 처럼 보인다 —
+실측 1건(`sorted(...)` 앵커가 `):` 를 삼켰다). 통과·실패 어느 쪽이든 그
+자리를 실제로 쳤는지 볼 것(#267).
 
 **못 보는 축**(#274): 발췌 **내용이 파서를 고치기에 충분한가**는 기계가
 못 잰다 — 창(앞 120 + 뒤 240)이 헤더를 담는지는 실제 원문에서만 확인된다.
-그리고 이미 쌓인 18건은 발췌가 없다(배포 전 줄). 다음 조회부터 붙는다.
+원자 교체 단언은 **구조**만 재지 동시 쓰기의 read-modify-write 유실(선재)은
+재지 않는다. 그리고 발췌가 없는 갈래는 둘이다 — `형식미지원` 류는 발췌
+도입 전에 쌓인 줄이라 그 종목·분기를 **다시 조회할 때**(24h 캐시 만료 후)
+붙지만, `시계열이상`(`quarterly_infographic` 이 조립된 시계열만 보고 남긴다)은
+**원문 없이** 기록되므로 영원히 없다. 그래서 문구가 원인을 단정하지 않고
+사유를 이름으로 센다(#55·#82·#165).

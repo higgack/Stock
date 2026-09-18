@@ -677,14 +677,18 @@ _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 
 # 담는다 — 여기서 더 자르면 헤더가 잘려 **고칠 근거가 사라진다**(#156·#350
 # '자르는 자리가 다음 결정을 가리지 않는가').
 _EXCERPT_CAP = 400
-# 텔레그램 단일 메시지 한도(4096 UTF-16). 발췌를 붙이다 넘기면 메시지가
-# **통째로 안 간다** — 예산 안에서만 싣고 나머지는 CLI 가 전부 보여준다.
+# 텔레그램 단일 메시지 한도는 4096 UTF-16 이고, 우리는 그보다 낮은 값을
+# **보낼 메시지 전체**에 건다 — 넘기면 메시지가 통째로 안 가고 그 실패는
+# `_periodic_backlog_review` 의 except 가 삼켜 **아무 신호도 안 남는다**.
+# ⚠️ 갈래 개수로는 자르지 않는다. 개수 상한을 따로 두면 예산이 남아도는데도
+# 조용히 버리고, 그 버린 수는 '길이 한도로 생략' 계수에 안 잡혀 보고서가
+# "전부 봤다"고 거짓말한다(2026-09-18 독립 리뷰 실측: 10갈래 → 6개 표시 ·
+# 생략 문구 없음 · 1294/4096). 자르는 것은 **예산 하나**다(#45).
 _DM_LIMIT = 4000
 _DM_EX_WIDTH = 200
-# 갈래 수 — 발췌가 짧으면 6갈래가 다 실리고, 길면(escape 가 `<` 를 4배로
-# 늘린다) 위 예산이 잘라 낸다. 4 로 두면 최악의 발췌에서도 한도에 안 닿아
-# 예산 분기에 **발화 경로가 없다**(#291).
-_EX_SAMPLE_N = 6
+# 운영자에게 인쇄되는 명령은 **그대로 붙여넣어 도는 형태**여야 한다(#278).
+# HTML 메시지라 `&&` 는 `&amp;&amp;` 로 써야 파싱이 안 깨진다(규칙 7).
+_CLI_CMD = "cd ~/stock &amp;&amp; .venv/bin/python -m bot.scripts.backlog_misses"
 
 # 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
 # SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
@@ -964,20 +968,27 @@ def legacy_notice(rows: list, now: float | None = None) -> str:
 
 
 def miss_key(rec: dict) -> tuple:
-    """기록 한 줄의 **신원** — 같은 종목·분기·사유·상세는 한 줄이다.
+    """기록 한 줄의 **신원** — 같은 종목·분기·사유는 한 줄이다.
 
     ⚠️ 줄 **전체**를 비교하면(옛 `line in old`) 필드를 하나 더하는 순간
     같은 미스가 두 줄로 쌓여 총계가 부푼다(#45 총계와 소계가 다른 모집단).
     신원은 표기가 아니라 필드로 정한다.
+
+    ⚠️ `detail`·`ex` 는 **신원이 아니라 관측**이라 빠진다. 넣으면 파서를
+    고친 뒤 같은 종목·분기를 다시 조회했을 때 관문 문구가 달라져 key 가
+    갈리고, **이미 고친 상태의 원문**이 '파서를 고칠 유일한 근거' 로 계속
+    실린다(#18 구워진 데이터). `_parse_sig` 가 파서 변경 시 캐시를 무효화
+    하므로 그 재조회는 파서를 고칠 때마다 반드시 일어난다. 사유가 다르면
+    다른 미스이므로(`형식미지원` ↔ `시계열이상`) `reason` 은 신원이다.
     """
     if not isinstance(rec, dict):
         return ()
     return (norm_miss_ticker(rec.get("ticker")), rec.get("year"),
-            rec.get("reprt"), rec.get("reason"), rec.get("detail") or "")
+            rec.get("reprt"), rec.get("reason"))
 
 
-def excerpt_samples(rows: list, limit: int = _EX_SAMPLE_N) -> list[dict]:
-    """갈래마다 **원문 발췌 한 건**, 큰 갈래부터.
+def excerpt_samples(rows: list) -> list[dict]:
+    """갈래마다 **원문 발췌 한 건**, 큰 갈래부터. 기본은 **전부**.
 
     ⚠️ 히스토그램만으론 파서를 못 고친다 — 같은 보고서가 범위(#105)·관문
     (#107)·어휘(#109)·창(#275) 넷을 연달아 오진하게 만든 이유가 '원문이
@@ -985,8 +996,10 @@ def excerpt_samples(rows: list, limit: int = _EX_SAMPLE_N) -> list[dict]:
     """
     groups: dict[str, list] = {}
     for r in rows:
-        if not isinstance(r, dict) or r.get(_TOMB_KEY):
+        if not isinstance(r, dict):
             continue
+        # ⚠️ 묘비 줄은 따로 안 거른다 — `ex` 가 없어 아래 발췌 게이트가
+        # 이미 버린다. 따로 두면 도달 경로가 없는 가드가 하나 는다(#291).
         groups.setdefault(r.get("detail") or r.get("reason") or "?", []).append(r)
     out = []
     for kind, items in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
@@ -996,10 +1009,31 @@ def excerpt_samples(rows: list, limit: int = _EX_SAMPLE_N) -> list[dict]:
         out.append({"kind": kind, "n": len(items),
                     "ticker": norm_miss_ticker(pick.get("ticker")),
                     "year": pick.get("year"), "reprt": pick.get("reprt"),
-                    "ex": str(pick.get("ex") or "")})
-        if len(out) >= limit:
-            break
+                    "at": pick.get("at"), "ex": str(pick.get("ex") or "")})
     return out
+
+
+def excerpt_line(sm: dict) -> str:
+    """발췌 한 건의 머리줄(HTML). 화면·CLI 가 같은 문구를 쓴다(#38).
+
+    기록 날짜를 같이 적는다 — 파서를 고친 뒤 남아 있는 옛 관측인지
+    이번 라운드의 것인지 읽는 쪽이 구별할 수 있어야 한다(#43·#114).
+    """
+    when = _kst_day(sm.get("at"))
+    return (f"· [{_html.escape(str(sm.get('kind')))}] "
+            f"{_html.escape(str(sm.get('ticker')))} "
+            f"{sm.get('year')}/{sm.get('reprt')}"
+            + (f" · 기록 {when}" if when else ""))
+
+
+def _kst_day(ts) -> str:
+    """기록 시각 → `MM-DD`(KST 명시계산 — 서버 로컬타임 의존 금지, 규칙 10a)."""
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromtimestamp(
+            float(ts), _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
+    except Exception:                                          # noqa: BLE001
+        return ""                       # 옛 줄엔 `at` 이 없다 — 말하지 않는다
 
 
 def excerpt_missing_note(rows: list) -> str:
@@ -1034,8 +1068,12 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        import time
         rec = {"ticker": norm_miss_ticker(ticker), "year": year,
-               "reprt": reprt_code, "reason": reason, "dv": _DETAIL_VOCAB}
+               "reprt": reprt_code, "reason": reason, "dv": _DETAIL_VOCAB,
+               # 발췌가 언제 관측된 것인지 — 파서를 고친 뒤 남은 옛 관측과
+               # 이번 라운드를 구별할 방법이 없으면 근거가 거짓이 된다(#114).
+               "at": int(time.time())}
         if detail:
             # 사유만으론 뭘 고쳐야 할지 모른다(#93) — 상세를 같이 남긴다.
             rec["detail"] = detail
@@ -1058,7 +1096,6 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         dropped = len(old) - len(keep)
         old = keep
         if dropped:
-            import time
             prev = sum(int((parse_miss_line(ln) or {}).get(_TOMB_KEY) or 0)
                        for ln in old)
             old = [ln for ln in old
@@ -1066,8 +1103,6 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
             old.append(_json.dumps(
                 {"dv": _DETAIL_VOCAB, _TOMB_KEY: prev + dropped,
                  "at": int(time.time())}, ensure_ascii=False))
-        if not dropped and line in old:
-            return                  # 같은 줄이 이미 있다 — mtime 도 안 건드린다
         # ⚠️ 신원이 같은 **옛 줄은 이 줄이 대신한다**. 줄 전체 비교만 두면
         # 발췌 같은 필드를 더하는 순간 같은 미스가 두 줄로 쌓여 보고서의
         # 건수가 부푼다(#45).
@@ -1078,7 +1113,18 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
             if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
                 continue
             kept.append(ln)
-        _MISS_LOG.write_text("\n".join(kept + [line]) + "\n", encoding="utf-8")
+        body = "\n".join(kept + [line]) + "\n"
+        if body == raw:
+            return                  # 바뀐 게 없다 — mtime 도 안 건드린다
+        # ⚠️ `write_text` 는 truncate 후 쓰기라 **읽는 쪽이 찢긴 파일**을
+        # 본다(대시보드는 요청마다 스레드고 `_fill_backlog` 는 병렬이다).
+        # 찢긴 줄은 JSON 파싱 실패 → `is_current_vocab` True → prune 을
+        # 통과해 영구히 남는다. tmp+replace 로 바꾼다(#379·#384).
+        # ⚠️ 남는 축: read-modify-write 라 **동시 쓰기의 유실**은 그대로다
+        # (선재 — 원장은 진단용이고 다음 조회가 다시 남긴다).
+        tmp = _MISS_LOG.with_name(_MISS_LOG.name + ".tmp")
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(_MISS_LOG)
     except Exception as exc:
         log.debug("dart_backlog: 미스 로그 실패: %s", exc)
 
@@ -1136,6 +1182,12 @@ def parse_backlog(text: str) -> dict | None:
     return None
 
 
+def _cut_note(n: int) -> str:
+    """길이 한도로 못 실은 갈래 수 — 자른 사실과 **전부 보는 법**을 말한다(#45)."""
+    return (f"… 갈래 {n}개는 길이 한도로 생략 — "
+            f"<code>{_CLI_CMD}</code> 가 전부 보여줍니다.")
+
+
 def review_text() -> str:
     """미스 요약 HTML — 보낼 게 없으면 빈 문자열.
 
@@ -1181,7 +1233,11 @@ def review_text() -> str:
     if det:
         # 사유만 세면 "단위없음 15" 로 끝나 다음 수를 못 정한다(#93).
         out += ["", "<b>상세</b> (무엇을 고쳐야 하나)"]
-        out += [f"· {d}: {n}건" for d, n in det.most_common(8)]
+        # ⚠️ `detail` 은 DART 원문(캡션 24자)을 물고 온다 — escape 를
+        # 빠뜨리면 `<` 하나에 메시지 전체가 안 간다(규칙 7). 바로 아래
+        # 발췌 블록은 escape 하는데 여기만 raw 였다(#38).
+        out += [f"· {_html.escape(str(d))}: {n}건"
+                for d, n in det.most_common(8)]
     out += ["", "<b>종목</b> (상위 10)"]
     out += [f"· {t} ×{n}" for t, n in tick.most_common(10)]
     tail = []
@@ -1190,26 +1246,27 @@ def review_text() -> str:
         # 발췌 없는 줄을 침묵으로 두면 '원문이 없는 갈래' 로 읽힌다(#43·#54).
         tail += ["", f"⚠️ {no_ex}"]
     tail += ["", "이 목록을 Claude 에게 그대로 붙여넣으면 파서를 확장합니다.",
-             "원문 확인: <code>backlog_misses --ticker &lt;코드&gt;</code>"]
+             f"원문 확인: <code>{_CLI_CMD} --ticker &lt;코드&gt;</code>"]
     samples = excerpt_samples(rows)
     if samples:
-        head = ["", "<b>원문 발췌</b> (갈래마다 1건 — 파서를 고칠 유일한 근거)"]
+        head = ["", f"<b>원문 발췌</b> (갈래마다 1건 · 앞 {_DM_EX_WIDTH}자 — "
+                    "파서를 고칠 유일한 근거)"]
         body: list[str] = []
-        # ⚠️ 한도를 넘기면 메시지가 **통째로** 안 간다 — 예산 안에서만 싣고,
-        # 실은 개수는 사실대로 말한다(#45 자른 사실을 밝힐 것).
-        budget = _DM_LIMIT - _u16len("\n".join(out + tail))
         for sm in samples:
             ex = _html.escape(sm["ex"][:_DM_EX_WIDTH])
-            blk = (f"· [{_html.escape(str(sm['kind']))}] {sm['ticker']} "
-                   f"{sm.get('year')}/{sm.get('reprt')}\n<code>{ex}</code>")
-            if _u16len("\n".join(head + body + [blk])) > budget:
+            blk = f"{excerpt_line(sm)}\n<code>{ex}</code>"
+            # ⚠️ **보낼 메시지 전체**를 잰다. 예산을 따로 빼 두면 그 식의
+            # 피연산자 하나(머리말)를 빠뜨리는 변형이 안 잡히고 실제로
+            # 4,106 u16 가 나갔다(2026-09-18 독립 리뷰 실측, #20·#291).
+            # 잘릴 때 붙는 안내 줄도 **미리 자리를 잡아 둔다** — 마지막에
+            # 붙이면 그 줄이 한도를 넘긴다.
+            trial = out + head + body + [blk, _cut_note(len(samples))] + tail
+            if _u16len("\n".join(trial)) > _DM_LIMIT:
                 break
             body.append(blk)
         if body:
             if len(body) < len(samples):
-                body.append(f"… 갈래 {len(samples) - len(body)}개는 길이 한도로 "
-                            "생략 — 무인자 <code>backlog_misses</code> 에서 "
-                            "전부 보입니다.")
+                body.append(_cut_note(len(samples) - len(body)))
             out += head + body
     out += tail
     return "\n".join(out)

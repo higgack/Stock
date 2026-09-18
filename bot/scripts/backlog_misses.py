@@ -79,7 +79,9 @@ def summarize() -> int:
                           for i in items if _norm(i.get("ticker")) == t)
             print(f"    {t:12s} {n}회  {qs}")
     # 보고서와 **같은 선택기**를 쓴다 — 복제하면 둘이 다른 갈래를 집는다(#38).
-    samples = _samples(rows, limit=8)
+    # 개수로 자르지 않는다 — 자를 거면 자른 수를 말해야 하고(#45),
+    # 보고서가 '전부 보여준다' 고 가리키는 곳이 바로 여기다.
+    samples = _samples(rows)
     if samples:
         print("\n■ 원문 발췌 (갈래마다 1건 — 파서를 고칠 근거)")
         for sm in samples:

@@ -45896,12 +45896,18 @@ class TestBacklogDiagnosisWindowAndTicker20260904:
         assert bl.norm_miss_ticker("AAPL") == "AAPL"
 
     def test_log_miss_stores_the_normalized_ticker(self, tmp_path, monkeypatch):
-        """쓰는 쪽도 통일해야 **중복 기록 방지**(`line in old`)가 성립한다 —
-        읽기만 합치면 같은 종목·분기가 두 줄로 쌓인다.
+        """저장 표기는 **정규형**이다 — 보고서가 `000660` 과 `000660.KS` 를
+        두 종목으로 세면 '종목 N개' 가 부푼다(#45).
 
         (2026-09-04 뮤테이션이 이 사각을 드러냈다: 쓰기 정규화를 지워도
         전 테스트가 통과했다 — 읽기 테스트는 로그를 직접 써서 그 경로를
         한 번도 안 탄다, #20 배선은 태워야 보인다.)
+
+        ⚠️ 2026-09-18 전제 변경(#222): 옛 판은 이 계약을 "**중복 기록
+        방지**(`line in old`)가 성립하려면" 으로 적었는데, 이제 중복 방지는
+        `miss_key` 가 읽을 때 정규화하며 진다 — 그 문장은 더 이상 참이
+        아니다. 남는 보장은 '저장 표기가 정규형' 하나이고, 중복 방지 자체는
+        `TestBacklogMissExcerpt20260918` 이 잰다.
         """
         import json
 
@@ -71571,6 +71577,19 @@ class TestBacklogMissExcerpt20260918:
         assert "<b>잔고" not in out, out
         # 갈래마다 하나 — 두 갈래가 둘 다 실린다.
         assert "구 분 수주총액 기납품액" in out, out
+        # 발췌가 없는 갈래는 **블록 자체가 없다** — 빈 <code></code> 를
+        # '파서를 고칠 유일한 근거' 라고 부르면 안 된다(#54·#43).
+        bl._log_miss("012450.KS", 2026, "11011", "형식미지원", "발췌없는갈래")
+        out2 = bl.review_text()
+        assert "<code></code>" not in out2, out2
+        assert "[발췌없는갈래]" not in out2, out2
+        # 보고서는 앞 200자만 싣고 **그 사실을 말한다**(#156·#350).
+        bl._log_miss("005930.KS", 2026, "11011", "형식미지원", "긴발췌",
+                     "가" * 150 + "나" * 150)
+        out3 = bl.review_text()
+        assert f"앞 {bl._DM_EX_WIDTH}자" in out3, out3
+        assert "가" * 150 + "나" * 50 in out3, out3
+        assert "나" * 60 not in out3, out3
 
     def test_report_says_how_many_rows_have_no_excerpt(self, tmp_path,
                                                        monkeypatch):
@@ -71603,12 +71622,169 @@ class TestBacklogMissExcerpt20260918:
         """
         from bot import dart_backlog as bl
         monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
-        for i in range(bl._EX_SAMPLE_N + 2):
+        for i in range(12):
             bl._log_miss(f"00000{i}.KS", 2026, "11013", "형식미지원",
-                         f"갈래{i}", "<" * 400)
+                         f"갈래{i}", "'" * 400)
         out = bl.review_text()
-        assert bl._u16len(out) <= 4096, bl._u16len(out)
+        # ⚠️ 텔레그램 한도(4096)가 아니라 **우리 예산**으로 잰다 — 4096 으로
+        # 재면 96 의 여유가 흡수해, 예산 식에서 머리말·꼬리말 항을 빼는
+        # 변형이 안 잡힌다(독립 리뷰 실측 4,106 u16, #20·#291).
+        assert bl._u16len(out) <= bl._DM_LIMIT, bl._u16len(out)
+        assert bl._DM_LIMIT < 4096
         assert "길이 한도로 생략" in out, out
+        # 자른 수는 **예산이 자른 것 전부**여야 한다 — 개수 상한이 따로
+        # 있으면 그 상한이 버린 갈래는 이 계수에 안 잡힌다(#45).
+        # ⚠️ `<code>` 는 안내줄·생략줄에도 있다 — 발췌 블록만 집는다(#75).
+        shown = out.count("· [")
+        cut = int(__import__("re").search(r"갈래 (\d+)개는 길이 한도", out)[1])
+        assert shown + cut == 12, (shown, cut, out)
+
+    def test_budget_counts_the_whole_message_it_will_send(
+            self, tmp_path, monkeypatch):
+        """예산은 **보낼 메시지 전체**를 재야 한다 — 머리말(45 u16)이나
+        잘릴 때 붙는 안내 줄(90 u16)을 식에서 빠뜨리면 그만큼 넘긴 채
+        나가고, 텔레그램이 4096 에서 거절하면 `_periodic_backlog_review` 의
+        except 가 삼켜 **보고서가 통째로 사라진다**(독립 리뷰 실측 4,106).
+
+        ⚠️ 블록이 크면(400자 발췌) 경계가 성겨 40~90 u16 의 과소평가가 안
+        잡힌다 — 잘게 쪼개 경계를 촘촘하게 만든다(#91c 깨지는 값까지).
+        """
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for i in range(120):
+            bl._log_miss(f"{i:06d}.KS", 2026, "11013", "형식미지원",
+                         f"갈래{i:03d}", f"구 분 수주잔고 {i:03d}")
+        out = bl.review_text()
+        assert "길이 한도로 생략" in out, out          # 실제로 잘려야 잰다
+        assert bl._u16len(out) <= bl._DM_LIMIT, bl._u16len(out)
+        # 한 블록만 더 실었으면 넘었다 = 경계가 촘촘하다(가드가 눈멀지 않았다).
+        assert bl._DM_LIMIT - bl._u16len(out) < 120, bl._u16len(out)
+
+    def test_report_does_not_cap_kinds_when_the_budget_allows(
+            self, tmp_path, monkeypatch):
+        """갈래 **개수**로 자르지 않는다 — 예산이 3,000 u16 남았는데 6개만
+        싣고 아무 말도 안 하면, 운영자는 '전부 봤다' 고 믿고 절반을 못 본 채
+        파서를 고친다(2026-09-18 독립 리뷰 실측 10갈래 → 6개 · 1294/4096).
+
+        ⚠️ 갈래가 6을 넘는 건 예외가 아니라 기본값이다 — `_far_msg` 가
+        캡션 원문과 `{gap}자` 를 detail 에 박아 문서마다 갈라진다.
+        """
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        for i in range(10):
+            bl._log_miss(f"00000{i}.KS", 2026, "11013", "형식미지원",
+                         f"갈래{i}", f"구 분 수주잔고 {i}")
+        out = bl.review_text()
+        assert out.count("<code>") >= 10, out
+        assert "길이 한도로 생략" not in out, out
+
+    def test_a_reparsed_miss_replaces_the_stale_excerpt(self, tmp_path,
+                                                         monkeypatch):
+        """파서를 고치면 같은 종목·분기가 **다른 관문**에서 막힌다. 그때
+        옛 줄이 남으면 건수가 부풀고, 무엇보다 **이미 고친 상태의 원문**이
+        '파서를 고칠 유일한 근거' 로 실린다(#18 구워진 데이터).
+
+        그래서 `detail`·`ex` 는 신원이 아니다. 반대로 **사유가 다르면**
+        다른 미스이므로 덮어쓰면 안 된다(`형식미지원` ↔ `시계열이상`).
+        """
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원",
+                     "헤더에 기초·수주총액 열 없음", "원문A")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원",
+                     "헤더 통과 · 합계행 3값(검산실패)", "원문B")
+        rows = self._rows(bl)
+        assert len(rows) == 1, rows
+        assert rows[0]["ex"] == "원문B", rows
+        out = bl.review_text()
+        assert "막힌 조회 1건" in out and "원문A" not in out, out
+        # 사유가 다르면 따로 남는다.
+        bl._log_miss("000670.KS", 2026, "11013", "시계열이상")
+        assert len(self._rows(bl)) == 2
+
+    def test_excerpt_block_says_when_it_was_recorded(self, tmp_path,
+                                                     monkeypatch):
+        """옛 관측인지 이번 라운드 것인지 화면이 말해야 한다(#43·#114).
+        시각은 KST 명시계산(규칙 10a)."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주잔고 1")
+        rec = self._rows(bl)[0]
+        assert isinstance(rec.get("at"), int), rec
+        assert "· 기록 " in bl.review_text()
+        # 1970-01-01 20:00 UTC = 01-02 05:00 KST — 날짜가 갈리는 시각이라야
+        # 서버 로컬타임으로 되돌리는 변형이 발화한다(#40·#91c).
+        assert bl._kst_day(72000) == "01-02"
+        assert bl._kst_day(None) == ""          # 옛 줄엔 없다 — 말하지 않는다
+
+    def test_detail_histogram_is_escaped_too(self, tmp_path, monkeypatch):
+        """상세 줄도 DART 원문(캡션 24자)을 물고 온다 — 한 메시지 안에서
+        발췌만 escape 하고 여기만 raw 면 `<` 하나에 보고서 전체가 안
+        간다(규칙 7·#38)."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원",
+                     "금액캡션 멀다 (단위 : 백만원 <A&B>)", "구 분 수주잔고 1")
+        out = bl.review_text()
+        assert "<A&B>" not in out, out
+        assert "&lt;A&amp;B&gt;" in out, out
+
+    def test_public_selectors_skip_tombstones_and_count_utf16(self):
+        """묘비 줄을 **직접** 넘겨도 세지 않는다 — 호출부가 미리 거르므로
+        이 가드는 그 경로로는 발화하지 않는다(#291). 그리고 길이는 텔레그램이
+        세는 단위(UTF-16)다 — `len()` 은 이모지를 1로 센다."""
+        from bot import dart_backlog as bl
+        rows = [{bl._TOMB_KEY: 9, "dv": bl._DETAIL_VOCAB},
+                {"ticker": "000670", "reason": "형식미지원", "ex": "원문"}]
+        assert [s["kind"] for s in bl.excerpt_samples(rows)] == ["형식미지원"]
+        assert bl.excerpt_missing_note(rows) == ""   # 묘비를 '발췌 없음' 으로 세면 안 된다
+        assert bl._u16len("📐") == 2 and len("📐") == 1
+        # 신원은 표기에 안 흔들린다 — 밖에서 넘어온 레코드도 합쳐진다(#45).
+        assert (bl.miss_key({"ticker": "000660.KS", "year": 2026,
+                             "reprt": "11012", "reason": "형식미지원"})
+                == bl.miss_key({"ticker": "000660", "year": 2026,
+                                "reprt": "11012", "reason": "형식미지원"}))
+
+    def test_printed_commands_are_runnable_as_is(self, tmp_path, monkeypatch):
+        """운영자에게 인쇄되는 명령은 **그대로 붙여넣어 도는 형태**여야
+        한다(#278 — `cd` 없이 `python -m bot...` 는 ModuleNotFoundError).
+        #278 가드는 `print(...)` 만 훑으므로 텔레그램 표면은 못 본다(#274).
+        """
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "m.jsonl")
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주잔고 1")
+        out = bl.review_text()
+        for cmd in [ln for ln in out.splitlines() if "backlog_misses" in ln]:
+            assert "cd ~/stock" in cmd and "-m bot.scripts." in cmd, cmd
+        # HTML 메시지라 `&&` 는 escape 돼야 파싱이 안 깨진다(규칙 7).
+        assert "&amp;&amp;" in out and " && " not in out, out
+
+    def test_ledger_is_replaced_atomically(self, tmp_path, monkeypatch):
+        """`write_text` 는 truncate 후 쓰기라 **읽는 쪽이 찢긴 파일**을 본다
+        — 찢긴 줄은 JSON 파싱 실패 → `is_current_vocab` True → prune 을
+        통과해 영구히 남는다(#379·#384). 발췌가 붙어 원장이 10배가 되면서
+        그 창도 10배가 됐다.
+
+        **못 보는 축**(#274): 이 단언은 tmp+replace 라는 **구조**를 재지,
+        실제 동시 쓰기의 원자성이나 read-modify-write 유실(선재)을 재지 않는다.
+        """
+        from pathlib import Path as _P
+
+        from bot import dart_backlog as bl
+        log = tmp_path / "m.jsonl"
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        seen = []
+        orig = _P.replace
+        monkeypatch.setattr(_P, "replace",
+                            lambda self, target: (seen.append((self, target)),
+                                                  orig(self, target))[1])
+        bl._log_miss("000670.KS", 2026, "11013", "형식미지원", "캡션없음",
+                     "구 분 수주잔고 1")
+        assert [t for _s, t in seen] == [log], seen
+        assert not list(tmp_path.glob("*.tmp")), list(tmp_path.iterdir())
+        assert self._rows(bl)[0]["ticker"] == "000670"
 
     def test_cli_prints_the_same_excerpts_the_report_shows(
             self, tmp_path, monkeypatch, capsys):
@@ -71635,3 +71811,18 @@ class TestBacklogMissExcerpt20260918:
         rows = self._rows(bl)
         for sm in bl.excerpt_samples(rows):
             assert sm["ex"][:40] in out, (sm, out)
+        # 보고서가 "여기서 전부 보여준다" 고 가리키는 곳이다 — 개수로
+        # 자르면 그 문장이 거짓이 된다(#165). 큰 갈래가 먼저 온다.
+        for i in range(9):
+            bl._log_miss(f"11111{i}.KS", 2026, "11013", "형식미지원",
+                         f"갈래{i}", f"구 분 수주잔고 {i}")
+        # ⚠️ 큰 갈래가 먼저인지 재려면 **크기 순서와 이름 순서가 어긋나야**
+        # 한다 — 이름이 마지막인 갈래를 가장 크게 만든다(#91b·#91c).
+        for i in range(3):
+            bl._log_miss(f"2222{i}0.KS", 2026, "11013", "형식미지원",
+                         "힣많은갈래", "구 분 수주잔고 x")
+        capsys.readouterr()
+        assert bm.summarize() == 0
+        out2 = capsys.readouterr().out
+        assert out2.count("[갈래") == 9, out2          # 개수로 안 자른다
+        assert out2.index("[힣많은갈래]") < out2.index("[갈래0]"), out2
