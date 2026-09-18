@@ -689,6 +689,11 @@ _DM_EX_WIDTH = 200
 # 운영자에게 인쇄되는 명령은 **그대로 붙여넣어 도는 형태**여야 한다(#278).
 # HTML 메시지라 `&&` 는 `&amp;&amp;` 로 써야 파싱이 안 깨진다(규칙 7).
 _CLI_CMD = "cd ~/stock &amp;&amp; .venv/bin/python -m bot.scripts.backlog_misses"
+# `quarterly_infographic` 이 **원문 없이** 남기는 사유 — 조립된 분기 시계열의
+# 급변을 보고 찍는다. 원문 경로가 아니므로 발췌가 영영 없고, 되메우기 대상도
+# 아니다(다시 조회하면 그 자리에 파싱 사유가 들어와 이 신호를 지운다).
+# ⚠️ 문자열을 두 곳에 적으면 한쪽만 바뀌어 그 규칙이 조용히 죽는다(#38).
+MISS_SERIES_ANOMALY = "시계열이상"
 
 # 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
 # SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
@@ -1061,6 +1066,66 @@ def _u16len(s: str) -> int:
     return len(s.encode("utf-16-le")) // 2
 
 
+def refill_targets(rows: list) -> list[dict]:
+    """발췌가 없는 미스의 (종목·분기·사유) 목록 — **다시 조회하면 붙는다**.
+
+    발췌를 남기기 전에 쌓인 줄은 그 종목·분기를 누군가 다시 열 때까지
+    영원히 근거가 없다. 격주 보고서는 2주에 한 번이므로, 그때까지 기다리는
+    대신 운영자가 한 번에 되메울 수 있어야 한다(§Automation-first).
+
+    ⚠️ 신원으로 중복을 없앤다 — 같은 줄을 두 번 조회하면 그만큼 바깥
+    원천을 두드린다(#61).
+    """
+    seen, out = set(), []
+    for r in rows:
+        if not isinstance(r, dict) or r.get(_TOMB_KEY) or r.get("ex"):
+            continue
+        if r.get("reason") == MISS_SERIES_ANOMALY:
+            continue        # 원문 없이 기록된다 — 되메울 원문이 없다
+        k = miss_key(r)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(r)
+    return out
+
+
+def drop_miss(ticker, year, reprt_code, reason: str) -> bool:
+    """해소된 미스 한 줄을 지운다. 지웠으면 True.
+
+    ⚠️ 다시 조회해 **값이 나오면** 그 줄은 더 이상 개선 여지가 아니다 —
+    남겨 두면 다음 보고서의 '막힌 조회 N건' 이 영원히 부푼다(#45). 원장은
+    `_parse_sig` 가 바뀔 때 자동으로 비워지지 않으므로(캐시만 무효화된다)
+    지우는 쪽이 있어야 수렴한다.
+    """
+    if not _MISS_LOG.exists():
+        return False
+    key = miss_key({"ticker": ticker, "year": year,
+                    "reprt": reprt_code, "reason": reason})
+    raw = _MISS_LOG.read_text(encoding="utf-8")
+    kept = []
+    for ln in raw.splitlines():
+        r = parse_miss_line(ln)
+        if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
+            continue
+        kept.append(ln)
+    body = ("\n".join(kept) + "\n") if kept else ""
+    if body == raw:
+        return False
+    _write_ledger(body)
+    return True
+
+
+def _write_ledger(body: str) -> None:
+    """원장 갈아끼우기 — tmp+replace. `write_text` 는 truncate 후 쓰기라
+    읽는 쪽이 **찢긴 파일**을 본다(#379·#384). 쓰는 곳이 둘이므로 한 곳에
+    둔다(#38)."""
+    _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _MISS_LOG.with_name(_MISS_LOG.name + ".tmp")
+    tmp.write_text(body, encoding="utf-8")
+    tmp.replace(_MISS_LOG)
+
+
 def _log_miss(ticker: str, year, reprt_code, reason: str,
               detail: str = "", excerpt: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
@@ -1116,15 +1181,9 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         body = "\n".join(kept + [line]) + "\n"
         if body == raw:
             return                  # 바뀐 게 없다 — mtime 도 안 건드린다
-        # ⚠️ `write_text` 는 truncate 후 쓰기라 **읽는 쪽이 찢긴 파일**을
-        # 본다(대시보드는 요청마다 스레드고 `_fill_backlog` 는 병렬이다).
-        # 찢긴 줄은 JSON 파싱 실패 → `is_current_vocab` True → prune 을
-        # 통과해 영구히 남는다. tmp+replace 로 바꾼다(#379·#384).
         # ⚠️ 남는 축: read-modify-write 라 **동시 쓰기의 유실**은 그대로다
         # (선재 — 원장은 진단용이고 다음 조회가 다시 남긴다).
-        tmp = _MISS_LOG.with_name(_MISS_LOG.name + ".tmp")
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(_MISS_LOG)
+        _write_ledger(body)
     except Exception as exc:
         log.debug("dart_backlog: 미스 로그 실패: %s", exc)
 

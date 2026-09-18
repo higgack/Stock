@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""수주잔고 파서 미스 요약 — 읽기 전용·네트워크 0.
+"""수주잔고 파서 미스 요약 — 기본은 읽기 전용·네트워크 0.
+
+⚠️ 예외는 `--ticker`·`--sweep`·`--explain`(원문을 다시 받는다)과
+`--refill`(원문을 받아 **원장에 발췌를 되메운다**) 이다. '읽기 전용' 을
+전체에 대한 주장으로 적으면 거짓이 된다(#55·#286).
 
 `bot/dart_backlog._log_miss` 가 남긴 `~/.tradingagents/backlog_misses.jsonl` 를
 사유별로 묶어 보여준다. **실사용이 곧 프로브**라는 설계의 수확 도구다 —
@@ -19,6 +23,9 @@
         → `본문없음 0자` 일 때 원문 수신을 해부한다(HTTP 상태·바이트수·zip 엔트리).
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --list 012450.KS 2026 11013
         → 그 분기 전후의 정기공시 원시 목록을 넓은 창으로 찍는다(창 밖 정정 확인).
+    cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --refill
+        → 발췌가 없는 미스(발췌 기록 배포 전에 쌓인 줄)를 **다시 조회해**
+          원문 발췌를 되메운다. 값이 나오면 그 줄은 지운다. 기본 40건 상한.
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --sweep
     # 값이 **틀린** 종목의 파싱 근거(어느 표를 잡았나):
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --explain 047810
@@ -39,12 +46,15 @@ from bot.dart_backlog import norm_miss_ticker as _norm
 from bot.dart_backlog import parse_miss_line as _pline
 
 
-def summarize() -> int:
+def _load_rows():
+    """원장 → (현행 어휘 행, 전체 레코드, 옛 어휘 건수).
+
+    `summarize` 와 `refill` 이 **같은 술어**를 써야 둘이 다른 모집단을
+    보지 않는다(#35·#38·#45)."""
     from bot.dart_backlog import _MISS_LOG
-    if not _MISS_LOG.exists():
-        print(f"기록 없음 ({_MISS_LOG}) — 아직 막힌 종목이 없거나 조회 이력이 없다.")
-        return 0
     rows, legacy, all_rec = [], 0, []
+    if not _MISS_LOG.exists():
+        return rows, all_rec, legacy
     for ln in _MISS_LOG.read_text(encoding="utf-8").splitlines():
         if not ln.strip():
             continue
@@ -60,6 +70,75 @@ def summarize() -> int:
             continue
         rows.append(rec)
     legacy += sum(int(r[_TOMB_KEY]) for r in all_rec if r.get(_TOMB_KEY))
+    return rows, all_rec, legacy
+
+
+def refill(cap: int = 40) -> int:
+    """발췌가 없는 미스를 **다시 조회해** 원문 발췌를 되메운다.
+
+    ⚠️ 원장을 쓴다(이 스크립트의 유일한 쓰기 경로) — 그게 목적이다.
+    ⚠️ 바깥 원천을 미스 1건당 정기보고서 1건씩 받는다. 상한을 두고,
+    **자른 사실을 말한다**(#45). 한 줄씩 즉시 찍는다 — 수십 분짜리를
+    파이프로 받으면 끝날 때까지 아무것도 안 보인다(#103).
+    """
+    from bot.dart_backlog import backlog_probe, drop_miss, refill_targets
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    if not dart:
+        print("❌ DART_API_KEY 없음 — 원문을 못 받으면 되메울 수 없다.")
+        return 1
+    rows, _all, _legacy = _load_rows()
+    todo = refill_targets(rows)
+    if not todo:
+        print("되메울 줄 없음 — 발췌 없는 미스가 없다.")
+        return 0
+    cut = max(0, len(todo) - cap)
+    todo = todo[:cap]
+    print(f"■ 발췌 되메우기 {len(todo)}건 (종목당 정기보고서 1건 다운로드)"
+          + (f" · 상한 {cap} 로 {cut}건은 이번에 안 한다" if cut else ""),
+          flush=True)
+    print("=" * 84, flush=True)
+    filled = solved = same = 0
+    for i, r in enumerate(todo, 1):
+        tk, yr, rc = r.get("ticker"), r.get("year"), r.get("reprt")
+        was = r.get("reason")
+        try:
+            val, why = backlog_probe(dart, tk, yr, rc)
+        except Exception as exc:                               # noqa: BLE001
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            continue
+        if val is not None:
+            solved += 1
+            drop_miss(tk, yr, rc, was)
+            print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ✅ 해소 "
+                  f"{val/1e12:.3f}조 — 원장에서 지웠다", flush=True)
+            continue
+        # 사유가 그대로면 `_log_miss` 가 같은 신원의 줄을 **대체**했다.
+        # 달라졌으면 새 줄이 따로 생겼고, 옛 줄은 **방금 다시 재서 반증된
+        # 관측**이다 — 안 지우면 같은 분기가 두 건으로 세어진다(#45).
+        now = (why or "").split(" · ")[0]
+        filled += 1
+        if now == was:
+            same += 1
+        else:
+            drop_miss(tk, yr, rc, was)
+        print(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ↻ {why}"
+              + ("" if now == was else f"  ⚠️ 사유 바뀜(옛 줄 {was} 는 지웠다)"),
+              flush=True)
+    print("=" * 84, flush=True)
+    print(f"■ 되메움 {filled}건(같은 사유 {same}) · 해소 {solved}건"
+          + (f" · 남은 {cut}건은 다시 실행" if cut else ""))
+    print("→ 이제 `backlog_misses` 로 원문 발췌를 볼 수 있다.")
+    return 0
+
+
+def summarize() -> int:
+    from bot.dart_backlog import _MISS_LOG
+    if not _MISS_LOG.exists():
+        print(f"기록 없음 ({_MISS_LOG}) — 아직 막힌 종목이 없거나 조회 이력이 없다.")
+        return 0
+    rows, all_rec, legacy = _load_rows()
     if legacy:
         print("⚠️ " + (_legnote(all_rec) or f"옛 어휘 {legacy}건 제외"))
     if not rows:
@@ -419,6 +498,8 @@ def main(argv: list[str]) -> int:
         return list_probe(argv[2], argv[3], argv[4])
     if len(argv) > 2 and argv[1] == "--explain":
         return explain(argv[2])
+    if len(argv) > 1 and argv[1] == "--refill":
+        return refill(int(argv[2]) if len(argv) > 2 else 40)
     if len(argv) > 1 and argv[1] == "--sweep":
         return sweep(argv[2:])
     return summarize()

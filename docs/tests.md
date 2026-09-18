@@ -991,6 +991,10 @@ Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었
 | 인쇄되는 명령은 **그대로 붙여넣어 돈다**(#278) + `&&` escape(규칙 7) | ✅ 자동 | `test_printed_commands_are_runnable_as_is` |
 | 공개 선택기가 묘비를 안 세고, 길이는 UTF-16 으로 잰다 | ✅ 자동 | `test_public_selectors_skip_tombstones_and_count_utf16` |
 | CLI 가 보고서와 **같은 선택기**로 같은 발췌를 **전부**, 큰 갈래부터 찍는다(#38) | ✅ 자동 | `test_cli_prints_the_same_excerpts_the_report_shows` |
+| `--refill` 이 발췌 없는 줄만, **신원으로 중복 없이** 고른다(#61) | ✅ 자동 | `test_refill_targets_are_deduped_and_exclude_rows_that_have_one` |
+| 되메워 **값이 나오면 그 줄을 지운다** — 안 지우면 '막힌 조회 N건' 이 영원히 부푼다(#45) | ✅ 자동 | `test_drop_miss_removes_only_that_row` · `test_refill_fills_excerpts_and_drops_resolved_rows` |
+| 상한으로 자른 사실·키 없음(rc=1)을 말한다(#45·#54·#82) | ✅ 자동 | `test_refill_says_what_it_did_not_do` |
+| `시계열이상` 사유는 **단일 출처**라 되메우기가 그 신호를 안 지운다(#38) | ✅ 자동 | `test_series_anomaly_reason_has_one_source` |
 
 ⚠️ 2026-09-18 독립 리뷰가 잡은 두 축이 여기 들어 있다. (a) 옛 판은 갈래를
 `_EX_SAMPLE_N=6` 으로 **조용히** 잘랐다 — 실측 10갈래 → 6개 표시, 생략 문구
@@ -1011,6 +1015,13 @@ Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었
 ⚠️ 뮤테이션이 문법을 깨면 전 테스트가 빨간불이라 '잡힘' 처럼 보인다 —
 실측 1건(`sorted(...)` 앵커가 `):` 를 삼켰다). 통과·실패 어느 쪽이든 그
 자리를 실제로 쳤는지 볼 것(#267).
+
+⚠️ `--refill` 은 이 스크립트의 **유일한 쓰기 경로**다(원장에 발췌를 되메운다)
+— 모듈 독스트링의 "읽기 전용" 을 전체에 대한 주장으로 두면 거짓이 된다(#55·#286).
+발췌 없는 줄은 그 종목·분기를 누군가 다시 열 때까지 영원히 근거가 없고 격주
+보고서는 2주에 한 번이므로, 운영자가 한 번에 되메울 수 있어야 한다
+(§Automation-first). 사유가 달라지면 옛 줄은 **방금 다시 재서 반증된 관측**
+이므로 지운다.
 
 **못 보는 축**(#274): 발췌 **내용이 파서를 고치기에 충분한가**는 기계가
 못 잰다 — 창(앞 120 + 뒤 240)이 헤더를 담는지는 실제 원문에서만 확인된다.
