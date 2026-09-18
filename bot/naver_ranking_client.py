@@ -766,13 +766,73 @@ def fetch_kr_highlow(limit: int = 200) -> dict:
     return out
 
 
+def _paused_now() -> bool:
+    """네이버 호출이 **우리 스위치로** 꺼져 있나 — 사유 문자열이 아니라 **상태**를
+    본다(#19 소스 문자열에 기대면 문구 한 줄에 무너진다). 형제 보드와 같은
+    술어를 쓴다(#38)."""
+    try:
+        from bot.finviz_client import naver_paused
+        return bool(naver_paused())
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _kr_bulk_fallback(out: dict, limit: int) -> None:
+    """네이버 목록이 **한 행도** 안 오면 KRX 벌크로 채운다.
+
+    폴백 조건은 '실패했나' 가 아니라 '요구를 충족했나' 다(#136) — 여기서는
+    "급등·급락 표를 만들 행이 있나". 형제(52주 신고저)는 같은 죽은 엔드포인트를
+    쓰면서도 pykrx 폴백이 있어 살아 있었고, 폴백이 없는 이 보드만 빈 화면이
+    됐다(#51 비대칭이 단서 · §작업 원칙 "외부 원천 폴백은 fix 였다").
+
+    ⚠️ 값을 채우되 **어디서 왔는지 화면이 말한다**(#43·#136·#34) — 장중에 전일
+    종가 랭킹을 '네이버 급등/급락' 이라 적으면 화면이 거짓말한다. 그래서
+    `source`·`asof`·`fallback` 을 싣고 렌더가 그걸 따른다.
+    ⚠️ 네이버 사유를 **덮지 않는다** — 둘 다 남겨야 운영자가 어느 원천을
+    고칠지 안다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+    """
+    from bot import kr_bulk_rank as _kb
+    prev = out.get("reason") or ""
+    if _paused_now() or prev == _nd.PAUSED:
+        # ⚠️ **우리가 끈 것**은 장애가 아니다 — 안 물어본 원천을 대신해 KRX 를
+        # 두드리면 일시정지의 뜻(바깥 호출을 멈춘다)이 깨지고, 화면은 이미
+        # 정확한 사유를 적고 있다(#279·#345 일시정지는 실패가 아니라 판정 보류).
+        return
+    try:
+        rows, asof, memo = _kb.kr_bulk_rows()
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("KR movers KRX 폴백 예외: %s", exc)
+        out["reason"] = " · ".join(
+            x for x in (prev, f"KRX 폴백 예외({type(exc).__name__})") if x)
+        return
+    if not rows:
+        out["reason"] = " · ".join(
+            x for x in (prev, f"KRX 폴백도 비었습니다 — {memo}") if x)
+        return
+    out["up"] = _kb.sort_rows(rows, "pct", desc=True, limit=limit)
+    out["down"] = _kb.sort_rows(rows, "pct", desc=False, limit=limit)
+    out["fallback"] = True
+    out["asof"] = asof
+    out["source"] = f"{_kb.SOURCE_LABEL} · {asof} 종가 기준"
+    out["reason"] = " · ".join(x for x in (
+        f"네이버 목록을 못 받아 KRX 벌크로 대체했습니다 — {prev}" if prev
+        else "네이버 목록을 못 받아 KRX 벌크로 대체했습니다", memo) if x)
+
+
 def fetch_kr_movers(limit: int = 30) -> dict:
     """KR 급등/급락 — 네이버 domestic 상승/하락 랭킹 top (상한가 한도 필터 없이,
     사용자 2026-06-14 'KR 상한가/하한가 → 급등/급락'). JP/CN/HK 무버 형태. 한글명·
-    시총·거래대금 native. ETF/ETN/스팩 제외. {up,down,ts,source,reason}. graceful.
-    `reason` 은 **둘 다 비었을 때만** 실린다(부분 수신은 실패가 아니다)."""
+    시총·거래대금 native. ETF/ETN/스팩 제외. graceful.
+    {up,down,ts,source,reason,fallback,asof}.
+
+    `reason` 은 네이버가 **한 행도 안 줬을 때만** 실린다(부분 수신은 실패가
+    아니다). 그때 KRX 벌크 폴백이 돌고, **성공해도 사유는 남는다** — 값이 보여도
+    원천이 막힌 사실은 말해야 한다(#43·#41 여유로 사실을 덮지 말 것). 폴백이면
+    `fallback=True` · `source`·`asof` 가 갈리므로 렌더는 그걸 따라야 한다(#136).
+    """
     from bot.finviz_client import _now_label
     out = {"up": [], "down": [], "ts": _now_label(), "reason": "",
+           "fallback": False, "asof": "",
            "source": "네이버 증권 급등/급락(전종목·한글명·시총·거래대금)"}
     up, why_u = _domestic_paged2("up", max_items=max(limit, 50))
     dn, why_d = _domestic_paged2("down", max_items=max(limit, 50))
@@ -800,6 +860,10 @@ def fetch_kr_movers(limit: int = 30) -> dict:
         else:
             out["reason"] = ("원천이 0건을 줬습니다 — 고칠 것이 없을 수 "
                              "있습니다(원천 점검 대상)")
+        # 사유를 적었으면 끝이 아니다 — 사용자가 보고 싶은 것은 표다(#325
+        # "사유를 갈라 적는 것으로 끝냈다 — 원한 건 표였다"). 재료가 다른
+        # 저장소에 있으면 사유가 아니라 **값**을 보여 줘야 한다.
+        _kr_bulk_fallback(out, limit)
     return out
 
 

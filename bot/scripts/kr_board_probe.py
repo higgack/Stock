@@ -57,7 +57,7 @@ from __future__ import annotations
 import json
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -115,6 +115,75 @@ def _section_control():
     print("   ⇒ 아래 0건은 '원천에 없다' 가 아니라 **판정 불가**입니다(#143).")
     return False
 
+
+
+# ── ①-b 요청 모양 ──────────────────────────────────────────────────────────
+# 2026-09-18 두 보드가 동시에 빈 화면이 됐다. 화면이 적은 사유는 `sortType=up`
+# (하드코딩)과 `__probe__`(미끼) **양쪽에 동일**했다 —
+#   `sortType: Invalid input: expected "dividend" ·
+#    dividendSortType: Invalid option: expected one of "rate"|"value"`
+# 값마다 다른 사유가 오지 않는다는 것은 거절 대상이 그 **값**이 아니라는 뜻이고,
+# 그러면 허용값을 묻는 ② 도 영원히 목록을 못 배운다. 무엇이 바뀌었는지는
+# **재야** 안다(#12·#165) — 여기서는 판정하지 않고 요청 모양별 원문을 나란히
+# 찍는다(#51 나란히 놔야 보인다 · #109 원문 표본을 같이 찍을 것).
+# ⚠️ 본문을 짧게 자르지 않는다 — 결정적 필드가 잘리는 자리에서 한 라운드를
+# 더 쓴 전례가 있다(#156·#350 자르는 자리가 다음 결정을 가리지 않는가).
+_SHAPES = (
+    ("현행(대조군)", {"sortType": "up", "category": "all", "page": 1, "pageSize": 5}),
+    ("sortType 없음", {"category": "all", "page": 1, "pageSize": 5}),
+    ("파라미터 없음", {}),
+    ("dividend 갈래", {"sortType": "dividend", "dividendSortType": "rate",
+                       "category": "all", "page": 1, "pageSize": 5}),
+    ("category 없음", {"sortType": "up", "page": 1, "pageSize": 5}),
+)
+
+
+def shape_verdict(results: list) -> str:
+    """관측 → 한 줄 판정(순수). `results` = [(라벨, 행수, 사유)].
+
+    갈래는 셋이고 처방이 전부 다르다(#82):
+      - 어느 모양이든 행이 온다      → 그 모양으로 배선하면 된다
+      - dividend 갈래만 행이 온다    → 이 주소는 배당 랭킹 전용이 됐다
+      - 전부 0행                     → 주소 자체가 바뀌었다(SPA 청크를 읽어야 한다)
+    ⚠️ 한 모양도 못 쟀으면 ✅ 도 ❌ 도 아니다(#54)."""
+    if not results:
+        return "❓ 아무 모양도 못 쟀습니다 — 판정 불가"
+    ok = [lab for lab, n, _w in results if n]
+    if not ok:
+        # ⚠️ **사유를 봐야** 한다 — 일시정지(우리가 껐다)·타임아웃·429 는
+        # "주소가 죽었다" 와 처방이 정반대인데, 옛 판은 그 셋에도 확신에 찬
+        # ❌ 를 냈다(독립 리뷰 2026-09-18 · #82·#165·#279·#345). 원천이
+        # **요청 모양을 거절**했다고 말한 것(4xx)만 구조 변경의 증거다.
+        from bot import naver_diag as _nd2
+        shaped = [w for _l, _n, w in results
+                  if _nd2.status_from(w or "") in _nd2.REQUEST_SHAPE_4XX]
+        if not shaped:
+            return ("❓ 다섯 모양 전부 0행인데 **원천이 요청 모양을 거절한 적은 "
+                    "없습니다**(일시정지·타임아웃·차단일 수 있습니다) — 판정 "
+                    "불가. 사유 원문을 보고 다시 재 주세요.")
+        return ("❌ 다섯 모양 전부 0행이고 원천이 요청 모양을 거절했습니다 — 이 "
+                "주소(`domestic/stock/list`)가 더는 종목 랭킹을 주지 않는 것으로 "
+                "보입니다. 다음 측정은 모바일 페이지 청크에서 새 주소를 읽는 "
+                "것입니다(#338 의 그 방법).")
+    if ok == ["dividend 갈래"]:
+        return ("❌ `dividend` 갈래만 행을 줍니다 — 이 주소가 배당 랭킹 전용이 "
+                "됐습니다. 급등·급락/거래량 상위는 다른 주소를 찾아야 합니다.")
+    return "✅ 행을 주는 모양: " + ", ".join(ok) + " — 그 모양으로 배선하면 됩니다"
+
+
+def _section_shape() -> None:
+    from bot import naver_diag as nd
+    print("\n①-b 요청 모양 — 무엇이 거절되는지 원문으로")
+    results: list = []
+    for label, params in _SHAPES:
+        d, why = _get(_LIST, **params)
+        rows = _rows(d)
+        results.append((label, len(rows), why or ""))
+        q = "&".join(f"{k}={v}" for k, v in params.items()) or "(없음)"
+        mark = "✅" if rows else "❌"
+        print(f"   {mark} {label}: {q}")
+        print(f"      → {len(rows)}행" + (f" · {nd.mask_secrets(why)}" if why else ""))
+    print("   " + shape_verdict(results))
 
 def _section_sorts():
     print("\n② 거래량 상위의 정렬 키 — 허용값을 원천에게 묻는다")
@@ -455,6 +524,10 @@ def main() -> int:
     print("   ⚠️ ④ 는 **애프터마켓 창 안**(16:00~20:00 KST)에서 돌려야 "
           "의미가 있습니다 — 창 밖이면 시간외 블록이 안 붙습니다.")
     ok = _section_control()
+    if not ok:
+        # 대조군이 죽었으면 ② 이후는 전부 '판정 불가' 다 —
+        # 무엇이 거절되는지부터 원문으로 잰다(#143·#109).
+        _section_shape()
     vals = _section_sorts()
     if vals:
         _section_rows(vals)

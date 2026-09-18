@@ -45,6 +45,9 @@ AUDITS: tuple[tuple[str, str, str], ...] = (
     ("🕰 발표지표 신선도", "bot.scripts.macro_staleness_audit", "daily"),
     ("💱 피어 통화 불일치", "bot.scripts.peer_currency_audit", "weekly"),
     ("💼 자산·가계부·ASIA·아카이브·Screener", "bot.scripts.asset_pages_audit", "daily"),
+    # 네이버 KR 보드(급등·급락·거래량 상위)는 2026-09-18 원천 400 으로 빈
+    # 화면이었는데 **어떤 감사도 안 봤다** — 사용자가 먼저 물었다(#52·#303).
+    ("🇰🇷 네이버 KR 보드", "bot.scripts.kr_boards_audit", "daily"),
     # FCF 는 한 종목이 **세 화면**에 실리고 원천이 둘(DART·yfinance)이라
     # 정의 차이로 갈릴 수 있다 — 사람이 눈으로 못 재는 값이라 기계가 잰다
     # (사용자 2026-08-21). 종목마다 스냅샷을 새로 받아 무거우므로 weekly.

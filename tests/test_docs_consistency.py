@@ -67,7 +67,7 @@ def _mistake_entries():
     parts = _ENT_RE.split(sec)
     ent = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
     ref = _REFERENCE.read_text(encoding="utf-8")
-    for num, body, ref_body in _folded_pairs():
+    for num, body, ref_body in _ref_pairs():
         if num in ent:
             ent[num] = ent[num] + "\n" + ref_body
     return sec, ent
@@ -191,7 +191,9 @@ def test_folded_entries_point_at_a_real_reference_section():
     지우는 변형이 조용히 초록이 되면 이 가드는 눈이 먼다."""
     txt = _CLAUDE.read_text(encoding="utf-8")
     ref = _REFERENCE.read_text(encoding="utf-8")
-    pointed = set(re.findall(r'→ REFERENCE §실수 #(\d+[a-z]?)', txt))
+    # 표식이 둘이다(접기 `→` · 이관 `⇒`) — 한쪽만 세면 다른 쪽 절이 전부
+    # '고아' 로 잡혀 멀쩡한 파일을 틀렸다고 한다(#47 계수 패턴부터 의심할 것).
+    pointed = set(re.findall(r'[→⇒] REFERENCE §실수 #(\d+[a-z]?)', txt))
     secs = set(re.findall(r'(?m)^### 실수 #(\d+[a-z]?)$', ref))
     assert len(pointed) >= 20, f"REFERENCE 포인터가 {len(pointed)}건뿐 — 눈먼 가드"
     # **양방향**으로 본다. 예전 판은 dangling 만 봐서, CLAUDE.md 에서 포인터 줄을
@@ -371,8 +373,13 @@ _HAND_FOLDED = frozenset("""188 190 203 204 248 259 261 264 265 266 267 270 273
 343 344 345 346 347 348""".split())
 
 
-def _folded_pairs():
-    """[(번호, CLAUDE.md 항목, REFERENCE 사본)] — 접힌 항목 전수(이름 열거 금지)."""
+def _ref_pairs(marker: str | None = None):
+    """[(번호, CLAUDE.md 항목, REFERENCE 사본)] — REFERENCE 절이 있는 항목 전수
+    (이름 열거 금지, #24). `marker` 를 주면 그 표식을 단 항목만.
+
+    ⚠️ **접기와 이관은 계약이 다르다**(2026-09-18). 접기(`→`)는 명령형 절을
+    CLAUDE.md 에 남기고, 이관(`⇒`)은 제목 절만 남긴다. 한 목록으로 섞어 재면
+    접기 계약 회귀가 이관을 '규칙이 사라졌다' 로 오보한다(#34)."""
     from bot.scripts import claude_md_fold as fold
     c = _CLAUDE.read_text(encoding="utf-8")
     r = _REFERENCE.read_text(encoding="utf-8")
@@ -382,8 +389,23 @@ def _folded_pairs():
     out = []
     for i, m in enumerate(secs):
         e = secs[i + 1].start() if i + 1 < len(secs) else len(r)
-        out.append((m.group(1), ents.get(m.group(1), ""), r[m.end():e]))
+        body = ents.get(m.group(1), "")
+        if marker is not None and marker not in body:
+            continue
+        out.append((m.group(1), body, r[m.end():e]))
     return out
+
+
+def _folded_pairs():
+    """접힌(서사만 옮긴) 항목 — 명령형 절이 CLAUDE.md 에 남아 있어야 한다."""
+    from bot.scripts.claude_md_fold import _POINTER
+    return _ref_pairs(_POINTER)
+
+
+def _relocated_pairs():
+    """이관된(전문을 옮긴) 항목 — 제목 절만 남는다."""
+    from bot.scripts.claude_md_fold import _RELOCATED
+    return _ref_pairs(_RELOCATED)
 
 
 # 접기 계약을 재는 **독립** 추출기 — 제품의 `is_rule_clause` 를 쓰면 동어반복이다
@@ -471,11 +493,12 @@ def test_folding_does_not_thin_the_citation_corpus():
     접을수록 가드가 눈이 먼다(독립 리뷰 H2, 실측 −12%). `_mistake_entries` 가
     REFERENCE 사본을 합치므로 접힌 항목의 인용도 그대로 세어진다."""
     _, ent = _mistake_entries()
-    folded = [n for n, _b, _r in _folded_pairs() if n in ent]
-    assert len(folded) >= 20, f"접힌 항목이 {len(folded)}개뿐 — 눈먼 가드"
-    # 접힌 항목 본문에 REFERENCE 서사가 실제로 합쳐졌는지 값으로 본다
-    thin = [n for n in folded if "→ REFERENCE §실수" not in ent[n]]
-    assert not thin, f"포인터가 없는 접힌 항목: {thin[:5]}"
+    folded = [n for n, _b, _r in _ref_pairs() if n in ent]
+    assert len(folded) >= 20, f"사본이 있는 항목이 {len(folded)}개뿐 — 눈먼 가드"
+    # 본문에 REFERENCE 서사가 실제로 합쳐졌는지 값으로 본다(표식은 둘 다 인정)
+    thin = [n for n in folded
+            if "→ REFERENCE §실수" not in ent[n] and "⇒ REFERENCE §실수" not in ent[n]]
+    assert not thin, f"포인터가 없는 사본 항목: {thin[:5]}"
     cites = sum(len(_REF_RE.findall(ent[n])) for n in folded)
     assert cites >= len(folded), f"접힌 항목의 인용이 {cites}건뿐 — 사본이 안 합쳐졌다"
 
