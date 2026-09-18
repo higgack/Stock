@@ -997,6 +997,7 @@ Claude 에게 그대로 붙여넣으면 파서를 확장합니다" 라고 적었
 | `시계열이상` 사유는 **단일 출처**라 되메우기가 그 신호를 안 지운다(#38) | ✅ 자동 | `test_series_anomaly_reason_has_one_source` |
 | 모든 경로가 **코드 지문**을 먼저 찍고, 모르는 플래그는 거절한다(rc=2) | ✅ 자동 | `test_cli_says_which_build_it_is_and_rejects_unknown_flags` |
 | 지문이 **출력을 만드는 두 파일**을 덮고 소스가 바뀌면 값이 바뀐다(#364·#286) | ✅ 자동 | `test_build_fingerprint_covers_the_sources_that_make_the_output` |
+| `make test` 가 **운영 미스 원장**을 안 건드린다 — conftest 리다이렉트(#30·#312·#344) | ✅ 자동 | `test_production_disk_caches_are_redirected` |
 
 ⚠️ 2026-09-18 독립 리뷰가 잡은 두 축이 여기 들어 있다. (a) 옛 판은 갈래를
 `_EX_SAMPLE_N=6` 으로 **조용히** 잘랐다 — 실측 10갈래 → 6개 표시, 생략 문구
@@ -1031,6 +1032,14 @@ VM 에 도달하는 경로가 있는지부터 답할 것" 의 재발). 그래서
 보고서는 2주에 한 번이므로, 운영자가 한 번에 되메울 수 있어야 한다
 (§Automation-first). 사유가 달라지면 옛 줄은 **방금 다시 재서 반증된 관측**
 이므로 지운다.
+
+⚠️ 2026-09-18 배포전 스모크가 잡은 것 — `make test` 가 `backlog_probe` 를
+태우면서 운영 원장(`~/.tradingagents/backlog_misses.jsonl`)에 **가짜 티커**를
+남기고 있었다(`X`·`005930` 이 픽스처 본문 "수주잔고 없음" 과 함께). 그 원장이
+곧 격주 DM 이라 운영자는 그걸 진짜 미스로 읽고 없는 버그를 쫓는다 — 발췌를
+싣게 된 이번 변경이 그 오염을 '파서를 고칠 유일한 근거' 로 **승격**시켜 더
+나빠졌다. 루트 `conftest.py` 의 import 시점 리다이렉트에 한 줄 더했다(함수
+스코프 fixture 로는 daemon 스레드·`pytest bot/tests` 프로세스를 못 덮는다).
 
 **못 보는 축**(#274): 발췌 **내용이 파서를 고치기에 충분한가**는 기계가
 못 잰다 — 창(앞 120 + 뒤 240)이 헤더를 담는지는 실제 원문에서만 확인된다.

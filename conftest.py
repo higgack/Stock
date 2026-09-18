@@ -197,6 +197,13 @@ def _redirect_disk_caches() -> list:
         # 조용히 빈 맵을 받는다(실측: `TestTwIndustryMapTpexEnglishKeys` 가 전체
         # 실행에서만 빨간불). 위 주석이 적은 대로 관측했으니 한 줄 더한다.
         ("bot.twse_client", "_CACHE_DIR", "twse"),
+        # 수주잔고 미스 원장 — `make test` 가 `backlog_probe` 를 태우면
+        # `_log_miss` 가 운영 원장에 **가짜 티커**를 남긴다(2026-09-18 실측:
+        # `X`·`005930` 이 픽스처 본문 "수주잔고 없음" 과 함께 들어 있었다).
+        # 그 원장이 곧 격주 파서 리뷰 DM 이라, 운영자는 그걸 **진짜 미스**로
+        # 읽고 없는 버그를 쫓는다. 발췌를 싣게 된 이번 변경이 그 오염을
+        # '파서를 고칠 유일한 근거' 로 승격시켜 더 나빠졌다(#30·#312·#344).
+        ("bot.dart_backlog", "_MISS_LOG", "backlog_misses.jsonl"),
     )
     done = []
     for mod, attr, leaf in targets:
