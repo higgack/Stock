@@ -75829,10 +75829,17 @@ class TestPrepostStoredSnapshot20260919:
         assert out["stale"] is False and out["in_window"] is True, out
         assert pp.stored_note(out, "W") == ""
 
-    def test_in_window_but_scan_behind_is_stored_without_next_window_tail(
+    def test_in_window_but_scan_behind_prints_nothing_when_the_scan_is_fine(
             self, tmp_path, monkeypatch):
-        """창 **안**인데 집계가 TTL 을 넘겼으면 저장분이지만 '다음 창' 은
-        거짓이다 — 꼬리를 안 붙인다(#55)."""
+        """옛 계약은 "창 안인데 뒤처지면 '다음 창' 꼬리 없는 저장분 줄" 이었다.
+
+        사용자 2026-09-20(화면을 보고): "이 코멘트는 대시보드에 없어도 될것
+        같아. 당연한거니까." — 부제가 이미 `💾 저장분(N) · 실시간 아님 · <창> ·
+        <기준시각>` 을 말하므로 본문의 같은 문장은 소음이다(#25·#45). 지우지
+        않고 **좁혔다**(#222): 마지막 집계가 **실패**했을 때만 낸다. 남는 보장은
+        "정상 경로에선 한 글자도 안 붙는다" 이고, '다음 창' 이 창 안에서 거짓이
+        되지 않는다(#55)는 보장은 아래 실패 테스트로 옮겼다.
+        """
         pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
                        self._SNAP_KR, 1.0)           # 1시간 전 > 2분 TTL
         monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: True)
@@ -75840,27 +75847,44 @@ class TestPrepostStoredSnapshot20260919:
         monkeypatch.setattr(pp, "kr_prepost_status", lambda: {})
         out = pp.fetch_kr_prepost_movers()
         assert out["stale"] is True and out["in_window"] is True, out
+        assert pp.stored_note(out, "프리마켓 08:00–09:00") == ""
+        # 그런데 **실패**면 창 안에서도 낸다 — 그리고 '다음 창' 이 아니다(#55).
+        import time as _t
+        out["status"] = {"state": "failed", "ts": _t.time()}
         note = pp.stored_note(out, "프리마켓 08:00–09:00")
-        assert "저장분" in note and "다음 창" not in note, note
-        # 사유도 못박는다 — 창 밖 문구로 바꿔치는 변형이 통과했다(리뷰 실측).
-        assert "이번 창" in note and "창 밖" not in note, note
+        assert "실패해 갱신되지 않았습니다" in note, note
+        assert "이번 창" in note and "다음 창" not in note, note
 
     # ── ③ 문구 단일 출처 ───────────────────────────────────────────
     def test_stored_note_states_age_as_a_number_and_claims_nothing_unmeasured(
             self):
-        """나이는 숫자로(#202) · 창 판정이 없으면 사유를 단정하지 않는다(#165)."""
+        """나이는 숫자로(#202) · 재시도 시점은 창 판정이 있을 때만(#165).
+
+        옛 계약은 저장분이면 늘 한 줄을 냈다 — 2026-09-20 부터 **실패 갈래만**
+        낸다(사용자 결정, 위 테스트 docstring). 남는 보장은 그대로 잰다(#222).
+        """
+        import time as _t
         import bot.prepost_client as pp
+        F = {"state": "failed", "ts": _t.time()}
         n = pp.stored_note({"ts": "2026-09-18 19:52", "stale": True,
-                            "stale_min": 1620, "in_window": False}, "창")
+                            "stale_min": 1620, "in_window": False,
+                            "status": F}, "창")
         assert "2026-09-18 19:52" in n and "27시간 전" in n, n
-        assert "창 밖" in n and "다음 창(창)" in n, n
-        # 창 판정을 못 받으면 '창 밖' 이라고 말하지 않는다.
-        n2 = pp.stored_note({"ts": "t", "stale": True, "stale_min": 5}, "창")
-        assert "창 밖" not in n2 and "갱신되지 않아" not in n2, n2
+        assert "다음 창(창)에서 다시 시도합니다" in n, n
+        # 창 판정을 못 받으면 **언제 다시 시도하는지 단정하지 않는다**.
+        n2 = pp.stored_note({"ts": "t", "stale": True, "stale_min": 5,
+                             "status": F}, "창")
+        assert "실패해 갱신되지 않았습니다" in n2, n2
+        assert "다음 창" not in n2 and "이번 창" not in n2, n2
         # 나이를 못 재면 나이를 **지어내지 않는다**(#54).
-        n3 = pp.stored_note({"ts": "t", "stale": True, "stale_min": None}, "")
-        assert "전" not in n3.split("·")[1] if "·" in n3 else True, n3
-        assert pp.stored_note({"stale": False, "stale_min": 5}, "창") == ""
+        n3 = pp.stored_note({"ts": "t", "stale": True, "stale_min": None,
+                             "status": F}, "")
+        assert "전." not in n3 and "전 " not in n3, n3
+        # 저장분이 아니거나 스캔이 멀쩡하면 아무 줄도 없다.
+        assert pp.stored_note({"stale": False, "stale_min": 5,
+                               "status": F}, "창") == ""
+        assert pp.stored_note({"stale": True, "stale_min": 5, "ts": "t",
+                               "in_window": False, "status": {}}, "창") == ""
         assert pp.stored_note({}, "창") == "" and pp.stored_note(None, "창") == ""
 
     def test_both_pages_use_the_single_note_source(self):
@@ -75884,12 +75908,17 @@ class TestPrepostStoredSnapshot20260919:
         import bot.finviz_client as fv
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
 
-    def test_kr_page_draws_the_stored_rows_and_a_visible_stored_line(
+    def test_kr_page_draws_the_stored_rows_and_says_the_age_in_the_subtitle(
             self, tmp_path, monkeypatch):
-        """사용자가 본 그 화면 — 표가 뜨고 **보이는 줄**에 나이가 있다.
+        """사용자가 본 그 화면 — 표가 뜨고 **부제**가 나이·기준시각을 말한다.
 
-        ⚠️ 단언은 `sm-note` 칸 하나를 **잘라서** 본다: 페이지 전체에서
-        `저장분` 을 찾으면 shell 의 JS 주석이 대신 만족시킨다(실측, #55·#75).
+        옛 계약은 본문에도 `💾 저장분 — … 창 밖이라 …` 한 줄을 요구했다.
+        2026-09-20 사용자가 그 줄을 빼 달라고 했고(당연한 사실의 중복),
+        **나이·기준시각은 부제가 계속 말하므로** #43 의 보장은 그대로다 —
+        그래서 지우지 않고 그 자리로 옮겨 잰다(#222).
+
+        ⚠️ 단언은 `sm-note` 칸을 **잘라서** 본다: 페이지 전체에서 `저장분` 을
+        찾으면 shell 의 JS 주석과 부제가 대신 만족시킨다(실측, #55·#75).
         """
         import re
         pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
@@ -75899,14 +75928,12 @@ class TestPrepostStoredSnapshot20260919:
         html = render_kr_prepost_page()
         assert "삼성전자" in html, "저장분 표가 안 그려졌다"
         assert "데이터가 없습니다" not in html, html[:400]
+        # 부제 = 저장분이라는 사실 + 나이 + 기준시각(#43·#34·#55).
+        assert "💾 저장분(27시간 전)" in html and "네이버 실시간" not in html
+        assert "2026-09-18 19:52 기준" in html
+        # 그리고 본문엔 같은 말을 되풀이하는 줄이 **없다**(사용자 2026-09-20).
         notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
-        hit = [n for n in notes if "저장분" in n]
-        assert hit, notes
-        assert "2026-09-18 19:52" in hit[0] and "27시간 전" in hit[0], hit[0]
-        # 창 인자를 떼는 변형은 순수 테스트가 못 잡는다(#20) — 화면에서 본다.
-        assert "다음 창(" in hit[0], hit[0]
-        # 부제가 '실시간' 이라고 적으면 한 화면이 두 말을 한다(#34·#55).
-        assert "네이버 실시간" not in html and "💾 저장분(27시간 전)" in html
+        assert not [n for n in notes if "💾 저장분 —" in n], notes
         # 클래스를 쓰면 CSS 도 있어야 한다(#201·#273).
         assert re.search(r"\.sm-note\s*\{", html)
 
@@ -75919,15 +75946,15 @@ class TestPrepostStoredSnapshot20260919:
         from bot.us_pages import render_us_prepost_page
         html = render_us_prepost_page()
         assert "AAPL" in html and "데이터가 없습니다" not in html
-        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
-        hit = [n for n in notes if "저장분" in n]
-        assert hit and "30시간 전" in hit[0], notes
         # 부제도 payload 판정을 따른다 — 저장분에 '실시간'·'라이브' 금지
         # (#34·#55). 두 축을 **둘 다** 집는다: 한쪽만 재면 나머지를 하드코딩
         # 으로 되돌리는 변형이 통과했다(뮤테이션 실측).
         assert "가격·등락=시간외 라이브" not in html
         assert "가격·등락=집계 시점 시간외가" in html
         assert "네이버 실시간" not in html and "💾 저장분(30시간 전)" in html
+        # 본문 되풀이 줄은 없다(사용자 2026-09-20) — 형제 KR 과 같은 계약(#38).
+        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
+        assert not [n for n in notes if "💾 저장분 —" in n], notes
         assert re.search(r"\.sm-note\s*\{", html)
 
     def test_live_page_has_no_stored_line(self, tmp_path, monkeypatch):
@@ -76074,7 +76101,11 @@ class TestPrepostStoredSnapshot20260919:
         out = pp.fetch_kr_prepost_movers()
         assert (out.get("status") or {}).get("state") == "failed", out.get("status")
         note = pp.stored_note(out, "프리마켓 08:00–09:00")
-        assert "실패" in note and "다음 창" not in note, note
+        assert "실패해 갱신되지 않았습니다" in note, note
+        # '자동 갱신됩니다' 는 실패한 마당에 지킬 수 없는 약속이다(#380) —
+        # 우리가 지킬 수 있는 주장(**다시 시도한다**)만 적는다(#375).
+        assert "자동 갱신" not in note, note
+        assert "다음 창(프리마켓 08:00–09:00)에서 다시 시도합니다" in note, note
         # 기계 상세(예외·사유 문자열)는 사용자 화면에 안 싣는다(#391).
         assert "universe" not in note, note
         # 그리고 상태 파일 자체도 26시간 뒤 살아 있어야 배너가 뜬다.
@@ -76136,8 +76167,9 @@ class TestPrepostStoredSnapshot20260919:
         from bot.us_pages import render_us_prepost_page
         html = render_us_prepost_page()
         notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
-        hit = [n for n in notes if "저장분" in n]
-        assert hit and "실패" in hit[0] and "다음 창" not in hit[0], notes
+        hit = [n for n in notes if "💾 저장분 —" in n]
+        assert hit and "실패해 갱신되지 않았습니다" in hit[0], notes
+        assert "자동 갱신" not in hit[0], hit[0]
         assert "boom" not in html, "기계 상세가 사용자 화면에 샜다(#391)"
 
     # ── ⑧ 저장분 '없음' 과 '못 읽음' 은 다른 사실(#82·#379) ────────────
@@ -76234,4 +76266,9 @@ class TestPrepostStoredSnapshot20260919:
         monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
         out = pp.fetch_kr_prepost_movers()
         assert out["stale_min"] == 0, out
-        assert "-" not in pp.stored_note(out, "창").split("집계")[-1]
+        # ⚠️ 2026-09-20 부터 평상시엔 줄이 없으므로 그대로 재면 `"" ` 를 재는
+        # 동어반복이 된다(#291) — 줄이 **실제로 뜨는** 실패 갈래로 태운다.
+        import time as _t
+        out["status"] = {"state": "failed", "ts": _t.time()}
+        note = pp.stored_note(out, "창")
+        assert note and "-" not in note.split("집계")[-1], note
