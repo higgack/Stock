@@ -75270,16 +75270,33 @@ class TestLiquidationBadge20260919:
         """캐시 독자는 **어떤 바이트가 와도 안 던진다**(#331 한 바이트가 보드
         셋을 비웠다)."""
         from unittest import mock
-        from bot import kr_stock_flags as kf
+        from bot import highlow_render as hr, kr_stock_flags as kf
         from bot.highlow_render import stock_panel
+        # ⚠️ 이 테스트는 `self._cache` 를 안 쓰므로(일부러 쓰레기를 심는다)
+        # **킥을 손으로 막아야** 한다 — 안 막으면 daemon 이 tmp_path 에
+        # 백오프 도장을 써서 아래 `_read_envelope() == {}` 가 **단독 green /
+        # 전체 red** 가 된다(실측 2026-09-19 · #128 동시성 단언을 시간·순서로
+        # 쓰지 말 것). 독립 리뷰 F5 가 경고한 그 경합이 실제로 났다.
+        kick = mock.patch.object(hr, "_kick_flags_fill", lambda mod: None)
         for junk in (b"{not json", b"\x8d\xff", b'{"v":9,"flags":{}}',
                      b'{"v":1,"flags":[]}'):
             (tmp_path / kf._CACHE).write_bytes(junk)
-            with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+            with kick, mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
                     mock.patch("bot.kr_stock_flags._collect",
-                               lambda: ({}, 0, {}, ["스텁"])):
+                               lambda: ({}, 0, {}, ["스텁"], {})):
                 assert "rbadge" not in stock_panel(
                     "x", self._items(), "k", "KR", name_only=True)
+        # ⚠️ 위 스텁은 **오늘 안 탄다**(`cache_only=True` 가 먼저 반환한다).
+        # 그래도 arity 를 맞춰 둔다 — 틀린 스텁은 `ValueError` 를 내고 그건
+        # 렌더 except 가 삼켜 **엉뚱한 이유로 통과**한다(#91b 재는 대상이
+        # 맞나). 실제로 파손 내성을 재는 축은 `_read_envelope` 이므로 그것도
+        # 직접 태운다.
+        for junk in (b"{not json", b"\x8d\xff", b'{"v":9}', b'[]'):
+            (tmp_path / kf._CACHE).write_bytes(junk)
+            with kick, mock.patch("bot.finviz_client._CACHE_DIR", tmp_path):
+                assert kf._read_envelope() == {}
+                s = kf.snapshot(cache_only=True)
+                assert s["flags"] == {} and s["state"] in ("cold", "backoff")
 
     # ── 독립 리뷰 2026-09-19 (5건 · 전부 실행으로 재현) ────────────────────
     def test_the_probe_source_section_actually_hits_the_source(self, tmp_path,
@@ -75363,6 +75380,191 @@ class TestLiquidationBadge20260919:
         with self._cache(tmp_path, {}):
             assert hr._kick_flags_fill is not before, "픽스처가 킥을 안 막는다"
         assert hr._kick_flags_fill is before          # 빠져나오면 복원된다
+
+    def test_the_probe_names_the_stocks_it_lists(self, tmp_path, capsys):
+        """③ 이 코드만 찍으면 사용자가 "이게 원풍물산 맞나"를 따로 찾아봐야
+        한다 — 판정 줄은 자족해야 한다(#356·#82·#109).
+
+        `_kis_master_rows` 는 이름을 **이미** 준다. 첫 판이 그걸 버렸다
+        (VM 실측 2026-09-19 · #123·#129·#189·#228·#292 계열).
+        """
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 900,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kospi", "999990", "관리주", True, 10,
+                         risk={"관리종목": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "046070", "코다코", True, 120,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kosdaq", "289080", "코스나인", True, 120,
+                         risk={"거래정지": "Y"})])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            rc = kf.why()
+        out = capsys.readouterr().out
+        assert rc == 0
+        # ③ — 코드 **와** 이름이 같은 줄에.
+        line = [x for x in out.split("\n") if "008290" in x][0]
+        assert "원풍물산" in line, line
+        assert "046070" in out and "코다코" in out
+        # 정리매매가 아닌 종목은 ③ 에 없다.
+        assert "코스나인" not in out and "관리주" not in out
+        # ② — 갈래별 계수(하나로 뭉치면 무엇이 몇인지 모른다, #45).
+        assert "정리매매 2" in out and "거래정지 1" in out and "관리종목 1" in out
+
+    def test_a_name_we_could_not_get_is_never_invented(self, tmp_path, capsys):
+        """이름을 못 구하면 **코드가 회사명인 척하면 안 된다**(#34·#165).
+
+        ⚠️ 계약 갱신(2026-09-19 독립 리뷰): 첫 판은 `snapshot` 을 `names={}`
+        로 스텁했는데 그건 `force=True` 가 **낼 수 없는 상태**라 아무것도
+        안 쟀다(#291). 그리고 `_kis_master_rows` 는 이름이 비면 **코드**를
+        넣으므로(`head[21:].strip() or code`) 그대로 실으면 `008290 008290`
+        이 찍힌다 — 원천이 실제로 만드는 그 모양으로 태운다(#155).
+        """
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "      ", True, 1,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kospi", "006380", "카프로", True, 1,
+                         risk={"정리매매": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 1)])
+        real = bb._kis_master_rows
+        # 원천 파서는 빈 이름을 **코드로 채워** 준다 — 그게 이 축의 전제다.
+        rows, _ = real("kospi", raw=ks)
+        assert {r["code"].strip(): r["name"] for r in rows}["008290"] == "008290"
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            kf.why()
+        out = capsys.readouterr().out
+        line = [x for x in out.split("\n") if "008290" in x][0]
+        assert "(이름 미확보)" in line, line
+        assert "008290  008290" not in out      # 코드가 회사명인 척 금지
+        assert "006380  카프로" in out          # 멀쩡한 이름은 그대로
+
+    def test_unreadable_rows_are_never_counted_as_confirmed(self, tmp_path,
+                                                            capsys):
+        """G2·G3 — 갈래별 소계가 `is True` 만 세면 **소계 합 ≠ 총계**다.
+        인코딩이 드리프트한 날 `정리매매 0` 옆에 `플래그 있는 종목 220` 이
+        붙어 원천이 0종목인 것처럼 읽힌다(#45). 그리고 모름을 '확인됨'으로
+        세면 화면이 거짓말한다(#165)."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 1,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kospi", "999990", "수상한주", True, 1,
+                         risk={"정리매매": "T"})])      # 모름
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 1)])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            snap = kf.snapshot(cache_only=False, write=False)
+            kf.why()
+        out = capsys.readouterr().out
+        # 모름은 ③ 에 안 실린다(확인된 정리매매가 아니다). ③ 블록은
+        # `③` 줄부터 `④` 줄 직전까지 — 문자열 split 은 다른 섹션의 같은
+        # 글자에 걸린다(#55 그 표면 하나를 잘라서 볼 것).
+        lines = out.split("\n")
+        i3 = next(i for i, x in enumerate(lines) if x.startswith("③"))
+        i4 = next(i for i, x in enumerate(lines) if x.startswith("④"))
+        sec3 = "\n".join(lines[i3:i4])
+        assert "999990" not in sec3, sec3
+        assert "008290" in sec3
+        # ⚠️ `정리매매 1` 만 보면 약하다 — 소계가 모름까지 세면 `정리매매 2`
+        # 가 되므로 **그 줄을 잘라** 값으로 집는다(#55·#75).
+        gal = [x for x in out.split("\n") if "갈래별" in x][0]
+        assert "정리매매 1 " in gal and "정리매매 2" not in gal, gal
+        assert "모름 1" in gal, gal               # 그런데 사실은 말한다
+        # 소계 합 + 모름 = 플래그 있는 종목(총계) — 모집단이 맞아떨어진다.
+        flagged = len(snap["flags"])
+        by = sum(1 for v in snap["flags"].values()
+                 if any(x is True for x in v.values()))
+        unk = sum(1 for v in snap["flags"].values()
+                  if any(x is None for x in v.values()))
+        assert by + unk == flagged == 2
+
+    def test_every_path_carries_the_names_key(self, tmp_path):
+        """G4 — 독스트링이 '네 경로 모두 키를 싣는다'고 약속한다. 키가
+        빠지면 호출부가 KeyError 를 내고 그걸 렌더 except 가 삼켜 **엉뚱한
+        이유로** 뱃지가 사라진다(#54·#55·#286)."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        # (a) 콜드 — 캐시 없음
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path):
+            assert kf.snapshot(cache_only=True)["names"] == {}
+        # (b) 캐시 히트
+        (tmp_path / kf._CACHE).write_text(json.dumps(
+            {"v": kf._SCHEMA, "n": 9, "flags": {"008290": {"정리매매": True}},
+             "note": "", "fetched": time.time(), "fails": 0, "next_try": 0}),
+            encoding="utf-8")
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path):
+            assert kf.snapshot(cache_only=True)["names"] == {}
+        # (c) 실패(백오프) · (d) 신선 수집
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 1,
+                         risk={"정리매매": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 1)])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: ([], "죽음")):
+            # ⚠️ `force=True` 가 없으면 (b) 가 심은 캐시에 걸려 **실패 경로를
+            # 한 번도 안 탄다** — 그 상태로 통과하면 아무것도 안 잰 것이다
+            # (뮤테이션 실측 2026-09-19 · #91b).
+            dead = kf.snapshot(cache_only=False, write=False, force=True)
+        assert dead["state"] == "backoff" and dead["names"] == {}
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            # ⚠️ 위 (b) 가 심은 캐시가 살아 있으므로 `force=True` 여야
+            # 신선 수집을 탄다 — 안 그러면 이 단언이 캐시 경로를 재고
+            # **이름이 항상 {}** 로 보인다(#91b 재는 대상이 맞나).
+            fresh = kf.snapshot(cache_only=False, write=False, force=True)
+        assert fresh["names"] == {"008290": "원풍물산"}
+        # 독스트링이 그 계약을 실제로 적고 있는가(#55·#286).
+        # ⚠️ `"names" in __doc__` 은 **뒤 설명 문장이 대신 만족**시켜
+        # 반환 키 목록에서 빼도 통과한다(뮤테이션 실측 · #75) — 그 줄
+        # 하나를 잘라서 본다(#55).
+        doc = kf.snapshot.__doc__ or ""
+        ret = [x for x in doc.split("\n") if x.strip().startswith("반환:")][0]
+        assert "names" in ret, ret
+
+    def test_names_are_diagnostic_only_and_never_baked(self, tmp_path):
+        """이름을 캐시에 구우면 봉투 스키마가 바뀌어 배포가 12시간짜리
+        무효화를 유발한다(#18·#21b). 화면은 보드 행에서 이름을 이미 받는다."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 900,
+                         risk={"정리매매": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 1)])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            fresh = kf.snapshot(cache_only=False)
+            assert fresh["names"] == {"008290": "원풍물산"}   # 신선 수집엔 있다
+            cached = kf.snapshot(cache_only=True)
+        assert cached["flags"] == {"008290": {"정리매매": True}}
+        assert cached["names"] == {}                         # 캐시엔 없다
+        env = json.loads((tmp_path / kf._CACHE).read_text(encoding="utf-8"))
+        assert "names" not in env and env["v"] == kf._SCHEMA
 
     def test_backoff_grows_and_is_capped(self):
         """간격이 안 자라면 유계가 아니고, 상한이 없으면 영영 안 돌아온다

@@ -78,18 +78,27 @@ def parse_flag(raw) -> bool | None:
     return None
 
 
-def _collect() -> tuple[dict, int, dict, list]:
-    """KIS 마스터를 실제로 받아 (맵, 총행수, 모름계수, 메모) 반환.
+def _collect() -> tuple[dict, int, dict, list, dict]:
+    """KIS 마스터를 실제로 받아 (맵, 총행수, 모름계수, 메모, **이름**) 반환.
 
     맵은 **False 가 아닌 종목만** 담는다(True 또는 모름) — 2,800행을 통째로
     구우면 캐시가 쓸데없이 커진다. 그래서 '맵에 없음' 은 총행수가 0 보다 클
     때만 '정상'이고, 0 이면 **판정 불가**다(#45 두 모집단을 한 수로 세지 말 것).
+
+    ⚠️ 이름은 **플래그가 붙은 종목만** · **진단 전용**이다. `_kis_master_rows`
+    가 이름을 이미 주는데 첫 판이 그걸 버려서 `--why ③` 이 `008290` 같은
+    코드만 찍었고, 사용자가 "이게 원풍물산 맞나"를 따로 찾아봐야 했다
+    (VM 실측 2026-09-19 · #123·#129·#189·#228·#292 계열 — 계산해 둔 것을
+    표시까지 배선 안 하면 없는 것과 같다 · #356 판정 줄은 자족해야 한다).
+    화면은 보드 행에서 이름을 이미 받으므로 캐시에는 **안 굽는다**(봉투
+    스키마 불변 — #18 캐시 무효화를 유발하지 않는다).
     """
     from bot.bollinger_board import _kis_master_rows
     out: dict = {}
     total = 0
     unknown: dict = {}
     notes: list = []
+    names: dict = {}
     books = 0
     for book in ("kospi", "kosdaq"):
         try:
@@ -130,11 +139,20 @@ def _collect() -> tuple[dict, int, dict, list]:
                     hit[k] = True
             if hit:
                 out[code] = hit
+                # ⚠️ `_kis_master_rows` 는 이름이 비면 **코드**를 넣는다
+                # (`head[21:].strip() or code`). 그걸 이름이라 싣으면
+                # `008290  008290` 이 찍혀 **코드가 회사명인 척**한다
+                # (독립 리뷰 2026-09-19 실측 · #34·#165). 코드와 같으면
+                # 이름을 못 받은 것이므로 **안 싣는다** — 그래야 아래
+                # `(이름 미확보)` 갈래가 실제로 발화한다(#291).
+                nm = str(r.get("name") or "").strip()
+                if nm and nm != code:
+                    names[code] = nm
     if books < 2:
         # ⚠️ 반쪽 맵은 굽지 않는다 — 코스닥 zip 만 실패한 맵을 완전본으로
         # 구우면 코스닥 정리매매 종목이 12시간 동안 뱃지 없이 뜬다(#280·#384).
         notes.append("책 2권을 다 못 받아 **부분**입니다(캐시에 굽지 않습니다)")
-    return out, total, unknown, notes
+    return out, total, unknown, notes, names
 
 
 def _read_envelope() -> dict:
@@ -161,7 +179,10 @@ def snapshot(*, cache_only: bool = True, write: bool = True,
              force: bool = False) -> dict:
     """한 번의 디스크 읽기로 화면·진단이 필요한 것을 **전부** 돌려준다.
 
-    반환: `{flags, note, state, n, fetched, fails, next_try}`.
+    반환: `{flags, note, state, n, names, fetched, fails, next_try}`.
+    `names` 는 **진단 전용**이고 네 경로 모두 키를 싣는다(캐시 경로는 `{}`
+    — 캐시에 굽지 않기 때문이다). 키 유무로 갈리면 호출부가 KeyError 를
+    내므로 **항상 있다**(#54 없는 것과 모르는 것은 다른 말이다).
     `state` 는 넷이고 **처방이 다르다**(#82):
       * `ok`      — 쓸 수 있는 맵(수집 뒤 `_TTL` 안)
       * `stale`   — 맵은 있는데 낡음(그래도 쓴다 — 상장 상태는 하루 단위)
@@ -191,17 +212,21 @@ def snapshot(*, cache_only: bool = True, write: bool = True,
     if n > 0:
         state = "ok" if (now - fetched) < _TTL else "stale"
         if cache_only or state == "ok":
+            # ⚠️ `names` 는 **신선 수집 때만** 있다(캐시엔 안 굽는다) —
+            # 빈 dict 로 명시해 호출부가 키 유무로 갈리지 않게 한다(#54).
             return {"flags": flags, "note": note, "state": state, "n": n,
-                    "fetched": fetched, "fails": fails, "next_try": next_try}
+                    "names": {}, "fetched": fetched, "fails": fails,
+                    "next_try": next_try}
     elif cache_only:
         state = "backoff" if now < next_try else "cold"
         if not note:
             note = ("재시도 대기 중입니다" if state == "backoff"
                     else "아직 안 받았습니다(백그라운드가 데웁니다)")
         return {"flags": {}, "note": note, "state": state, "n": 0,
-                "fetched": fetched, "fails": fails, "next_try": next_try}
+                "names": {}, "fetched": fetched, "fails": fails,
+                "next_try": next_try}
 
-    out, total, unknown, notes = _collect()
+    out, total, unknown, notes, names = _collect()
     partial = any("부분" in x for x in notes)
     if total <= 0 or partial:
         # ⚠️ 실패도 **도장을 남긴다** — 안 남기면 다음 렌더가 곧바로 또
@@ -218,6 +243,7 @@ def snapshot(*, cache_only: bool = True, write: bool = True,
         # 부분이어도 **값은 준다**(#148 우리가 버린 건 아닌가) — 굽지만 않는다.
         return {"flags": out if partial else {}, "note": note,
                 "state": "backoff", "n": 0, "fetched": fetched,
+                "names": names if partial else {},
                 "fails": fails, "next_try": now + _BACKOFF[
                     min(fails, len(_BACKOFF)) - 1]}
 
@@ -233,7 +259,7 @@ def snapshot(*, cache_only: bool = True, write: bool = True,
                          "unknown": unknown, "note": note,
                          "fetched": now, "fails": 0, "next_try": 0})
     return {"flags": out, "note": note, "state": "ok", "n": total,
-            "fetched": now, "fails": 0, "next_try": 0}
+            "names": names, "fetched": now, "fails": 0, "next_try": 0}
 
 
 def flags_map(*, cache_only: bool = False, write: bool = True,
@@ -308,6 +334,22 @@ def why() -> int:                                              # pragma: no cove
         print("   ↪ 갈래: 네트워크 차단 / KIS 마스터 URL 변경 / zip·인코딩 드리프트")
         return 1
     print(f"② 원천(지금 받아 본 것) — ✅ {src['note']}")
+    # '플래그 있는 종목 N' 하나로는 무엇이 몇인지 모른다 — 갈래마다 뜻도
+    # 처방도 다르다(#45 두 모집단을 한 수로 세지 말 것 · #82).
+    by_key = {k: sum(1 for v in src["flags"].values() if v.get(k) is True)
+              for k in RISK_KEYS}
+    # ⚠️ 소계 합이 총계와 **같아야** 한다 — `is True` 만 세면 모름 행이
+    # 어느 소계에도 안 들어가고, 인코딩이 드리프트한 날 `정리매매 0` 옆에
+    # `플래그 있는 종목 220` 이 붙어 원천이 0종목인 것처럼 읽힌다
+    # (독립 리뷰 2026-09-19 실측 · #45 두 모집단을 한 수로 세지 말 것).
+    n_unk = sum(1 for v in src["flags"].values()
+                if any(x is None for x in v.values()))
+    line = " · ".join(f"{k} {n:,}" for k, n in by_key.items())
+    if n_unk:
+        line += f" · **모름 {n_unk:,}**(어느 소계에도 안 들어감 — ④ 를 볼 것)"
+    print(f"   ↪ 갈래별: {line}"
+          + f"  (뱃지로 그리는 것은 {'·'.join(BADGE_KEYS)} 뿐 — 나머지는 "
+            "±30% 를 면제하지 않는다)")
     if "미발견" in src["note"]:
         # 컬럼명 드리프트는 **0종목과 구별되지 않는다** — 빈 맵을 12시간 굽고
         # 화면은 '오늘 해당 종목 없음' 이라고 거짓을 말한다(독립 리뷰 F2).
@@ -319,9 +361,16 @@ def why() -> int:                                              # pragma: no cove
     liq = sorted(c_ for c_, v in fresh.items() if v.get("정리매매") is True)
     unk = sorted(c_ for c_, v in fresh.items()
                  if any(x is None for x in v.values()))
+    nm = src.get("names") or {}
     if liq:
-        print(f"③ 정리매매 — ✅ {len(liq)}종목: {', '.join(liq[:20])}"
-              + (" …" if len(liq) > 20 else ""))
+        # ⚠️ **이름을 같이 찍는다** — 첫 판은 코드만 찍어 사용자가 "이게
+        # 원풍물산 맞나"를 따로 찾아봐야 했다(#356 판정 줄은 자족해야 한다).
+        # 이름을 못 구하면 지어내지 말고 코드만 적는다(#165).
+        print(f"③ 정리매매 — ✅ {len(liq)}종목")
+        for c_ in liq[:30]:
+            print(f"     {c_}  {nm.get(c_) or '(이름 미확보)'}")
+        if len(liq) > 30:
+            print(f"     … 외 {len(liq) - 30}종목")
     elif unk:
         print(f"③ 정리매매 — ❓ 0종목인데 모름이 {len(unk)}종목 있습니다 "
               "(인코딩을 못 읽었을 수 있습니다 — ② 의 '모름' 표본을 보세요)")
