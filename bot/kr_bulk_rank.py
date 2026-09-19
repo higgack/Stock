@@ -179,7 +179,9 @@ def _kis_names(*, write: bool = True) -> tuple[dict, str]:
 
     ⚠️ **이름표는 따로 캐시한다.** `_kis_master_rows` 자체엔 캐시가 없어(공용
     헬퍼라 이 커밋에서 안 건드린다) 부를 때마다 zip 2개를 받는다 — 각 30초
-    상한이라 **콜드 비용의 대부분**이 여기다. 그런데 상장 종목명·시장 접미사는
+    상한이다(⚠️ "콜드 비용의 **대부분**이 여기다" 는 계측이 아니라 상한에서
+    나온 추정이다. 이 경로엔 타이밍 계측이 없다 — 재지 않은 것을 단정하지
+    않는다, #165·#69). 그런데 상장 종목명·시장 접미사는
     하루에 한 번 바뀌는 값이라 10분마다 다시 받을 이유가 없다(#61 이 비용이
     어느 단계를 줄이나). 캐시해 두면 이후 갱신은 pykrx 호출만 남는다.
     ⚠️ **반쪽 맵은 굽지 않는다** — 코스닥 zip 만 실패한 맵을 완전본으로 구우면
@@ -399,13 +401,19 @@ def _record(obj: dict) -> None:
         pass
 
 
-def attempt_note(rec, now: float) -> str:
+def attempt_note(rec, now: float, *, board_empty: bool = True) -> str:
     """마지막 시도의 **관측 사실** 한 조각(순수). 기록이 없으면 ''.
 
     갈래마다 처방이 다르므로 이름을 달리 부른다(#82):
       - 받는 중  → 기다리면 된다
       - 실패     → **그 사유를 고쳐야 한다**(행동 가능)
       - 성공했는데 화면이 비었다 → 캐시 쓰기를 봐야 한다(전혀 다른 자리)
+
+    ⚠️ `board_empty=False`(행이 실려 있다)면 **성공 기록은 적지 않는다** —
+    옛 판은 이 문장을 두 문맥이 그대로 나눠 써서, 행이 멀쩡히 실린 화면에
+    "그런데 화면이 비었다면 캐시 쓰기를 봐야 합니다" 라는 **다른 상황용
+    진단**과 시도 행 수(2,500행)가 서빙된 복사본 옆에 붙었다(독립 리뷰
+    2026-09-19 M2 · #45 두 모집단 · #25 안 맞는 문구는 소음이다).
     """
     if not isinstance(rec, dict):
         return ""
@@ -418,11 +426,35 @@ def attempt_note(rec, now: float) -> str:
     took = _num(rec.get("secs"))
     tail = f"({_ago(took)} 걸림)" if took else ""
     if rec.get("ok"):
+        if not board_empty:
+            return ""            # 행이 실려 있다 — 성공 기록은 더할 말이 없다
         n = int(_num(rec.get("rows")) or 0)
         return (f"지난 시도는 {_ago(now - fin)} 전 성공했습니다{tail} — "
                 f"{n:,}행. 그런데 화면이 비었다면 캐시 쓰기를 봐야 합니다")
     why = str(rec.get("reason") or "사유 미기록")
     return f"지난 시도가 {_ago(now - fin)} 전 실패했습니다{tail}: {why}"
+
+
+# 연속 실패 간격 — 원천이 오래 죽었을 때 **하루 몇 번인가**를 세고 정한다
+# (#384 그대로). 렌더는 장중 30초·2분 주기로 도므로 백오프가 없으면 죽은
+# KRX/KIS 를 그 속도로 계속 두드린다(독립 리뷰 2026-09-19 M4).
+_BACKOFF = (60.0, 300.0, 900.0, 1800.0, 3600.0)
+
+
+def retry_wait(rec, now: float) -> float:
+    """다음 갱신까지 **남은 초**(순수). 지금 쳐도 되면 0.
+
+    성공했거나 기록이 없으면 0 — 백오프는 **연속 실패**에만 건다(#82 갈래는
+    처방이 다르다). 지수적으로 늘리되 상한 1시간(#384 의 그 규약).
+    """
+    if not isinstance(rec, dict):
+        return 0.0
+    fin = _num(rec.get("finished"))
+    if fin is None or rec.get("ok"):
+        return 0.0
+    n = max(1, int(_num(rec.get("fails")) or 1))
+    wait = _BACKOFF[min(n, len(_BACKOFF)) - 1]
+    return max(0.0, (fin + wait) - now)
 
 
 def warming_note(rec, now: float) -> str:
@@ -459,26 +491,59 @@ def warming_reason(rec, now: float, budget: float) -> str:
     return f"{head} — {note}"
 
 
+_REFRESH_WORDS = {
+    "live": "갱신은 백그라운드가 받습니다",
+    "idle": "갱신을 지금 띄우지 못했습니다(다음 조회에서 다시 시도합니다)",
+    "stuck": "갱신이 시작만 하고 안 끝나고 있습니다",
+    "backoff": "연속 실패라 갱신을 잠시 쉬고 있습니다",
+}
+
+
 def stale_note(asof: str, age_sec, rec=None, now: float | None = None,
-               *, refreshing: bool = True) -> str:
+               *, refreshing: str = "live", memo: str = "") -> str:
     """만료된 복사본을 낼 때 화면이 적을 사실(순수).
 
-    낡음을 숨기지 않는다 — **기준일**과 **받은 지 얼마나 됐는지**를 같이
-    적는다(#43·#163 되살린 값엔 기준시각을 반드시 · #202 라벨 말고 숫자로).
+    낡음을 숨기지 않는다 — **기준일**과 **언제 받았는지**를 같이 적는다
+    (#43·#163 되살린 값엔 기준시각을 반드시 · #202 라벨 말고 숫자로).
     갱신 시도가 실패했으면 그게 더 행동 가능하므로 같이 싣는다(#275).
 
-    ⚠️ `refreshing` 은 **재서** 받는다 — `_kick` 이 스레드를 못 띄웠는데
-    "갱신은 백그라운드가 받습니다" 라고 적으면 화면이 재지 않은 것을
-    단정하는 것이고(#165·#375 우리 코드에 대한 주장만 할 것), 늘 켜지는
-    '갱신 중' 배지는 아무것도 안 재는 것과 같다(#25·#260·#343).
+    ⚠️ 받은 시각은 **절대 시각**이다. 옛 판은 `11분 전에 받았습니다` 였는데,
+    이 문자열이 그대로 페이지 세션 캐시(`kr_movers_v1.json`)에 구워져 몇 시간
+    뒤에도 `11분 전` 이라고 적었다(독립 리뷰 2026-09-19 M1 실측). 상대 시각은
+    **다시 재지 않으면 반드시 거짓이 된다** — 절대 시각은 안 늙는다(#18·#43).
+
+    ⚠️ `memo`(수집기가 남긴 경고 — 이름표 미확보 등)를 **같이 싣는다**. 신선
+    경로는 이 memo 를 그대로 내보내는데 만료 경로만 버리고 있었다: KIS 마스터가
+    0종목이라 티커가 맨 6자리가 된 배치가 `_TTL` 뒤에도 **경고 없이** 최대
+    `max_back` 일 동안 다시 서빙됐다(독립 리뷰 H3 · #45 · #55).
+
+    ⚠️ `refreshing` 은 **재서** 받는다(문자열 4갈래) — `_kick` 이 스레드를 못
+    띄웠는데 "갱신은 백그라운드가 받습니다" 라고 적으면 재지 않은 것을 단정하는
+    것이고(#165·#375), 늘 켜지는 '갱신 중' 배지는 아무것도 안 재는 것과 같다
+    (#25·#260·#343). 2026-09-19 전제 변경(#222): 옛 판은 bool 이라 '멈춤' 과
+    '쉬는 중' 을 '못 띄웠다' 와 같은 문장으로 적었다.
     """
-    head = f"{asof} 종가입니다 — {_ago(age_sec)} 전에 받았습니다"
-    head += ("· 갱신은 백그라운드가 받습니다" if refreshing
-             else "· 갱신을 지금 띄우지 못했습니다(다음 조회에서 다시 시도합니다)")
-    note = attempt_note(rec, time.time() if now is None else now)
+    _now = time.time() if now is None else now
+    head = f"{asof} 종가입니다 — {_recv_label(_now, age_sec)}에 받았습니다"
+    head += " · " + _REFRESH_WORDS.get(str(refreshing), _REFRESH_WORDS["idle"])
+    parts = [head]
+    if str(memo or "").strip():
+        parts.append(str(memo).strip())
+    note = attempt_note(rec, _now, board_empty=False)
     if note and "받는 중" not in note:
-        return f"{head} · {note}"
-    return head
+        parts.append(note)
+    return " · ".join(parts)
+
+
+def _recv_label(now: float, age_sec) -> str:
+    """받은 **절대 시각**(KST). 못 재면 '얼마 전인지 모름'(#54·#165)."""
+    a = _num(age_sec)
+    if a is None or a < 0:
+        return "알 수 없는 시각"
+    try:
+        return datetime.fromtimestamp(now - a, _KST).strftime("%m-%d %H:%M")
+    except (OSError, OverflowError, ValueError):
+        return "알 수 없는 시각"
 
 
 def _stale_ok(asof: str, max_back: int, now=None) -> bool:
@@ -543,6 +608,7 @@ def _run_attempt(max_back: int, *, write: bool) -> tuple[list, str, str]:
         if write:
             _record({"started": t0, "finished": time.time(), "ok": False,
                      "secs": round(time.time() - t0, 1), "rows": 0,
+                     "fails": _fails_after(False),
                      "reason": f"예외({type(exc).__name__}: {str(exc)[:120]})"})
         raise
     if write:
@@ -552,8 +618,22 @@ def _run_attempt(max_back: int, *, write: bool) -> tuple[list, str, str]:
         # 이 사실을 적는다(#82·#86).
         _record({"started": t0, "finished": time.time(), "ok": bool(rows),
                  "secs": round(time.time() - t0, 1), "rows": len(rows),
+                 "fails": _fails_after(bool(rows)),
                  "reason": "" if rows else memo})
     return rows, asof, memo
+
+
+def _fails_after(ok: bool) -> int:
+    """직전 기록을 이어 **연속 실패 횟수**를 센다(성공이면 0).
+
+    백오프(`retry_wait`)가 이 수를 쓴다 — 실패가 이어질수록 간격을 늘려야
+    원천이 오래 죽은 동안 바깥 요청이 폭주하지 않는다(#384·#116).
+    """
+    if ok:
+        return 0
+    prev = attempt_record()
+    n = int(_num(prev.get("fails")) or 0) if isinstance(prev, dict) else 0
+    return n + 1
 
 
 def _cache_put(obj: dict) -> None:
@@ -575,28 +655,54 @@ def _guarded(max_back: int, *, write: bool) -> tuple[list, str, str]:
     덜 중요한 것까지 삼킨다). 호출부 셋은 모두 `except Exception` 으로 감싸고
     사유를 화면에 적으므로 전파돼도 조용히 죽지 않는다.
     """
+    # ⚠️ `try` 는 **import 한 줄만** 감싼다. 옛 판은 호출까지 감싸서,
+    # `fn` 안의 지연 import(pykrx·pandas·`bot.finviz_client`)가 ImportError 를
+    # 내면 `_run_attempt` 를 **한 번 더** 돌려 바깥 원천을 두 번 쳤다 — 바로
+    # 이 독스트링이 막는다고 적은 그 일이다(독립 리뷰 2026-09-19 M3 실측
+    # `fetch attempts inside one _guarded() call: 2`).
     try:
         from bot.singleflight import once
-        return once(f"kr_bulk_rank:{max_back}:{int(write)}",
-                    lambda: _run_attempt(max_back, write=write))
     except ImportError:
         return _run_attempt(max_back, write=write)
+    return once(f"kr_bulk_rank:{max_back}:{int(write)}",
+                lambda: _run_attempt(max_back, write=write))
 
 
-def _kick(max_back: int) -> bool:
-    """갱신을 **기다리지 않고** 띄운다.
+def _kick(max_back: int, rec=None, now: float | None = None) -> str:
+    """갱신을 **기다리지 않고** 띄운다. 반환은 **지금 상태**(4갈래).
 
-    반환은 "띄웠나" 가 아니라 **"갱신이 지금 진행 중인가"** 다 — 이미 받는
-    중이면 스레드를 더 안 띄우지만 갱신은 진행 중이므로 True 다. 화면이 그
-    값으로 '갱신 중' 을 적으므로 뜻을 정확히 맞춘다(#25·#343 — 늘 켜지는
-    배지는 아무것도 안 재는 것과 같고, 꺼져 있어야 할 때 켜지면 거짓말이다).
+    `live`(진행 중) / `stuck`(시작만 하고 `_WARM_MAX` 초과) / `backoff`(연속
+    실패라 쉬는 중) / `idle`(못 띄웠다). 화면이 그 값으로 문장을 고르므로
+    뜻을 정확히 맞춘다(#25·#343 — 늘 켜지는 배지는 아무것도 안 재는 것과 같고,
+    꺼져 있어야 할 때 켜지면 거짓말이다).
+
+    2026-09-19 전제 변경(#222): 옛 판은 bool 이었고 락이 잡혀 있으면 **상한
+    없이** True 였다 — 스레드가 멈추면(pykrx 호출에 명시 타임아웃이 없다)
+    화면이 "갱신은 백그라운드가 받습니다" 를 영원히 주장하는 동안 복사본이
+    늙어 보드가 빈다(독립 리뷰 2026-09-19 L4). `warming_note` 는 바로 그
+    이유로 `_WARM_MAX` 로 묶여 있었는데 여기만 안 묶여 있었다(#38).
 
     ⚠️ 매 렌더마다 스레드를 띄우면 폴링(2분)마다 쌓인다 — 논블로킹 락으로
     '하나만' 을 보장한다. `start()` 가 던지면 **반드시 풀어 준다**: 안 풀면
     그 보드의 갱신이 영구 정지한다(#280·#371 실측한 그 함정).
     """
+    _now = time.time() if now is None else now
+    _rec = attempt_record() if rec is None else rec
     if not _KICK.acquire(blocking=False):
-        return True                    # 이미 받는 중 = 갱신은 진행 중이다
+        # 진행 중이다 — 단 **얼마나 됐는지** 를 묶어서 본다(#41 유예는 면죄가
+        # 아니다). ⚠️ '멈췄다' 는 기록이 **실제로 그렇게 말할 때만** 이다:
+        # 시작 도장이 있고 끝나지 않았는데 예열 창을 넘겼을 때. 기록이 없으면
+        # 모르는 것이므로 관측한 사실(락이 잡혀 있다 = 진행 중)만 말한다
+        # (#54·#165 재지 않은 것을 단정하지 말 것).
+        _st = _num(_rec.get("started")) if isinstance(_rec, dict) else None
+        _fin = _num(_rec.get("finished")) if isinstance(_rec, dict) else None
+        if _st is not None and _fin is None and (_now - _st) > _WARM_MAX:
+            return "stuck"
+        return "live"
+    if retry_wait(_rec, _now) > 0:
+        # 연속 실패 — 지금 또 쳐도 같은 답이다. 락은 되돌려 놓는다.
+        _KICK.release()
+        return "backoff"
 
     def _bg() -> None:
         try:
@@ -612,8 +718,8 @@ def _kick(max_back: int) -> bool:
     except Exception as exc:                                   # noqa: BLE001
         _KICK.release()
         log.warning("kr_bulk_rank: 갱신 스레드 기동 실패 — %s", exc)
-        return False
-    return True
+        return "idle"
+    return "live"
 
 
 def kr_bulk_rows(max_back: int = 7, *,
@@ -643,10 +749,16 @@ def kr_bulk_rows(max_back: int = 7, *,
     if isinstance(old, dict) and old.get("rows"):
         asof = str(old.get("asof") or "")
         if _stale_ok(asof, max_back):
-            live = _kick(max_back)
+            # ⚠️ 기록은 **kick 전에** 읽는다 — `_kick` 이 띄운 스레드의 첫 일이
+            # `started` 로 덮어쓰는 것이라, 뒤에 읽으면 직전 실패 사유가 "받는
+            # 중" 에 가려진다(독립 리뷰 2026-09-19 H2 실측 20회 중 5회). 콜드
+            # 경로는 이미 그렇게 하고 있었는데 여기만 순서가 반대였다(#38).
+            rec = attempt_record()
+            state = _kick(max_back, rec)
             return (list(old["rows"]), asof,
-                    stale_note(asof, cache_age_sec(_CACHE), attempt_record(),
-                               refreshing=live))
+                    stale_note(asof, cache_age_sec(_CACHE), rec,
+                               refreshing=state,
+                               memo=str(old.get("memo") or "")))
 
     # ⚠️ 여기부터가 **콜드**다. 렌더 안에서 도므로 KIS 마스터 zip 2개(각 30초
     # 상한) + pykrx 3콜이 동기로 붙으면 대시보드가 통째로 멈춘다(#116).

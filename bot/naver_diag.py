@@ -340,14 +340,20 @@ def get_json(url: str, *, headers: dict, log, tag: str,
         return None, http_reason(None, exc=exc)
 
 
-_HTTP_CODE_RE = re.compile(r"원천이 HTTP (\d{3})")
+# ⚠️ 생산부가 **둘**이다 — 이 파일의 `http_reason`(`원천이 HTTP 400 — …`)과
+# `bot/source_health.py` 의 `_naver_domestic`(`HTTP 400 (12ms)`). 옛 판은 앞엣것만
+# 읽어서, 일일 감사가 받는 **실물 400** 을 못 읽고 "닿지 못했습니다 — 네트워크·
+# 프록시를 먼저 볼 것" 으로 찍었다(독립 리뷰 2026-09-19 H1 · #38 형제를 즉시
+# grep · #292 틀린 라벨은 라벨이 없는 것보다 나쁘다). 둘 다 `HTTP <코드>` 라고
+# 적으므로 그 **공통 모양**을 읽는다.
+_HTTP_CODE_RE = re.compile(r"\bHTTP (\d{3})\b")
 
 
 def status_from(reason: str) -> int | None:
     """사유 문구 → HTTP 상태코드(순수). 못 읽으면 None.
 
-    생산부(`http_reason`)가 만든 문자열에서 되읽는다 — 같은 파일에 두어
-    한쪽만 바뀌면 회귀가 잡는다(#19·#38).
+    생산부(`http_reason` · `source_health._naver_domestic`)가 만든 문자열에서
+    되읽는다 — 회귀가 **양쪽 생산부의 실제 출력**으로 왕복을 고정한다(#19·#38).
     """
     m = _HTTP_CODE_RE.search(str(reason or ""))
     return int(m.group(1)) if m else None
@@ -386,6 +392,115 @@ def reason_rank(reason: str) -> int:
         return 2
     # 200 을 받고 못 읽었다(parse·shape·자원 오류) — 우리가 고칠 자리가 있다.
     return 1
+
+
+# 원천의 **기계 상세**를 여는 마커들 — `http_reason` 이 만드는 것들이고,
+# `— 원천: <본문 표본>` 이라는 raw 덤프를 뒤에 달고 다니는 것도 이것뿐이다.
+# `parse_reason`·`shape_reason` 은 덤프 없이 "누가 고칠 것"만 말하는 짧은
+# 사람 문장이라 여기 넣지 않는다(#274 이 검사가 못 보는 축을 밝혀 둔다).
+_MACHINE_MARKS = ("원천이 HTTP ", "원천에 닿지 못함", "원천이 200 을 줬는데")
+
+
+def machine_detail_at(reason: str) -> int:
+    """사유 안에서 **기계 상세가 시작하는 위치**(순수). 없으면 -1.
+
+    클라이언트가 사유를 조립할 때 "기계 상세를 꼬리에 두었나"를 회귀가 이
+    함수로 잰다 — 규율로 기억할 일을 구조로(#119).
+    """
+    r = str(reason or "")
+    hits = [i for i in (r.find(m) for m in _MACHINE_MARKS) if i >= 0]
+    return min(hits) if hits else -1
+
+
+def compose_reason(human, machine: str = "") -> str:
+    """사람 문장들 + **꼬리에** 기계 상세 → 사유 한 줄(순수).
+
+    `public_reason` 이 기대는 계약("기계 상세는 꼬리")을 **여기 한 곳에서**
+    지킨다 — 형제 클라이언트가 각자 조립하면 한쪽만 고쳐져 갈라진다(#38, 실제로
+    갈라져 있었다: 급등·급락은 사람 문장 뒤에, 거래량 상위는 **맨 앞**에 두고
+    있었다). 그리고 꼬리로 밀면 감사 줄도 **가장 행동 가능한 것이 머리**에
+    온다(#275).
+    """
+    parts = [str(x).strip() for x in (human or []) if str(x or "").strip()]
+    out = " · ".join(parts)
+    m = str(machine or "").strip()
+    if not m:
+        return out
+    return f"{out} · {m}" if out else m
+
+
+# 화면용 갈래 이름 — **코드도 덤프도 없이** "무슨 일이냐"만 말한다.
+# ⚠️ `http_reason` 의 문구(운영자용)와 **일부러 다르다**: 저쪽은 상태코드와
+# 원문 표본을 싣고 이쪽은 안 싣는다(#45 청중이 둘). 대신 **갈래가 갈라지면
+# 양쪽이 같이 갈라져야** 하므로 회귀가 두 함수의 갈래 집합을 대조한다(#38).
+_SCREEN_GLOSS = {
+    401: "원천이 우리 접근을 막았습니다",
+    403: "원천이 우리 접근을 막았습니다",
+    404: "원천 주소가 없습니다",
+    429: "원천 요청 한도를 넘었습니다",
+}
+
+
+def screen_gloss(machine: str) -> str:
+    """기계 상세 한 덩이 → **화면에 적을 갈래 이름**(순수). 모르면 "".
+
+    사용자는 `HTTP 400` 도 zod 원문도 필요 없지만, 보드가 왜 비었는지(또는 왜
+    폴백인지)는 알아야 한다 — 코드를 지우면서 갈래까지 지우면 #82·#43 을
+    거스른다. 그래서 **갈래만** 남긴다.
+    """
+    m = str(machine or "")
+    if not m:
+        return ""
+    if "원천에 닿지 못함" in m:
+        return "원천에 닿지 못했습니다"
+    if "원천이 200 을 줬는데" in m:
+        return "원천이 빈 응답을 줬습니다"
+    st = status_from(m)
+    if st is None:
+        return ""
+    if st in _SCREEN_GLOSS:
+        return _SCREEN_GLOSS[st]
+    if st in REQUEST_SHAPE_4XX:
+        # 400·422 류 — 우리 요청 모양이 거절됐다. 원문(zod)은 운영자 채널에만.
+        return "원천이 우리 요청을 거절했습니다"
+    if 500 <= st < 600:
+        return "원천이 장애 상태입니다"
+    return ""
+
+
+def public_reason(reason: str) -> str:
+    """사유 → **대시보드에 적을 문장**만 남긴다(순수).
+
+    사용자 2026-09-19: "급등/급락에 `— 원천이 HTTP 400 — 원천: sortType:
+    Invalid input: expected "dividend" · dividendSortType: …` 이건 지워져.
+    굳이 대시보드에 나올 필요가 없는 정보야."
+
+    사유 한 줄은 **청중이 둘**이다 — 운영자는 zod 원문까지 봐야 고칠 자리를
+    알고(#82·#109 원문 표본을 같이 찍을 것), 대시보드 방문자는 "네이버 목록을
+    못 받아 KRX 벌크로 대체했습니다 · 기준일" 이면 충분하다. 그래서 **값은
+    그대로 두고 화면만** 줄인다 — `reason` 은 감사·로그·`--check`·`--why` 가
+    계속 전문을 읽는다(#45 두 모집단을 한 칸에 담지 말 것).
+
+    ⚠️ **기계 상세는 꼬리에 온다** — 이건 가정이 아니라 클라이언트가 지키는
+    계약이고 회귀가 `machine_detail_at` 으로 강제한다. 절 구분자(` · `)로
+    잘라내려 한 첫 판은 **원천 본문이 그 글자를 담아서** 실패했다(zod 가
+    필드 사유를 ` · ` 로 잇는다 — 그리고 `allowed_values`(#388)가 바로 그
+    경계로 키를 귀속시키므로 표본에서 그 글자를 없앨 수도 없다).
+
+    ⚠️ **남는 문장이 없으면 원문을 그대로 돌려준다** — 사유가 통째로 기계
+    상세뿐인 보드(폴백이 없어 사람 문장이 안 붙는 경우)에서 이걸 지우면 화면이
+    "불러올 수 없습니다" 만 적고 **왜인지 한 마디도 안 하게** 된다. 침묵이
+    최악이다(#43·#82·#335).
+    """
+    r = str(reason or "").strip()
+    if not r:
+        return ""
+    i = machine_detail_at(r)
+    if i < 0:
+        return r
+    head = r[:i].rstrip().rstrip("·—").rstrip()
+    gloss = screen_gloss(r[i:])
+    return " · ".join(x for x in (head, gloss) if x) or r
 
 
 def stale_label(age_sec: float | int | None) -> str:

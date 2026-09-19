@@ -49,22 +49,38 @@ def board_verdict(name: str, n: int, fallback: bool, reason: str,
             + (f" · {reason}" if reason else " · 사유 미기록"))
 
 
-def _warming() -> str:
+def _warming(since: float | None = None) -> str:
     """KRX 벌크가 **지금 받는 중**인가 — 관측 기록이 말한다(#86 아는 쪽에 물어라).
 
     화면이 비는 갈래 둘은 처방이 정반대다(#82): 예열 중이면 기다리면 되고,
     측정된 실패면 그 사유를 고쳐야 한다. 기록이 없으면 '' 라서 ❌ 로 간다 —
     못 재면 통과가 아니다(#54).
+
+    ⚠️ `since`(이 감사 실행의 시작 시각) **이후에 시작된** 예열은 면죄가
+    아니다. 감사는 매번 콜드 프로세스라 자기가 부른 fetch 가 곧바로 `started`
+    를 찍는데, 그걸 예열로 인정하면 `_WARM_MAX` 가 **정의상 발화할 수 없고**
+    두 보드가 영구히 비어도 ⚠️ + rc=0 이라 일일 결산이 한 줄도 안 나간다
+    (독립 리뷰 2026-09-19 H4 실측 · #41 유예는 면죄가 아니다 · #260 을 거꾸로
+    뒤집은 형태 — 못 고칠 ❌ 를 막으려던 가드가 **고칠 수 있는 것**을 가렸다).
+
+    ⚠️ 그리고 SWR(#390) 이후 이 분기는 "디스크 복사본이 아예 없거나 조회
+    창을 넘겼다" 일 때만 닿는다 — 그건 **서빙 프로세스도 같은 디스크를 보므로**
+    사용자 화면도 비어 있다는 뜻이다. 면죄할 자리가 아니다.
     """
     try:
         import time
-        from bot.kr_bulk_rank import attempt_record, warming_note
-        return warming_note(attempt_record(), time.time())
+        from bot.kr_bulk_rank import _num, attempt_record, warming_note
+        rec = attempt_record()
+        if since is not None and isinstance(rec, dict):
+            st = _num(rec.get("started"))
+            if st is not None and st >= since:
+                return ""
+        return warming_note(rec, time.time())
     except Exception:                                          # noqa: BLE001
         return ""
 
 
-def _movers() -> str:
+def _movers(since: float | None = None) -> str:
     try:
         from bot.naver_ranking_client import fetch_kr_movers
         d = fetch_kr_movers(limit=30)
@@ -72,10 +88,10 @@ def _movers() -> str:
         return f"❓ 급등·급락: 판정 불가({type(exc).__name__}: {exc})"
     n = len(d.get("up") or []) + len(d.get("down") or [])
     return board_verdict("급등·급락", n, bool(d.get("fallback")),
-                         str(d.get("reason") or ""), warming=_warming())
+                         str(d.get("reason") or ""), warming=_warming(since))
 
 
-def _volume() -> str:
+def _volume(since: float | None = None) -> str:
     try:
         from bot.kr_volume_client import fetch_kr_volume_top
         d = fetch_kr_volume_top(limit=50)
@@ -83,7 +99,7 @@ def _volume() -> str:
         return f"❓ 거래량 상위: 판정 불가({type(exc).__name__}: {exc})"
     return board_verdict("거래량 상위", len(d.get("rows") or []),
                          bool(d.get("fallback")), str(d.get("reason") or ""),
-                         warming=_warming())
+                         warming=_warming(since))
 
 
 def endpoint_verdict(ok: bool, detail: str) -> str:
@@ -113,7 +129,21 @@ def endpoint_verdict(ok: bool, detail: str) -> str:
 
 def _endpoint() -> str:
     """원천 자체의 도달성 — 보드가 폴백으로 살아 있어도 **원천이 죽은 사실**은
-    따로 말해야 한다(#45 두 모집단 · #41 여유로 사실을 덮지 말 것)."""
+    따로 말해야 한다(#45 두 모집단 · #41 여유로 사실을 덮지 말 것).
+
+    ⚠️ **일시정지면 찌르지 않는다.** `_naver_domestic` 은 `naver_paused()` 를
+    안 보므로, 옛 판은 `/naverpause` 중에도 감사가 네이버를 두드렸고 —
+    `endpoint_verdict` 의 ⏸ 갈래는 그 센티널을 **아무도 만들지 않아** 도달
+    불가였다(독립 리뷰 2026-09-19 H1 · #291 발화 경로 없는 가드 · #279·#345
+    일시정지는 실패가 아니라 판정 보류).
+    """
+    try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():
+            from bot.naver_diag import PAUSED
+            return endpoint_verdict(False, PAUSED)
+    except Exception:                                          # noqa: BLE001
+        pass
     try:
         from bot.source_health import _naver_domestic
         ok, detail = _naver_domestic()
@@ -123,8 +153,12 @@ def _endpoint() -> str:
 
 
 def main() -> int:
+    import time
     print("═══ KR 네이버 보드 ═══")
-    lines = [_endpoint(), _movers(), _volume()]
+    # ⚠️ 실행 시작 시각 — 이 실행이 **스스로 띄운** 예열에 면죄를 주지 않으려고
+    # 판정 함수에 들려 보낸다(`_warming`, 독립 리뷰 H4).
+    t0 = time.time()
+    lines = [_endpoint(), _movers(t0), _volume(t0)]
     for ln in lines:
         print("   " + ln)
     bad = sum(1 for ln in lines if ln.startswith("❌"))

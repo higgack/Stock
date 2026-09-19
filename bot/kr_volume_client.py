@@ -325,8 +325,14 @@ def _learn_sort_type(force: bool = False) -> tuple[str, str, list]:
     return "", why_fail, rows
 
 
-def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
-    """원시 행 → 보드 행 + 사유 정리(순수에 가깝게 — 캐시는 호출부가)."""
+def _finish(out: dict, raw: list, notes: list, partial: bool,
+            det: list | None = None) -> dict:
+    """원시 행 → 보드 행 + 사유 정리(순수에 가깝게 — 캐시는 호출부가).
+
+    `det` = 원천이 준 **기계 상세**(HTTP 상태 + 본문 표본). 사람 문장과 섞지
+    않고 **꼬리**로 모은다 — 화면은 그 앞까지만 적는다(`naver_diag.
+    public_reason`, #391). 형제 보드(급등·급락)와 같은 규약이다(#38).
+    """
     from bot.naver_ranking_client import _is_real_stock
     limit = out["limit"]
     kept = [r for r in raw if _is_real_stock(r)]
@@ -355,11 +361,13 @@ def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
     if partial:
         notes.append("원천이 요청한 수를 다 주지 못해 일부만 실렸습니다")
     out["partial"] = partial
-    out["reason"] = " · ".join(n for n in notes if n)
+    out["reason"] = _nd.compose_reason(
+        notes, " · ".join(d for d in (det or []) if d))
     return out
 
 
-def _bulk_fallback(out: dict, notes: list) -> dict | None:
+def _bulk_fallback(out: dict, notes: list,
+                   det: list | None = None) -> dict | None:
     """네이버 목록을 못 받으면 KRX 벌크로 거래량 상위를 만든다(성공 시 out, 아니면 None).
 
     이 보드는 2026-09-16 신설 이래 원천 400 으로 **한 번도 행을 못 냈다** —
@@ -404,7 +412,8 @@ def _bulk_fallback(out: dict, notes: list) -> dict | None:
     notes.append(f"네이버 목록을 못 받아 KRX 벌크({asof} 종가)로 대체했습니다")
     if memo:
         notes.append(memo)
-    out["reason"] = " · ".join(n for n in notes if n)
+    out["reason"] = _nd.compose_reason(
+        notes, " · ".join(d for d in (det or []) if d))
     return out
 
 
@@ -412,7 +421,7 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
     """거래량 상위 — {rows, ts, sort, reason, has_hl, partial, …}. graceful."""
     from bot.finviz_client import _cache_write, _cached, _now_label
 
-    def _stale(notes: list) -> dict | None:
+    def _stale(notes: list, det: list) -> dict | None:
         """저장분 폴백 — 값이 없을 때 **모든** 실패 경로가 같이 쓴다(리뷰 M8).
         그리고 저장분이라는 사실을 화면이 말해야 한다(#306·#335)."""
         st = _cached(_CACHE, ttl=86400)
@@ -420,8 +429,9 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
             return None
         st = dict(st)
         st["stale"] = True
-        st["reason"] = " · ".join(
-            [n for n in notes if n] + ["아래는 직전 저장분입니다"])
+        st["reason"] = _nd.compose_reason(
+            [n for n in notes if n] + ["아래는 직전 저장분입니다"],
+            " · ".join(d for d in det if d))
         return st
 
     out: dict = {"rows": [], "ts": _now_label(), "sort": "", "reason": "",
@@ -433,17 +443,18 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
     if isinstance(c, dict) and c.get("rows"):
         return c
     notes: list = []
+    det: list = []                 # 원천이 준 기계 상세 — 꼬리로 모은다(#391)
     sort, why, probe_rows = learn_sort_type()
     if not sort:
-        notes.append(why)
+        det.append(why)
         if probe_rows:
             # 미끼 응답이 정상 목록이면 그걸 쓴다 — 이미 받은 것을 버리고
             # 빈 화면을 내면 안 된다(리뷰 H3·#148). 정렬 기준은 밝힌다(#43).
             notes.append("정렬 키를 못 배워 원천 기본 정렬로 보여 줍니다")
-            _finish(out, probe_rows, notes, partial=True)
+            _finish(out, probe_rows, notes, partial=True, det=det)
             return out                     # 부분/기본정렬은 캐시하지 않는다(#280)
-        return (_bulk_fallback(out, notes) or _stale(notes)
-                or _finish(out, [], notes, partial=False))
+        return (_bulk_fallback(out, notes, det) or _stale(notes, det)
+                or _finish(out, [], notes, partial=False, det=det))
     out["sort"] = sort
     raw: list = []
     partial = False
@@ -463,7 +474,7 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
             if not st:
                 partial = bool(raw)        # 받다 끊겼으면 부분이다
                 if why:
-                    notes.append(why)
+                    det.append(why)
                 break
         raw += st
         if len(st) < _PAGE_SIZE:
@@ -471,9 +482,9 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
         if len(raw) >= want:
             break
     if not raw:
-        return (_bulk_fallback(out, notes) or _stale(notes)
-                or _finish(out, [], notes, partial=False))
-    _finish(out, raw, notes, partial=partial)
+        return (_bulk_fallback(out, notes, det) or _stale(notes, det)
+                or _finish(out, [], notes, partial=False, det=det))
+    _finish(out, raw, notes, partial=partial, det=det)
     if out["rows"] and not partial:
         _cache_write(_CACHE, out)          # 부분은 굽지 않는다(#280)
     return out
