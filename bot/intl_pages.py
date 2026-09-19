@@ -241,8 +241,9 @@ def render_kr_prepost_page() -> str:
     try:
         from bot.prepost_client import (fetch_kr_prepost_movers,
                                         freshness_label, kr_prepost_status,
-                                        scan_state, stored_missing_note,
-                                        stored_note, venue_attribution_note)
+                                        retry_clause, scan_state,
+                                        stored_missing_note, stored_note,
+                                        venue_attribution_note)
         data = fetch_kr_prepost_movers()
         st = kr_prepost_status()
         note = venue_attribution_note()
@@ -260,6 +261,7 @@ def render_kr_prepost_page() -> str:
         stored_missing_note = lambda *a, **k: ""    # noqa: E731
         scan_state = lambda *a, **k: ""             # noqa: E731
         freshness_label = lambda *a, **k: ""        # noqa: E731
+        retry_clause = lambda *a, **k: ""           # noqa: E731
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
@@ -306,6 +308,7 @@ def render_kr_prepost_page() -> str:
     # 상태 파일이 이제 영구 보존이라 '진행 중'이 영원한 거짓말이 된다(#25·#38).
     _state = scan_state(st)
     _stl = _html.escape(str((st or {}).get("ts_label") or ""))
+    _retry = retry_clause(data.get("in_window"), win)
     if _state == "failed":
         _detail = _html.escape(str((st or {}).get("detail") or ""))
         _scanned = (st or {}).get("scanned")
@@ -317,9 +320,13 @@ def render_kr_prepost_page() -> str:
             f'⚠️ <b>최근 시간외 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
             # ⚠️ 스냅샷이 **없을 때** '아래는 직전 성공 스냅샷' 이라고 적으면
             # 바로 아래 '데이터가 없습니다' 와 한 화면이 두 말을 한다(#55·#43).
-            + (f'아래는 직전 성공 스냅샷입니다. {win} 창에서 자동 재집계됩니다.'
-               if (up or down) else
-               f'직전 성공 스냅샷도 없습니다. {win} 창에서 자동 재집계됩니다.')
+            + ('아래는 직전 성공 스냅샷입니다.' if (up or down)
+               else '직전 성공 스냅샷도 없습니다.')
+            # ⚠️ 옛 문구는 `{win} 창에서 **자동 재집계됩니다**` 였다 — 바로 아래
+            # 저장분 줄이 #380 을 근거로 금지한 그 지킬 수 없는 약속의 동의어라
+            # 한 화면이 두 말을 했다(독립 리뷰 M1). 두 줄이 **같은 함수**에서
+            # 나오게 한다(#38·#147 — 형제를 즉시 grep).
+            + (f' {_html.escape(_retry)}' if _retry else '')
             + '</div>') + body
     elif _state == "running":
         body = (

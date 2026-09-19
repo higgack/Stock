@@ -75880,6 +75880,14 @@ class TestPrepostStoredSnapshot20260919:
         n3 = pp.stored_note({"ts": "t", "stale": True, "stale_min": None,
                              "status": F}, "")
         assert "전." not in n3 and "전 " not in n3, n3
+        # 창 판정은 있는데 **창 라벨이 비면** `다음 창()` 빈 괄호가 나간다 —
+        # 그때도 시점을 적지 않는다(독립 리뷰 L2: `window and` 가드를 지우는
+        # 변형이 통과했다. 오늘 두 호출부는 비지 않는 상수를 넘기지만 인자
+        # 누락과 겹치면 실제로 나간다, #91·#291).
+        n4 = pp.stored_note({"ts": "t", "stale": True, "stale_min": 5,
+                             "in_window": False, "status": F}, "")
+        assert "실패해 갱신되지 않았습니다" in n4, n4
+        assert "다음 창" not in n4 and "()" not in n4, n4
         # 저장분이 아니거나 스캔이 멀쩡하면 아무 줄도 없다.
         assert pp.stored_note({"stale": False, "stale_min": 5,
                                "status": F}, "창") == ""
@@ -75952,6 +75960,10 @@ class TestPrepostStoredSnapshot20260919:
         assert "가격·등락=시간외 라이브" not in html
         assert "가격·등락=집계 시점 시간외가" in html
         assert "네이버 실시간" not in html and "💾 저장분(30시간 전)" in html
+        # 기준시각도 부제가 말한다 — `docs/tests.md` ⑥ 이 그렇게 적는데 US 는
+        # 무가드였다(독립 리뷰 L3: 부제의 `· 마지막 갱신 {ts}` 를 지우는 변형이
+        # 통과). 문서보다 약한 가드는 문서를 거짓으로 만든다(#286).
+        assert "마지막 갱신 2026-09-18 21:10" in html
         # 본문 되풀이 줄은 없다(사용자 2026-09-20) — 형제 KR 과 같은 계약(#38).
         notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
         assert not [n for n in notes if "💾 저장분 —" in n], notes
@@ -76170,7 +76182,54 @@ class TestPrepostStoredSnapshot20260919:
         hit = [n for n in notes if "💾 저장분 —" in n]
         assert hit and "실패해 갱신되지 않았습니다" in hit[0], notes
         assert "자동 갱신" not in hit[0], hit[0]
+        # 창 인자 배선 — 형제 KR 과 **같은 축**을 잰다(#38). 리뷰 실측으로
+        # US 쪽 인자 누락 변형이 base 에서도 통과하는 선재 공백이었다.
+        assert "다음 창(" in hit[0] and "()" not in hit[0], hit[0]
         assert "boom" not in html, "기계 상세가 사용자 화면에 샜다(#391)"
+
+    def test_kr_page_states_the_failure_and_the_retry_window_on_the_rows_path(
+            self, tmp_path, monkeypatch):
+        """KR 도 **실패+행** 경로를 화면으로 태운다(독립 리뷰 H2).
+
+        옛 KR 테스트는 `assert "다음 창(" in hit[0]` 로 *창 인자 배선*을 재고
+        있었고 그 주석이 "창 인자를 떼는 변형은 순수 테스트가 못 잡는다(#20)
+        — 화면에서 본다" 라고 적어 뒀다. 2026-09-20 에 그 테스트를 부정 단언
+        (본문 줄이 없다)으로 다시 쓰면서 **그 축이 통째로 빠졌다** — 리뷰
+        실측으로 (a) 호출부의 `win` 인자를 떼는 변형과 (b) 호출은 남기고
+        `if False:` 로 결과를 버리는 변형이 **둘 다 46 passed** 였다(base
+        에서는 둘 다 잡혔다). #222 는 "다시 쓴다" 이지 "줄인다" 가 아니고,
+        #378 이 같은 실패모드를 이미 적어 뒀다(#20·#313 호출은 남기고 결과를
+        버리는 변형).
+
+        그리고 같은 화면의 배너와 **문구가 갈리지 않는지**도 여기서 잰다
+        (독립 리뷰 M1): 배너가 `{창} 창에서 **자동 재집계됩니다**` 라고 적고
+        있었는데, 그건 바로 아래 저장분 줄이 #380 을 근거로 금지한 그 지킬 수
+        없는 약속의 동의어다. 두 줄은 `retry_clause` 단일 출처다(#38·#147).
+        """
+        import re
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 27.0)
+        self._status(tmp_path, "kr_prepost_status.json", "failed", 26.0,
+                     detail="universe 실패(네이버 무버 0)")
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        assert "삼성전자" in html, "저장분 표가 안 그려졌다"
+        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
+        hit = [n for n in notes if "💾 저장분 —" in n]
+        assert hit, notes
+        assert "실패해 갱신되지 않았습니다" in hit[0], hit[0]
+        # 창 인자가 실제로 넘어가야 시점을 적을 수 있다 — 이 단언이 H2 의 두
+        # 변형을 한꺼번에 잡는다(줄이 사라져도, 창을 잃어도 빨간불).
+        assert "다음 창(" in hit[0] and "()" not in hit[0], hit[0]
+        assert "자동 갱신" not in hit[0], hit[0]
+        # ⚠️ KR 배너는 **일부러** `사유: …` 로 detail 을 적는다(선재 설계) —
+        # 기계 상세 금지는 저장분 **줄**의 계약이므로 그 줄만 집는다(#55·#75).
+        assert "universe" not in hit[0], hit[0]
+        # 배너는 같은 화면 두 줄 위다 — **같은 주장**을 해야 한다(M1).
+        assert "최근 시간외 집계 실패" in html, "KR 배너가 안 떴다"
+        assert "자동 재집계" not in html, "배너가 지킬 수 없는 약속을 한다(#380)"
+        assert html.count("다음 창(") >= 2, "배너와 줄이 같은 문구를 안 쓴다"
 
     # ── ⑧ 저장분 '없음' 과 '못 읽음' 은 다른 사실(#82·#379) ────────────
     def test_a_torn_snapshot_file_is_not_called_missing(
@@ -76266,9 +76325,17 @@ class TestPrepostStoredSnapshot20260919:
         monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
         out = pp.fetch_kr_prepost_movers()
         assert out["stale_min"] == 0, out
-        # ⚠️ 2026-09-20 부터 평상시엔 줄이 없으므로 그대로 재면 `"" ` 를 재는
+        # ⚠️ 2026-09-20 부터 평상시엔 줄이 없으므로 그대로 재면 `""` 를 재는
         # 동어반복이 된다(#291) — 줄이 **실제로 뜨는** 실패 갈래로 태운다.
         import time as _t
         out["status"] = {"state": "failed", "ts": _t.time()}
         note = pp.stored_note(out, "창")
-        assert note and "-" not in note.split("집계")[-1], note
+        # ⚠️⚠️ 그런데 `split("집계")[-1]` 은 **옛 판에서도** 동어반복이었다
+        # (독립 리뷰 2026-09-20 실측): 꼬리 `… 마지막 **집계** 시도가 …` 가
+        # "집계" 를 품으므로 `[-1]` 은 실패 문장이고 나이는 `[1]` 에 산다 —
+        # `-120분 전` 을 넣어도 통과했다. 즉 #395 가 적은 원인 진단("빈
+        # 문자열이라 `-` 가 없다")이 틀렸고, 줄을 비우지 않게 만든 것으로는
+        # 안 고쳐진다. **나이 절 하나를 잘라서** 본다(#55·#75·#91b).
+        age_clause = note.split(" 집계 · ", 1)[1].split(".", 1)[0]
+        assert "-" not in age_clause, (age_clause, note)
+        assert "분 전" in age_clause, (age_clause, note)

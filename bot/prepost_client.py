@@ -855,6 +855,31 @@ def stored_missing_note(data: dict | None) -> str:
     return "(직전 집계 저장분도 없습니다.)"
 
 
+def retry_clause(in_window: bool | None, window: str = "") -> str:
+    """"언제 다시 시도하나" **한 절** — 배너와 저장분 줄의 단일 출처(#38·#147).
+
+    2026-09-20 독립 리뷰 M1: 같은 화면 두 줄 위의 KR 실패 배너가
+    `{창} 창에서 **자동 재집계됩니다**` 라고 적고 있었다 — `stored_note` 가
+    #380 을 근거로 금지한 바로 그 **지킬 수 없는 약속**의 동의어다(회귀가
+    `자동 갱신` 을 금지해 놓고 형제 표면의 동의어는 아무도 안 봤다). 문구를
+    한 곳에서 만들어 두 표면이 같은 주장을 하게 한다.
+
+    우리가 지킬 수 있는 것은 **다시 시도한다**까지다(#375 — 우리 코드에 대한
+    주장) · 성공은 약속하지 않는다. 그리고 시점은 **창 판정이 있을 때만**
+    적는다 — 창 **안**인데 '다음 창' 이라 적으면 거짓이고(#55), 판정을 못
+    받았으면(`None`) 시점을 단정하지 않는다(#165).
+
+    ⚠️ `window` 가 비면 `다음 창()` 이라는 빈 괄호가 나가므로 그때도 시점을
+    적지 않는다(독립 리뷰 L2 — 오늘 두 호출부는 비지 않는 상수를 넘기지만,
+    인자 누락과 겹치면 실제로 나간다).
+    """
+    if in_window is True:
+        return "잠시 후 이번 창에서 다시 시도합니다."
+    if in_window is False and window:
+        return f"다음 창({window})에서 다시 시도합니다."
+    return ""
+
+
 def stored_note(data: dict | None, window: str = "") -> str:
     """저장분 안내 **한 줄** — 부제가 못 말하는 사실이 있을 때만 낸다.
 
@@ -875,7 +900,8 @@ def stored_note(data: dict | None, window: str = "") -> str:
     있으면 도달 불가이므로(2026-09-19 독립 리뷰 H2) 이 줄이 **유일한 통로**다.
     ⚠️ 이 문장은 **우리 스냅샷에 대한 주장**이지 시장에 대한 주장이 아니다 —
     "지금 시장이 이렇다"가 아니라 "우리가 마지막으로 집계한 것이 이것이다"(#375).
-    ⚠️ `in_window` 를 못 받았으면 **왜 저장분인지 단정하지 않는다**(#165).
+    ⚠️ `in_window` 가 가르는 것은 **재시도 시점**이다(`retry_clause`) — 옛
+    판의 '왜 저장분인가' 문구는 사용자 요청으로 사라졌다(독립 리뷰 L1).
     """
     d = data or {}
     if not d.get("stale"):
@@ -895,13 +921,10 @@ def stored_note(data: dict | None, window: str = "") -> str:
     # ⚠️ '다시 시도한다'는 **우리 코드에 대한 주장**이라 지킬 수 있다(백오프가
     #    풀리면 창 안에서 `_kick_*` 이 다시 돈다) — 성공을 약속하지 않는다(#375).
     #    기계 상세(예외 문자열)는 사용자 화면에 안 싣는다(#391).
-    iw = d.get("in_window")
     tail = " 마지막 집계 시도가 실패해 갱신되지 않았습니다."
-    if iw is True:
-        tail += " 잠시 후 이번 창에서 다시 시도합니다."
-    elif window and iw is False:
-        tail += f" 다음 창({window})에서 다시 시도합니다."
-    return "💾 저장분" + (f" — {when}" if when else "") + "." + tail
+    retry = retry_clause(d.get("in_window"), window)
+    return ("💾 저장분" + (f" — {when}" if when else "") + "." + tail
+            + (f" {retry}" if retry else ""))
 
 
 if __name__ == "__main__":
