@@ -74954,6 +74954,14 @@ class TestLiquidationBadge20260919:
     -50.00%` 만 적고 있었다 — 값은 KRX 가 준 그대로라 산수도 맞고(#33) 어떤
     감사도 안 걸렸는데(#96), 화면이 답을 못 해 사용자가 물어야 알았다(#43).
     정리매매는 가격제한폭이 적용되지 않는 문서화된 예외다.
+
+    ⚠️ 픽스처의 종목코드·이름은 **VM 실측 출력에서 옮긴 것**이다
+    (`--why ③`, 2026-09-19). 첫 판은 코스나인을 `289080` 이라 적었는데
+    **틀렸다**(실측 `082660`) — 픽스처가 실재 식별자를 쓰면 그 라벨은
+    레포 안에서 사실로 읽히고, 나는 실제로 그 틀린 라벨 위에 "코스나인은
+    정리매매가 아닌데 왜 -50%인가" 라는 **없는 수수께끼**를 세웠다
+    (#165 재지 않은 것을 단정하지 말 것 · #34 · #19 내 픽스처를 내가
+    근거로 되읽지 말 것). 지어내지 말고 잰 값을 쓸 것.
     """
 
     # ── 원천: KIS 마스터가 이미 그 칸을 주고 있었다(#150) ──────────────────
@@ -74966,7 +74974,7 @@ class TestLiquidationBadge20260919:
                          risk={"정리매매": "Y"}),
             _bb_mst_line("kospi", "005930", "삼성전자", True, 5123456)])
         kq = _bb_mst_zip("kosdaq", [
-            _bb_mst_line("kosdaq", "289080", "코스나인", True, 120,
+            _bb_mst_line("kosdaq", "082660", "코스나인", True, 120,
                          risk={"정리매매": "Y", "관리종목": "Y"})])
         rows, _ = bb._kis_master_rows("kospi", raw=ks)
         by = {r["code"].strip(): r["risk_raw"] for r in rows}
@@ -74974,7 +74982,7 @@ class TestLiquidationBadge20260919:
         assert by["005930"]["정리매매"] == ""      # 안 찍힌 칸은 빈 칸이다
         rows2, _ = bb._kis_master_rows("kosdaq", raw=kq)
         by2 = {r["code"].strip(): r["risk_raw"] for r in rows2}
-        assert by2["289080"] == {"정리매매": "Y", "거래정지": "",
+        assert by2["082660"] == {"정리매매": "Y", "거래정지": "",
                                  "관리종목": "Y"}
 
     def test_existing_callers_are_untouched(self):
@@ -75098,19 +75106,19 @@ class TestLiquidationBadge20260919:
         return st
 
     def _items(self):
-        return [{"ticker": "289080.KQ", "name": "코스나인", "price": 1,
+        return [{"ticker": "082660.KQ", "name": "코스나인", "price": 1,
                  "pct": -50.0, "vol": 56820000, "mcap": 120.0, "ind": "반도체"},
                 {"ticker": "005930.KS", "name": "삼성전자", "price": 70000,
                  "pct": 1.2, "vol": 10, "mcap": 4e6, "ind": "반도체"}]
 
     def test_the_badge_reaches_the_rendered_row(self, tmp_path):
         from bot.highlow_render import stock_panel
-        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+        with self._cache(tmp_path, {"082660": {"정리매매": True}}):
             h = stock_panel("📊 거래량 상위", self._items(), "v", "KR",
                             name_only=True)
         assert h.count('class="rbadge"') == 1
         # 뱃지가 **그 행**에 붙어야 한다 — 패널 어딘가가 아니라.
-        row = [r for r in h.split("<tr ") if "289080" in r][0]
+        row = [r for r in h.split("<tr ") if "082660" in r][0]
         assert 'class="rbadge"' in row and "정리매매" in row
         other = [r for r in h.split("<tr ") if "005930" in r][0]
         assert "rbadge" not in other
@@ -75118,7 +75126,7 @@ class TestLiquidationBadge20260919:
     def test_unknown_is_never_drawn_as_a_badge(self, tmp_path):
         """모르는 것을 '정리매매'라고 적으면 화면이 거짓말한다(#165)."""
         from bot.highlow_render import stock_panel
-        with self._cache(tmp_path, {"289080": {"정리매매": None}}):
+        with self._cache(tmp_path, {"082660": {"정리매매": None}}):
             h = stock_panel("x", self._items(), "v", "KR", name_only=True)
         assert "rbadge" not in h and "rlegend" not in h
 
@@ -75128,14 +75136,14 @@ class TestLiquidationBadge20260919:
         from bot.kr_stock_flags import BADGE_KEYS
         from bot.highlow_render import stock_panel
         assert BADGE_KEYS == ("정리매매",)
-        with self._cache(tmp_path, {"289080": {"관리종목": True,
+        with self._cache(tmp_path, {"082660": {"관리종목": True,
                                                "거래정지": True}}):
             h = stock_panel("x", self._items(), "v", "KR", name_only=True)
         assert "rbadge" not in h
 
     def test_the_legend_appears_only_when_a_badge_was_drawn(self, tmp_path):
         from bot.highlow_render import stock_panel
-        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+        with self._cache(tmp_path, {"082660": {"정리매매": True}}):
             hit = stock_panel("x", self._items(), "v", "KR", name_only=True)
             miss = stock_panel("x", self._items()[1:], "v2", "KR",
                                name_only=True)
@@ -75147,7 +75155,7 @@ class TestLiquidationBadge20260919:
         """사용자가 짚은 둘 — 급등·급락과 거래량 상위. 한 페이지만 고치면
         다른 쪽이 조용히 빠진다(#38·#48)."""
         from bot import naver_pages as np_
-        rows = [{"ticker": "289080.KQ", "name": "코스나인", "price": 1,
+        rows = [{"ticker": "082660.KQ", "name": "코스나인", "price": 1,
                  "pct": -50.0, "vol": 1, "value": 1.0, "mcap": 1.0}]
         # ⚠️ 두 페이지 다 원천을 **함수 안에서** import 한다 — 페이지 모듈에
         # 패치하면 아무것도 안 막힌다(그 상태로 '통과'하면 이 가드가 눈이
@@ -75161,7 +75169,7 @@ class TestLiquidationBadge20260919:
                                          "source": "s"}, raising=False)
         monkeypatch.setattr("bot.naver_sector_client.apply_kr_industry",
                             lambda *a, **k: None, raising=False)
-        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+        with self._cache(tmp_path, {"082660": {"정리매매": True}}):
             for fn in (np_.render_highlow_page, np_.render_kr_volume_page):
                 html = fn()
                 assert 'class="rbadge"' in html, fn.__name__
@@ -75172,7 +75180,7 @@ class TestLiquidationBadge20260919:
         from unittest import mock
         from bot import highlow_render as hr
         calls: list = []
-        with self._cache(tmp_path, {"289080": {"정리매매": True}}), \
+        with self._cache(tmp_path, {"082660": {"정리매매": True}}), \
                 mock.patch("bot.kr_stock_flags.snapshot",
                            side_effect=lambda **k: calls.append(k) or {
                                "flags": {}, "note": "", "state": "ok", "n": 1,
@@ -75188,10 +75196,10 @@ class TestLiquidationBadge20260919:
         from unittest import mock
         from bot import highlow_render as hr
         n: list = []
-        with self._cache(tmp_path, {"289080": {"정리매매": True}}), \
+        with self._cache(tmp_path, {"082660": {"정리매매": True}}), \
                 mock.patch("bot.kr_stock_flags.snapshot",
                            side_effect=lambda **k: n.append(1) or {
-                               "flags": {"289080": {"정리매매": True}},
+                               "flags": {"082660": {"정리매매": True}},
                                "note": "", "state": "ok", "n": 1,
                                "fetched": 0, "fails": 0, "next_try": 0}):
             hr.stock_panel("x", self._items() * 15, "k", "KR", name_only=True)
@@ -75262,7 +75270,7 @@ class TestLiquidationBadge20260919:
         """'수집 0분 전' 은 '모름' 처럼 읽힌다 — 갓 받은 값은 '방금'이다."""
         from unittest import mock
         from bot.highlow_render import stock_panel
-        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+        with self._cache(tmp_path, {"082660": {"정리매매": True}}):
             h = stock_panel("x", self._items(), "v", "KR", name_only=True)
         assert "방금 수집" in h and "0분 전" not in h
 
@@ -75398,7 +75406,7 @@ class TestLiquidationBadge20260919:
         kq = _bb_mst_zip("kosdaq", [
             _bb_mst_line("kosdaq", "046070", "코다코", True, 120,
                          risk={"정리매매": "Y"}),
-            _bb_mst_line("kosdaq", "289080", "코스나인", True, 120,
+            _bb_mst_line("kosdaq", "082660", "코스나인", True, 120,
                          risk={"거래정지": "Y"})])
         real = bb._kis_master_rows
         with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
@@ -75487,13 +75495,46 @@ class TestLiquidationBadge20260919:
         gal = [x for x in out.split("\n") if "갈래별" in x][0]
         assert "정리매매 1 " in gal and "정리매매 2" not in gal, gal
         assert "모름 1" in gal, gal               # 그런데 사실은 말한다
-        # 소계 합 + 모름 = 플래그 있는 종목(총계) — 모집단이 맞아떨어진다.
+        # ⚠️ **소계 합 = 총계가 아니다** — 한 종목이 여러 갈래를 가질 수
+        # 있다(VM 실측 2026-09-19: 8+119+183=310 vs 총계 220). 첫 판 주석이
+        # 그걸 "같아야 한다"고 적었는데 실측이 반증했다(#55·#286). 맞아
+        # 떨어지는 것은 **종목 단위** 분류다(확정 있음 / 모름만 있음).
         flagged = len(snap["flags"])
         by = sum(1 for v in snap["flags"].values()
                  if any(x is True for x in v.values()))
         unk = sum(1 for v in snap["flags"].values()
                   if any(x is None for x in v.values()))
         assert by + unk == flagged == 2
+
+    def test_overlapping_flags_are_reconciled_on_screen(self, tmp_path,
+                                                        capsys):
+        """정리매매 종목은 대개 관리종목이자 거래정지다 — 소계 합이 총계보다
+        크다(VM 실측 8+119+183=310 vs 220). 나란히 놓인 수가 안 맞으면
+        사용자는 우리 버그로 읽으므로 **중복이라는 사실을 적어야** 한다
+        (#33·#45). 첫 판은 "소계 합 = 총계" 라고 적었고 실측이 반증했다."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 1,
+                         risk={"정리매매": "Y", "거래정지": "Y",
+                               "관리종목": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "082660", "코스나인", True, 1,
+                         risk={"정리매매": "Y", "관리종목": "Y"})])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            snap = kf.snapshot(cache_only=False, write=False)
+            kf.why()
+        out = capsys.readouterr().out
+        gal = [x for x in out.split("\n") if "갈래별" in x][0]
+        # 2종목인데 소계 합은 5 — 그 차이를 화면이 **말한다**.
+        assert len(snap["flags"]) == 2
+        assert "정리매매 2" in gal and "관리종목 2" in gal, gal
+        assert "합 5" in gal and "총계 2" in gal, gal
+        assert "여러 갈래" in gal, gal
 
     def test_every_path_carries_the_names_key(self, tmp_path):
         """G4 — 독스트링이 '네 경로 모두 키를 싣는다'고 약속한다. 키가
@@ -75607,7 +75648,7 @@ class TestLiquidationBadge20260919:
         from bot import highlow_render as hr, kr_stock_flags as kf
         (tmp_path / kf._CACHE).write_text(json.dumps(
             {"v": kf._SCHEMA, "n": 2814,
-             "flags": {"289080": {"정리매매": True}}, "note": "옛것",
+             "flags": {"082660": {"정리매매": True}}, "note": "옛것",
              "fetched": time.time() - kf._TTL - 60, "fails": 0,
              "next_try": 0}), encoding="utf-8")
         kicked: list = []

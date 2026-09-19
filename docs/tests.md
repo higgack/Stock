@@ -1275,7 +1275,8 @@ KIS 가 그렇다고 말할 때만 뜬다. (c) 뱃지는 `stock_panel` 안에서
 |---|---|
 | ③ 이 코드와 이름을 같은 줄에 · ② 가 갈래별로 센다 | `test_the_probe_names_the_stocks_it_lists` |
 | 코드가 회사명인 척하지 않는다(`(이름 미확보)`) | `test_a_name_we_could_not_get_is_never_invented` |
-| 모름은 소계에 안 들어가되 **사실은 말한다**(소계 합 + 모름 = 총계) | `test_unreadable_rows_are_never_counted_as_confirmed` |
+| 모름은 소계에 안 들어가되 **사실은 말한다** | `test_unreadable_rows_are_never_counted_as_confirmed` |
+| 소계 합 ≠ 총계(한 종목이 여러 갈래) — 그 차이를 화면이 말한다 | `test_overlapping_flags_are_reconciled_on_screen` |
 | `names` 키는 **네 경로 모두** 싣는다(독스트링 계약) | `test_every_path_carries_the_names_key` |
 | 이름은 **진단 전용** — 캐시에 안 굽는다(스키마 불변 → 배포가 12시간 무효화를 유발하지 않는다) | `test_names_are_diagnostic_only_and_never_baked` |
 
@@ -1288,7 +1289,7 @@ KIS 가 그렇다고 말할 때만 뜬다. (c) 뱃지는 `stock_panel` 안에서
 | # | 무엇이 | 왜 나쁜가 |
 |---|---|---|
 | G1 | `_kis_master_rows` 는 이름이 비면 **코드**를 넣는다(`head[21:].strip() or code`) — 그걸 그대로 실어 `008290  008290` 이 찍혔다 | **코드가 회사명인 척**한다(#34·#165). 그리고 `(이름 미확보)` 갈래는 **도달 불가**였다(#291) — 그걸 '덮는다'던 내 테스트는 `force=True` 가 낼 수 없는 상태를 스텁했다 |
-| G2 | 갈래별 소계가 `is True` 만 세서 **소계 합 ≠ 총계** | 인코딩 드리프트한 날 `정리매매 0` 옆에 `플래그 있는 종목 220` 이 붙어 원천이 0종목처럼 읽힌다(#45) |
+| G2 | 갈래별 소계가 `is True` 만 세서 모름이 **어느 소계에도 안 들어갔다** | 인코딩 드리프트한 날 `정리매매 0` 옆에 `플래그 있는 종목 220` 이 붙어 원천이 0종목처럼 읽힌다(#45) |
 | G3 | 그 `is True` 계약이 무가드 | 모름을 '확인된 정리매매' 로 세는 변형이 통과 |
 | G4 | "`names` 는 네 경로 모두 싣는다" 는 독스트링 약속이 **무가드** | 키가 빠지면 KeyError 를 렌더 except 가 삼켜 **엉뚱한 이유로** 뱃지가 사라진다(#54·#55) |
 | G5 | `snapshot()` 독스트링 반환 키 목록에 `names` 누락 | #55 드리프트 |
