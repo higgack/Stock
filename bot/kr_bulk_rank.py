@@ -35,6 +35,8 @@ _SESSION_FILL` 이 같은 사유로 KR 만 채운다).
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -43,6 +45,9 @@ log = logging.getLogger("bot.kr_bulk_rank")
 _KST = ZoneInfo("Asia/Seoul")
 _EOK = 1e8          # 원 → 억 (`naver_ranking_client._kr_row` 와 같은 규약, #38)
 SOURCE_LABEL = "KRX 벌크 종가(pykrx·KIS 마스터)"
+
+_NAMES_CACHE = "kr_bulk_rank_names_v1.json"
+_NAMES_TTL = 12 * 3600   # 상장 종목명·시장 접미사는 하루 한 번 바뀌는 값이다
 
 
 # ── 순수 ────────────────────────────────────────────────────────────────
@@ -158,7 +163,7 @@ def _frame(stock, name: str, *args, **kw):
     return df, ""
 
 
-def _kis_names() -> tuple[dict, str]:
+def _kis_names(*, write: bool = True) -> tuple[dict, str]:
     """{6자리코드: (종목명, 접미사)} — KIS 마스터(무키·무로그인).
 
     ⚠️ pykrx 시세 프레임은 **종목명을 안 준다**(index=코드). 이름 없이 코드만
@@ -171,14 +176,37 @@ def _kis_names() -> tuple[dict, str]:
     KOSDAQ150 ≈ 350종목)만 돌려준다(독립 리뷰 2026-09-18 실측). 전 종목 랭킹에
     그걸 쓰면 나머지 ~2,350행이 접미사 없는 맨 6자리가 되어 `/lookup/123456` 이
     **미국 심볼로 해석**되고 링크가 통째로 깨진다. 마스터 **전 행**을 쓴다.
+
+    ⚠️ **이름표는 따로 캐시한다.** `_kis_master_rows` 자체엔 캐시가 없어(공용
+    헬퍼라 이 커밋에서 안 건드린다) 부를 때마다 zip 2개를 받는다 — 각 30초
+    상한이라 **콜드 비용의 대부분**이 여기다. 그런데 상장 종목명·시장 접미사는
+    하루에 한 번 바뀌는 값이라 10분마다 다시 받을 이유가 없다(#61 이 비용이
+    어느 단계를 줄이나). 캐시해 두면 이후 갱신은 pykrx 호출만 남는다.
+    ⚠️ **반쪽 맵은 굽지 않는다** — 코스닥 zip 만 실패한 맵을 완전본으로 구우면
+    코스닥 전 종목이 12시간 동안 접미사 없는 맨 코드가 된다(#280·#384 부분을
+    완전본으로 굽지 말 것).
+    ⚠️ `write=False`(진단)는 **읽기만** 한다 — 진단이 운영 캐시를 채우면
+    자기가 읽을 신호를 오염시킨다(#30·#264·#283).
     """
+    from bot.finviz_client import _cached
+    cached = _cached(_NAMES_CACHE, ttl=_NAMES_TTL)
+    if isinstance(cached, dict) and isinstance(cached.get("map"), dict) \
+            and cached["map"]:
+        # ⚠️ JSON 왕복은 튜플을 **리스트**로 바꾼다 — 호출부가 `nm, suf` 로
+        # 푸는 지금은 둘 다 되지만, 모양을 원래대로 돌려 두는 것이 계약이다
+        # (#22 디스크 캐시를 왕복하는 값은 읽는 지점에서 복원할 것).
+        return ({str(k): (str(v[0]), str(v[1])) for k, v in cached["map"].items()
+                 if isinstance(v, (list, tuple)) and len(v) == 2},
+                str(cached.get("note") or ""))
     out: dict = {}
     notes: list = []
     try:
         from bot.bollinger_board import _kis_master_rows
     except Exception as exc:                                   # noqa: BLE001
         return {}, f"KIS 마스터 실패({type(exc).__name__})"
-    for book, suf in (("kospi", ".KS"), ("kosdaq", ".KQ")):
+    books = (("kospi", ".KS"), ("kosdaq", ".KQ"))
+    filled = 0
+    for book, suf in books:
         try:
             rows, note = _kis_master_rows(book)
         except Exception as exc:                               # noqa: BLE001
@@ -187,13 +215,19 @@ def _kis_names() -> tuple[dict, str]:
         if not rows:
             notes.append(f"{book} 0행({note})")
             continue
+        filled += 1
         for r in rows:
             code = str(r.get("code") or "").zfill(6)
             if len(code) == 6:
                 out[code] = (str(r.get("name") or ""), suf)
     if not out:
         return {}, "KIS 마스터가 0종목(" + " · ".join(notes) + ")"
-    return out, " · ".join(notes)
+    note = " · ".join(notes)
+    if write and filled == len(books):
+        from bot.finviz_client import _cache_write
+        _cache_write(_NAMES_CACHE, {
+            "map": {k: [v[0], v[1]] for k, v in out.items()}, "note": note})
+    return out, note
 
 
 def _rows_on(stock, ds: str, names: dict) -> tuple[list, str]:
@@ -295,17 +329,177 @@ def _rows_on(stock, ds: str, names: dict) -> tuple[list, str]:
     return rows, " · ".join(notes)
 
 
+# ── 캐시 · 시도 기록 ─────────────────────────────────────────────────────
+#
+# 2026-09-19 사용자가 붙인 일일 감사: `❌ 급등·급락 0행 … KRX 벌크 수집이 12초를
+# 넘겨 이번에는 비웠습니다 — 백그라운드가 받는 중이라 **다음 갱신에 나옵니다**`.
+# 그 마지막 문장이 참인지 아무도 재지 않았고(#380·#165), **참이어도 수렴하지
+# 않는 구조**였다:
+#   (a) TTL(10분)이 지나면 `_cached` 가 None 을 줘 **이미 받아 둔 종가를 버리고**
+#       또 비웠다 — 종가는 사실상 안 바뀌는 값인데도(#163 SWR 은 되살린 값에
+#       기준시각을 같이 싣는 것이지 버리는 게 아니다).
+#   (b) 일일 감사는 **매번 콜드 프로세스**라 정의상 예산을 넘긴다 = 영원히 ❌.
+#       못 고칠 ❌ 가 매일 오면 진짜 ❌ 를 가린다(#260).
+#   (c) 비는 갈래가 넷인데(자격증명 없음 / pykrx 없음 / 원천 빈 응답 / 아직 안
+#       끝남) 화면은 한 문장이었다 — 처방이 전부 다르다(#82).
+# 그래서 ① 만료분을 **나이와 함께** 내고 갱신은 뒤에서 받고(SWR) ② 시도마다
+# **관측 기록**을 남겨 화면·감사가 약속 대신 사실을 말하게 한다(#86 상태는 아는
+# 쪽에 물어라).
 _CACHE = "kr_bulk_rank_v1.json"
+_STATE = "kr_bulk_rank_state_v1.json"
 _BUDGET = 12    # 초 — 렌더 경로 상한(#116). 콜드 미스의 실제 비용(KIS zip 2개 +
 #   pykrx 3콜)보다 짧다: 넘기면 이번 응답을 비우고 백그라운드가 캐시를 채운다.
-_TTL = 600      # 10분 — 보드 폴링(2분)보다 길어도 되는 이유는 이 값이 **종가**
-#   라 장중에도 거의 안 바뀌기 때문이다. 짧게 잡으면 폴링마다 KRX 벌크 3~4콜이
-#   나간다(#116 예산과 캐시는 한 세트 · #36 TTL 과 주기의 관계는 값의 성질이
-#   정한다). ⚠️ **빈 결과는 굽지 않는다** — 원천 장애 한 번이 10분 빈 화면이
-#   된다(#161·#280·#303).
+_TTL = 600      # 10분 — 이 값이 **종가**라 장중에도 거의 안 바뀐다. 짧게 잡으면
+#   폴링(2분)마다 KRX 벌크 3~4콜이 나간다(#116 예산과 캐시는 한 세트 · #36).
+#   ⚠️ **빈 결과는 굽지 않는다** — 원천 장애 한 번이 10분 빈 화면이 된다
+#   (#161·#280·#303). 만료분은 버리지 않고 `_stale_ok` 범위 안이면 낸다.
+_WARM_MAX = 300  # 초 — '예열 중' 이라고 말해 줄 수 있는 상한. 넘으면 그건 예열이
+#   아니라 **멈춘 것**이므로 ⚠️ 로 숨기지 않는다(#41 여유로 사실을 덮지 말 것).
+
+_KICK = threading.Lock()   # 논블로킹 — 갱신 스레드를 하나만 띄운다
 
 
-def _kr_bulk_rows_uncached(max_back: int) -> tuple[list, str, str]:
+def _ago(sec) -> str:
+    """나이를 사람 말로 — 라벨만 말고 **숫자로**(#202)."""
+    s = _num(sec)
+    if s is None or s < 0:
+        return "얼마 전"
+    s = int(s)
+    if s < 60:
+        return f"{s}초"
+    if s < 3600:
+        return f"{s // 60}분"
+    if s < 86400:
+        return f"{s // 3600}시간"
+    return f"{s // 86400}일"
+
+
+def attempt_record() -> dict:
+    """마지막 수집 시도의 **관측 기록**(없거나 못 읽으면 {}).
+
+    ⚠️ 이 파일은 `_cache_write`(truncate 후 쓰기)로 쓰이므로 다른 프로세스가
+    **쓰다 만 것**을 읽을 수 있다(#379). 그때 `_cached` 가 JSON 오류를 삼켜
+    None 을 주고 우리는 '기록 없음' 으로 떨어진다 — 값이 틀어지지는 않고 그
+    호출만 판정 불가가 된다. 공용 헬퍼라 호출부가 100곳이어서 이 커밋에서
+    원자 교체로 바꾸지 않았다(못 보는 축, #274).
+    """
+    try:
+        from bot.finviz_client import _cached
+        rec = _cached(_STATE, ttl=float("inf"))
+    except Exception:                                          # noqa: BLE001
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def _record(obj: dict) -> None:
+    try:
+        from bot.finviz_client import _cache_write
+        _cache_write(_STATE, obj)
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
+def attempt_note(rec, now: float) -> str:
+    """마지막 시도의 **관측 사실** 한 조각(순수). 기록이 없으면 ''.
+
+    갈래마다 처방이 다르므로 이름을 달리 부른다(#82):
+      - 받는 중  → 기다리면 된다
+      - 실패     → **그 사유를 고쳐야 한다**(행동 가능)
+      - 성공했는데 화면이 비었다 → 캐시 쓰기를 봐야 한다(전혀 다른 자리)
+    """
+    if not isinstance(rec, dict):
+        return ""
+    st = _num(rec.get("started"))
+    if st is None:
+        return ""
+    fin = _num(rec.get("finished"))
+    if fin is None:
+        return f"{_ago(now - st)}째 받는 중입니다"
+    took = _num(rec.get("secs"))
+    tail = f"({_ago(took)} 걸림)" if took else ""
+    if rec.get("ok"):
+        n = int(_num(rec.get("rows")) or 0)
+        return (f"지난 시도는 {_ago(now - fin)} 전 성공했습니다{tail} — "
+                f"{n:,}행. 그런데 화면이 비었다면 캐시 쓰기를 봐야 합니다")
+    why = str(rec.get("reason") or "사유 미기록")
+    return f"지난 시도가 {_ago(now - fin)} 전 실패했습니다{tail}: {why}"
+
+
+def warming_note(rec, now: float) -> str:
+    """**지금 예열 중**이라 비어 있는 것인가 — 그렇다면 그 사실을, 아니면 ''.
+
+    ⚠️ 예열은 **유예이지 면죄가 아니다**. 시작만 하고 `_WARM_MAX` 를 넘도록
+    안 끝났으면 그건 예열이 아니라 멈춘 것이므로 '' 를 돌려 감사가 ❌ 를 내게
+    한다 — 안 그러면 stuck 상태가 영원히 ⚠️ 로 숨는다(#41·#260·#25).
+    """
+    if not isinstance(rec, dict):
+        return ""
+    st = _num(rec.get("started"))
+    if st is None or _num(rec.get("finished")) is not None:
+        return ""
+    age = now - st
+    if age < 0 or age > _WARM_MAX:
+        return ""
+    return f"{_ago(age)}째 받는 중입니다"
+
+
+def warming_reason(rec, now: float, budget: float) -> str:
+    """콜드 미스로 이번 응답을 비울 때 화면이 적을 사유(순수).
+
+    ⚠️ 옛 문구는 "백그라운드가 받는 중이라 **다음 갱신에 나옵니다**" 였다 —
+    재지 않은 약속이다(#380). 우리가 아는 사실은 둘뿐이다: *이번 요청을
+    백그라운드로 넘겼다*(우리 코드에 대한 주장, #375)와 *마지막 시도가 어떻게
+    끝났나*(기록). 그 둘만 적는다.
+    """
+    head = (f"KRX 벌크가 {budget:g}초 예산 안에 안 끝나 이번 응답은 비웠습니다"
+            "(수집은 백그라운드로 넘겼습니다)")
+    note = attempt_note(rec, now)
+    if not note:
+        return head + " — 아직 한 번도 끝난 적이 없습니다"
+    return f"{head} — {note}"
+
+
+def stale_note(asof: str, age_sec, rec=None, now: float | None = None,
+               *, refreshing: bool = True) -> str:
+    """만료된 복사본을 낼 때 화면이 적을 사실(순수).
+
+    낡음을 숨기지 않는다 — **기준일**과 **받은 지 얼마나 됐는지**를 같이
+    적는다(#43·#163 되살린 값엔 기준시각을 반드시 · #202 라벨 말고 숫자로).
+    갱신 시도가 실패했으면 그게 더 행동 가능하므로 같이 싣는다(#275).
+
+    ⚠️ `refreshing` 은 **재서** 받는다 — `_kick` 이 스레드를 못 띄웠는데
+    "갱신은 백그라운드가 받습니다" 라고 적으면 화면이 재지 않은 것을
+    단정하는 것이고(#165·#375 우리 코드에 대한 주장만 할 것), 늘 켜지는
+    '갱신 중' 배지는 아무것도 안 재는 것과 같다(#25·#260·#343).
+    """
+    head = f"{asof} 종가입니다 — {_ago(age_sec)} 전에 받았습니다"
+    head += ("· 갱신은 백그라운드가 받습니다" if refreshing
+             else "· 갱신을 지금 띄우지 못했습니다(다음 조회에서 다시 시도합니다)")
+    note = attempt_note(rec, time.time() if now is None else now)
+    if note and "받는 중" not in note:
+        return f"{head} · {note}"
+    return head
+
+
+def _stale_ok(asof: str, max_back: int, now=None) -> bool:
+    """기준일이 **신선 경로가 받아들이는 범위** 안인가(순수).
+
+    상한을 임의로 정하지 않는다 — `_kr_bulk_rows_uncached` 가 오늘부터
+    `max_back` 일을 거슬러 찾으므로, 그 범위의 종가는 신선 경로가 '지금 낼
+    값' 으로 인정하는 바로 그것이다(#269 문턱은 추측하지 말고 주기에서 도출).
+    ⚠️ 기준일을 못 읽으면 **안 낸다** — 나이를 못 적는 값을 화면에 실으면
+    사용자가 그걸 '현재' 로 읽는다(#43·#163).
+    """
+    try:
+        d = datetime.strptime(str(asof), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+    today = (now or datetime.now(_KST)).date()
+    return 0 <= (today - d).days <= max(0, max_back)
+
+
+def _kr_bulk_rows_uncached(max_back: int, *,
+                           write: bool = True) -> tuple[list, str, str]:
     """(행, 기준일 `YYYY-MM-DD`, 사유/메모).
 
     행이 있으면 세 번째 값은 **메모**(빈 문자열이 정상), 없으면 **사유**다 —
@@ -314,7 +508,7 @@ def _kr_bulk_rows_uncached(max_back: int) -> tuple[list, str, str]:
     stock, why = _pykrx()
     if stock is None:
         return [], "", why
-    names, nwhy = _kis_names()
+    names, nwhy = _kis_names(write=write)
     tried: list = []
     today = datetime.now(_KST)
     for back in range(max(0, max_back) + 1):
@@ -333,47 +527,142 @@ def _kr_bulk_rows_uncached(max_back: int) -> tuple[list, str, str]:
                     + " / ".join(tried[:3]))
 
 
-def kr_bulk_rows(max_back: int = 7, *, use_cache: bool = True) -> tuple[list, str, str]:
+def _run_attempt(max_back: int, *, write: bool) -> tuple[list, str, str]:
+    """한 번 받아 오고 **기록을 남긴다**.
+
+    ⚠️ `write=False`(진단·프로브)는 캐시도 기록도 안 건드린다 — 진단이 자기가
+    읽을 신호를 오염시키면 안 된다(#30·#264·#283).
+    """
+    t0 = time.time()
+    if write:
+        _record({"started": t0, "finished": None, "ok": None,
+                 "secs": None, "rows": 0, "reason": ""})
+    try:
+        rows, asof, memo = _kr_bulk_rows_uncached(max_back, write=write)
+    except BaseException as exc:                               # noqa: BLE001
+        if write:
+            _record({"started": t0, "finished": time.time(), "ok": False,
+                     "secs": round(time.time() - t0, 1), "rows": 0,
+                     "reason": f"예외({type(exc).__name__}: {str(exc)[:120]})"})
+        raise
+    if write:
+        if rows:
+            _cache_put({"rows": rows, "asof": asof, "memo": memo})
+        # 행이 0 이면 `ok=False` + **그 사유**를 남긴다 — 다음 요청이 약속 대신
+        # 이 사실을 적는다(#82·#86).
+        _record({"started": t0, "finished": time.time(), "ok": bool(rows),
+                 "secs": round(time.time() - t0, 1), "rows": len(rows),
+                 "reason": "" if rows else memo})
+    return rows, asof, memo
+
+
+def _cache_put(obj: dict) -> None:
+    try:
+        from bot.finviz_client import _cache_write
+        _cache_write(_CACHE, obj)
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
+def _guarded(max_back: int, *, write: bool) -> tuple[list, str, str]:
+    """동시 요청은 하나만 돈다(#113 캐시는 끝난 뒤에만 도와준다).
+
+    ⚠️ 키에 `write` 를 넣는다 — 진단(`write=False`)이 렌더의 리더가 되면 그
+    호출의 캐시·기록 쓰기가 통째로 사라진다(#346 `force` 로 키를 가른 선례).
+    ⚠️ `except` 는 **ImportError 만** 잡는다(옛 판은 `Exception`). 넓게 잡으면
+    리더가 되던 예외를 삼키고 `_run_attempt` 를 **한 번 더** 돌려 바깥 원천을
+    두 번 친다 — 그건 재시도 정책이지 import 폴백이 아니다(#315 넓은 try 는
+    덜 중요한 것까지 삼킨다). 호출부 셋은 모두 `except Exception` 으로 감싸고
+    사유를 화면에 적으므로 전파돼도 조용히 죽지 않는다.
+    """
+    try:
+        from bot.singleflight import once
+        return once(f"kr_bulk_rank:{max_back}:{int(write)}",
+                    lambda: _run_attempt(max_back, write=write))
+    except ImportError:
+        return _run_attempt(max_back, write=write)
+
+
+def _kick(max_back: int) -> bool:
+    """갱신을 **기다리지 않고** 띄운다.
+
+    반환은 "띄웠나" 가 아니라 **"갱신이 지금 진행 중인가"** 다 — 이미 받는
+    중이면 스레드를 더 안 띄우지만 갱신은 진행 중이므로 True 다. 화면이 그
+    값으로 '갱신 중' 을 적으므로 뜻을 정확히 맞춘다(#25·#343 — 늘 켜지는
+    배지는 아무것도 안 재는 것과 같고, 꺼져 있어야 할 때 켜지면 거짓말이다).
+
+    ⚠️ 매 렌더마다 스레드를 띄우면 폴링(2분)마다 쌓인다 — 논블로킹 락으로
+    '하나만' 을 보장한다. `start()` 가 던지면 **반드시 풀어 준다**: 안 풀면
+    그 보드의 갱신이 영구 정지한다(#280·#371 실측한 그 함정).
+    """
+    if not _KICK.acquire(blocking=False):
+        return True                    # 이미 받는 중 = 갱신은 진행 중이다
+
+    def _bg() -> None:
+        try:
+            _guarded(max_back, write=True)
+        except Exception as exc:                               # noqa: BLE001
+            log.info("kr_bulk_rank: 백그라운드 갱신 실패 — %s", exc)
+        finally:
+            _KICK.release()
+
+    try:
+        threading.Thread(target=_bg, name="kr_bulk_rank_kick",
+                         daemon=True).start()
+    except Exception as exc:                                   # noqa: BLE001
+        _KICK.release()
+        log.warning("kr_bulk_rank: 갱신 스레드 기동 실패 — %s", exc)
+        return False
+    return True
+
+
+def kr_bulk_rows(max_back: int = 7, *,
+                 use_cache: bool = True) -> tuple[list, str, str]:
     """캐시를 두른 진입점 — 보드는 이걸 부른다.
 
     ⚠️ 캐시는 **가장 아래 계층**에 둔다(#348) — 호출부마다 두면 급등·급락과
-    거래량 상위가 같은 벌크를 각자 받는다. 동시 요청은 single-flight 로 하나만
-    돈다(#113 캐시는 끝난 뒤에만 도와준다)."""
-    from bot.finviz_client import _cache_write, _cached
-    if use_cache:
-        c = _cached(_CACHE, ttl=_TTL)
-        if isinstance(c, dict) and c.get("rows"):
-            return list(c["rows"]), str(c.get("asof") or ""), str(c.get("memo") or "")
+    거래량 상위가 같은 벌크를 각자 받는다.
 
-    def _run():
-        rows, asof, memo = _kr_bulk_rows_uncached(max_back)
-        if rows and use_cache:
-            # ⚠️ 캐시 쓰기는 **작업 안**에 둔다 — 예산을 넘겨 호출부가 먼저
-            # 돌아가도 백그라운드가 끝나면 다음 요청이 곧바로 받는다(#116).
-            _cache_write(_CACHE, {"rows": rows, "asof": asof, "memo": memo})
-        return rows, asof, memo
-
-    def _guarded():
-        try:
-            from bot.singleflight import once
-            return once(f"kr_bulk_rank:{max_back}", _run)
-        except Exception:                                      # noqa: BLE001
-            return _run()
-
+    단 셋(#82 — 화면이 어느 단에서 왔는지 말한다):
+      ① 신선(TTL 안) → 그대로.
+      ② 만료분이 `_stale_ok` 범위 안 → **그대로 내고** 갱신은 뒤에서(SWR).
+         여기서 비우면 10분마다 보드가 깜빡인다.
+      ③ 복사본이 아예 없음 → 예산 안에서 받아 보고, 넘기면 비우되 **마지막
+         시도의 관측 사실**을 적는다(약속 금지, #380).
+    """
+    from bot.finviz_client import _cached, cache_age_sec
     if not use_cache:
-        return _guarded()
-    # ⚠️ 이 경로는 **렌더 안**에서 돈다 — 콜드 미스면 KIS 마스터 zip 2개
-    # (각 30초 상한) + pykrx 3콜이 동기로 붙어 대시보드가 통째로 멈춘다
-    # (#116 본문이 아닌 값을 본 응답 경로에서 부를 땐 예산과 캐시를 같이).
-    # 예산을 넘으면 이번 응답은 비우고 **백그라운드가 캐시를 예열**한다.
+        return _guarded(max_back, write=False)
+
+    fresh = _cached(_CACHE, ttl=_TTL)
+    if isinstance(fresh, dict) and fresh.get("rows"):
+        return (list(fresh["rows"]), str(fresh.get("asof") or ""),
+                str(fresh.get("memo") or ""))
+
+    old = _cached(_CACHE, ttl=float("inf"))
+    if isinstance(old, dict) and old.get("rows"):
+        asof = str(old.get("asof") or "")
+        if _stale_ok(asof, max_back):
+            live = _kick(max_back)
+            return (list(old["rows"]), asof,
+                    stale_note(asof, cache_age_sec(_CACHE), attempt_record(),
+                               refreshing=live))
+
+    # ⚠️ 여기부터가 **콜드**다. 렌더 안에서 도므로 KIS 마스터 zip 2개(각 30초
+    # 상한) + pykrx 3콜이 동기로 붙으면 대시보드가 통째로 멈춘다(#116).
+    # 예산을 넘기면 이번 응답만 비우고 작업은 **취소하지 않는다** — 그래야
+    # 다음 요청(과 일일 감사의 다음 실행)이 복사본을 받는다.
+    # ⚠️ 기록은 **제출 전에** 읽는다 — `_run_attempt` 가 곧바로 `started` 로
+    # 덮어쓰므로, 뒤에 읽으면 직전 시도의 실패 사유가 "받는 중" 에 가려진다
+    # (#275 더 행동 가능한 쪽을 남길 것).
+    prev = attempt_record()
     import concurrent.futures as _cf
     ex = _cf.ThreadPoolExecutor(max_workers=1,
                                 thread_name_prefix="kr_bulk_rank")
-    fut = ex.submit(_guarded)
+    fut = ex.submit(_guarded, max_back, write=True)
     ex.shutdown(wait=False)                  # 제출 직후 — 예외 경로 누수 방지(#128)
     try:
         return fut.result(timeout=_BUDGET)
     except _cf.TimeoutError:
-        log.info("kr_bulk_rank: 예산 %ss 초과 — 백그라운드가 예열합니다", _BUDGET)
-        return [], "", (f"KRX 벌크 수집이 {_BUDGET}초를 넘겨 이번에는 비웠습니다 "
-                        "— 백그라운드가 받는 중이라 다음 갱신에 나옵니다")
+        log.info("kr_bulk_rank: 예산 %ss 초과 — 백그라운드로 넘겼습니다", _BUDGET)
+        return [], "", warming_reason(prev, time.time(), _BUDGET)

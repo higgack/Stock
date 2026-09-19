@@ -73170,7 +73170,7 @@ class TestKrBulkRankModule20260919:
     def test_rows_carry_schema_units_and_suffix(self, monkeypatch):
         import bot.kr_bulk_rank as kb
         monkeypatch.setattr(kb, "_pykrx", lambda: (self._stock(), ""))
-        monkeypatch.setattr(kb, "_kis_names", lambda: (self._names(), ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda **_k: (self._names(), ""))
         rows, asof, memo = kb._kr_bulk_rows_uncached(3)
         by = {r["ticker"]: r for r in rows}
         assert "005930.KS" in by, by.keys()
@@ -73189,7 +73189,7 @@ class TestKrBulkRankModule20260919:
         실으면 등락률 랭킹이 통째로 거짓이 된다(#326·#280·#235)."""
         import bot.kr_bulk_rank as kb
         monkeypatch.setattr(kb, "_pykrx", lambda: (self._stock(), ""))
-        monkeypatch.setattr(kb, "_kis_names", lambda: (self._names(), ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda **_k: (self._names(), ""))
         rows, _asof, _memo = kb._kr_bulk_rows_uncached(3)
         tks = {r["ticker"] for r in rows}
         assert not any(t.startswith("444440") for t in tks), tks   # 스팩
@@ -73206,7 +73206,7 @@ class TestKrBulkRankModule20260919:
             return chg
         st = self._stock(get_market_price_change_by_ticker=staticmethod(_old_sig))
         monkeypatch.setattr(kb, "_pykrx", lambda: (st, ""))
-        monkeypatch.setattr(kb, "_kis_names", lambda: (self._names(), ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda **_k: (self._names(), ""))
         rows, _asof, memo = kb._kr_bulk_rows_uncached(3)
         assert rows, "옛 시그니처로도 행은 나와야 한다"
         assert "코스닥 누락" in memo, memo
@@ -73221,7 +73221,7 @@ class TestKrBulkRankModule20260919:
         st = self._stock(get_market_price_change_by_ticker=staticmethod(
             lambda f, t, market=None: chg2))
         monkeypatch.setattr(kb, "_pykrx", lambda: (st, ""))
-        monkeypatch.setattr(kb, "_kis_names", lambda: ({}, ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda **_k: ({}, ""))
         rows, _asof, memo = kb._kr_bulk_rows_uncached(3)
         assert rows and all(r["name"] == r["ticker"].split(".")[0] for r in rows)
         assert "종목명 미확보" in memo, memo
@@ -73244,17 +73244,26 @@ class TestKrBulkRankModule20260919:
         assert [r["name"] for r in down] == ["하락", "상승"], down
 
     def test_empty_result_is_not_cached(self, monkeypatch):
-        """원천 장애 한 번이 10분 빈 화면이 되면 안 된다(#161·#280·#303)."""
+        """원천 장애 한 번이 10분 빈 화면이 되면 안 된다(#161·#280·#303).
+
+        ⚠️ 2026-09-19 계약 갱신(#222): 빈 **행**은 여전히 안 굽지만, 그 시도의
+        **관측 기록**(`_STATE`)은 남긴다 — 그게 없으면 다음 요청이 '예열 중'
+        과 '고장' 을 못 가르고 재지 않은 약속을 적게 된다(#82·#380). 남는
+        보장은 그대로다: 빈 행이 캐시에 앉아 10분을 지배하면 안 된다.
+        """
         import bot.finviz_client as fv
         import bot.kr_bulk_rank as kb
         wrote: list = []
         monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
         monkeypatch.setattr(fv, "_cache_write", lambda n, v: wrote.append(n))
         monkeypatch.setattr(kb, "_kr_bulk_rows_uncached",
-                            lambda mb: ([], "", "원천 장애"))
+                            lambda mb, **_k: ([], "", "원천 장애"))
         rows, _a, why = kb.kr_bulk_rows()
         assert rows == [] and why == "원천 장애"
-        assert wrote == [], wrote
+        assert kb._CACHE not in wrote, wrote
+        # 그리고 사유는 **기록에** 실린다 — 계산해 두고 안 쓰면 없는 것과
+        # 같다(#123·#129·#189·#228·#292 계열)
+        assert wrote.count(kb._STATE) >= 1, wrote
 
 
 class TestKrFallbackBoardsTellTheTruthOnScreen20260919:
@@ -73366,6 +73375,33 @@ class TestKrBoardsAuditAndShapeProbe20260919:
         assert v.startswith("❌") and "배당 랭킹 전용" in v, v
         v2 = shape_verdict([("현행(대조군)", 5, ""), ("dividend 갈래", 0, r400)])
         assert v2.startswith("✅") and "현행(대조군)" in v2, v2
+
+    def test_shape_verdict_splits_rejected_from_accepted_but_empty(self):
+        """2026-09-19 VM 실측이 가른 것 — 넷은 400 인데 `dividend` 갈래만
+        **거절당하지 않고** 0행이었다. 옛 판은 "다섯 모양 전부 … 거절" 이라고
+        뭉쳐 적었는데 그건 한 모양에 대해 거짓이고(#292), 그 하나가 오히려
+        결정적 증거다: 거절 문구가 `expected "dividend"` 인데 바로 그 갈래만
+        통과한다 = 이 주소가 **배당 한 갈래로 좁혀졌다**(#82·#45)."""
+        from bot.naver_diag import http_reason
+        from bot.scripts.kr_board_probe import shape_verdict
+        r400 = http_reason(400, 300, body=(
+            b'{"detailCode":"invalid_value","message":"{\\"fieldErrors\\":'
+            b'{\\"sortType\\":[\\"Invalid input: expected \\\\\\"dividend'
+            b'\\\\\\"\\"]}}"}'))
+        v = shape_verdict([("현행(대조군)", 0, r400), ("sortType 없음", 0, r400),
+                           ("파라미터 없음", 0, r400), ("category 없음", 0, r400),
+                           ("dividend 갈래", 0, "")])
+        assert v.startswith("❌") and "4개 모양" in v, v
+        assert "배당 한 갈래로 좁혀진" in v, v
+        # 그 갈래가 0행인 **이유**는 안 쟀다 — 단정하지 않는다(#165)
+        assert "안 쟀습니다" in v, v
+        # 거절이 아닌 것을 '거절' 목록에 넣지 않는다(#292)
+        assert "거절: 현행(대조군), sortType 없음, 파라미터 없음, category 없음" in v, v
+        # 다섯이 **전부** 거절이면 종전 문구 그대로(옛 계약 유지, #222)
+        all5 = shape_verdict([(lab, 0, r400) for lab in
+                              ("현행(대조군)", "sortType 없음", "파라미터 없음",
+                               "dividend 갈래", "category 없음")])
+        assert all5.startswith("❌") and "종목 랭킹을 주지 않는" in all5, all5
 
     def test_probe_runs_shape_section_when_control_group_is_dead(self, monkeypatch,
                                                                  capsys):
@@ -73507,7 +73543,7 @@ class TestKrFallbackReviewFollowups20260919:
             get_market_ohlcv_by_ticker = staticmethod(lambda d, market=None: ohlcv)
             get_market_cap_by_ticker = staticmethod(lambda d, market=None: None)
         monkeypatch.setattr(kb, "_pykrx", lambda: (_S(), ""))
-        monkeypatch.setattr(kb, "_kis_names", lambda: ({}, ""))
+        monkeypatch.setattr(kb, "_kis_names", lambda **_k: ({}, ""))
         monkeypatch.setattr(kb, "today_is_final", lambda now: True)
         rows, _a, _m = kb._kr_bulk_rows_uncached(3)
         by = {r["ticker"].split(".")[0]: r for r in rows}
@@ -73534,24 +73570,66 @@ class TestKrFallbackReviewFollowups20260919:
 
     def test_render_path_has_a_budget(self, monkeypatch):
         """콜드 미스면 KIS zip 2개 + pykrx 3콜이 렌더 안에서 동기로 붙는다 —
-        예산을 넘기면 비우고 백그라운드가 예열한다(#116)."""
+        예산을 넘기면 비우고 작업은 **취소하지 않는다**(#116).
+
+        ⚠️ 2026-09-19 두 군데를 다시 썼다(#222):
+          - 사유를 **리터럴**("초를 넘겨")로 재고 있었다 — 문구를 다듬으면
+            멀쩡한 코드가 빨간불이 된다(#19). 계약은 "예산 숫자를 말하고 재지
+            않은 약속을 하지 않는다" 이지 그 표현이 아니다.
+          - 3초짜리 백그라운드 스레드를 **놓아둔 채** 끝나고 있었다. teardown
+            뒤에 `_cache_write` 가 진짜로 돌아 다음 테스트가 그 복사본을
+            읽는다(실측: SWR 을 넣자마자 형제 테스트가 `ticker: x` 를 받았다,
+            #312·#344 daemon 스레드는 teardown 뒤까지 산다).
+
+        ⚠️ 그 누수를 처음엔 "마지막 쓰기 **2회**를 봤다" 는 단언으로 막으려
+        했는데, 그건 **시간 단언**이라 단독 green · 전체 red 였다(실측 —
+        #128 이 "동시성 단언은 시간·순서로 쓰면 그렇게 된다, 배선 계약으로
+        쓸 것" 이라고 적어 둔 그대로를 내가 썼다). 지금은 구조로 막는다:
+        캐시·기록 이름을 **이 테스트 전용**으로 두어 뒤늦은 쓰기가 형제를
+        못 건드리게 하고, 단언은 예산 계약 하나만 본다. "행이 있으면 굽는다"
+        는 스레드 없이 결정적으로 도는 형제 테스트가 맡는다(#20 은 배선을
+        재라는 것이지 **타이밍**을 재라는 것이 아니다).
+        """
         import threading
+        import time as _t
         import bot.finviz_client as fv
         import bot.kr_bulk_rank as kb
         started = threading.Event()
+        release = threading.Event()
+        lock = threading.Lock()
+        wrote: list = []
+        monkeypatch.setattr(kb, "_CACHE", "kr_bulk_rank_budget_t.json")
+        monkeypatch.setattr(kb, "_STATE", "kr_bulk_rank_state_budget_t.json")
         monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
-        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+
+        def _note_write(name, _obj):
+            with lock:
+                wrote.append(name)
+        monkeypatch.setattr(fv, "_cache_write", _note_write)
         monkeypatch.setattr(kb, "_BUDGET", 0.2)
 
-        def _slow(mb):
+        def _slow(mb, **_k):
             started.set()
-            threading.Event().wait(3)
+            release.wait(5)
             return ([{"ticker": "x"}], "2026-09-18", "")
         monkeypatch.setattr(kb, "_kr_bulk_rows_uncached", _slow)
-        rows, asof, why = kb.kr_bulk_rows()
-        assert started.wait(2), "작업이 시작도 안 했다 — 재는 대상이 틀렸다"
-        assert rows == [] and asof == ""
-        assert "초를 넘겨" in why, why
+        try:
+            rows, asof, why = kb.kr_bulk_rows()
+            assert started.wait(2), "작업이 시작도 안 했다 — 재는 대상이 틀렸다"
+            assert rows == [] and asof == ""
+            assert "0.2" in why, why            # 예산을 **숫자로** 말한다(#202)
+            # 재지 않은 약속 금지(#380) — 우리가 아는 것은 '넘겼다' 까지다
+            assert "다음 갱신에 나옵니다" not in why, why
+        finally:
+            # 스레드를 풀어 주되 **단언하지 않는다** — 얼마나 빨리 끝나는지는
+            # 계약이 아니다(#128). 이름이 이 테스트 전용이라 늦게 써도 무해하다.
+            release.set()
+            for _ in range(200):
+                with lock:
+                    done = kb._STATE in wrote and kb._CACHE in wrote
+                if done:
+                    break
+                _t.sleep(0.01)
 
     def test_volume_fallback_stands_down_while_naver_is_paused(self, monkeypatch):
         """우리가 끈 것은 장애가 아니다 — 형제(무버)는 이미 물러나는데 이쪽만
@@ -73615,3 +73693,372 @@ class TestKrFallbackReviewFollowups20260919:
         none_ = ("22. **제목만 있고 콜론이 괄호 안에만 있다**(하루에 세 번: "
                  "a·b·c).\n")
         assert entry_title(none_) == "", entry_title(none_)
+
+
+class TestKrBulkRankConvergence20260919:
+    """폴백이 **수렴하나** — 2026-09-19 일일 감사가 이틀째 `❌ 급등·급락 0행`.
+
+    배포된 판은 렌더 예산(12초)을 넘기면 이번 응답을 비우고 "백그라운드가 받는
+    중이라 **다음 갱신에 나옵니다**" 라고 적었다. 그 문장이 참인지 아무도 재지
+    않았다(#380 '기다리면 된다' 고 말하는 문장을 쓸 땐 정말 그 경로가 다시 도는지
+    코드로 확인할 것 · #165 재지 않은 것을 단정하지 말 것). 그리고 **참이어도**
+    수렴하지 않는다:
+
+      (a) TTL(10분)이 지나면 `_cached` 가 None 을 주므로 이미 받아 둔 복사본을
+          **버리고** 또 비운다 — 종가라 사실상 안 바뀌는 값인데도(#163 SWR 은
+          되살린 값에 기준시각을 같이 싣는 것이지 버리는 게 아니다).
+      (b) 일일 감사는 **매번 콜드 프로세스**라 정의상 예산을 넘긴다 = 영원히
+          ❌ 다. 못 고칠 ❌ 가 매일 오면 진짜 ❌ 를 가린다(#260).
+      (c) 실패 갈래가 넷인데(자격증명 없음 / pykrx 없음 / 원천 빈 응답 /
+          아직 안 끝남) 화면은 한 문장이었다 — 처방이 전부 다르다(#82).
+
+    재현 테스트 먼저(§Pre-commit 9): 아래 넷은 **배포된 판에서 빨간불**이다.
+    """
+
+    _ROWS = [{"ticker": "005930.KS", "name": "삼성전자", "price": 70000.0,
+              "pct": 1.5, "vol": 12345.0, "value": 700.0, "mcap": 4000000.0,
+              "high": 71000.0, "low": 69000.0, "ind": None},
+             {"ticker": "035720.KQ", "name": "가나다", "price": 5000.0,
+              "pct": -3.0, "vol": 999.0, "value": 40.0, "mcap": 1000.0,
+              "high": 5200.0, "low": 4900.0, "ind": None}]
+
+    @staticmethod
+    def _asof(days_ago: int) -> str:
+        import datetime as _dt
+        from bot import kr_bulk_rank as _kb
+        d = _dt.datetime.now(_kb._KST) - _dt.timedelta(days=days_ago)
+        return d.strftime("%Y-%m-%d")
+
+    @classmethod
+    def _seed(cls, asof: str, age_sec: float, rows=None):
+        """복사본을 두고 **파일 나이까지** 맞춘다 — mtime 이 곧 '우리가 받은 시각'
+        이다(#304 나이는 아는 쪽이 말하게 · `finviz_client.cache_age_sec`)."""
+        import os
+        import time as _t
+        from bot import finviz_client as _fv
+        from bot import kr_bulk_rank as _kb
+        _fv._cache_write(_kb._CACHE, {
+            "rows": cls._ROWS if rows is None else rows,
+            "asof": asof, "memo": ""})
+        p = _fv._CACHE_DIR / _kb._CACHE
+        t = _t.time() - age_sec
+        os.utime(p, (t, t))
+        return p
+
+    @staticmethod
+    def _iso(monkeypatch, tag: str):
+        """캐시·기록 파일 이름을 **이 테스트 전용**으로 바꾼다.
+
+        ⚠️ 형제 테스트가 띄운 백그라운드 스레드는 teardown **뒤에** 캐시를
+        쓴다(#312·#344 실측: SWR 을 넣자마자 이 클래스가 남의 `ticker: x` 를
+        받아 '만료분을 안 낸다' 단언이 뒤집혔다). 그 스트레이 쓰기는 **기본
+        이름**으로 가므로, 여기서만 이름을 갈면 구조적으로 안 섞인다 — 규율로
+        기억할 일을 구조로(#119).
+        """
+        from bot import kr_bulk_rank as _kb
+        monkeypatch.setattr(_kb, "_CACHE", f"kr_bulk_rank_{tag}.json")
+        monkeypatch.setattr(_kb, "_STATE", f"kr_bulk_rank_state_{tag}.json")
+
+    def test_expired_copy_is_served_instead_of_blanking_the_board(self, monkeypatch):
+        """(a) TTL 이 지났다고 **이미 받아 둔 종가를 버리지 않는다**."""
+        from bot import kr_bulk_rank as _kb
+        self._iso(monkeypatch, "stale")
+        asof = self._asof(1)
+        self._seed(asof, _kb._TTL + 300)
+        kicked = []
+        monkeypatch.setattr(_kb, "_kick", lambda mb, **_k: kicked.append(mb) or True)
+        monkeypatch.setattr(_kb, "_kr_bulk_rows_uncached",
+                            lambda mb, **_k: pytest.fail("복사본이 있는데 전경에서 받았다"))
+        rows, got, memo = _kb.kr_bulk_rows()
+        assert rows, "만료된 복사본이 있는데 화면을 비웠다"
+        assert got == asof
+        assert kicked, "갱신을 킥하지 않으면 그 복사본은 영원히 낡는다"
+        # 나이는 라벨만 말고 **숫자로**(#202) + 기준일을 같이(#43·#163)
+        assert asof in memo and "전" in memo, memo
+        assert "갱신은 백그라운드가 받습니다" in memo, memo
+        # ⚠️ 킥이 **못 떴으면** 그렇게 적는다 — 늘 켜지는 '갱신 중' 은 아무것도
+        # 안 재는 것과 같고, 꺼져 있어야 할 때 켜지면 거짓말이다(#25·#165·#343).
+        monkeypatch.setattr(_kb, "_kick", lambda mb: False)
+        _rows2, _a2, memo2 = _kb.kr_bulk_rows()
+        assert "띄우지 못했습니다" in memo2, memo2
+
+    def test_copy_older_than_the_lookback_horizon_is_not_served(self, monkeypatch):
+        """복사본이라고 무한정 내지 않는다 — 상한은 **신선 경로가 받아들이는
+        기준일**(`max_back` 일)에서 파생한다(#269 lag 는 추측하지 말고 주기에서)."""
+        from bot import kr_bulk_rank as _kb
+        self._iso(monkeypatch, "horizon")
+        self._seed(self._asof(20), _kb._TTL + 300)
+        monkeypatch.setattr(_kb, "_kick", lambda mb, **_k: True)
+        monkeypatch.setattr(_kb, "_kr_bulk_rows_uncached",
+                            lambda mb, **_k: ([], "", "pykrx 없음(ModuleNotFoundError)"))
+        rows, got, memo = _kb.kr_bulk_rows(max_back=7)
+        assert rows == [] and got == ""
+        assert "pykrx 없음" in memo, memo
+
+    def test_timeout_reason_names_the_last_finished_attempt(self, monkeypatch):
+        """(c) 예산을 넘겨 비울 때 **마지막 시도의 관측 사실**을 적는다 —
+        "다음 갱신에 나옵니다" 는 재지 않은 약속이다(#380·#165)."""
+        import time as _t
+        from bot import finviz_client as _fv
+        from bot import kr_bulk_rank as _kb
+        self._iso(monkeypatch, "reason")
+        now = _t.time()
+        _fv._cache_write(_kb._STATE, {
+            "started": now - 600, "finished": now - 540, "ok": False,
+            "secs": 60.0, "rows": 0,
+            "reason": "KRX 자격증명 없음(.env 의 KRX_ID/KRX_PW)"})
+        monkeypatch.setattr(_kb, "_BUDGET", 0.05)
+        monkeypatch.setattr(_kb, "_kick", lambda mb, **_k: True)
+        import threading as _th
+        release = _th.Event()
+
+        def _slow(mb, **_k):
+            release.wait(5)
+            return [], "", "느림"
+        monkeypatch.setattr(_kb, "_kr_bulk_rows_uncached", _slow)
+        try:
+            rows, _asof, memo = _kb.kr_bulk_rows()
+            assert rows == []
+            assert "KRX 자격증명 없음" in memo, memo
+            assert "다음 갱신에 나옵니다" not in memo, memo
+        finally:
+            # 스레드를 **놓아둔 채 끝내지 않는다** — teardown 뒤의 쓰기는 기본
+            # 이름으로 가서 형제 테스트를 오염시킨다(#312·#344).
+            release.set()
+            for _ in range(500):
+                if str(_kb.attempt_record().get("reason") or "") == "느림":
+                    break
+                _t.sleep(0.01)
+
+    def test_every_attempt_leaves_a_record(self, monkeypatch):
+        """기록이 없으면 '예열 중' 과 '고장' 을 영영 못 가른다(#82·#86)."""
+        from bot import kr_bulk_rank as _kb
+        self._iso(monkeypatch, "record")
+        monkeypatch.setattr(_kb, "_kr_bulk_rows_uncached",
+                            lambda mb, **_k: ([], "", "pykrx 없음(ImportError)"))
+        _kb.kr_bulk_rows()
+        rec = _kb.attempt_record()
+        assert rec.get("finished") and rec.get("ok") is False, rec
+        assert "pykrx 없음" in str(rec.get("reason")), rec
+        monkeypatch.setattr(_kb, "_kr_bulk_rows_uncached",
+                            lambda mb, **_k: (list(self._ROWS), "2026-09-18", ""))
+        _kb.kr_bulk_rows()
+        rec = _kb.attempt_record()
+        assert rec.get("ok") is True and rec.get("rows") == 2, rec
+
+    def test_attempt_note_names_the_branch(self):
+        """갈래마다 처방이 다르므로 이름을 달리 부른다(#82)."""
+        from bot import kr_bulk_rank as _kb
+        now = 1_000_000.0
+        run = _kb.attempt_note({"started": now - 25, "finished": None}, now)
+        assert "받는 중" in run and "25초" in run, run
+        bad = _kb.attempt_note({"started": now - 300, "finished": now - 240,
+                                "ok": False, "reason": "pykrx 없음"}, now)
+        assert "실패" in bad and "pykrx 없음" in bad, bad
+        # 성공했는데 캐시가 비었다 = **캐시 쓰기**를 봐야 한다(다른 처방)
+        okr = _kb.attempt_note({"started": now - 300, "finished": now - 240,
+                                "ok": True, "rows": 2500}, now)
+        assert "성공" in okr and "2,500" in okr, okr
+        assert _kb.attempt_note({}, now) == ""
+        assert _kb.attempt_note(None, now) == ""
+
+    def test_warming_note_is_a_grace_not_an_amnesty(self):
+        """'예열 중' 은 유예이지 면죄가 아니다 — 시작만 하고 안 끝난 기록이
+        오래되면 그건 예열이 아니라 **멈춘 것**이므로 ⚠️ 로 숨기지 않는다
+        (#41 여유로 사실을 덮지 말 것 · #260)."""
+        from bot import kr_bulk_rank as _kb
+        now = 1_000_000.0
+        assert _kb.warming_note({"started": now - 30, "finished": None}, now)
+        assert not _kb.warming_note({"started": now - 3600, "finished": None}, now)
+        assert not _kb.warming_note({"started": now - 300, "finished": now - 240,
+                                     "ok": False, "reason": "x"}, now)
+        assert not _kb.warming_note({}, now)
+
+    def test_audit_separates_warmup_from_a_measured_failure(self):
+        """(b) 감사가 '아직 예열 중' 과 '고장' 을 같은 ❌ 로 내면 매일 못 고칠
+        ❌ 가 쌓인다(#260). 예열은 ⚠️, 측정된 실패는 ❌."""
+        from bot.scripts.kr_boards_audit import board_verdict
+        warm = board_verdict("급등·급락", 0, False, "사유",
+                             warming="25초째 받는 중입니다")
+        assert warm.startswith("⚠️") and "25초" in warm, warm
+        dead = board_verdict("급등·급락", 0, False,
+                             "KRX 폴백도 비었습니다 — 지난 시도 실패: pykrx 없음")
+        assert dead.startswith("❌") and "pykrx 없음" in dead, dead
+
+    def test_audit_passes_the_warming_fact_to_the_verdict(self, monkeypatch):
+        """M7 — `board_verdict` 에 갈래를 만들어 놓고 **감사가 안 넘기면** 그
+        갈래는 도달 불가다(#20 순수 함수만 재면 배선을 못 잡는다 · #291)."""
+        import time as _t
+        from bot import kr_bulk_rank as _kb
+        from bot import naver_ranking_client as _nrc
+        from bot.scripts import kr_boards_audit as _aud
+        monkeypatch.setattr(_nrc, "fetch_kr_movers",
+                            lambda limit=30: {"up": [], "down": [],
+                                              "reason": "원천이 HTTP 400"})
+        monkeypatch.setattr(_kb, "attempt_record",
+                            lambda: {"started": _t.time() - 20, "finished": None})
+        line = _aud._movers()
+        assert line.startswith("⚠️") and "20초" in line, line
+        # 그리고 **멈춘** 수집은 여전히 ❌ 다 — 예열은 유예이지 면죄가 아니다(#41)
+        monkeypatch.setattr(_kb, "attempt_record",
+                            lambda: {"started": _t.time() - 9999,
+                                     "finished": None})
+        assert _aud._movers().startswith("❌"), _aud._movers()
+
+    def test_diagnostic_call_shares_no_singleflight_slot_with_the_render(
+            self, monkeypatch):
+        """M9 — 진단(`use_cache=False`)이 렌더의 **리더**가 되면 그 호출의 캐시·
+        기록 쓰기가 통째로 사라진다(#346 `force` 로 키를 가른 선례 · #30 진단이
+        자기가 읽을 신호를 오염시키면 안 된다)."""
+        import bot.finviz_client as _fv
+        import bot.singleflight as _sf
+        from bot import kr_bulk_rank as _kb
+        self._iso(monkeypatch, "sfkey")
+        keys: list = []
+
+        def _once(key, fn, *a, **k):
+            keys.append(key)
+            return fn()
+        monkeypatch.setattr(_sf, "once", _once)
+        monkeypatch.setattr(_fv, "_cached", lambda *a, **k: None)
+        wrote: list = []
+        monkeypatch.setattr(_fv, "_cache_write", lambda n, v: wrote.append(n))
+        monkeypatch.setattr(_kb, "_kr_bulk_rows_uncached",
+                            lambda mb, **_k: (list(self._ROWS), "2026-09-18", ""))
+        _kb.kr_bulk_rows(use_cache=False)
+        assert wrote == [], "진단이 운영 캐시·기록을 건드렸다"
+        _kb.kr_bulk_rows()
+        assert len(set(keys)) == 2, keys
+        assert _kb._CACHE in wrote and _kb._STATE in wrote, wrote
+
+    def test_kick_spawns_one_thread_and_recovers_from_a_failed_start(
+            self, monkeypatch):
+        """M10·M11 — `_kick` 의 두 계약.
+
+        `start()` 가 던지면 **반드시 락을 푼다**: 안 풀면 그 보드의 갱신이
+        영구 정지한다(#280·#371 이 레포가 실측한 함정). 그리고 이미 받는
+        중이면 스레드를 더 띄우지 않는다 — 폴링(2분)마다 쌓인다.
+
+        ⚠️ `Thread` 스텁은 **stdlib 가 아니라 모듈 로컬 별칭**에 건다(#371).
+        """
+        import types
+        from bot import kr_bulk_rank as _kb
+
+        class _Boom:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        monkeypatch.setattr(_kb, "threading",
+                            types.SimpleNamespace(Thread=_Boom))
+        assert _kb._kick(7) is False
+        got = _kb._KICK.acquire(blocking=False)
+        if got:
+            _kb._KICK.release()
+        assert got, "start() 가 던졌는데 락이 잠긴 채 남았다 = 영구 정지"
+
+        spawned: list = []
+
+        class _Rec:
+            def __init__(self, target=None, **k):
+                self.target = target
+
+            def start(self):
+                spawned.append(1)          # 일부러 실행하지 않는다 = 받는 중
+        monkeypatch.setattr(_kb, "threading",
+                            types.SimpleNamespace(Thread=_Rec))
+        try:
+            # ⚠️ 반환의 뜻은 **"갱신이 지금 진행 중인가"** 다(2026-09-19 계약
+            # 갱신, #222) — 이미 받는 중이면 스레드를 더 안 띄우지만 갱신은
+            # 진행 중이므로 True 다. 화면이 그 값으로 '갱신 중' 을 적으므로
+            # 뜻이 어긋나면 배지가 거짓말한다(#25·#343). '스레드를 하나만'
+            # 이라는 보장은 **띄운 횟수**로 잰다.
+            assert _kb._kick(7) is True
+            assert _kb._kick(7) is True
+            assert spawned == [1], f"받는 중인데 스레드를 또 띄웠다: {spawned}"
+        finally:
+            # 스레드가 안 돌았으므로 `_bg` 의 finally 도 안 돈다 — 테스트가
+            # 직접 푼다. 안 풀면 **이 세션의 남은 테스트가 전부 영향**을 받는다.
+            try:
+                _kb._KICK.release()
+            except RuntimeError:
+                pass
+
+    def test_name_map_is_cached_but_a_half_map_is_not(self, monkeypatch):
+        """이름표(KIS 마스터 zip 2개)는 **콜드 비용의 대부분**인데 캐시가 없어
+        갱신마다 다시 받고 있었다 — 상장 종목명은 하루 한 번 바뀌는 값이다
+        (#61 이 비용이 어느 단계를 줄이나). 단 **반쪽 맵은 안 굽는다**:
+        코스닥 zip 만 실패한 맵을 완전본으로 구우면 코스닥 전 종목이 12시간
+        동안 접미사 없는 맨 코드가 된다(#280·#384)."""
+        import bot.bollinger_board as bb
+        import bot.finviz_client as fv
+        from bot import kr_bulk_rank as _kb
+        self._iso(monkeypatch, "names")
+        monkeypatch.setattr(_kb, "_NAMES_CACHE", "kr_bulk_rank_names_t.json")
+        try:
+            (fv._CACHE_DIR / _kb._NAMES_CACHE).unlink()
+        except OSError:
+            pass
+        calls: list = []
+
+        def _master(book, **_k):
+            calls.append(book)
+            if book == "kosdaq":
+                return [], "HTTP 500"
+            return [{"code": "005930", "name": "삼성전자"}], ""
+        monkeypatch.setattr(bb, "_kis_master_rows", _master)
+        got, note = _kb._kis_names()
+        assert got.get("005930") == ("삼성전자", ".KS"), got
+        assert "kosdaq" in note, note
+        assert not (fv._CACHE_DIR / _kb._NAMES_CACHE).exists(), "반쪽 맵을 구웠다"
+
+        # 두 책이 다 오면 굽고, 다음 호출은 원천을 **한 번도** 안 친다
+        def _both(book, **_k):
+            calls.append(book)
+            return ([{"code": "005930", "name": "삼성전자"}] if book == "kospi"
+                    else [{"code": "035720", "name": "가나다"}]), ""
+        monkeypatch.setattr(bb, "_kis_master_rows", _both)
+        _kb._kis_names()
+        calls.clear()
+        again, _n = _kb._kis_names()
+        assert calls == [], "캐시가 있는데 zip 을 또 받았다"
+        # JSON 왕복이 튜플을 리스트로 바꾼다 — 읽는 지점에서 복원한다(#22)
+        assert again["035720"] == ("가나다", ".KQ"), again["035720"]
+
+        # 진단(write=False)은 **읽기만** — 운영 캐시를 채우지 않는다(#30·#283)
+        try:
+            (fv._CACHE_DIR / _kb._NAMES_CACHE).unlink()
+        except OSError:
+            pass
+        _kb._kis_names(write=False)
+        assert not (fv._CACHE_DIR / _kb._NAMES_CACHE).exists(), "진단이 캐시를 채웠다"
+
+        # ⚠️ 그리고 그 `write` 가 **진입점에서 여기까지 배선되나** — 헬퍼만
+        # 재면 배선을 떼는 변형을 못 잡는다(#20). `kr_bulk_rows(use_cache=
+        # False)` 를 통째로 태워 값으로 본다.
+        monkeypatch.setattr(_kb, "_pykrx", lambda: (object(), ""))
+        monkeypatch.setattr(_kb, "_rows_on", lambda st, ds, nm: ([], "행 없음"))
+        monkeypatch.setattr(_kb, "today_is_final", lambda now: True)
+        _kb.kr_bulk_rows(max_back=1, use_cache=False)
+        assert not (fv._CACHE_DIR / _kb._NAMES_CACHE).exists(), \
+            "진단 경로가 이름 캐시를 채웠다 — write 배선이 끊겼다"
+
+    def test_endpoint_line_does_not_blame_the_request_shape_on_a_proxy_error(self):
+        """샌드박스 스모크 실측: 옛 판이 **ProxyError**(아예 못 닿음)에도
+        "네이버가 우리 요청 모양을 거절합니다" 를 붙였다 — 처방이 정반대인
+        갈래를 한 문장이 덮은 것이고(#82) 재지 않은 원인을 단정한 것이다
+        (#165·#292). 요청 모양 거절은 원천이 4xx 로 그렇게 말했을 때만이다."""
+        from bot.naver_diag import PAUSED, http_reason
+        from bot.scripts.kr_boards_audit import endpoint_verdict
+        proxy = ("ProxyError: HTTPSConnectionPool(host='m.stock.naver.com', "
+                 "port=443): Max retries exceeded")
+        v = endpoint_verdict(False, proxy)
+        assert "요청 모양" not in v.split("(요청 모양 문제인지는")[0], v
+        assert "닿지 못했습니다" in v, v
+        r400 = http_reason(400, 120, body=b'{"detail":"sortType"}')
+        v400 = endpoint_verdict(False, r400)
+        assert "요청 모양을 거절합니다" in v400, v400
+        # 우리가 끈 것은 장애가 아니다(#279·#345)
+        assert endpoint_verdict(False, PAUSED).startswith("⏸"), PAUSED
+        assert endpoint_verdict(True, "200 · 50행").startswith("✅")
