@@ -23,6 +23,18 @@ from bot import naver_diag as _nd
 log = logging.getLogger("bot.naver_ranking")
 
 _BASE = "https://m.stock.naver.com/front-api"
+
+# ── `sortType` 단일 출처 ──────────────────────────────────────────────
+# 이 주소의 `sortType` 은 **값마다 살고 죽는다** — 2026-09-18 부터 `up`·`down`
+# 과 거래량계는 400 인데 52주 계열은 그대로 행을 준다. 그래서 "지금 동작이
+# 증명된 값" 과 "죽은 값" 을 여기 한 곳에 두고 도달성 점검·프로브가 그걸
+# 쓴다. 리터럴을 각자 적으면 52주 보드가 값을 바꿀 때 점검만 남아 갈린다
+# (#38·#392 대조군이 시험 대상과 같았던 그 사고).
+KR_HIGHLOW_SORT = "high52week"          # /kr52 — 화면이 네이버라고 적고 있다
+KR_HIGHLOW_LOW_SORT = "low52week"
+KR_MOVERS_SORT = "up"                   # 급등·급락 — 2026-09-18~ 400
+KR_MOVERS_DOWN_SORT = "down"
+
 _H = {
     "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
@@ -757,8 +769,8 @@ def fetch_kr_highlow(limit: int = 200) -> dict:
     from bot.finviz_client import _now_label
     out = {"high": [], "low": [], "ts": _now_label(),
            "source": "네이버 증권 52주 최고/최저(전종목·한글명)"}
-    hi = _domestic_paged("high52week", max_items=limit)
-    lo = _domestic_paged("low52week", max_items=limit)
+    hi = _domestic_paged(KR_HIGHLOW_SORT, max_items=limit)
+    lo = _domestic_paged(KR_HIGHLOW_LOW_SORT, max_items=limit)
     if hi:
         out["high"] = [_kr_row(s) for s in hi if _is_real_stock(s)]
     if lo:
@@ -836,8 +848,8 @@ def fetch_kr_movers(limit: int = 30) -> dict:
     out = {"up": [], "down": [], "ts": _now_label(), "reason": "",
            "fallback": False, "asof": "",
            "source": "네이버 증권 급등/급락(전종목·한글명·시총·거래대금)"}
-    up, why_u = _domestic_paged2("up", max_items=max(limit, 50))
-    dn, why_d = _domestic_paged2("down", max_items=max(limit, 50))
+    up, why_u = _domestic_paged2(KR_MOVERS_SORT, max_items=max(limit, 50))
+    dn, why_d = _domestic_paged2(KR_MOVERS_DOWN_SORT, max_items=max(limit, 50))
     if up:
         out["up"] = [_kr_row(s) for s in up if _is_real_stock(s)][:limit]
     if dn:

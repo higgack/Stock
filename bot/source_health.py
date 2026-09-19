@@ -58,17 +58,30 @@ def _naver_get(url: str, headers: dict | None = None, want: str = "json") -> tup
 
 
 def _naver_domestic() -> tuple[bool, str]:
-    """네이버 국내 front-api(코스피 등락 랭킹) — 1페이지."""
+    """네이버 국내 front-api 도달성 — 1페이지.
+
+    ⚠️ 이 점검이 재는 것은 **도달성**이다. 옛 판은 `sortType=up` 을 찔렀는데
+    그건 2026-09-18 부터 400 인 **죽은 값**이라, 무인 일일 감사가 매일 "주소가
+    거절한다" 를 냈다 — 정작 같은 주소가 52주 값으로는 행을 주고 있었다.
+    못 고칠 ❌ 가 매일 오면 진짜 ❌ 를 가린다(#260·#392). 값은 `sortType` 단일
+    출처에서 가져온다 — 리터럴을 여기 또 적으면 52주 보드가 값을 바꿀 때 이
+    점검만 남아 갈린다(#38).
+    ⚠️ 급등·급락이 쓰는 값이 거절당하는 **사실**은 이 줄이 아니라
+    `kr_boards_audit` 의 보드 판정이 말한다(#45 두 모집단).
+    """
     try:
+        # ⚠️ import 도 `try` 안에 둔다 — 이 함수의 계약은 "graceful, 튜플을
+        # 돌려준다" 이고, 호출부(`/health` 의 dict 리터럴)는 예외를 안 받는다.
+        from bot.naver_ranking_client import KR_HIGHLOW_SORT
         ok, data, dt = _naver_get(
             "https://m.stock.naver.com/front-api/domestic/stock/list"
-            "?sortType=up&category=all&page=1&pageSize=5")
+            f"?sortType={KR_HIGHLOW_SORT}&category=all&page=1&pageSize=5")
         if not ok:
             return False, f"{data} ({dt:.0f}ms)"
         rows = (data or {}).get("result") or (data or {}).get("stocks") or data
         n = len(rows) if isinstance(rows, list) else (
             len(rows.get("stocks", [])) if isinstance(rows, dict) else 0)
-        return (n > 0), f"국내 랭킹 {n}건 ({dt:.0f}ms)"
+        return (n > 0), f"국내 랭킹({KR_HIGHLOW_SORT}) {n}건 ({dt:.0f}ms)"
     except Exception as exc:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 

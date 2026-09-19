@@ -73418,8 +73418,12 @@ class TestKrBoardsAuditAndShapeProbe20260919:
         # 그 갈래가 0행인 **이유**는 안 쟀다 — 단정하지 않는다(#165)
         assert "안 쟀습니다" in v, v
         # 거절이 아닌 것을 '거절' 목록에 넣지 않는다(#292)
-        assert f"거절: {_LBL_CONTROL}, {_LBL_SUBJECT}, sortType 없음" in v, v
-        assert "dividend 갈래" not in v.split("거절:")[1].split(")")[0], v
+        # ⚠️ `split(")")` 로 자르면 `52주 갈래(대조군)` 안의 `)` 에서 끊겨
+        # 가드가 **영원히 발화하지 못한다**(독립 리뷰 2026-09-19 F5 실측:
+        # `rejected=[전 라벨]` 뮤테이션도 통과했다, #91b 재는 대상이 맞나).
+        # 거절 목록 **전체**를 값으로 못박는다.
+        assert (f"거절: {_LBL_CONTROL}, {_LBL_SUBJECT}, sortType 없음, "
+                "파라미터 없음, category 없음)") in v, v
         # 전부 거절이면 종전 문구 그대로(옛 계약 유지, #222)
         all6 = shape_verdict([(lab, 0, r400) for lab in
                               (_LBL_CONTROL, _LBL_SUBJECT, "sortType 없음",
@@ -74654,13 +74658,15 @@ class TestProbeControlGroupIsAProvenCall20260919:
     def test_control_verdict_splits_unreachable_from_value_rejected(self):
         """갈래 넷, 처방이 전부 다르다(#82). 특히 '대조군만 행' 은 **주소가
         살아 있다**는 뜻이라 새 주소를 찾으러 가면 안 된다."""
+        from bot.naver_diag import http_reason
         from bot.scripts.kr_board_probe import control_verdict as cv
-        assert cv(control_ok=True, subject_ok=True).startswith("✅")
-        v = cv(control_ok=True, subject_ok=False)
+        r400 = http_reason(400, 12, body=b'{"detail":"sortType"}')
+        assert cv(control_ok=True, subject=True).startswith("✅")
+        v = cv(control_ok=True, subject=False, subject_why=r400)
         assert v.startswith("⚠️") and "살아 있습니다" in v, v
         assert "새 주소가 아니라" in v, v
-        assert cv(control_ok=False, subject_ok=True).startswith("❓")
-        v4 = cv(control_ok=False, subject_ok=False)
+        assert cv(control_ok=False, subject=True).startswith("❓")
+        v4 = cv(control_ok=False, subject=False, subject_why=r400)
         assert v4.startswith("❌") and "판정 불가" in v4, v4
 
     def test_shapes_include_the_control_branch(self):
@@ -74761,3 +74767,172 @@ class TestProbeControlGroupIsAProvenCall20260919:
         assert pr.main() == 0
         capsys.readouterr()
         assert pr._SUBJECT_OK is None
+
+
+class TestProbeReviewFollowups20260919C:
+    """독립 리뷰가 배포 전에 잡은 것 — 대조군 fix 의 다음 층(실수 #392).
+
+    핵심은 하나다: **대조군을 고친 것만으로는 갈래가 안 갈린다.** 시험 대상의
+    사유를 버리고 `bool` 로 접으면 타임아웃·429·일시정지가 "이 값만
+    거절당한다" 로 찍혀 운영자가 갈 곳이 반대가 된다(#82·#292). 그리고 같은
+    병이 **무인 경로**(일일 감사가 부르는 도달성 점검)에 그대로 남아 있었다.
+    """
+
+    # ── F1 ───────────────────────────────────────────────────────────────
+    def test_subject_state_is_three_valued_not_a_bool(self):
+        """거절(4xx)·판정 불가(429·타임아웃·일시정지)·행 셋은 처방이 다르다.
+
+        거절은 원천이 **4xx 로 그렇게 말했을 때만**이다(#352 단일 출처) —
+        429·403·404 를 거절로 세면 "값만 죽었다" 가 거짓이 된다.
+        """
+        from bot.naver_diag import PAUSED, http_reason
+        from bot.scripts.kr_board_probe import subject_state
+        assert subject_state(5, "") is True
+        assert subject_state(0, http_reason(400, 12, body=b"x")) is False
+        assert subject_state(0, http_reason(422, 12, body=b"x")) is False
+        # 판정 불가 — 하나라도 False 면 운영자를 엉뚱한 데로 보낸다
+        for why in (http_reason(429, 12, body=b"x"),
+                    http_reason(403, 12, body=b"x"),
+                    http_reason(404, 12, body=b"x"),
+                    "원천이 응답하지 않습니다(timeout)", PAUSED, ""):
+            assert subject_state(0, why) is None, why
+
+    def test_verdict_does_not_blame_the_value_on_a_timeout_or_a_pause(self):
+        """옛 판은 `bool` 만 받아 타임아웃도 "값만 거절당합니다" 로 찍었다."""
+        from bot.naver_diag import PAUSED
+        from bot.scripts.kr_board_probe import control_verdict as cv
+        to = "원천이 응답하지 않습니다(timeout)"
+        v = cv(control_ok=True, subject=None, subject_why=to)
+        assert v.startswith("❓") and "판정 불가" in v, v
+        assert "거절당합니다" not in v, v
+        assert "timeout" in v, "사유 원문을 버리면 다음 라운드가 추측한다(#109)"
+        p = cv(control_ok=False, subject=None, control_why=PAUSED)
+        assert p.startswith("⏸") and "결함 아님" in p, p
+
+    def test_a_pause_neither_hammers_the_source_nor_counts_as_a_defect(
+            self, monkeypatch, capsys):
+        """일시정지 중에 ①-b 가 여섯 번 더 두드리면 안 되고(#279·#345),
+        rc=1 로 세면 매일 못 고칠 ❌ 가 된다(#260). 건너뛴 사실은 적는다(#54)."""
+        import bot.scripts.kr_board_probe as pr
+        from bot.naver_diag import PAUSED
+        monkeypatch.setattr(pr, "_banner", lambda: True)
+        monkeypatch.setattr(pr, "_get", lambda url, **k: (None, PAUSED))
+        monkeypatch.setattr(pr, "_section_shape",
+                            lambda: (_ for _ in ()).throw(
+                                AssertionError("일시정지 중에 원천을 두드렸다")))
+        monkeypatch.setattr(pr, "_section_sorts", lambda: ())
+        monkeypatch.setattr(pr, "_section_venue", lambda: None)
+        monkeypatch.setattr(pr, "_section_nxt_universe", lambda: None)
+        monkeypatch.setattr(pr, "_section_venue_params", lambda: None)
+        assert pr.main() == 0
+        out = capsys.readouterr().out
+        assert "건너뜀" in out, out[-400:]
+        assert "⏸" in out, out[-400:]
+
+    def test_an_unmeasured_subject_is_not_counted_as_a_defect(self, monkeypatch,
+                                                              capsys):
+        """대상이 타임아웃이면 rc=1 이 아니다 — 못 쟀지 거절당한 게 아니다(#54)."""
+        import bot.scripts.kr_board_probe as pr
+
+        def _fake(url, **params):
+            if params.get("sortType") == pr._CONTROL_SORT:
+                return {"result": {"stocks": [{"itemCode": "005930"}]}}, ""
+            return None, "원천이 응답하지 않습니다(timeout)"
+        monkeypatch.setattr(pr, "_banner", lambda: True)
+        monkeypatch.setattr(pr, "_get", _fake)
+        monkeypatch.setattr(pr, "_section_sorts", lambda: ())
+        monkeypatch.setattr(pr, "_section_venue", lambda: None)
+        monkeypatch.setattr(pr, "_section_nxt_universe", lambda: None)
+        monkeypatch.setattr(pr, "_section_venue_params", lambda: None)
+        assert pr.main() == 0
+        capsys.readouterr()
+        assert pr._SUBJECT_OK is None
+
+    # ── F2 ───────────────────────────────────────────────────────────────
+    def test_the_unattended_reachability_probe_uses_the_proven_value(self,
+                                                                     monkeypatch):
+        """무인 일일 감사가 부르는 도달성 점검이 **죽은 값**을 찌르고 있었다.
+
+        `source_health._naver_domestic` 이 `sortType=up` 을 쓰는 한 그 줄은
+        매일 "주소가 거절한다" 를 낸다 — 같은 주소가 52주 값으로는 행을 주는데
+        (#260 못 고칠 ❌ 가 진짜 ❌ 를 가린다 · #392 의 무인 경로판).
+        """
+        import types
+        import bot.source_health as sh
+        from bot.naver_ranking_client import KR_HIGHLOW_SORT, KR_MOVERS_SORT
+        seen: list = []
+
+        def _spy(url, *a, **k):
+            seen.append(url)
+            return types.SimpleNamespace(
+                status_code=200, json=lambda: {"result": {"stocks": [1, 2]}},
+                text="")
+        monkeypatch.setattr("requests.get", _spy)
+        ok, detail = sh._naver_domestic()
+        assert ok is True, detail
+        assert seen and f"sortType={KR_HIGHLOW_SORT}" in seen[0], seen
+        # 반대 증거 — 죽은 값으로 되돌아가면 잡힌다(#25)
+        assert f"sortType={KR_MOVERS_SORT}&" not in seen[0], seen
+        # 무엇으로 쟀는지 detail 이 말한다(#43·#34)
+        assert KR_HIGHLOW_SORT in detail, detail
+
+    def test_the_sort_values_have_one_source(self, monkeypatch):
+        """리터럴을 각자 적으면 52주 보드가 값을 바꿀 때 점검만 남아 갈린다(#38).
+
+        프로브는 **모듈 레벨에서 bot 패키지를 import 하지 않는다**(의존성 없는
+        인터프리터에서 배너보다 먼저 죽으면 '도달 실패' 와 구별이 안 된다,
+        #132) — 그래서 리터럴을 두되 동일성을 회귀가 못박는다.
+        """
+        import bot.naver_ranking_client as nrc
+        from bot.scripts.kr_board_probe import _CONTROL_SORT, _SUBJECT_SORT
+        assert _CONTROL_SORT == nrc.KR_HIGHLOW_SORT
+        assert _SUBJECT_SORT == nrc.KR_MOVERS_SORT
+        # 그리고 그 상수가 **실제로 나가는** 값이어야 한다(#20 배선은 태워야 본다)
+        seen: list = []
+        monkeypatch.setattr(nrc, "_get_stocks2",
+                            lambda url: (seen.append(url), (None, "stub"))[1])
+        nrc.fetch_kr_highlow(limit=5)
+        assert any(f"sortType={nrc.KR_HIGHLOW_SORT}" in u for u in seen), seen
+        assert any(f"sortType={nrc.KR_HIGHLOW_LOW_SORT}" in u for u in seen), seen
+
+    # ── F3 ───────────────────────────────────────────────────────────────
+    def test_usable_labels_come_from_the_shape_table_not_a_denylist(self):
+        """2항목 denylist 라 `sortType 없음`·`파라미터 없음` 이 "배선하면
+        됩니다" 로 샜다 — 정렬을 안 지정한 응답의 순서를 우리는 안 쟀다(#165).
+        목록은 `_SHAPES` 에서 파생한다(#24)."""
+        from bot.scripts.kr_board_probe import (_LBL_CONTROL, _LBL_SUBJECT,
+                                                _SHAPES, _SUBJECT_SORT,
+                                                usable_labels)
+        u = usable_labels()
+        assert _LBL_SUBJECT in u and _LBL_CONTROL not in u, u
+        assert "sortType 없음" not in u and "파라미터 없음" not in u, u
+        assert "dividend 갈래" not in u, u
+        # 구조에서 파생 — 열거가 아니다
+        assert set(u) == {lab for lab, p in _SHAPES
+                          if p.get("sortType") == _SUBJECT_SORT}
+
+    def test_an_unordered_response_is_not_called_wirable(self):
+        from bot.naver_diag import http_reason
+        from bot.scripts.kr_board_probe import _LBL_SUBJECT, shape_verdict
+        r400 = http_reason(400, 12, body=b"x")
+        v = shape_verdict([(_LBL_SUBJECT, 0, r400), ("sortType 없음", 5, ""),
+                           ("파라미터 없음", 5, "")])
+        assert "배선하면 됩니다" not in v, v
+        assert "안 쟀습니다" in v, v
+
+    # ── F4 ───────────────────────────────────────────────────────────────
+    def test_the_control_alive_line_states_facts_not_assumptions(self):
+        """"나머지는 거절당했습니다" 를 재지 않고 적으면 타임아웃이 거절로
+        둔갑하고, 행을 준 갈래가 있는데도 거짓이 된다(#82·#165·#292)."""
+        from bot.naver_diag import http_reason
+        from bot.scripts.kr_board_probe import (_LBL_CONTROL, _LBL_SUBJECT,
+                                                shape_verdict)
+        r400 = http_reason(400, 12, body=b"x")
+        to = "원천이 응답하지 않습니다(timeout)"
+        v = shape_verdict([(_LBL_CONTROL, 5, ""), (_LBL_SUBJECT, 0, r400),
+                           ("dividend 갈래", 5, ""), ("sortType 없음", 0, to)])
+        assert "나머지는 거절당했습니다" not in v, v
+        assert f"거절당한 것: {_LBL_SUBJECT}" in v, v
+        assert "행을 준 것: dividend 갈래" in v, v
+        assert "거절도 행도 아닌 것: sortType 없음" in v, v
+        assert "살아 있고" in v and "새 주소를 찾을 자리가 아닙니다" in v, v
