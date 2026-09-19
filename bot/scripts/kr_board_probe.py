@@ -10,8 +10,16 @@
 배선은 이 출력을 보고 한다.
 
 무엇을 재나
-  ① **대조군** — 이미 동작을 증명한 호출(`domestic/stock/list?sortType=up`).
-     이게 죽으면 아래 0건은 '없다' 가 아니라 '이 VM 이 못 닿는다' 이다(#143).
+  ① **대조군** — 지금 **화면에서 동작이 증명된** 호출. 같은 주소·같은 함수로
+     `/kr52`(52주 신고가·신저가)가 `sortType=high52week` 를 쓰고 있다
+     (`naver_ranking_client.fetch_kr_highlow` → `_domestic_paged`). 이게 죽으면
+     아래 0건은 '없다' 가 아니라 '이 VM 이 못 닿는다' 이다(#143).
+     ⚠️ 옛 판은 대조군을 `sortType=up` 으로 뒀는데 그건 2026-09-18 에 **죽은
+     바로 그 값**이다 — 대조군이 시험 대상과 같으면 '못 닿는다' 와 '이 값만
+     거절당한다' 가 같은 화면이 되고(#91b 재는 대상이 맞나), 실제로 ①-b 가
+     "이 주소의 sortType 이 배당 한 갈래로 좁혀졌다(새 주소를 찾아라)" 를
+     냈는데 같은 주소가 52주 값으로는 행을 주고 있다는 사실이 출력 어디에도
+     없었다. 시험 대상(`up`)은 대조군 **옆에** 나란히 찍는다(#51).
   ② **거래량 상위의 정렬 키** — 목록을 우리가 적지 않는다. 미끼 값을 보내
      원천이 스스로 적어 보내는 **허용값 목록**을 읽는다(#350·#353 에서
      테마 보드가 같은 방식으로 상한 200 을 알아냈다). 그다음 거래량계로
@@ -104,16 +112,100 @@ def _banner():
     return True
 
 
-def _section_control():
-    print("\n① 대조군 — 이미 동작을 증명한 호출")
-    d, why = _get(_LIST, sortType="up", category="all", page=1, pageSize=5)
-    rows = _rows(d)
+# 대조군 = 지금 동작이 **화면으로** 증명된 값(/kr52). 시험 대상 = 죽은 값.
+# ⚠️ 값은 `naver_ranking_client` 가 단일 출처지만 여기서는 **리터럴로** 둔다 —
+# 모듈 레벨에서 bot 패키지를 import 하면 의존성이 없는 인터프리터에서 배너
+# (`_banner`)보다 먼저 죽어 "도달 실패" 와 구별이 안 된다(#132). 대신 회귀가
+# 제품 상수와의 동일성 + `fetch_kr_highlow` 의 실제 URL 을 둘 다 못박는다(#38).
+_CONTROL_SORT = "high52week"      # `fetch_kr_highlow` 가 쓰는 값
+_SUBJECT_SORT = "up"              # `fetch_kr_movers` 가 쓰는 값(2026-09-18~ 400)
+_LBL_CONTROL = "52주 갈래(대조군)"
+_LBL_SUBJECT = "현행(급등·급락)"
+
+# ① 에서 잰다. True=행 · False=**원천이 요청 모양을 거절했다** · None=판정
+# 불가(일시정지·타임아웃·429·네트워크·파싱). 셋은 처방이 전부 다르므로 한
+# 값으로 뭉치지 않는다(#54·#82·#279 일시정지는 실패가 아니다).
+_SUBJECT_OK: bool | None = None
+_PAUSED = False
+
+
+def subject_state(rows: int, why: str) -> bool | None:
+    """시험 대상 관측 → 3-상태(순수). `bool` 로 접으면 타임아웃·429·일시정지가
+    "이 값만 거절당한다" 로 찍혀 운영자가 갈 곳이 반대가 된다(#82·#165·#292).
+
+    거절은 원천이 **4xx 로 그렇게 말했을 때만**이다(#352 `REQUEST_SHAPE_4XX`
+    단일 출처 — 429·403·404 는 요청 모양 문제가 아니다).
+    """
+    from bot import naver_diag as nd
     if rows:
-        print(f"   ✅ sortType=up → {len(rows)}행 (네이버 도달 정상)")
         return True
-    print(f"   ❌ sortType=up 이 0행 — {why or '사유 없음'}")
-    print("   ⇒ 아래 0건은 '원천에 없다' 가 아니라 **판정 불가**입니다(#143).")
-    return False
+    w = why or ""
+    if nd.PAUSED in w:
+        return None
+    return False if nd.status_from(w) in nd.REQUEST_SHAPE_4XX else None
+
+
+def control_verdict(*, control_ok: bool, subject: bool | None,
+                    control_why: str = "", subject_why: str = "") -> str:
+    """관측 → 한 줄(순수 — 배선과 따로 값으로 재려고 뺀다, #176).
+
+    갈래 여섯이고 처방이 전부 다르다(#82):
+      - 일시정지      → **우리가 껐다**(결함 아님, 판정 보류 #279·#345)
+      - 둘 다 행      → 이 호출은 정상(화면이 비면 원인은 여기 밖)
+      - 대조군만 행   → **주소는 살아 있고 값만** 거절당한다(새 주소 아님)
+      - 대상 판정불가 → 타임아웃·429·네트워크 — 다시 재야 한다
+      - 대상만 행     → 대조군 쪽이 바뀌었다(/kr52 가 폴백인지 같이 볼 것)
+      - 둘 다 0행     → 이 VM 이 못 닿는다 = 아래는 전부 판정 불가(#143)
+    """
+    from bot import naver_diag as nd
+    if nd.PAUSED in ((control_why or "") + (subject_why or "")):
+        return ("⏸ 네이버 호출을 **우리가 꺼 뒀습니다**(결함 아님) — "
+                "이번 실행은 판정 보류입니다")
+    if control_ok and subject is True:
+        return ("✅ 둘 다 행을 줍니다 — 이 호출은 정상입니다"
+                "(화면이 비면 원인은 이 호출 밖입니다)")
+    if control_ok and subject is False:
+        return ("⚠️ 주소는 **살아 있습니다**(52주 값은 행을 줍니다) — 급등·급락이 "
+                "쓰는 값만 거절당합니다. 고칠 자리는 새 주소가 아니라 "
+                "`sortType` 의 **값**입니다(#143 대조군이 그 둘을 가릅니다)")
+    if control_ok:
+        return ("❓ 대조군은 행을 주는데 시험 대상은 **거절도 행도 아닙니다** — "
+                "원천이 요청 모양을 거절한 적이 없으니(타임아웃·한도·네트워크일 "
+                f"수 있습니다) 판정 불가입니다. 사유: {nd.mask_secrets(subject_why) or '없음'}")
+    if subject is True:
+        return ("❓ 대조군만 0행입니다 — 52주 값이 바뀌었을 수 있습니다"
+                "(/kr52 가 폴백으로 살아 있는 것은 아닌지 같이 볼 것)")
+    return ("❌ 둘 다 0행 — 아래 0건은 '원천에 없다' 가 아니라 **판정 불가**"
+            "입니다(#143). ①-b 가 무엇이 거절되는지 원문으로 잽니다")
+
+
+def _section_control():
+    """반환 = **대조군**이 행을 줬나(= 이 VM 이 네이버에 닿나).
+
+    시험 대상 결과는 `_SUBJECT_OK` 로 나간다 — 둘을 한 bool 로 뭉치면
+    '못 닿는다' 와 '이 값만 거절당한다' 가 같은 화면이 된다(#82·#45).
+    """
+    global _PAUSED, _SUBJECT_OK
+    from bot import naver_diag as nd
+    print("\n① 대조군 — 지금 화면에서 동작이 증명된 호출")
+    cd, cw = _get(_LIST, sortType=_CONTROL_SORT, category="all",
+                  page=1, pageSize=5)
+    crows = _rows(cd)
+    sd, sw = _get(_LIST, sortType=_SUBJECT_SORT, category="all",
+                  page=1, pageSize=5)
+    srows = _rows(sd)
+    _SUBJECT_OK = subject_state(len(srows), sw)
+    _PAUSED = nd.PAUSED in ((cw or "") + (sw or ""))
+    print(f"   {'✅' if crows else '❌'} sortType={_CONTROL_SORT} "
+          f"(/kr52 가 쓰는 값) → {len(crows)}행"
+          + (f" · {nd.mask_secrets(cw)}" if cw else ""))
+    print(f"   {'✅' if srows else '❌'} sortType={_SUBJECT_SORT} "
+          f"(급등·급락이 쓰는 값) → {len(srows)}행"
+          + (f" · {nd.mask_secrets(sw)}" if sw else ""))
+    print("   " + control_verdict(control_ok=bool(crows),
+                                   subject=_SUBJECT_OK,
+                                   control_why=cw, subject_why=sw))
+    return bool(crows)
 
 
 
@@ -129,13 +221,29 @@ def _section_control():
 # ⚠️ 본문을 짧게 자르지 않는다 — 결정적 필드가 잘리는 자리에서 한 라운드를
 # 더 쓴 전례가 있다(#156·#350 자르는 자리가 다음 결정을 가리지 않는가).
 _SHAPES = (
-    ("현행(대조군)", {"sortType": "up", "category": "all", "page": 1, "pageSize": 5}),
+    # ⚠️ 대조군 갈래가 **이 목록에 없어서** ①-b 가 "주소가 죽었다" 와 "값만
+    # 좁혀졌다" 를 한 번도 가르지 못했다(#143·#51 나란히 놔야 보인다).
+    (_LBL_CONTROL, {"sortType": _CONTROL_SORT, "category": "all",
+                    "page": 1, "pageSize": 5}),
+    (_LBL_SUBJECT, {"sortType": _SUBJECT_SORT, "category": "all",
+                    "page": 1, "pageSize": 5}),
     ("sortType 없음", {"category": "all", "page": 1, "pageSize": 5}),
     ("파라미터 없음", {}),
     ("dividend 갈래", {"sortType": "dividend", "dividendSortType": "rate",
                        "category": "all", "page": 1, "pageSize": 5}),
-    ("category 없음", {"sortType": "up", "page": 1, "pageSize": 5}),
+    ("category 없음", {"sortType": _SUBJECT_SORT, "page": 1, "pageSize": 5}),
 )
+
+
+def usable_labels() -> tuple:
+    """급등·급락/거래량 상위가 **쓸 수 있는** 모양 = 시험 대상 값을 보내는 것.
+
+    이름 열거가 아니라 `_SHAPES` 에서 파생한다(#24) — 모양을 더할 때마다
+    손으로 목록을 고치는 것을 잊으면 "행이 온다" 가 "배선하면 됩니다" 로
+    샌다(독립 리뷰 2026-09-19 · #34).
+    """
+    return tuple(lab for lab, p in _SHAPES
+                 if p.get("sortType") == _SUBJECT_SORT)
 
 
 def shape_verdict(results: list) -> str:
@@ -148,6 +256,7 @@ def shape_verdict(results: list) -> str:
     ⚠️ 한 모양도 못 쟀으면 ✅ 도 ❌ 도 아니다(#54)."""
     if not results:
         return "❓ 아무 모양도 못 쟀습니다 — 판정 불가"
+    from bot import naver_diag as _nd2
     ok = [lab for lab, n, _w in results if n]
     if not ok:
         # ⚠️ **사유를 봐야** 한다 — 일시정지(우리가 껐다)·타임아웃·429 는
@@ -162,15 +271,14 @@ def shape_verdict(results: list) -> str:
         # 없는 것보다 나쁘다). 그 하나가 오히려 결정적 증거다: 거절 문구가
         # `expected "dividend"` 이고 바로 그 갈래만 통과한다 = 이 주소의
         # `sortType` 이 **배당 한 갈래로 좁혀졌다**.
-        from bot import naver_diag as _nd2
         rejected = [lab for lab, _n, w in results
                     if _nd2.status_from(w or "") in _nd2.REQUEST_SHAPE_4XX]
         # 사유가 비었다 = 응답은 받았는데 우리가 아는 행이 0 (거절이 아니다)
         served_empty = [lab for lab, n, w in results if not n and not w]
         if not rejected:
-            return ("❓ 다섯 모양 전부 0행인데 **원천이 요청 모양을 거절한 적은 "
-                    "없습니다**(일시정지·타임아웃·차단일 수 있습니다) — 판정 "
-                    "불가. 사유 원문을 보고 다시 재 주세요.")
+            return (f"❓ {len(results)}개 모양 전부 0행인데 **원천이 요청 "
+                    "모양을 거절한 적은 없습니다**(일시정지·타임아웃·차단일 "
+                    "수 있습니다) — 판정 불가. 사유 원문을 보고 다시 재 주세요.")
         # ⚠️ 위 `if not rejected: return` 이 비지 않음을 이미 보장한다 —
         # 조건부로 두면 **도달 불가한 분기**가 된다(#291, 독립 리뷰 L1).
         head = (f"❌ {len(rejected)}개 모양을 원천이 거절했습니다"
@@ -196,10 +304,44 @@ def shape_verdict(results: list) -> str:
         return (head + " — 이 주소(`domestic/stock/list`)가 더는 종목 랭킹을 "
                 "주지 않는 것으로 보입니다. 다음 측정은 모바일 페이지 청크에서 "
                 "새 주소를 읽는 것입니다(#338 의 그 방법)." + tail)
-    if ok == ["dividend 갈래"]:
-        return ("❌ `dividend` 갈래만 행을 줍니다 — 이 주소가 배당 랭킹 전용이 "
-                "됐습니다. 급등·급락/거래량 상위는 다른 주소를 찾아야 합니다.")
-    return "✅ 행을 주는 모양: " + ", ".join(ok) + " — 그 모양으로 배선하면 됩니다"
+    # ⚠️ **"행이 온다" 와 "이 두 보드가 쓸 수 있다" 는 다른 사실이다**(#34).
+    # 52주·배당 갈래는 행을 줘도 급등·급락/거래량 상위를 못 만들고, 정렬을
+    # **안 지정한** 모양은 어떤 순서인지 우리가 안 쟀다(#165). 옛 판은 그
+    # 넷을 `ok` 에 담아 "그 모양으로 배선하면 됩니다" 를 낼 수 있었다.
+    usable = [lab for lab in ok if lab in usable_labels()]
+    if usable:
+        return ("✅ 행을 주는 모양: " + ", ".join(usable)
+                + " — 그 모양으로 배선하면 됩니다")
+    if _LBL_CONTROL in ok:
+        # ⚠️ "나머지는 거절당했습니다" 를 **재지 않고** 적으면 타임아웃·한도가
+        # 거절로 둔갑한다(#82·#165·#292). 사실만 갈래로 적는다.
+        rej = [lab for lab, _n, w in results if lab != _LBL_CONTROL
+               and _nd2.status_from(w or "") in _nd2.REQUEST_SHAPE_4XX]
+        others = [lab for lab in ok if lab != _LBL_CONTROL]
+        unknown = [lab for lab, n, _w in results
+                   if lab != _LBL_CONTROL and not n and lab not in rej]
+        facts = []
+        if rej:
+            facts.append(f"거절당한 것: {', '.join(rej)}")
+        if others:
+            facts.append(f"행을 준 것: {', '.join(others)}")
+        if unknown:
+            facts.append(f"거절도 행도 아닌 것: {', '.join(unknown)}")
+        return (f"⚠️ `{_LBL_CONTROL}` 가 행을 줍니다 — "
+                "주소(`domestic/stock/list`)는 **살아 있고** `sortType` 의 허용 "
+                "값 집합만 좁혀진 것으로 읽힙니다. 새 주소를 찾을 자리가 "
+                "아닙니다(#143 대조군이 그 둘을 가릅니다) · " + " · ".join(facts)
+                + " · 다음 측정은 이 주소가 **아직 받는 값**이 무엇인지 — 미끼는 "
+                "판별 유니온의 한 갈래만 답하므로(② 가 목록을 못 배운다) 네이버 "
+                "모바일 화면이 실제로 보내는 요청을 청크에서 읽습니다(#338).")
+    unmeasured = [lab for lab in ok if lab != "dividend 갈래"]
+    if unmeasured:
+        return ("⚠️ 행을 주는 것은 " + ", ".join(unmeasured) + " 뿐입니다 — "
+                "정렬을 지정하지 않은 응답이라 **어떤 순서인지 안 쟀습니다**"
+                "(#165). 거래량 상위로 쓰려면 그 순서를 먼저 재야 합니다"
+                "(`kr_volume_client.is_volume_desc`).")
+    return ("❌ `dividend` 갈래만 행을 줍니다 — 이 주소가 배당 랭킹 전용이 "
+            "됐습니다. 급등·급락/거래량 상위는 다른 주소를 찾아야 합니다.")
 
 
 def _section_shape() -> None:
@@ -554,10 +696,18 @@ def main() -> int:
     print(f"   NXT 체결 창 {window_label('NXT')}")
     print("   ⚠️ ④ 는 **애프터마켓 창 안**(16:00~20:00 KST)에서 돌려야 "
           "의미가 있습니다 — 창 밖이면 시간외 블록이 안 붙습니다.")
+    global _PAUSED, _SUBJECT_OK
+    _SUBJECT_OK = None          # 실행마다 초기화 — 남은 값이 다음 판정을 정하면
+    _PAUSED = False             # 안 된다(#114 루프 잔여 상태 · #30).
     ok = _section_control()
-    if not ok:
-        # 대조군이 죽었으면 ② 이후는 전부 '판정 불가' 다 —
-        # 무엇이 거절되는지부터 원문으로 잰다(#143·#109).
+    if _PAUSED:
+        # ⚠️ 우리가 끈 것은 장애가 아니다 — 안 물어본 원천을 여섯 번 더
+        # 두드리면 일시정지의 뜻이 깨진다(#279·#345). 건너뛴 사실은 적는다(#54).
+        print("\n①-b 요청 모양 — ⏭ 건너뜀(네이버 호출을 우리가 꺼 뒀습니다)")
+    elif not ok or _SUBJECT_OK is False:
+        # 대조군이 죽었으면 ② 이후는 전부 '판정 불가' 다. 대조군이 살아 있어도
+        # **시험 대상이 거절당했으면** 무엇이 거절되는지가 이 라운드의 질문이다
+        # — 옛 판은 그때 ①-b 를 건너뛰어 원문이 한 줄도 안 남았다(#143·#109).
         _section_shape()
     vals = _section_sorts()
     if vals:
@@ -582,7 +732,12 @@ def main() -> int:
         print("   ❌ ④ 구성 검산 불일치: "
               + ", ".join(_VENUE_MISMATCH)
               + " — `통합 = 본체 + 시간외` 가 깨졌습니다(원천 구조 변경 의심).")
-    return 0 if (ok and not _VENUE_MISMATCH) else 1
+    # ⚠️ 시험 대상이 거절당한 실행에 rc=0 을 내면 "이상 없음" 으로 읽힌다 —
+    # 화면 두 장이 폴백으로 서빙 중인 사실이 종료코드에서 사라진다(#54·#41).
+    # 단 **일시정지는 결함이 아니다**(#279·#345) — 그때는 rc=0.
+    if _PAUSED:
+        return 0
+    return 0 if (ok and _SUBJECT_OK is not False and not _VENUE_MISMATCH) else 1
 
 
 if __name__ == "__main__":
