@@ -75270,16 +75270,33 @@ class TestLiquidationBadge20260919:
         """캐시 독자는 **어떤 바이트가 와도 안 던진다**(#331 한 바이트가 보드
         셋을 비웠다)."""
         from unittest import mock
-        from bot import kr_stock_flags as kf
+        from bot import highlow_render as hr, kr_stock_flags as kf
         from bot.highlow_render import stock_panel
+        # ⚠️ 이 테스트는 `self._cache` 를 안 쓰므로(일부러 쓰레기를 심는다)
+        # **킥을 손으로 막아야** 한다 — 안 막으면 daemon 이 tmp_path 에
+        # 백오프 도장을 써서 아래 `_read_envelope() == {}` 가 **단독 green /
+        # 전체 red** 가 된다(실측 2026-09-19 · #128 동시성 단언을 시간·순서로
+        # 쓰지 말 것). 독립 리뷰 F5 가 경고한 그 경합이 실제로 났다.
+        kick = mock.patch.object(hr, "_kick_flags_fill", lambda mod: None)
         for junk in (b"{not json", b"\x8d\xff", b'{"v":9,"flags":{}}',
                      b'{"v":1,"flags":[]}'):
             (tmp_path / kf._CACHE).write_bytes(junk)
-            with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+            with kick, mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
                     mock.patch("bot.kr_stock_flags._collect",
-                               lambda: ({}, 0, {}, ["스텁"])):
+                               lambda: ({}, 0, {}, ["스텁"], {})):
                 assert "rbadge" not in stock_panel(
                     "x", self._items(), "k", "KR", name_only=True)
+        # ⚠️ 위 스텁은 **오늘 안 탄다**(`cache_only=True` 가 먼저 반환한다).
+        # 그래도 arity 를 맞춰 둔다 — 틀린 스텁은 `ValueError` 를 내고 그건
+        # 렌더 except 가 삼켜 **엉뚱한 이유로 통과**한다(#91b 재는 대상이
+        # 맞나). 실제로 파손 내성을 재는 축은 `_read_envelope` 이므로 그것도
+        # 직접 태운다.
+        for junk in (b"{not json", b"\x8d\xff", b'{"v":9}', b'[]'):
+            (tmp_path / kf._CACHE).write_bytes(junk)
+            with kick, mock.patch("bot.finviz_client._CACHE_DIR", tmp_path):
+                assert kf._read_envelope() == {}
+                s = kf.snapshot(cache_only=True)
+                assert s["flags"] == {} and s["state"] in ("cold", "backoff")
 
     # ── 독립 리뷰 2026-09-19 (5건 · 전부 실행으로 재현) ────────────────────
     def test_the_probe_source_section_actually_hits_the_source(self, tmp_path,
@@ -75363,6 +75380,79 @@ class TestLiquidationBadge20260919:
         with self._cache(tmp_path, {}):
             assert hr._kick_flags_fill is not before, "픽스처가 킥을 안 막는다"
         assert hr._kick_flags_fill is before          # 빠져나오면 복원된다
+
+    def test_the_probe_names_the_stocks_it_lists(self, tmp_path, capsys):
+        """③ 이 코드만 찍으면 사용자가 "이게 원풍물산 맞나"를 따로 찾아봐야
+        한다 — 판정 줄은 자족해야 한다(#356·#82·#109).
+
+        `_kis_master_rows` 는 이름을 **이미** 준다. 첫 판이 그걸 버렸다
+        (VM 실측 2026-09-19 · #123·#129·#189·#228·#292 계열).
+        """
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 900,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kospi", "999990", "관리주", True, 10,
+                         risk={"관리종목": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "046070", "코다코", True, 120,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kosdaq", "289080", "코스나인", True, 120,
+                         risk={"거래정지": "Y"})])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            rc = kf.why()
+        out = capsys.readouterr().out
+        assert rc == 0
+        # ③ — 코드 **와** 이름이 같은 줄에.
+        line = [x for x in out.split("\n") if "008290" in x][0]
+        assert "원풍물산" in line, line
+        assert "046070" in out and "코다코" in out
+        # 정리매매가 아닌 종목은 ③ 에 없다.
+        assert "코스나인" not in out and "관리주" not in out
+        # ② — 갈래별 계수(하나로 뭉치면 무엇이 몇인지 모른다, #45).
+        assert "정리매매 2" in out and "거래정지 1" in out and "관리종목 1" in out
+
+    def test_a_name_we_could_not_get_is_never_invented(self, tmp_path, capsys):
+        """이름을 못 구하면 **코드만** 적는다 — 지어내면 화면이 거짓말한다
+        (#165). 캐시 경로엔 이름이 없다(굽지 않으므로)."""
+        from unittest import mock
+        from bot import kr_stock_flags as kf
+        snap = {"flags": {"008290": {"정리매매": True}}, "note": "n", "n": 5,
+                "state": "ok", "names": {}, "fetched": time.time(),
+                "fails": 0, "next_try": 0}
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(kf, "snapshot", lambda **k: snap):
+            kf.why()
+        out = capsys.readouterr().out
+        assert "008290" in out and "(이름 미확보)" in out
+
+    def test_names_are_diagnostic_only_and_never_baked(self, tmp_path):
+        """이름을 캐시에 구우면 봉투 스키마가 바뀌어 배포가 12시간짜리
+        무효화를 유발한다(#18·#21b). 화면은 보드 행에서 이름을 이미 받는다."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 900,
+                         risk={"정리매매": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 1)])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            fresh = kf.snapshot(cache_only=False)
+            assert fresh["names"] == {"008290": "원풍물산"}   # 신선 수집엔 있다
+            cached = kf.snapshot(cache_only=True)
+        assert cached["flags"] == {"008290": {"정리매매": True}}
+        assert cached["names"] == {}                         # 캐시엔 없다
+        env = json.loads((tmp_path / kf._CACHE).read_text(encoding="utf-8"))
+        assert "names" not in env and env["v"] == kf._SCHEMA
 
     def test_backoff_grows_and_is_capped(self):
         """간격이 안 자라면 유계가 아니고, 상한이 없으면 영영 안 돌아온다
