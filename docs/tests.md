@@ -1181,3 +1181,67 @@ DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 �
 못했다. 두 fix 가 어느 쪽이든 다음 VM 실행이 사유로 답한다(#82·#165). (c) 사유
 채널은 **급등·급락에만** 배선했다 — 52주 신고저·상한가 보드는 여전히
 `_get_stocks`(값만)를 쓰므로 빈 화면이 갈래를 말하지 않는다.
+
+### 정리매매 뱃지 — 랭킹 보드가 "왜 ±30% 밖인가"에 답한다 (2026-09-19)
+
+사용자 질문: "코스나인이나, 원풍물산 코다코같은건 맞는거야? 이거 정리매매
+종목이야? 30% 가 상하한룰로 알고 있는데." 화면은 `1원 · -50.00%` 만 적고
+있었다 — 값은 KRX 가 준 그대로라 행마다 산수도 맞고(#33) 값이 다 '있어서'
+어떤 감사도 안 걸렸는데(#96), 화면이 답을 못 해 사용자가 물어야 알았다(#43).
+
+원천은 **새로 찾지 않았다**. 이 레포가 볼린저 유니버스용으로 이미 받는 KIS
+마스터(공개 zip·인증 불필요)의 컬럼 목록에 `정리매매`·`거래정지`·`관리종목`
+이 들어 있었고 `_kis_master_rows` 가 그 여섯 칸만 남기고 버리고 있었다 —
+"이미 부르는 호출이 무엇을 더 주나"(#150·§작업 원칙)를 먼저 물은 자리다.
+
+| 축 | 테스트 | 왜 |
+|---|---|---|
+| 책마다 다른 컬럼명 | `test_master_carries_the_risk_columns_for_both_books` | KOSPI `정리매매` ↔ KOSDAQ `정리매매 여부` — 한쪽만 맞으면 그 시장이 영영 뱃지를 못 받는다(#27·#34) |
+| 덧붙인 키 | `test_existing_callers_are_untouched` | `risk_raw` 는 추가다 — 유니버스 빌드가 바뀌면 안 된다 |
+| 독스트링 ↔ 코드 | `test_field_slice_raises_value_error_not_key_error` | `list.index` 는 ValueError 인데 독스트링이 오래 KeyError 라 적고 있었다(#55) |
+| 드리프트를 말한다 | `test_a_missing_risk_column_is_counted_not_silent` | 조용히 빠지면 뱃지가 영영 안 붙는데 아무도 모른다(#43·#54) |
+| 3-상태 | `test_parse_flag_is_three_state` · `test_unknown_encoding_is_counted_with_a_raw_sample` | 인코딩을 **재지 않았다** — 모름을 False 로 접으면 '정상'과 구별되지 않는다(#54·#82·#165) |
+| 반쪽 금지 | `test_a_half_map_is_never_baked` · `test_zero_rows_is_not_a_clean_map` | 코스닥 zip 만 실패한 맵을 구우면 12시간 동안 뱃지가 없다(#280·#384) |
+| 배선(값으로) | `test_the_badge_reaches_the_rendered_row` · `test_both_boards_the_user_named_get_it` | 순수 함수만 재면 배선을 떼는 변형을 못 잡는다(#20) |
+| 안 그리는 것 | `test_unknown_is_never_drawn_as_a_badge` · `test_only_the_key_that_waives_the_price_limit_is_badged` | 모름을 '정리매매'라 적으면 거짓말이고(#165), 관리종목·거래정지는 ±30% 를 면제하지 않는다(#25·#260) |
+| 범례 | `test_the_legend_appears_only_when_a_badge_was_drawn` · `..._age_label_reads_as_a_time_not_a_blank` | 늘 있는 각주는 아무것도 안 재는 것과 같다(#25·#260) |
+| 비용 | `test_non_kr_boards_never_pay_for_the_lookup` · `test_the_lookup_is_once_per_panel_not_per_row` | 행마다 부르면 30행이면 캐시를 30번 읽는다(#113·#61) |
+| 렌더-세이프 | `test_render_path_never_downloads` · `test_a_cold_cache_kicks_the_background_warm` | 콜드면 zip 2개 × 30초 상한이다 — 렌더가 기다리면 화면 블록(#116·#312) |
+| 워밍 | `test_the_warm_dedup_is_per_source_not_global` · `..._never_parks_the_source_forever` | `start()` 가 던지면 그 원천이 영구 정지한다(#371) |
+| 파손 내성 | `test_a_torn_or_junk_cache_never_raises` | 한 바이트가 보드 셋을 비운 적이 있다(#331) |
+| 표면 | `test_badge_css_travels_with_the_panel` · `test_the_badge_passes_aa_in_both_themes` | 페이지 번들의 `.sm-note` 를 빌리면 그 번들을 안 쓰는 보드에서 미정의(#273). 채움형은 다크 3.68:1 로 AA 미달(#355) |
+| CLI | `test_run_hint_includes_cd` · `test_the_cli_dispatches_why` | 광고한 CLI 가 죽은 채 배포될 수 있다(#252·#278·#351) |
+
+뮤테이션 14종 전부 잡힘(0 통과) — 복원은 백업 파일 + md5 대조(#358).
+
+**못 보는 축**(#274): (a) **플래그 값의 인코딩을 재지 않았다** — 샌드박스에서
+KIS 마스터에 도달할 수 없다. Y/N·0/1 을 둘 다 받고 그 밖은 '모름'으로 세어
+`--why` 가 표본과 함께 말한다. 첫 VM 실행이 이 가정을 스스로 반증한다(#82·#165).
+(b) **이 세 종목이 실제로 정리매매인지도 재지 않았다** — 같은 이유다. 뱃지는
+KIS 가 그렇다고 말할 때만 뜬다. (c) 뱃지는 `stock_panel` 안에서 붙으므로
+`_RISK_SOURCES` 에 원천이 있는 시장의 **모든** 보드(52주·장전장후·NXT 포함)에
+같이 나간다 — 사용자가 짚은 둘만 고르려면 게이트를 **더** 넣어야 해서
+그러지 않았다(§UNIVERSAL). (d) 뱃지 키는 정리매매 하나다. `거래정지`·
+`관리종목` 은 같은 파싱에서 공짜로 와 맵에는 실리지만 그리지 않는다 —
+그 둘은 ±30% 를 면제하지 않으므로 사용자가 물은 질문의 답이 아니다.
+
+#### 독립 리뷰가 배포 전에 잡은 것 (2026-09-19 · 5건 · 전부 실행으로 재현)
+
+| # | 무엇이 | 왜 나쁜가 | 고친 뒤 축 |
+|---|---|---|---|
+| F1 | `why()` 의 ② '원천' 이 12시간 캐시에 걸려 **캐시를 원천이라 불렀다**(원천 호출 0, rc=0) | ① 과 ② 가 같은 것을 읽으면 대조군이 성립하지 않는다 — 바로 #392 가 고친 그 병을 내 진단이 그대로 냈다(#143) | `snapshot(force=True)` · `test_the_probe_source_section_actually_hits_the_source` |
+| F2 | `_collect` 이 성공 경로에서 원천 note 를 버려 **'상태 컬럼 미발견' 이 어디에도 안 닿았다** | KIS 가 컬럼명을 바꾸면 빈 맵이 12시간 구워지고 화면은 '오늘 해당 종목 없음' 이라고 거짓을 말한다(#43·#54) | `test_a_column_rename_is_never_read_as_zero_stocks` |
+| F3 | 실패에 **도장을 안 남겨** 렌더마다 KIS zip 2개를 다시 받았다(실측 5렌더 = 10다운로드) | `/highlow` 는 `no-cache` + 30초 폴링이다 — 원천이 죽은 하루가 곧 연속 다운로드 루프(#116·#303·#384) | 지수 백오프 15분→6시간 · `test_a_dead_source_backs_off_instead_of_looping` · `test_backoff_grows_and_is_capped` |
+| F4 | 원천 불가가 '해당 종목 없음' 과 **글자 하나 안 다르게** 보였다 | 이 기능이 없애려던 그 침묵이 그대로 돌아온다(#43·#45) | `snapshot.state` 를 렌더까지 · `test_an_unavailable_source_is_never_silent` |
+| F5 | 킥이 `_fetching_pages` 에서만 막혀 다른 KR 렌더 테스트가 daemon 을 띄웠다 | 형제의 `_cache_write` 패치 안에 착지하면 **단독 green / 전체 red**(#30·#128·#312) | 픽스처(`_cache`)가 구조로 막는다 · `test_the_fixture_blocks_the_background_kick` |
+
+뮤테이션 F1~F5 + 백오프·낡은 맵까지 11종 전부 잡힘(0 통과).
+
+**여기서 새로 못 보는 축**(#274): (e) F5 의 경합은 **결정적으로 재현할 수
+없다** — 스레드가 형제 테스트의 패치 창 안에 착지해야 터진다. 그래서 축이
+구조 검사(픽스처가 킥을 막는가) 하나뿐이고, 그게 이 가드의 한계다.
+(f) 백오프 간격이 **적절한지**는 재지 않았다 — "원천이 오래 죽으면 하루 몇
+번인가"를 세어 정한 값(6시간 상한 → 하루 8~9회)이지 실측이 아니다(#384 와
+같은 근거). (g) `stale` 을 계속 서빙하는 상한이 없다 — 원천이 며칠 죽으면
+며칠 된 플래그를 뱃지로 그린다. 상장 상태는 하루 단위로 바뀌므로 낡은 값이
+빈 값보다 낫다는 판단이고(#41), 며칠이 지나면 잘못된 뱃지가 될 수 있다.
