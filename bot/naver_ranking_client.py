@@ -802,21 +802,23 @@ def _kr_bulk_fallback(out: dict, limit: int) -> None:
         rows, asof, memo = _kb.kr_bulk_rows()
     except Exception as exc:                                   # noqa: BLE001
         log.warning("KR movers KRX 폴백 예외: %s", exc)
-        out["reason"] = " · ".join(
-            x for x in (prev, f"KRX 폴백 예외({type(exc).__name__})") if x)
+        out["reason"] = _nd.compose_reason(
+            [f"KRX 폴백 예외({type(exc).__name__})"], prev)
         return
     if not rows:
-        out["reason"] = " · ".join(
-            x for x in (prev, f"KRX 폴백도 비었습니다 — {memo}") if x)
+        out["reason"] = _nd.compose_reason(
+            [f"KRX 폴백도 비었습니다 — {memo}"], prev)
         return
     out["up"] = _kb.sort_rows(rows, "pct", desc=True, limit=limit)
     out["down"] = _kb.sort_rows(rows, "pct", desc=False, limit=limit)
     out["fallback"] = True
     out["asof"] = asof
     out["source"] = f"{_kb.SOURCE_LABEL} · {asof} 종가 기준"
-    out["reason"] = " · ".join(x for x in (
-        f"네이버 목록을 못 받아 KRX 벌크로 대체했습니다 — {prev}" if prev
-        else "네이버 목록을 못 받아 KRX 벌크로 대체했습니다", memo) if x)
+    # ⚠️ 기계 상세(네이버 사유)는 **꼬리**에 둔다 — 화면이 사람 문장만 적으려면
+    # 잘라 낼 자리가 하나여야 하고(`public_reason`), 감사 줄도 가장 행동 가능한
+    # 것이 머리에 와야 한다(#275·#391).
+    out["reason"] = _nd.compose_reason(
+        ["네이버 목록을 못 받아 KRX 벌크로 대체했습니다", memo], prev)
 
 
 def fetch_kr_movers(limit: int = 30) -> dict:

@@ -8,3 +8,10 @@ __pycache__/
 .pytest_cache/
 # Added by code-review-graph
 .code-review-graph/
+
+# 회귀가 tests/ 아래에 **일시적으로** 심는 프로브 파일 — 실행 중에만 존재하고
+# finally 에서 지워진다. 그 창에 `git add` 가 겹치면 그대로 커밋되고(2026-09-19
+# 실측: `tests/_dupscan_probe_tmp.py` 가 배포 커밋에 실려 fresh checkout 에서
+# `make test` 가 빨간불), 첫 실행이 그 tracked 파일을 지워 워킹트리가 더러워진다.
+# 규율로 기억하지 말고 **스테이징 자체를 막는다**(#119·#328).
+tests/_*_tmp.py

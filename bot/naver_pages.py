@@ -367,6 +367,10 @@ def render_highlow_page() -> str:
         # (#55 설명이 코드와 어긋나면 버그). 저장분이면 **잰 나이**를 적는다.
         from bot.highlow_render import movers_freshness as _mf
         why = why or str(data.get("reason") or "")      # 캐시 경로엔 why 가 없다
+        # 화면엔 **사람 문장만** — 기계 상세(HTTP 상태 + 원천 본문 덤프)는
+        # 감사·로그·`--check`·`--why` 가 계속 전문을 읽는다(사용자 2026-09-19
+        # "굳이 대시보드에 나올 필요가 없는 정보야", #391·#45).
+        why = _naver_diag.public_reason(why)
         if data.get("fallback") and not data.get("stale"):
             # ⚠️ 폴백이면 `movers_freshness` 의 '장중 30초 갱신' 도, 제목의
             # '네이버 증권 급등/급락' 도 **둘 다 거짓**이다(#55 설명이 코드와
@@ -398,6 +402,10 @@ def render_highlow_page() -> str:
     # 일시정지(우리가 껐다)·403/429(원천이 거절)·구조 변경(우리가 고칠 것)이
     # 같은 화면이라 사용자가 "원천 문제냐"를 물어야 했다(#82·#43·#52). 형제
     # 위젯(업종 등락·리서치·거래량 상위)은 이미 사유를 적는다(#38·#335).
+    # ⚠️ 여기 오는 사유는 폴백까지 실패했을 때라 사람 문장(`KRX 폴백도
+    # 비었습니다 — …`)과 기계 상세가 섞여 있다. 기계 상세뿐이면 `public_reason`
+    # 이 **원문을 그대로** 돌려주므로 사유가 사라지지 않는다(#43·#391).
+    why = _naver_diag.public_reason(why)
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
             + (_html.escape(why) if why else '사유 미기록 — 로그를 볼 것')
             + '</div>')
@@ -430,7 +438,8 @@ def render_kr_volume_page() -> str:
              "sort": "", "has_hl": False}
     rows = d.get("rows") or []
     ts = _html.escape(str(d.get("ts") or ""))
-    reason = _html.escape(str(d.get("reason") or ""))
+    # 형제 보드(급등·급락)와 **같은 규약** — 화면은 사람 문장만(#38·#391).
+    reason = _html.escape(_naver_diag.public_reason(str(d.get("reason") or "")))
     if d.get("stale"):
         # 저장분을 서빙 중이면 화면이 그렇게 말한다 — 침묵하면 '지금 값'으로
         # 읽힌다(#306·#335·#43, 독립 리뷰 2026-09-16 M8).
