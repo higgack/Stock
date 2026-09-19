@@ -139,8 +139,14 @@ def _collect() -> tuple[dict, int, dict, list, dict]:
                     hit[k] = True
             if hit:
                 out[code] = hit
+                # ⚠️ `_kis_master_rows` 는 이름이 비면 **코드**를 넣는다
+                # (`head[21:].strip() or code`). 그걸 이름이라 싣으면
+                # `008290  008290` 이 찍혀 **코드가 회사명인 척**한다
+                # (독립 리뷰 2026-09-19 실측 · #34·#165). 코드와 같으면
+                # 이름을 못 받은 것이므로 **안 싣는다** — 그래야 아래
+                # `(이름 미확보)` 갈래가 실제로 발화한다(#291).
                 nm = str(r.get("name") or "").strip()
-                if nm:
+                if nm and nm != code:
                     names[code] = nm
     if books < 2:
         # ⚠️ 반쪽 맵은 굽지 않는다 — 코스닥 zip 만 실패한 맵을 완전본으로
@@ -173,7 +179,10 @@ def snapshot(*, cache_only: bool = True, write: bool = True,
              force: bool = False) -> dict:
     """한 번의 디스크 읽기로 화면·진단이 필요한 것을 **전부** 돌려준다.
 
-    반환: `{flags, note, state, n, fetched, fails, next_try}`.
+    반환: `{flags, note, state, n, names, fetched, fails, next_try}`.
+    `names` 는 **진단 전용**이고 네 경로 모두 키를 싣는다(캐시 경로는 `{}`
+    — 캐시에 굽지 않기 때문이다). 키 유무로 갈리면 호출부가 KeyError 를
+    내므로 **항상 있다**(#54 없는 것과 모르는 것은 다른 말이다).
     `state` 는 넷이고 **처방이 다르다**(#82):
       * `ok`      — 쓸 수 있는 맵(수집 뒤 `_TTL` 안)
       * `stale`   — 맵은 있는데 낡음(그래도 쓴다 — 상장 상태는 하루 단위)
@@ -329,8 +338,16 @@ def why() -> int:                                              # pragma: no cove
     # 처방도 다르다(#45 두 모집단을 한 수로 세지 말 것 · #82).
     by_key = {k: sum(1 for v in src["flags"].values() if v.get(k) is True)
               for k in RISK_KEYS}
-    print("   ↪ 갈래별: "
-          + " · ".join(f"{k} {n:,}" for k, n in by_key.items())
+    # ⚠️ 소계 합이 총계와 **같아야** 한다 — `is True` 만 세면 모름 행이
+    # 어느 소계에도 안 들어가고, 인코딩이 드리프트한 날 `정리매매 0` 옆에
+    # `플래그 있는 종목 220` 이 붙어 원천이 0종목인 것처럼 읽힌다
+    # (독립 리뷰 2026-09-19 실측 · #45 두 모집단을 한 수로 세지 말 것).
+    n_unk = sum(1 for v in src["flags"].values()
+                if any(x is None for x in v.values()))
+    line = " · ".join(f"{k} {n:,}" for k, n in by_key.items())
+    if n_unk:
+        line += f" · **모름 {n_unk:,}**(어느 소계에도 안 들어감 — ④ 를 볼 것)"
+    print(f"   ↪ 갈래별: {line}"
           + f"  (뱃지로 그리는 것은 {'·'.join(BADGE_KEYS)} 뿐 — 나머지는 "
             "±30% 를 면제하지 않는다)")
     if "미발견" in src["note"]:
