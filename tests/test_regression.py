@@ -11735,14 +11735,24 @@ class TestUsPrepost:
         assert W(2026, 6, 13, 0, 30) is True      # 토 새벽 = 금 장후 tail
         assert W(2026, 6, 14, 22, 0) is False     # 일 (휴장)
 
-    def test_prepost_fresh(self):
+    def test_prepost_live(self):
+        """옛 계약은 `_prepost_fresh` 였고 창 **밖**을 True('신선')로 돌려줬다.
+
+        그 True 의 뜻은 "재스캔 불필요"였는데 이름이 '신선'이라 화면에서 '최신'
+        으로 읽혀 저장분에 라벨이 안 붙었고, 그게 주말 빈칸 사고의 절반이었다
+        (#394·#34). 지우지 않고 **새 계약으로 다시 쓴다**(#222) — 남는 보장은
+        "창 안에서 TTL 이 실제로 갈린다"이고, 새로 더한 보장은 "창 밖은
+        라이브가 아니다"·"나이를 못 재면 라이브라고 주장하지 않는다"이다.
+        재스캔 여부는 이제 호출부가 `in_win` 으로 따로 본다.
+        """
         from datetime import datetime, timezone
-        from bot.prepost_client import _prepost_fresh
+        from bot.prepost_client import _prepost_live
         now = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc).timestamp()  # 장후 창
-        assert _prepost_fresh(now - 10 * 60, now)         # 10분 = fresh(<30m)
-        assert not _prepost_fresh(now - 40 * 60, now)     # 40분 = stale
+        assert _prepost_live(10 * 60, now)          # 10분 = 라이브(<30m)
+        assert not _prepost_live(40 * 60, now)      # 40분 = 저장분
         closed = datetime(2026, 6, 10, 17, 0, tzinfo=timezone.utc).timestamp()  # 정규장
-        assert _prepost_fresh(closed - 10 * 3600, closed)  # 장 밖 = 항상 fresh(재스캔0)
+        assert not _prepost_live(10 * 60, closed)   # 창 밖 = 라이브 아님
+        assert _prepost_live(None, now) is False    # 못 재면 주장 안 함(#54·#165)
 
     def test_rank_prepost(self):
         from bot.prepost_client import _rank_prepost
@@ -75706,3 +75716,253 @@ class TestLiquidationBadge20260919:
         tail = tree.body[-1]
         assert isinstance(tail, ast.If)
         assert "main()" in ast.get_source_segment(src, tail)
+
+
+class TestPrepostStoredSnapshot20260919:
+    """장전·장후 보드가 **창 밖에서 마지막 집계를 그대로** 보여주는가.
+
+    사용자 2026-09-19(토 22:5x KST) "장전장후 시간대가 아니라면 가장 최종데이터를
+    그대로 남겨줘 … 지금 한국시간으로 토요일이니 금요일 장후데이터가 되겠지" —
+    화면은 `장전·장후 급등·급락 데이터가 없습니다` 였다.
+
+    원인(실측 재현): `fetch_*_prepost_movers` 가 저장분을 `ttl=86400` 으로 읽는데,
+    이 보드는 **창 밖에서 재스캔을 아예 안 한다**(`if not in_win: pass`). 그래서
+    파일 mtime 이 마지막 창에 얼어붙고 24h 뒤 죽어 **주말·연휴가 정의상 빈칸**이
+    된다(금 19:52 집계 → 토 19:52 폐기). 형제 보드(movers·jp_stop)는 창 밖에서도
+    kick 하므로 mtime 이 갱신돼 같은 구멍이 없다 — 이 조합은 prepost 둘뿐이다.
+
+    계약 셋: ① 나이로 버리지 않는다 ② 저장분이면 **보이는 줄**로 나이를 숫자와
+    함께 말한다 ③ 라이브(창 안 + TTL 안)엔 라벨이 안 붙는다(#25 늘 뜨는 배지).
+    """
+
+    _SNAP_KR = {"up": [{"ticker": "005930.KS", "name": "삼성전자", "pct": 1.25,
+                        "price": 81000.0, "vol": 5000, "value": 4.05e8,
+                        "mcap": 4.8e14}],
+                "down": [], "ts": "2026-09-18 19:52", "source": "naver",
+                "session": "post", "scanned": 200}
+    _SNAP_US = {"up": [{"ticker": "AAPL", "name": "Apple", "pct": 2.1,
+                        "price": 230.0, "vol": 5000, "value": 1.1e6,
+                        "mcap": 3.4e12}],
+                "down": [], "ts": "2026-09-18 21:10", "source": "naver",
+                "session": "post"}
+
+    def _env(self, tmp_path, monkeypatch, name, snap, age_h):
+        """저장분을 `age_h` 시간 전에 쓴 상태로 만든다(mtime = 집계 시각)."""
+        import json
+        import os
+        import time
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+        f = tmp_path / name
+        f.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        os.utime(f, (time.time() - age_h * 3600,) * 2)
+        return pp
+
+    # ── ① 나이로 버리지 않는다 ──────────────────────────────────────
+    def test_kr_27h_old_friday_snapshot_survives_the_weekend(
+            self, tmp_path, monkeypatch):
+        """증상 재현 테스트 — 옛 `ttl=86400` 이면 여기서 빈 dict 가 나온다.
+
+        창 밖(토요일)을 시계에서 떼어내 고정한다 — 실제 `now` 를 쓰면 평일
+        15:40~20:00 에만 빨간불이 되는 시한폭탄이다(#249·#342·#377).
+        """
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 27.0)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["up"] and out["up"][0]["ticker"] == "005930.KS", out
+        assert out["ts"] == "2026-09-18 19:52", out
+        # 저장분이라는 사실과 나이가 payload 에 실린다(#43·#163).
+        assert out["stale"] is True and out["in_window"] is False, out
+        assert 27 * 60 - 2 <= out["stale_min"] <= 27 * 60 + 2, out
+
+    def test_us_30h_old_snapshot_survives(self, tmp_path, monkeypatch):
+        """형제(US)도 같은 구멍이었다 — 한쪽만 고치면 갈린다(#38·#147)."""
+        pp = self._env(tmp_path, monkeypatch, "us_prepost_movers_v2.json",
+                       self._SNAP_US, 30.0)
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: False)
+        out = pp.fetch_us_prepost_movers()
+        assert out["up"] and out["up"][0]["ticker"] == "AAPL", out
+        assert out["stale"] is True and out["in_window"] is False, out
+
+    def test_a_week_old_snapshot_is_still_served(self, tmp_path, monkeypatch):
+        """연휴로 7일이 비어도 준다 — 낡은 값이 빈 값보다 낫고 나이는 말한다
+        (#41·#171·#384). 임의 상한을 되살리는 변형이 여기서 잡힌다."""
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 24.0 * 7)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["up"], "7일 된 저장분이 버려졌다 — 연휴 내내 빈칸이 된다"
+        assert out["stale_min"] >= 24 * 60 * 6, out
+
+    def test_no_snapshot_at_all_is_not_labelled_stored(
+            self, tmp_path, monkeypatch):
+        """저장분이 **없는** 것과 낡은 것은 다른 사실이다(#82·#54)."""
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["up"] == [] and out["stale"] is False, out
+        assert out["stale_min"] is None, out
+
+    # ── ② 라이브엔 라벨이 없다 ──────────────────────────────────────
+    def test_live_in_window_snapshot_carries_no_stored_label(
+            self, tmp_path, monkeypatch):
+        """창 안 + TTL 안이면 라이브다 — 늘 뜨는 배지는 아무것도 안 재는
+        것과 같다(#25·#260)."""
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 1.0 / 60)      # 1분 전
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: True)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["stale"] is False and out["in_window"] is True, out
+        assert pp.stored_note(out, "W") == ""
+
+    def test_in_window_but_scan_behind_is_stored_without_next_window_tail(
+            self, tmp_path, monkeypatch):
+        """창 **안**인데 집계가 TTL 을 넘겼으면 저장분이지만 '다음 창' 은
+        거짓이다 — 꼬리를 안 붙인다(#55)."""
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 1.0)           # 1시간 전 > 2분 TTL
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: True)
+        monkeypatch.setattr(pp, "_kick_kr_refresh", lambda: None)
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda: {})
+        out = pp.fetch_kr_prepost_movers()
+        assert out["stale"] is True and out["in_window"] is True, out
+        note = pp.stored_note(out, "프리마켓 08:00–09:00")
+        assert "저장분" in note and "다음 창" not in note, note
+
+    # ── ③ 문구 단일 출처 ───────────────────────────────────────────
+    def test_stored_note_states_age_as_a_number_and_claims_nothing_unmeasured(
+            self):
+        """나이는 숫자로(#202) · 창 판정이 없으면 사유를 단정하지 않는다(#165)."""
+        import bot.prepost_client as pp
+        n = pp.stored_note({"ts": "2026-09-18 19:52", "stale": True,
+                            "stale_min": 1620, "in_window": False}, "창")
+        assert "2026-09-18 19:52" in n and "27시간 전" in n, n
+        assert "창 밖" in n and "다음 창(창)" in n, n
+        # 창 판정을 못 받으면 '창 밖' 이라고 말하지 않는다.
+        n2 = pp.stored_note({"ts": "t", "stale": True, "stale_min": 5}, "창")
+        assert "창 밖" not in n2 and "갱신되지 않아" not in n2, n2
+        # 나이를 못 재면 나이를 **지어내지 않는다**(#54).
+        n3 = pp.stored_note({"ts": "t", "stale": True, "stale_min": None}, "")
+        assert "전" not in n3.split("·")[1] if "·" in n3 else True, n3
+        assert pp.stored_note({"stale": False, "stale_min": 5}, "창") == ""
+        assert pp.stored_note({}, "창") == "" and pp.stored_note(None, "창") == ""
+
+    def test_both_pages_use_the_single_note_source(self):
+        """화면마다 문구를 적으면 한쪽만 고쳐져 갈린다(#38·#147) — 두 렌더가
+        `stored_note` 를 부르는지 AST 로 본다(소스 문자열 금지, #19)."""
+        import ast
+        import pathlib
+        for path, fn in (("bot/intl_pages.py", "render_kr_prepost_page"),
+                         ("bot/us_pages.py", "render_us_prepost_page")):
+            src = pathlib.Path(path).read_text(encoding="utf-8")
+            tree = ast.parse(src)
+            node = next(n for n in ast.walk(tree)
+                        if isinstance(n, ast.FunctionDef) and n.name == fn)
+            calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)
+                     and isinstance(c.func, ast.Name)
+                     and c.func.id == "stored_note"]
+            assert calls, f"{path}:{fn} 가 stored_note 를 안 부른다"
+
+    # ── ④ 화면 E2E — 배선을 떼는 변형은 순수 테스트가 못 잡는다(#20) ──
+    def _cache_dirs(self, tmp_path, monkeypatch):
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+
+    def test_kr_page_draws_the_stored_rows_and_a_visible_stored_line(
+            self, tmp_path, monkeypatch):
+        """사용자가 본 그 화면 — 표가 뜨고 **보이는 줄**에 나이가 있다.
+
+        ⚠️ 단언은 `sm-note` 칸 하나를 **잘라서** 본다: 페이지 전체에서
+        `저장분` 을 찾으면 shell 의 JS 주석이 대신 만족시킨다(실측, #55·#75).
+        """
+        import re
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 27.0)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        assert "삼성전자" in html, "저장분 표가 안 그려졌다"
+        assert "데이터가 없습니다" not in html, html[:400]
+        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
+        hit = [n for n in notes if "저장분" in n]
+        assert hit, notes
+        assert "2026-09-18 19:52" in hit[0] and "27시간 전" in hit[0], hit[0]
+        # 클래스를 쓰면 CSS 도 있어야 한다(#201·#273).
+        assert re.search(r"\.sm-note\s*\{", html)
+
+    def test_us_page_draws_the_stored_rows_and_a_visible_stored_line(
+            self, tmp_path, monkeypatch):
+        import re
+        pp = self._env(tmp_path, monkeypatch, "us_prepost_movers_v2.json",
+                       self._SNAP_US, 30.0)
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: False)
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        assert "AAPL" in html and "데이터가 없습니다" not in html
+        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
+        hit = [n for n in notes if "저장분" in n]
+        assert hit and "30시간 전" in hit[0], notes
+        assert re.search(r"\.sm-note\s*\{", html)
+
+    def test_live_page_has_no_stored_line(self, tmp_path, monkeypatch):
+        """라이브 경로엔 `sm-note` 저장분 줄이 없다(#25)."""
+        import re
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 1.0 / 60)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: True)
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
+        assert not [n for n in notes if "저장분" in n], notes
+        assert "삼성전자" in html
+
+    def test_empty_page_says_there_is_no_stored_snapshot_either(
+            self, tmp_path, monkeypatch):
+        """저장분조차 없을 때만 '없습니다' — 그리고 그 사실을 적는다(#82)."""
+        import bot.prepost_client as pp
+        self._cache_dirs(tmp_path, monkeypatch)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        assert "데이터가 없습니다" in html and "저장분도 없습니다" in html
+
+    # ── ⑤ 옛 이름이 되살아나지 않는다 ──────────────────────────────
+    def test_the_misleading_fresh_helpers_are_gone(self):
+        """`_*_prepost_fresh` 는 창 **밖**을 True('신선')로 돌려줬고 그 이름이
+        화면에서 '최신'으로 읽혔다(#34). 되살리면 라벨이 다시 사라진다."""
+        import bot.prepost_client as pp
+        assert not hasattr(pp, "_prepost_fresh")
+        assert not hasattr(pp, "_kr_prepost_fresh")
+        assert callable(pp._prepost_live) and callable(pp._kr_prepost_live)
+        # 나이를 못 재면 라이브라고 주장하지 않는다(#54·#165).
+        assert pp._prepost_live(None) is False
+        assert pp._kr_prepost_live(None) is False
+
+    def test_stored_read_has_no_expiry(self):
+        """저장분 읽기에 24h 같은 상한이 되살아나면 주말이 다시 빈칸이 된다.
+        상수 하나에서 오게 두고 그 값이 **유한하지 않음**을 못박는다(#66)."""
+        import ast
+        import math
+        import pathlib
+        import bot.prepost_client as pp
+        assert math.isinf(pp._STORED_FOREVER)
+        src = pathlib.Path("bot/prepost_client.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for fn in ("fetch_us_prepost_movers", "fetch_kr_prepost_movers"):
+            node = next(n for n in ast.walk(tree)
+                        if isinstance(n, ast.FunctionDef) and n.name == fn)
+            kws = [k for c in ast.walk(node) if isinstance(c, ast.Call)
+                   and isinstance(c.func, ast.Name) and c.func.id == "_cached"
+                   for k in c.keywords if k.arg == "ttl"]
+            assert kws, f"{fn}: _cached(ttl=) 호출이 없다"
+            for k in kws:
+                assert isinstance(k.value, ast.Name) \
+                    and k.value.id == "_STORED_FOREVER", ast.dump(k.value)

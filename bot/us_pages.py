@@ -382,11 +382,13 @@ def render_us_prepost_page() -> str:
     2026-06-16 '전시장 정규장 무버' — 시간외 급변은 뉴스주라 무버 랭킹에 직격). 급등락
     (정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick. 종목 → 우리 종목분석(lookup)."""
     try:
-        from bot.prepost_client import fetch_us_prepost_movers
+        from bot.prepost_client import fetch_us_prepost_movers, stored_note
         data = fetch_us_prepost_movers()
     except Exception as exc:
         log.warning("us prepost page fetch failed: %s", exc)
-        data = {"up": [], "down": [], "ts": "", "source": "", "session": ""}
+        data = {"up": [], "down": [], "ts": "", "source": "", "session": "",
+                "stale": False, "stale_min": None, "in_window": None}
+        stored_note = lambda *a, **k: ""       # noqa: E731 — import 실패 폴백
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
@@ -415,7 +417,10 @@ def render_us_prepost_page() -> str:
                 body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전시장 무버 '
                         '시간외 스캔(~1분). 잠시 후 새로고침해 주세요.</div>')
         else:
+            # 여기 = **저장분조차 없음**(있으면 위에서 서빙) — 그 사실을
+            # 적어야 '창 밖이라 안 보이는 것'과 안 갈린다(#82·#43, KR 동일).
             body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
+                    '(직전 집계 저장분도 없습니다.)<br>'
                     f'연장거래({_ext_window_kst()}) 시간에 '
                     '확인해 주세요.</div>')
     else:
@@ -432,6 +437,10 @@ def render_us_prepost_page() -> str:
                 + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
                           _ind_dist_line(down), **_vlbl) + '</div>'
                 + _HL_SORT_JS)
+        # 저장분이면 나이를 **숫자로** 같이(#202) — 형제(KR)와 같은 단일 출처(#38).
+        _sn = stored_note(data, _ext_window_kst())
+        if _sn:
+            body = f'<div class="sm-note">{_html.escape(_sn)}</div>' + body
     sub = (f"전시장 무버 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
            "네이버 실시간 · 가격·등락=시간외 라이브 · 거래량·거래대금=정규장 누적"
            "(시간외분은 네이버 미제공) · 연장거래 창에서 30분 · "

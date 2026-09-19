@@ -240,7 +240,7 @@ def render_kr_prepost_page() -> str:
     """
     try:
         from bot.prepost_client import (fetch_kr_prepost_movers,
-                                        kr_prepost_status,
+                                        kr_prepost_status, stored_note,
                                         venue_attribution_note)
         data = fetch_kr_prepost_movers()
         st = kr_prepost_status()
@@ -248,9 +248,11 @@ def render_kr_prepost_page() -> str:
     except Exception as exc:
         log.warning("kr prepost page: %s", exc)
         data = {"up": [], "down": [], "ts": "", "building": False,
-                "status": {}, "session": ""}
+                "status": {}, "session": "", "stale": False,
+                "stale_min": None, "in_window": None}
         st = {}
         note = ""
+        stored_note = lambda *a, **k: ""       # noqa: E731 — import 실패 폴백
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
@@ -265,7 +267,10 @@ def render_kr_prepost_page() -> str:
             body = ('<div class="empty">⏳ 장전·장후 급등·급락 산출 중…<br>'
                     '네이버 시간외 스캔 중. 잠시 후 새로고침해 주세요.</div>')
         else:
+            # 여기 오는 유일한 경로 = **저장분조차 없음**(있으면 위에서 서빙).
+            # 그 사실을 적어야 '창 밖이라 안 보이는 것'과 안 갈린다(#82·#43).
             body = ('<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
+                    '(직전 집계 저장분도 없습니다.)<br>'
                     f'{win} 에 확인해 주세요.</div>')
     else:
         from bot.highlow_render import HL_SORT_JS, sort_by_pct, stock_panel
@@ -280,6 +285,11 @@ def render_kr_prepost_page() -> str:
     # 이 보드가 무엇을 재고 있는지 — **보이는 줄**로(#43·#228 툴팁 금지).
     if note:
         body = f'<div class="sm-note">ℹ️ {_html.escape(note)}</div>' + body
+    # 저장분이면 나이를 **숫자로** 같이(#202) — 판정은 payload 가 한다(#136).
+    # 문구는 형제(US)와 `prepost_client.stored_note` 단일 출처(#38).
+    _sn = stored_note(data, win) if (up or down) else ""
+    if _sn:
+        body = f'<div class="sm-note">{_html.escape(_sn)}</div>' + body
     # 스캔 상태 배너 — 직전 성공 스냅샷을 서빙 중인데 최근 집계가 실패/진행이면
     # 사용자가 화면에서 '왜 오늘 장전이 안 보이는지' 즉시 인지(silent-fail 제거,
     # 실수 #12). state=done(최신 반영)이면 배너 없음 — 스냅샷이 곧 최신.
