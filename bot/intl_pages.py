@@ -240,17 +240,26 @@ def render_kr_prepost_page() -> str:
     """
     try:
         from bot.prepost_client import (fetch_kr_prepost_movers,
-                                        kr_prepost_status,
-                                        venue_attribution_note)
+                                        freshness_label, kr_prepost_status,
+                                        scan_state, stored_missing_note,
+                                        stored_note, venue_attribution_note)
         data = fetch_kr_prepost_movers()
         st = kr_prepost_status()
         note = venue_attribution_note()
     except Exception as exc:
         log.warning("kr prepost page: %s", exc)
         data = {"up": [], "down": [], "ts": "", "building": False,
-                "status": {}, "session": ""}
+                "status": {}, "session": "", "stale": False,
+                "stale_min": None, "in_window": None,
+                "stored_unreadable": False}
         st = {}
         note = ""
+        # import 실패 폴백 — 단일출처 함수들이 없으니 **아무 주장도 하지 않는다**
+        # (#165: 못 재면 단정 금지 · #54: 없는 것을 ✅ 로 찍지 않는다).
+        stored_note = lambda *a, **k: ""            # noqa: E731
+        stored_missing_note = lambda *a, **k: ""    # noqa: E731
+        scan_state = lambda *a, **k: ""             # noqa: E731
+        freshness_label = lambda *a, **k: ""        # noqa: E731
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
@@ -265,7 +274,12 @@ def render_kr_prepost_page() -> str:
             body = ('<div class="empty">⏳ 장전·장후 급등·급락 산출 중…<br>'
                     '네이버 시간외 스캔 중. 잠시 후 새로고침해 주세요.</div>')
         else:
+            # 여기 오는 유일한 경로 = **저장분조차 없음**(있으면 위에서 서빙).
+            # 그 사실을 적어야 '창 밖이라 안 보이는 것'과 안 갈린다(#82·#43).
+            # '없음' 과 '못 읽음' 은 처방이 다르다 — 문구는 단일출처가 가른다
+            # (#82·#379, 형제 US 와 같은 함수 #38).
             body = ('<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
+                    + _html.escape(stored_missing_note(data)) + '<br>'
                     f'{win} 에 확인해 주세요.</div>')
     else:
         from bot.highlow_render import HL_SORT_JS, sort_by_pct, stock_panel
@@ -280,10 +294,17 @@ def render_kr_prepost_page() -> str:
     # 이 보드가 무엇을 재고 있는지 — **보이는 줄**로(#43·#228 툴팁 금지).
     if note:
         body = f'<div class="sm-note">ℹ️ {_html.escape(note)}</div>' + body
+    # 저장분이면 나이를 **숫자로** 같이(#202) — 판정은 payload 가 한다(#136).
+    # 문구는 형제(US)와 `prepost_client.stored_note` 단일 출처(#38).
+    _sn = stored_note(data, win) if (up or down) else ""
+    if _sn:
+        body = f'<div class="sm-note">{_html.escape(_sn)}</div>' + body
     # 스캔 상태 배너 — 직전 성공 스냅샷을 서빙 중인데 최근 집계가 실패/진행이면
     # 사용자가 화면에서 '왜 오늘 장전이 안 보이는지' 즉시 인지(silent-fail 제거,
     # 실수 #12). state=done(최신 반영)이면 배너 없음 — 스냅샷이 곧 최신.
-    _state = (st or {}).get("state")
+    # `running` 도장은 **나이로 만료**시킨다 — 스캔이 죽으면 그 도장이 남는데
+    # 상태 파일이 이제 영구 보존이라 '진행 중'이 영원한 거짓말이 된다(#25·#38).
+    _state = scan_state(st)
     _stl = _html.escape(str((st or {}).get("ts_label") or ""))
     if _state == "failed":
         _detail = _html.escape(str((st or {}).get("detail") or ""))
@@ -309,7 +330,10 @@ def render_kr_prepost_page() -> str:
             '갱신됩니다. 아래는 직전 스냅샷.</div>') + body
     sub = (f"🇰🇷 {sess_kr} 시간외 급등·급락 상·하위 30 · 등락률=시간외가 vs 정규장 "
            "종가(시간외-정규장 격차) · 거래량·거래대금=시간외 세션 누적(정규장 별개) · "
-           "실제 시간외 체결 종목만(미체결=전일가 placeholder 제외) · 네이버 실시간 · "
+           "실제 시간외 체결 종목만(미체결=전일가 placeholder 제외) · "
+           # 저장분을 '실시간' 이라고 적으면 본문(💾 저장분 27시간 전)과 한 화면이
+           # 두 말을 한다(#34·#55) — 부제도 payload 판정을 따른다(#136).
+           + (freshness_label(data) or "네이버 실시간") + " · "
            f"{win} · 창에서 2분"
            + (f" · {ts} 기준" if ts else ""))
     return _tw_shell("🇰🇷 한국 장전·장후 급등·급락", sub, body,
