@@ -187,6 +187,20 @@ HL_SORT_JS = _MULTISELECT_JS + """
 /* 비-KR 종목명: 티커 아래 한글명 별도 줄(.nk). 괄호 인라인이 좁은 셀에서 단어
    중간 줄바꿈돼 안 보이던 것 해소(사용자 2026-06-15). 작게·muted·단어 보존. */
 .hl-table td.nm .nk{display:block;font-size:11.5px;color:var(--muted,#888);font-weight:400;word-break:keep-all;line-height:1.25;margin-top:1px}
+/* 🚨 상태 뱃지 — 가격제한폭(KR ±30%)이 적용되지 않는 정리매매 종목 표시
+   (사용자 2026-09-19). 뱃지가 없으면 화면이 "왜 -53% 인가"에 답하지 못한다
+   (#43). 경고색을 쓰되 종목명보다 작게 — 읽는 순서는 종목명이 먼저다.
+   ⚠️ **채우지 말 것**: `--neg` 배경에 흰 글씨는 다크에서 3.68:1 로 AA(4.5)
+   미달이다(`css_contrast` 로 실측). 글자에 `--neg` 를 쓰면 4.54~5.13:1 로
+   네 표면 모두 통과한다 — 접근성 fix 가 접근성을 깎던 그 자리다(#355). */
+.hl-table td.nm .rbadge{display:inline-block;font-size:10.5px;font-weight:700;
+  line-height:1.5;padding:0 5px;margin-right:5px;border-radius:4px;
+  white-space:nowrap;vertical-align:1px;
+  color:var(--neg,#e2574c);border:1px solid currentColor;background:transparent}
+/* 범례는 **패널과 같이 다닌다** — 페이지 번들의 `.sm-note` 를 빌려 쓰면 그
+   번들을 안 쓰는 보드(tw/intl)에서 정의 없는 클래스가 된다(#273·#38). */
+.hl-table+.rlegend{color:var(--muted,#8b949e);font-size:12px;margin:8px 2px 0;line-height:1.5}
+.hl-table+.rlegend b{color:var(--text,#e6edf3)}
 /* KR/CJK(name_only) 종목명 줄바꿈 절대 금지 — 상한가 등 다컬럼에서 '원익/IPS'
    처럼 깨지던 것 방지(사용자 2026-06-14 재요청 — 두 번째). nowrap + keep-all +
    !important 로 어떤 상위/캐시 규칙도 못 덮게. td 와 내부 a 둘 다 명시. min-width
@@ -594,6 +608,8 @@ def stock_panel(title: str, items: list, tid: str, market: str,
                 _kick_name_fill(_miss)
         except Exception:
             pass
+    # 🚨 상태 뱃지(정리매매) — 패널당 1회 조회, 렌더-세이프(#113·#116).
+    _rb, _rstate = _risk_badges(market, items)
     sym = _CUR.get(market, ("", 2))[0]
     cur_h = f" ({sym})" if sym else ""
 
@@ -617,6 +633,12 @@ def stock_panel(title: str, items: list, tid: str, market: str,
                 label = "🔺 " + label
             elif pct <= -limit_pct:
                 label = "🔻 " + label
+        # 정리매매는 **가격제한폭(KR ±30%)이 적용되지 않는** 문서화된
+        # 예외다 — 뱃지가 없으면 -53% 짜리 행이 우리 버그처럼 보인다(#43).
+        for _bk in _rb.get(_raw_tk, ()):
+            label = (f'<span class="rbadge" title="{_html.escape(_bk)}'
+                     ' — 가격제한폭(±30%)이 적용되지 않습니다">'
+                     f'{_html.escape(_bk)}</span>') + label
         vol, mcap = it.get("vol"), it.get("mcap")
         ind_txt = _display_industry(it.get("ind"))
         ind = _html.escape(ind_txt)
@@ -671,12 +693,18 @@ def stock_panel(title: str, items: list, tid: str, market: str,
         heads.append(f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총{cur_h}</th>')
     if show_ind:
         heads.append('<th class="srt" data-key="ind" data-type="text">업종</th>')
+    # 🚨 뱃지 범례 — **뱃지를 실제로 그린 패널에만** 붙인다. 늘 있는 각주는
+    # 아무것도 안 재는 것과 같다(#25·#260). 뜻·출처·기준시각을 같이 적는다
+    # (전역 표기 규칙 10b · #43 · #34 라벨에 기준을 박을 것). 패널 안에서
+    # 만들므로 `stock_panel` 을 쓰는 **모든** 보드가 자동으로 따라온다 —
+    # 페이지마다 복제하면 한쪽만 고쳐진다(#38·#48).
+    legend = _risk_legend(market, _rb, _rstate)
     return (
         f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
         f'{extra_head}'
         f'<table class="hl-table{" nm-nowrap" if name_only else ""}" id="{tid}"><thead><tr>'
         + "".join(heads)
-        + f'</tr></thead><tbody>{rows}</tbody></table></div>'
+        + f'</tr></thead><tbody>{rows}</tbody></table>{legend}</div>'
     )
 
 
@@ -746,6 +774,133 @@ _ENRICH_LOCK = _threading.Lock()
 
 _NAME_FILLING: set = set()         # 백그라운드 종목명 번역 워밍 진행 중 (dedup)
 _NAME_FILL_LOCK = _threading.Lock()
+
+
+_FLAGS_FILLING: set = set()        # 백그라운드 상태 플래그 워밍 진행 중 (dedup)
+_FLAGS_FILL_LOCK = _threading.Lock()
+
+# 상태 플래그를 주는 **원천 레지스트리**. 시장 게이트가 아니다 — KIS 마스터는
+# 한국 증권사 파일이라 KR 밖 종목이 아예 없다(§UNIVERSAL 문서화된 데이터소스
+# 사유). 다른 시장에 같은 플래그를 주는 원천이 생기면 여기 한 줄을 더하는
+# 것으로 끝나고 `_row` 는 안 바뀐다.
+_RISK_SOURCES = {"KR": "bot.kr_stock_flags"}
+
+
+def _risk_badges(market: str, items: list) -> tuple[dict, str]:
+    """({ticker: (뱃지키, …)}, 원천 상태) — 패널당 **한 번**만 맵을 읽는다.
+
+    상태를 같이 돌려주는 이유: 원천이 죽으면 뱃지도 범례도 없어져 **화면이
+    "오늘 해당 종목 없음" 과 똑같이 보인다** — 이 기능이 없애려던 그 침묵이
+    그대로 돌아온다(독립 리뷰 2026-09-19 · #43·#45·#54).
+
+    ⚠️ 렌더-세이프: 캐시만 본다(`cache_only=True`). 콜드면 KIS zip 2개를 각
+    30초 상한으로 받는데 그걸 렌더가 기다리면 그게 곧 화면 블록이다
+    (#116·#312 — 형제 종목명 번역이 같은 이유로 `cache_only` 다). 미스는
+    백그라운드가 데우고 **다음 렌더**에 반영된다.
+
+    ⚠️ 행마다 부르지 않는다 — 30행이면 캐시를 30번 읽는다(#113).
+    """
+    mod = _RISK_SOURCES.get(market)
+    if not mod or not items:
+        return {}, ""
+    try:
+        import importlib
+        m = importlib.import_module(mod)
+        snap = m.snapshot(cache_only=True)
+        out = {}
+        for it in items:
+            tk = it.get("ticker")
+            if not tk:
+                continue
+            b = m.badges(tk, snap["flags"])
+            if b:
+                out[tk] = b
+        # ⚠️ **백오프 중이면 부르지 않는다** — 원천이 죽었을 때 빈 맵을
+        # '콜드' 로 읽고 매 렌더마다 킥하면 `/highlow` 30초 폴링이 KIS zip
+        # 을 끊임없이 받는다(독립 리뷰 2026-09-19 실측 5렌더=10다운로드,
+        # #384 지수 백오프 · #116 재시도도 유계여야 한다).
+        if snap["state"] in ("cold", "stale"):
+            _kick_flags_fill(mod)
+        return out, snap["state"]
+    except Exception as exc:                                   # noqa: BLE001
+        # 조용히 빈 dict 를 돌려주면 '플래그 없음' 과 '조회 실패' 가 같아진다
+        # — 뱃지는 못 그려도 **로그에는 남긴다**(#12 silent-fail 금지).
+        log.info("risk badges 조회 실패(%s): %s", market, exc)
+        return {}, "error"
+
+
+def _risk_legend(market: str, drawn: dict, state: str = "ok") -> str:
+    """뱃지 범례 한 줄 — 그린 게 없으면 **빈 문자열**(#25·#260).
+
+    ⚠️ 순수 함수가 **아니다** — 기준시각은 캐시가 아는 쪽이라 나이를 물어서
+    적는다(#64·#86·#304 '값 수집' 라벨과 같은 규약). 원천은 안 친다(디스크
+    mtime 만 본다). 렌더 안에 인라인으로 두지 않은 이유는 **값으로 태우기
+    위해서**다(#176) — 첫 판 독스트링이 '순수 함수' 라고 적었는데 그건 이
+    함수에 대해 거짓이었다(#55 설명이 코드와 어긋나면 버그).
+    """
+    keys = sorted({k for v in (drawn or {}).values() for k in v})
+    if not keys:
+        # 뱃지가 없는 이유가 **둘**이다 — 해당 종목이 없거나, 상태를 못 받았거나.
+        # 둘을 같은 침묵으로 두면 이 기능이 없애려던 그 결함이 그대로 돌아온다
+        # (#43·#82). 못 받고 있을 때만 한 줄 — 정상일 땐 아무것도 안 그린다
+        # (늘 뜨는 각주는 아무것도 안 재는 것과 같다, #25·#260).
+        if state in ("cold", "backoff", "error"):
+            how = {"cold": "받는 중입니다", "backoff": "받지 못하고 있습니다",
+                   "error": "조회에 실패했습니다"}[state]
+            return ('<div class="rlegend">⚠️ 정리매매 등 종목 상태를 '
+                    + how + ' — 이 표에 <b>가격제한폭(±30%)이 적용되지 않는 '
+                    '종목이 섞여 있어도 표시되지 않습니다</b>.</div>')
+        return ""
+    age = ""
+    try:
+        from bot.finviz_client import cache_age_sec
+        mod = _RISK_SOURCES.get(market)
+        if mod:
+            import importlib
+            a = cache_age_sec(importlib.import_module(mod)._CACHE)
+            if a is not None:
+                age = (f" · 수집 {int(a // 3600)}시간 전" if a >= 3600
+                       else (f" · 수집 {int(a // 60)}분 전" if a >= 60
+                             else " · 방금 수집"))
+    except Exception:                                          # noqa: BLE001
+        pass
+    return ('<div class="rlegend">🚨 '
+            + _html.escape(" · ".join(keys))
+            + ' 종목은 <b>가격제한폭(±30%)이 적용되지 않습니다</b> — '
+              '그래서 하루 −50% 같은 값이 나올 수 있습니다. '
+              '출처: KIS 종목 마스터' + _html.escape(age) + '</div>')
+
+
+def _kick_flags_fill(mod: str) -> None:
+    """상태 플래그 캐시를 백그라운드 daemon 으로 워밍(렌더 블로킹 0).
+
+    형제 `_kick_name_fill` 과 같은 규약(#38). dedup 은 **원천별**이다 —
+    단일 bool 로 두면 `_RISK_SOURCES` 가 둘이 되는 날 한쪽 워밍이 다른 쪽을
+    막는다(오늘의 레지스트리 크기에 기대지 말 것, #24). graceful.
+    ⚠️ `start()` 가 던지면 `finally` 가 안 돌아 그 키가 **영구 정지**한다
+    (#371) — 기동 실패도 플래그를 되돌린다.
+    """
+    with _FLAGS_FILL_LOCK:
+        if mod in _FLAGS_FILLING:
+            return
+        _FLAGS_FILLING.add(mod)
+
+    def _run() -> None:
+        try:
+            import importlib
+            importlib.import_module(mod).flags_map()   # full(캐시 워밍)
+        except Exception:
+            pass
+        finally:
+            with _FLAGS_FILL_LOCK:
+                _FLAGS_FILLING.discard(mod)
+
+    try:
+        _threading.Thread(target=_run, daemon=True, name="risk-flags").start()
+    except Exception as exc:                                   # noqa: BLE001
+        with _FLAGS_FILL_LOCK:
+            _FLAGS_FILLING.discard(mod)
+        log.info("risk flags 워밍 기동 실패: %s", exc)
 
 
 def _kick_name_fill(pairs: list) -> None:

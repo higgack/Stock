@@ -165,11 +165,29 @@ _KIS_SPEC = {
 }
 
 
+# 종목 상태 플래그의 컬럼명 — **책마다 다르다**(KOSPI 는 맨 이름, KOSDAQ 은
+# '… 여부'). 원천이 그렇게 주는 것이지 우리 규약이 아니므로 이름을 통일하지
+# 않고 **정규 키 → 책별 컬럼명**으로 적는다(#34 라벨에 기준을 박을 것).
+# 해석(Y/N 인지 0/1 인지)은 여기서 하지 않는다 — 이 함수는 마스터파일을
+# **옮기기만** 하고 뜻은 `bot/kr_stock_flags.py` 가 정한다(#38 단일 출처).
+_KIS_RISK_COLS = {
+    "kospi": {"정리매매": "정리매매", "거래정지": "거래정지",
+              "관리종목": "관리종목"},
+    "kosdaq": {"정리매매": "정리매매 여부", "거래정지": "거래정지 여부",
+               "관리종목": "관리 종목 여부"},
+}
+
+
 def _field_slice(widths, cols, name: str) -> tuple[int, int]:
-    """컬럼명 → 고정폭 payload 안의 (시작, 끝). 이름이 없으면 KeyError.
+    """컬럼명 → 고정폭 payload 안의 (시작, 끝). 이름이 없으면 **ValueError**.
 
     오프셋을 상수로 박아 두면 위 폭 목록을 갱신할 때 한쪽만 바뀌어 조용히
-    어긋난다 — **이름으로 찾아 계산**한다(#38)."""
+    어긋난다 — **이름으로 찾아 계산**한다(#38).
+
+    ⚠️ 예외는 `list.index` 가 내는 **ValueError** 다 — 독스트링이 오래
+    `KeyError` 라고 적고 있었고(2026-09-19 `_KIS_RISK_COLS` 를 붙이며 발각),
+    그걸 믿고 `except KeyError` 로 감싼 호출부는 컬럼명 드리프트에서 통째로
+    죽는다(#55 설명이 코드와 어긋나면 버그)."""
     idx = cols.index(name)
     start = sum(widths[:idx])
     return start, start + widths[idx]
@@ -208,6 +226,16 @@ def _kis_master_rows(book: str, *, raw: bytes | None = None) -> tuple[list, str]
     f_flag = _field_slice(widths, cols, flag_col)
     f_group = _field_slice(widths, cols, group_col)
     f_mcap = _field_slice(widths, cols, mcap_col)
+    # 상태 플래그 슬라이스 — 컬럼명이 드리프트해도 **유니버스 빌드는 살린다**
+    # (여기서 죽으면 볼린저 보드가 통째로 빈다). 못 찾은 것은 세어서 말한다
+    # (#43·#54 — 조용히 빠지면 뱃지가 영영 안 붙는데 아무도 모른다).
+    risk_slices: dict = {}
+    missing: list = []
+    for _k, _col in _KIS_RISK_COLS.get(book, {}).items():
+        try:
+            risk_slices[_k] = _field_slice(widths, cols, _col)
+        except ValueError:
+            missing.append(_col)
     rows: list = []
     short = 0
     for line in text.split("\n"):
@@ -233,10 +261,15 @@ def _kis_master_rows(book: str, *, raw: bytes | None = None) -> tuple[list, str]
             "name": head[21:].strip() or code,
             "group": tail[f_group[0]:f_group[1]].strip(),
             "index": index_name, "member": member, "mcap": mcap,
+            # 원문 그대로(strip 만) — 해석은 `kr_stock_flags` 가 한다.
+            "risk_raw": {_k: tail[_s:_e].strip()
+                         for _k, (_s, _e) in risk_slices.items()},
         })
     note = f"{len(rows):,}행"
     if short:
         note += f" · 형식 미달 {short}행"
+    if missing:
+        note += f" · 상태 컬럼 미발견 {', '.join(missing)}"
     return rows, note
 
 

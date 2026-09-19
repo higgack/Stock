@@ -45308,6 +45308,10 @@ def _fetching_pages() -> list:
         # 게다가 그 스레드는 이 ExitStack 보다 오래 살아 목이 풀린 뒤 진짜
         # 원천을 친다. 그래서 킥 자체를 막고, 번역은 캐시 조회만 남긴다.
         P("bot.highlow_render._kick_name_fill", new=lambda pairs: None)
+        # 상태 플래그 워밍도 같은 이유로 막는다 — 캐시가 콜드면 렌더가
+        # daemon 을 띄워 KIS 마스터 zip 2개를 받는다(#312 그대로). 스레드는
+        # 이 ExitStack 보다 오래 살아 목이 풀린 뒤 진짜 원천을 친다.
+        P("bot.highlow_render._kick_flags_fill", new=lambda mod: None)
         P("bot.chart_translate.translate_names_kr",
           new=lambda pairs, cache_only=True: {})
         # 이름/업종 조회도 전부 스텁 — 픽스처가 원천에 의존하면 CI 와 VM 이
@@ -53381,7 +53385,7 @@ def _bb_close(vals, start: str = "2026-01-01"):
 
 
 def _bb_mst_line(book: str, code: str, name: str, member: bool, mcap,
-                 group: str = "ST") -> str:
+                 group: str = "ST", risk: dict | None = None) -> str:
     """KIS 마스터 한 줄 — **원천이 실제로 보내는 고정폭 모양** 그대로 만든다.
     내가 지어낸 모양으로 픽스처를 만들면 파서가 틀려도 전부 초록이다(#155)."""
     from bot import bollinger_board as bb
@@ -53397,6 +53401,10 @@ def _bb_mst_line(book: str, code: str, name: str, member: bool, mcap,
     put(spec[4], ("3" if member else "0") if book == "kospi"
         else ("Y" if member else "N"))
     put(spec[6], mcap)
+    # 상태 플래그(정리매매·거래정지·관리종목) — 정규 키로 받고 **책별 컬럼명**
+    # 으로 옮긴다(KOSPI '정리매매' ↔ KOSDAQ '정리매매 여부', #34).
+    for _k, _v in (risk or {}).items():
+        put(bb._KIS_RISK_COLS[book][_k], _v)
     return f"{code:<9}{'KR7' + code + '00':<12}{name}" + "".join(tail)
 
 
@@ -74936,3 +74944,522 @@ class TestProbeReviewFollowups20260919C:
         assert "행을 준 것: dividend 갈래" in v, v
         assert "거절도 행도 아닌 것: sortType 없음" in v, v
         assert "살아 있고" in v and "새 주소를 찾을 자리가 아닙니다" in v, v
+
+
+class TestLiquidationBadge20260919:
+    """정리매매 뱃지 — 랭킹 보드가 "왜 ±30% 밖인가"에 스스로 답해야 한다.
+
+    2026-09-19 사용자: "코스나인이나, 원풍물산 코다코같은건 맞는거야? 이거
+    정리매매 종목이야? 30% 가 상하한룰로 알고 있는데." 화면은 `1원 ·
+    -50.00%` 만 적고 있었다 — 값은 KRX 가 준 그대로라 산수도 맞고(#33) 어떤
+    감사도 안 걸렸는데(#96), 화면이 답을 못 해 사용자가 물어야 알았다(#43).
+    정리매매는 가격제한폭이 적용되지 않는 문서화된 예외다.
+    """
+
+    # ── 원천: KIS 마스터가 이미 그 칸을 주고 있었다(#150) ──────────────────
+    def test_master_carries_the_risk_columns_for_both_books(self):
+        """책마다 컬럼명이 다르다(KOSPI '정리매매' ↔ KOSDAQ '정리매매 여부').
+        한쪽만 맞으면 그 시장 종목이 영영 뱃지를 못 받는다(#27·#34)."""
+        from bot import bollinger_board as bb
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 900,
+                         risk={"정리매매": "Y"}),
+            _bb_mst_line("kospi", "005930", "삼성전자", True, 5123456)])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "289080", "코스나인", True, 120,
+                         risk={"정리매매": "Y", "관리종목": "Y"})])
+        rows, _ = bb._kis_master_rows("kospi", raw=ks)
+        by = {r["code"].strip(): r["risk_raw"] for r in rows}
+        assert by["008290"]["정리매매"] == "Y"
+        assert by["005930"]["정리매매"] == ""      # 안 찍힌 칸은 빈 칸이다
+        rows2, _ = bb._kis_master_rows("kosdaq", raw=kq)
+        by2 = {r["code"].strip(): r["risk_raw"] for r in rows2}
+        assert by2["289080"] == {"정리매매": "Y", "거래정지": "",
+                                 "관리종목": "Y"}
+
+    def test_existing_callers_are_untouched(self):
+        """`risk_raw` 는 **덧붙인** 키다 — 유니버스 빌드가 바뀌면 안 된다."""
+        from bot import bollinger_board as bb
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "005930", "삼성전자", True, 5123456,
+                         risk={"정리매매": "Y"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 200000)])
+        uni, _note, _diag = bb._rung_kis(raw={"kospi": ks, "kosdaq": kq})
+        assert uni["005930.KS"] == {"name": "삼성전자", "mcap": 5123456.0,
+                                    "index": "KOSPI200"}
+
+    def test_field_slice_raises_value_error_not_key_error(self):
+        """독스트링이 오래 `KeyError` 라고 적고 있었다 — 그걸 믿고 감싸면
+        컬럼명 드리프트에서 호출부가 통째로 죽는다(#55)."""
+        from bot import bollinger_board as bb
+        with pytest.raises(ValueError):
+            bb._field_slice(bb._KOSPI_WIDTHS, bb._KOSPI_COLS, "없는컬럼")
+        assert "ValueError" in bb._field_slice.__doc__
+
+    def test_a_missing_risk_column_is_counted_not_silent(self):
+        """컬럼명이 드리프트하면 **유니버스는 살리고 사실은 말한다**(#43·#54).
+        조용히 빠지면 뱃지가 영영 안 붙는데 아무도 모른다."""
+        from unittest import mock
+        from bot import bollinger_board as bb
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "005930", "삼성전자", True, 1)])
+        with mock.patch.dict(bb._KIS_RISK_COLS["kospi"],
+                             {"정리매매": "없는컬럼"}, clear=False):
+            rows, note = bb._kis_master_rows("kospi", raw=ks)
+        assert rows and "상태 컬럼 미발견 없는컬럼" in note
+        assert "정리매매" not in rows[0]["risk_raw"]
+
+    # ── 해석: 인코딩을 안 쟀으므로 3-상태다 ────────────────────────────────
+    def test_parse_flag_is_three_state(self):
+        """Y/N 인지 0/1 인지 **재지 않았다** — 둘 다 받고 그 밖은 '모름'이다.
+        모름을 False 로 접으면 '정상'과 구별되지 않는다(#54·#82·#165)."""
+        from bot.kr_stock_flags import parse_flag
+        assert [parse_flag(v) for v in ("Y", "y", "1", " Y ")] == [True] * 4
+        assert [parse_flag(v) for v in ("N", "n", "0", "", "  ")] == [False] * 5
+        assert parse_flag("X") is None and parse_flag(None) is None
+
+    def test_unknown_encoding_is_counted_with_a_raw_sample(self):
+        """숫자만 세면 어느 인코딩으로 온 건지 다음 라운드가 또 추측한다
+        (#109 원문 표본을 같이 찍을 것)."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "005930", "삼성전자", True, 1,
+                         risk={"정리매매": "T"})])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 1)])
+        real = bb._kis_master_rows
+        with mock.patch.object(bb, "_kis_master_rows",
+                               lambda b, **k: real(
+                                   b, raw=(ks if b == "kospi" else kq))):
+            fm, note = kf.flags_map(write=False)
+        assert fm["005930"]["정리매매"] is None
+        assert "모름 정리매매 1(T)" in note, note
+
+    def test_a_half_map_is_never_baked(self):
+        """코스닥 zip 만 실패한 맵을 완전본으로 구우면 코스닥 정리매매 종목이
+        12시간 동안 뱃지 없이 뜬다(#280·#384).
+
+        ⚠️ 계약 갱신(2026-09-19 독립 리뷰): 이제 **실패 도장은 굽는다** —
+        안 남기면 다음 렌더가 곧바로 또 받는다(`/highlow` 30초 폴링).
+        남는 보장은 "**플래그**는 안 굽는다" 이고 그게 이 테스트의 축이다(#222).
+        """
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "008290", "원풍물산", True, 1,
+                         risk={"정리매매": "Y"})])
+        wrote: list = []
+        real = bb._kis_master_rows
+        with mock.patch.object(bb, "_kis_master_rows",
+                               lambda b, **k: (real(b, raw=ks)
+                                               if b == "kospi" else ([], "죽음"))), \
+                mock.patch("bot.finviz_client._cache_write",
+                           lambda *a, **k: wrote.append(a)):
+            snap = kf.snapshot(cache_only=False)
+        assert snap["flags"]["008290"]["정리매매"] is True      # 값은 준다
+        assert snap["state"] == "backoff" and "부분" in snap["note"]
+        # 구운 것은 **도장뿐**이다 — 플래그도, 완전본 행수도 안 굽는다.
+        assert len(wrote) == 1 and wrote[0][0] == kf._CACHE
+        env = wrote[0][1]
+        assert not env.get("flags") and not env.get("n")
+        assert env["fails"] == 1 and env["next_try"] > 0
+
+    def test_zero_rows_is_not_a_clean_map(self):
+        """'맵이 비었다'와 '0행을 봤다'는 다른 사실이다(#45·#54)."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        with mock.patch.object(bb, "_kis_master_rows",
+                               lambda b, **k: ([], "HTTP 403")):
+            fm, note = kf.flags_map(write=False)
+        assert fm == {} and "0행" in note and "403" in note
+
+    # ── 렌더: 배선을 값으로 잰다(#20) ──────────────────────────────────────
+    def _cache(self, tmp_path, flags):
+        """캐시를 심고 **백그라운드 킥까지 막는** 컨텍스트.
+
+        ⚠️ 킥을 개별 테스트가 기억해 막을 일이 아니다(#119 규율을 구조로) —
+        안 막으면 daemon 스레드가 세션 공용 캐시 디렉터리에
+        `snapshot(write=True)` 를 날려, 하필 `_cache_write` 를 패치한
+        형제 테스트 안에 착지하면 **단독 green / 전체 red** 가 된다(독립 리뷰
+        2026-09-19 F5 · #30·#128·#312·#344).
+        """
+        from unittest import mock
+        from bot import highlow_render as hr, kr_stock_flags as kf
+        (tmp_path / kf._CACHE).write_text(json.dumps(
+            {"v": kf._SCHEMA, "n": 2814, "flags": flags, "note": "픽스처",
+             "fetched": time.time(), "fails": 0, "next_try": 0}),
+            encoding="utf-8")
+        st = contextlib.ExitStack()
+        st.enter_context(mock.patch("bot.finviz_client._CACHE_DIR", tmp_path))
+        st.enter_context(mock.patch.object(hr, "_kick_flags_fill",
+                                           lambda mod: None))
+        return st
+
+    def _items(self):
+        return [{"ticker": "289080.KQ", "name": "코스나인", "price": 1,
+                 "pct": -50.0, "vol": 56820000, "mcap": 120.0, "ind": "반도체"},
+                {"ticker": "005930.KS", "name": "삼성전자", "price": 70000,
+                 "pct": 1.2, "vol": 10, "mcap": 4e6, "ind": "반도체"}]
+
+    def test_the_badge_reaches_the_rendered_row(self, tmp_path):
+        from bot.highlow_render import stock_panel
+        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+            h = stock_panel("📊 거래량 상위", self._items(), "v", "KR",
+                            name_only=True)
+        assert h.count('class="rbadge"') == 1
+        # 뱃지가 **그 행**에 붙어야 한다 — 패널 어딘가가 아니라.
+        row = [r for r in h.split("<tr ") if "289080" in r][0]
+        assert 'class="rbadge"' in row and "정리매매" in row
+        other = [r for r in h.split("<tr ") if "005930" in r][0]
+        assert "rbadge" not in other
+
+    def test_unknown_is_never_drawn_as_a_badge(self, tmp_path):
+        """모르는 것을 '정리매매'라고 적으면 화면이 거짓말한다(#165)."""
+        from bot.highlow_render import stock_panel
+        with self._cache(tmp_path, {"289080": {"정리매매": None}}):
+            h = stock_panel("x", self._items(), "v", "KR", name_only=True)
+        assert "rbadge" not in h and "rlegend" not in h
+
+    def test_only_the_key_that_waives_the_price_limit_is_badged(self, tmp_path):
+        """관리종목·거래정지는 ±30% 를 면제하지 않는다 — 사용자가 물은 질문에
+        답하는 키는 정리매매뿐이다(#25·#260 늘 뜨는 뱃지는 소음)."""
+        from bot.kr_stock_flags import BADGE_KEYS
+        from bot.highlow_render import stock_panel
+        assert BADGE_KEYS == ("정리매매",)
+        with self._cache(tmp_path, {"289080": {"관리종목": True,
+                                               "거래정지": True}}):
+            h = stock_panel("x", self._items(), "v", "KR", name_only=True)
+        assert "rbadge" not in h
+
+    def test_the_legend_appears_only_when_a_badge_was_drawn(self, tmp_path):
+        from bot.highlow_render import stock_panel
+        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+            hit = stock_panel("x", self._items(), "v", "KR", name_only=True)
+            miss = stock_panel("x", self._items()[1:], "v2", "KR",
+                               name_only=True)
+        assert hit.count('class="rlegend"') == 1
+        assert "±30%" in hit and "KIS 종목 마스터" in hit
+        assert "rlegend" not in miss
+
+    def test_both_boards_the_user_named_get_it(self, tmp_path, monkeypatch):
+        """사용자가 짚은 둘 — 급등·급락과 거래량 상위. 한 페이지만 고치면
+        다른 쪽이 조용히 빠진다(#38·#48)."""
+        from bot import naver_pages as np_
+        rows = [{"ticker": "289080.KQ", "name": "코스나인", "price": 1,
+                 "pct": -50.0, "vol": 1, "value": 1.0, "mcap": 1.0}]
+        # ⚠️ 두 페이지 다 원천을 **함수 안에서** import 한다 — 페이지 모듈에
+        # 패치하면 아무것도 안 막힌다(그 상태로 '통과'하면 이 가드가 눈이
+        # 먼다, #91b). 원천 모듈에 건다.
+        monkeypatch.setattr("bot.naver_ranking_client.fetch_kr_movers",
+                            lambda **k: {"up": rows, "down": rows,
+                                         "ts": "2026-09-19", "source": "s"},
+                            raising=False)
+        monkeypatch.setattr("bot.kr_volume_client.fetch_kr_volume_top",
+                            lambda **k: {"rows": rows, "ts": "2026-09-19",
+                                         "source": "s"}, raising=False)
+        monkeypatch.setattr("bot.naver_sector_client.apply_kr_industry",
+                            lambda *a, **k: None, raising=False)
+        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+            for fn in (np_.render_highlow_page, np_.render_kr_volume_page):
+                html = fn()
+                assert 'class="rbadge"' in html, fn.__name__
+                assert 'class="rlegend"' in html, fn.__name__
+
+    def test_non_kr_boards_never_pay_for_the_lookup(self, tmp_path):
+        """원천 레지스트리에 없는 시장은 **조회 자체를 안 한다**(#61)."""
+        from unittest import mock
+        from bot import highlow_render as hr
+        calls: list = []
+        with self._cache(tmp_path, {"289080": {"정리매매": True}}), \
+                mock.patch("bot.kr_stock_flags.snapshot",
+                           side_effect=lambda **k: calls.append(k) or {
+                               "flags": {}, "note": "", "state": "ok", "n": 1,
+                               "fetched": 0, "fails": 0, "next_try": 0}):
+            hr.stock_panel("x", [{"ticker": "AAPL", "name": "Apple",
+                                  "price": 1, "pct": 1.0}], "u", "US")
+            assert calls == []
+            hr.stock_panel("x", self._items(), "k", "KR", name_only=True)
+            assert calls == [{"cache_only": True}]
+
+    def test_the_lookup_is_once_per_panel_not_per_row(self, tmp_path):
+        """행마다 부르면 30행이면 캐시를 30번 읽는다(#113)."""
+        from unittest import mock
+        from bot import highlow_render as hr
+        n: list = []
+        with self._cache(tmp_path, {"289080": {"정리매매": True}}), \
+                mock.patch("bot.kr_stock_flags.snapshot",
+                           side_effect=lambda **k: n.append(1) or {
+                               "flags": {"289080": {"정리매매": True}},
+                               "note": "", "state": "ok", "n": 1,
+                               "fetched": 0, "fails": 0, "next_try": 0}):
+            hr.stock_panel("x", self._items() * 15, "k", "KR", name_only=True)
+        assert n == [1]
+
+    def test_render_path_never_downloads(self, tmp_path):
+        """콜드면 zip 2개 × 30초 상한이다 — 렌더가 그걸 기다리면 화면
+        블록이다(#116·#312). 캐시가 없으면 **즉시** 빈 맵이다."""
+        from unittest import mock
+        from bot import bollinger_board as bb, highlow_render as hr
+        hit: list = []
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  side_effect=lambda *a, **k: hit.append(1)), \
+                mock.patch.object(hr, "_kick_flags_fill", lambda mod: None):
+            h = hr.stock_panel("x", self._items(), "k", "KR", name_only=True)
+        assert hit == [] and "rbadge" not in h
+
+    def test_a_cold_cache_kicks_the_background_warm(self, tmp_path):
+        from unittest import mock
+        from bot import highlow_render as hr
+        kicked: list = []
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(hr, "_kick_flags_fill", kicked.append):
+            hr.stock_panel("x", self._items(), "k", "KR", name_only=True)
+        assert kicked == ["bot.kr_stock_flags"]
+
+    def test_the_warm_dedup_is_per_source_not_global(self):
+        """단일 bool 로 두면 `_RISK_SOURCES` 가 둘이 되는 날 한쪽 워밍이 다른
+        쪽을 막는다 — 오늘의 레지스트리 크기에 기대지 말 것(#24).
+
+        ⚠️ 오늘은 원천이 하나라 이 계약이 **제품 경로로는 발화하지 않는다**
+        (#291) — 합성 원천 이름으로 태운다.
+        """
+        from unittest import mock
+        from bot import highlow_render as hr
+        started: list = []
+
+        class _T:
+            def __init__(self, target, **kw):
+                self._t = target
+
+            def start(self):
+                started.append(1)          # `_run` 은 부르지 않는다(원천 접촉 0)
+
+        hr._FLAGS_FILLING.clear()
+        with mock.patch.object(hr, "_threading", mock.Mock(Thread=_T)):
+            hr._kick_flags_fill("bot.kr_stock_flags")
+            hr._kick_flags_fill("bot.kr_stock_flags")      # dedup
+            assert started == [1]
+            hr._kick_flags_fill("bot.zzz_other_source")    # 다른 원천은 막지 않는다
+            assert started == [1, 1]
+        assert hr._FLAGS_FILLING == {"bot.kr_stock_flags", "bot.zzz_other_source"}
+        hr._FLAGS_FILLING.clear()
+
+    def test_a_failed_thread_start_never_parks_the_source_forever(self):
+        """`start()` 가 던지면 그 원천이 **영구 정지**한다(#371)."""
+        from unittest import mock
+        from bot import highlow_render as hr
+        hr._FLAGS_FILLING.clear()
+        boom = mock.Mock(Thread=mock.Mock(
+            return_value=mock.Mock(start=mock.Mock(side_effect=OSError("x")))))
+        with mock.patch.object(hr, "_threading", boom):
+            hr._kick_flags_fill("bot.kr_stock_flags")
+        assert hr._FLAGS_FILLING == set()
+
+    def test_the_legend_age_label_reads_as_a_time_not_a_blank(self, tmp_path):
+        """'수집 0분 전' 은 '모름' 처럼 읽힌다 — 갓 받은 값은 '방금'이다."""
+        from unittest import mock
+        from bot.highlow_render import stock_panel
+        with self._cache(tmp_path, {"289080": {"정리매매": True}}):
+            h = stock_panel("x", self._items(), "v", "KR", name_only=True)
+        assert "방금 수집" in h and "0분 전" not in h
+
+    def test_a_torn_or_junk_cache_never_raises(self, tmp_path):
+        """캐시 독자는 **어떤 바이트가 와도 안 던진다**(#331 한 바이트가 보드
+        셋을 비웠다)."""
+        from unittest import mock
+        from bot import kr_stock_flags as kf
+        from bot.highlow_render import stock_panel
+        for junk in (b"{not json", b"\x8d\xff", b'{"v":9,"flags":{}}',
+                     b'{"v":1,"flags":[]}'):
+            (tmp_path / kf._CACHE).write_bytes(junk)
+            with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                    mock.patch("bot.kr_stock_flags._collect",
+                               lambda: ({}, 0, {}, ["스텁"])):
+                assert "rbadge" not in stock_panel(
+                    "x", self._items(), "k", "KR", name_only=True)
+
+    # ── 독립 리뷰 2026-09-19 (5건 · 전부 실행으로 재현) ────────────────────
+    def test_the_probe_source_section_actually_hits_the_source(self, tmp_path,
+                                                               capsys):
+        """F1 — ② 가 12시간 캐시에 걸리면 **캐시를 원천이라 부른다**. ① 과 ②
+        가 같은 것을 읽으면 대조군이 성립하지 않는다(#143·#392)."""
+        from unittest import mock
+        from bot import kr_stock_flags as kf
+        (tmp_path / kf._CACHE).write_text(json.dumps(
+            {"v": kf._SCHEMA, "n": 5, "flags": {}, "note": "옛 메모",
+             "fetched": time.time(), "fails": 0, "next_try": 0}),
+            encoding="utf-8")
+        hit: list = []
+
+        def _boom(*a, **k):
+            hit.append(1)
+            raise RuntimeError("원천 죽음")
+
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch("bot.bollinger_board._kis_master_rows", _boom):
+            rc = kf.why()
+        out = capsys.readouterr().out
+        assert hit, "② 가 원천을 한 번도 안 쳤다"
+        assert rc == 1 and "② 원천(지금 받아 본 것) — ❌" in out
+        assert "① 캐시(화면이 읽는 것)" in out
+
+    def test_a_column_rename_is_never_read_as_zero_stocks(self, tmp_path,
+                                                          capsys):
+        """F2 — 컬럼명이 바뀌면 빈 맵이 12시간 구워지고 화면은 '오늘 해당
+        종목 없음'이라고 **거짓**을 말한다. 사유가 끝까지 닿아야 한다(#43·#54)."""
+        from unittest import mock
+        from bot import bollinger_board as bb, kr_stock_flags as kf
+        ks = _bb_mst_zip("kospi", [_bb_mst_line("kospi", "005930", "삼", True, 1)])
+        kq = _bb_mst_zip("kosdaq", [_bb_mst_line("kosdaq", "196170", "알", True, 1)])
+        real = bb._kis_master_rows
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.dict(bb._KIS_RISK_COLS["kospi"],
+                                {"정리매매": "없는컬럼"}, clear=False), \
+                mock.patch.object(bb, "_kis_master_rows",
+                                  lambda b, **k: real(
+                                      b, raw=(ks if b == "kospi" else kq))):
+            snap = kf.snapshot(cache_only=False, write=False)
+            assert "미발견" in snap["note"], snap["note"]
+            rc = kf.why()
+        out = capsys.readouterr().out
+        assert rc == 1 and "상태 컬럼을 못 찾았습니다" in out
+        assert "오늘 해당 종목 없음" not in out
+
+    def test_a_dead_source_backs_off_instead_of_looping(self, tmp_path):
+        """F3 — `/highlow` 는 30초 폴링이다. 실패 도장이 없으면 렌더마다 KIS
+        zip 2개를 받는다(리뷰 실측 5렌더=10다운로드). #303 과 #116 을 같이
+        지키는 것이 지수 백오프다(#384)."""
+        from unittest import mock
+        from bot import bollinger_board as bb, highlow_render as hr, \
+            kr_stock_flags as kf
+        n: list = []
+
+        def _dead(book, **k):
+            n.append(book)
+            return [], "HTTP 500"
+
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(bb, "_kis_master_rows", _dead):
+            kf.snapshot(cache_only=False)          # 1회차 — 도장을 남긴다
+            assert len(n) == 2
+            for _ in range(5):                      # 이후 렌더 5회
+                hr.stock_panel("x", self._items(), "k", "KR", name_only=True)
+            assert len(n) == 2, f"백오프 중인데 {len(n)}회 받았다"
+            assert kf.snapshot(cache_only=True)["state"] == "backoff"
+
+    def test_the_fixture_blocks_the_background_kick(self, tmp_path):
+        """F5 — 킥을 안 막으면 daemon 이 세션 공용 캐시 디렉터리에
+        `snapshot(write=True)` 를 날리고, 하필 `_cache_write` 를 패치한 형제
+        테스트 안에 착지하면 **단독 green / 전체 red** 가 된다(#30·#128·#312).
+
+        ⚠️ 그 경합은 **결정적으로 재현할 수 없다** — 이 구조 검사가 이 축의
+        전부이고, 그게 이 가드가 못 보는 것이다(#274).
+        """
+        from bot import highlow_render as hr
+        before = hr._kick_flags_fill
+        with self._cache(tmp_path, {}):
+            assert hr._kick_flags_fill is not before, "픽스처가 킥을 안 막는다"
+        assert hr._kick_flags_fill is before          # 빠져나오면 복원된다
+
+    def test_backoff_grows_and_is_capped(self):
+        """간격이 안 자라면 유계가 아니고, 상한이 없으면 영영 안 돌아온다
+        (#178 매번 걸리는 가드는 계열을 영구히 멈춘다)."""
+        from bot.kr_stock_flags import _BACKOFF
+        assert list(_BACKOFF) == sorted(_BACKOFF) and len(_BACKOFF) >= 4
+        assert _BACKOFF[0] <= 15 * 60 and _BACKOFF[-1] <= 6 * 3600
+
+    def test_an_unavailable_source_is_never_silent(self, tmp_path):
+        """F4 — 원천이 죽으면 뱃지도 범례도 없어져 '오늘 해당 종목 없음'과
+        **똑같이 보인다**. 이 기능이 없애려던 그 침묵이다(#43·#45·#54)."""
+        from unittest import mock
+        from bot import highlow_render as hr
+
+        def _snap(state, n):
+            return {"flags": {}, "note": "", "n": n, "state": state,
+                    "fetched": 0, "fails": 1, "next_try": 0}
+
+        for state, phrase in (("cold", "받는 중입니다"),
+                              ("backoff", "받지 못하고 있습니다"),
+                              ("error", "조회에 실패했습니다")):
+            with mock.patch.object(hr, "_kick_flags_fill", lambda mod: None), \
+                    mock.patch("bot.kr_stock_flags.snapshot",
+                               return_value=_snap(state, 0)):
+                h = hr.stock_panel("x", self._items(), "k", "KR",
+                                   name_only=True)
+            assert phrase in h, state
+            assert "표시되지 않습니다" in h, state
+        # 정상인데 해당 종목이 없으면 **아무것도 안 그린다**(#25·#260).
+        with mock.patch.object(hr, "_kick_flags_fill", lambda mod: None), \
+                mock.patch("bot.kr_stock_flags.snapshot",
+                           return_value=_snap("ok", 2814)):
+            assert "rlegend" not in hr.stock_panel(
+                "x", self._items(), "k", "KR", name_only=True)
+
+    def test_a_stale_map_is_still_served_and_refreshed(self, tmp_path):
+        """낡은 맵은 **버리지 않는다** — 상장 상태는 하루 단위라 낡은 값이
+        빈 값보다 낫다(#41·#384). 대신 갱신은 뒤에서 돈다."""
+        from unittest import mock
+        from bot import highlow_render as hr, kr_stock_flags as kf
+        (tmp_path / kf._CACHE).write_text(json.dumps(
+            {"v": kf._SCHEMA, "n": 2814,
+             "flags": {"289080": {"정리매매": True}}, "note": "옛것",
+             "fetched": time.time() - kf._TTL - 60, "fails": 0,
+             "next_try": 0}), encoding="utf-8")
+        kicked: list = []
+        with mock.patch("bot.finviz_client._CACHE_DIR", tmp_path), \
+                mock.patch.object(hr, "_kick_flags_fill", kicked.append):
+            h = hr.stock_panel("x", self._items(), "k", "KR", name_only=True)
+            assert kf.snapshot(cache_only=True)["state"] == "stale"
+        assert 'class="rbadge"' in h          # 값은 계속 보여준다
+        assert kicked == ["bot.kr_stock_flags"]   # 갱신은 뒤에서
+
+    # ── 표면 계약 ──────────────────────────────────────────────────────────
+    def test_badge_css_travels_with_the_panel(self):
+        """페이지 번들의 `.sm-note` 를 빌려 쓰면 그 번들을 안 쓰는 보드에서
+        정의 없는 클래스가 된다(#201·#273·#299)."""
+        from bot.highlow_render import HL_SORT_JS
+        assert ".rbadge{" in HL_SORT_JS.replace(" ", "")
+        assert ".rlegend{" in HL_SORT_JS.replace(" ", "")
+
+    def test_the_badge_passes_aa_in_both_themes(self):
+        """채움형(흰 글씨 on --neg)은 다크에서 3.68:1 로 AA 미달이다 —
+        접근성 fix 가 접근성을 깎던 그 자리다(#355). 글자색으로 쓴다."""
+        from bot import css_contrast as cc
+        from bot.highlow_render import HL_SORT_JS
+        css = HL_SORT_JS.replace(" ", "").replace("\n", "")
+        i = css.index(".rbadge{")
+        body = css[i:css.index("}", i)]
+        assert "color:var(--neg" in body and "background:transparent" in body
+        assert "--neg-on" not in body
+        for fg, bg in (("#e2574c", "#0e1117"), ("#e2574c", "#161b22"),
+                       ("#dc2626", "#ffffff"), ("#dc2626", "#f6f8fa")):
+            assert cc.contrast_ratio(fg, bg) >= cc.AA_MIN, (fg, bg)
+
+    def test_run_hint_includes_cd(self):
+        """`python -m` 은 cwd 에서 패키지를 찾는다 — 홈에서 돌리면 진단
+        자체가 안 뜬다(#278·#371)."""
+        from bot.kr_stock_flags import _RUN_HINT
+        assert _RUN_HINT.startswith("cd ~/stock && ")
+        assert "-m bot.kr_stock_flags" in _RUN_HINT
+
+    def test_the_cli_dispatches_why(self):
+        """광고한 CLI 가 죽은 채 배포될 수 있다 — `main` 을 실제로 태운다
+        (#252·#351)."""
+        from unittest import mock
+        from bot import kr_stock_flags as kf
+        called: list = []
+        with mock.patch.object(kf, "why",
+                               side_effect=lambda: called.append(1) or 0):
+            assert kf.main(["--why"]) == 0
+            assert called == [1]
+            assert kf.main([]) == 2          # 플래그 없이 부르면 사용법 + rc=2
+        # `if __name__` 블록이 그 `main` 을 부르는지 — 여기서 갈리면 CLI 가
+        # 죽은 채 배포된다(#252·#276 엔트리포인트는 맨 끝).
+        src = pathlib.Path("bot/kr_stock_flags.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        tail = tree.body[-1]
+        assert isinstance(tail, ast.If)
+        assert "main()" in ast.get_source_segment(src, tail)
