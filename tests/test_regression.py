@@ -73376,19 +73376,25 @@ class TestKrBoardsAuditAndShapeProbe20260919:
         assert not any(g in summary[0] for g in ("❌", "⚠️", "✅")), summary[0]
 
     def test_shape_verdict_never_calls_a_dead_address_healthy(self):
-        """다섯 모양 전부 0행이면 ✅ 가 아니다 — 갈래마다 처방이 다르다(#82·#54)."""
+        """전 모양 0행이면 ✅ 가 아니다 — 갈래마다 처방이 다르다(#82·#54).
+
+        ⚠️ 2026-09-19 다시 씀(#222): 옛 판은 시험 대상을 `현행(대조군)` 이라
+        불렀는데 그 값(`sortType=up`)은 2026-09-18 에 **죽은 바로 그 값**이라
+        대조군이 아니었다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다). 남는
+        보장(전부 0행 → ❌ · 배당 갈래만 행 → 전용 · 대상이 행 → ✅)은 그대로.
+        """
         from bot.naver_diag import http_reason
-        from bot.scripts.kr_board_probe import shape_verdict
+        from bot.scripts.kr_board_probe import _LBL_SUBJECT, shape_verdict
         # ⚠️ 픽스처는 **제품이 실제로 내는 사유 문자열**이어야 한다 — `"400"`
         # 같은 손글씨는 `status_from` 이 못 읽어 갈래 판정을 통째로 건너뛴다(#155).
         r400 = http_reason(400, 120, body=b'{"detail":"sortType"}')
         assert shape_verdict([]).startswith("❓")
-        assert shape_verdict([("현행(대조군)", 0, r400),
+        assert shape_verdict([(_LBL_SUBJECT, 0, r400),
                               ("dividend 갈래", 0, r400)]).startswith("❌")
-        v = shape_verdict([("현행(대조군)", 0, r400), ("dividend 갈래", 5, "")])
+        v = shape_verdict([(_LBL_SUBJECT, 0, r400), ("dividend 갈래", 5, "")])
         assert v.startswith("❌") and "배당 랭킹 전용" in v, v
-        v2 = shape_verdict([("현행(대조군)", 5, ""), ("dividend 갈래", 0, r400)])
-        assert v2.startswith("✅") and "현행(대조군)" in v2, v2
+        v2 = shape_verdict([(_LBL_SUBJECT, 5, ""), ("dividend 갈래", 0, r400)])
+        assert v2.startswith("✅") and _LBL_SUBJECT in v2, v2
 
     def test_shape_verdict_splits_rejected_from_accepted_but_empty(self):
         """2026-09-19 VM 실측이 가른 것 — 넷은 400 인데 `dividend` 갈래만
@@ -73402,20 +73408,23 @@ class TestKrBoardsAuditAndShapeProbe20260919:
             b'{"detailCode":"invalid_value","message":"{\\"fieldErrors\\":'
             b'{\\"sortType\\":[\\"Invalid input: expected \\\\\\"dividend'
             b'\\\\\\"\\"]}}"}'))
-        v = shape_verdict([("현행(대조군)", 0, r400), ("sortType 없음", 0, r400),
+        from bot.scripts.kr_board_probe import _LBL_CONTROL, _LBL_SUBJECT
+        v = shape_verdict([(_LBL_CONTROL, 0, r400), (_LBL_SUBJECT, 0, r400),
+                           ("sortType 없음", 0, r400),
                            ("파라미터 없음", 0, r400), ("category 없음", 0, r400),
                            ("dividend 갈래", 0, "")])
-        assert v.startswith("❌") and "4개 모양" in v, v
+        assert v.startswith("❌") and "5개 모양" in v, v
         assert "배당 한 갈래로 좁혀진" in v, v
         # 그 갈래가 0행인 **이유**는 안 쟀다 — 단정하지 않는다(#165)
         assert "안 쟀습니다" in v, v
         # 거절이 아닌 것을 '거절' 목록에 넣지 않는다(#292)
-        assert "거절: 현행(대조군), sortType 없음, 파라미터 없음, category 없음" in v, v
-        # 다섯이 **전부** 거절이면 종전 문구 그대로(옛 계약 유지, #222)
-        all5 = shape_verdict([(lab, 0, r400) for lab in
-                              ("현행(대조군)", "sortType 없음", "파라미터 없음",
-                               "dividend 갈래", "category 없음")])
-        assert all5.startswith("❌") and "종목 랭킹을 주지 않는" in all5, all5
+        assert f"거절: {_LBL_CONTROL}, {_LBL_SUBJECT}, sortType 없음" in v, v
+        assert "dividend 갈래" not in v.split("거절:")[1].split(")")[0], v
+        # 전부 거절이면 종전 문구 그대로(옛 계약 유지, #222)
+        all6 = shape_verdict([(lab, 0, r400) for lab in
+                              (_LBL_CONTROL, _LBL_SUBJECT, "sortType 없음",
+                               "파라미터 없음", "dividend 갈래", "category 없음")])
+        assert all6.startswith("❌") and "종목 랭킹을 주지 않는" in all6, all6
 
     def test_probe_runs_shape_section_when_control_group_is_dead(self, monkeypatch,
                                                                  capsys):
@@ -73675,10 +73684,11 @@ class TestKrFallbackReviewFollowups20260919:
     def test_shape_verdict_does_not_blame_the_address_on_a_pause_or_timeout(self):
         """일시정지·타임아웃·429 는 '주소가 죽었다' 와 처방이 정반대다(#82·#165)."""
         from bot.scripts.kr_board_probe import shape_verdict
-        v = shape_verdict([("현행(대조군)", 0, "네이버 호출 일시정지 중"),
+        from bot.scripts.kr_board_probe import _LBL_SUBJECT
+        v = shape_verdict([(_LBL_SUBJECT, 0, "네이버 호출 일시정지 중"),
                            ("dividend 갈래", 0, "원천이 응답하지 않습니다(timeout)")])
         assert v.startswith("❓"), v
-        v2 = shape_verdict([("현행(대조군)", 0, "원천이 HTTP 400 — …"),
+        v2 = shape_verdict([(_LBL_SUBJECT, 0, "원천이 HTTP 400 — …"),
                             ("dividend 갈래", 0, "원천이 HTTP 400 — …")])
         assert v2.startswith("❌"), v2
 
@@ -74593,3 +74603,161 @@ class TestKrBoardReviewFollowups20260919B:
         assert _kb.attempt_note(rec, now, board_empty=False) == ""
         note = _kb.stale_note("2026-09-18", 600, rec, now, refreshing="live")
         assert "캐시 쓰기" not in note and "2,500행" not in note, note
+
+
+class TestProbeControlGroupIsAProvenCall20260919:
+    """① 대조군이 **시험 대상과 같은 값**이었다 (사용자 2026-09-19 "신고가
+    신저가는 네이버에서 가져오는데 왜 이 두개는 못가져오는거야?").
+
+    프로브는 `① 대조군 — 이미 동작을 증명한 호출` 이라 적고 `sortType=up` 을
+    불렀는데, 그건 2026-09-18 에 **죽은 바로 그 값**이다. 대조군이 시험
+    대상과 같으면 '이 VM 이 못 닿는다' 와 '이 값만 거절당한다' 가 같은
+    화면이 되고(#143·#91b), 실제로 ①-b 가 "이 주소의 sortType 이 배당 한
+    갈래로 좁혀졌다 — 새 주소를 찾아라" 를 냈다. 같은 주소가 `high52week`
+    로는 행을 주고 있다(/kr52 가 그 값을 쓴다)는 사실이 출력 어디에도 없어
+    다음 라운드가 있지도 않은 새 주소를 찾으러 갈 뻔했다(#292·#165).
+    """
+
+    def test_control_sort_is_the_value_the_52w_board_actually_sends(self,
+                                                                    monkeypatch):
+        """대조군 값은 **제품이 실제로 보내는** 것이어야 한다 — 리터럴을 두
+        군데 적으면 52주 보드가 값을 바꿀 때 대조군만 남아 갈린다(#38·#66
+        자기 상수로 자기를 검증하면 아무것도 안 잰다). 수집기를 태워 URL 을
+        본다(#20 헬퍼만 재면 배선을 못 잡는다)."""
+        import bot.naver_ranking_client as nrc
+        from bot.scripts.kr_board_probe import _CONTROL_SORT, _SUBJECT_SORT
+        seen: list = []
+
+        def _spy(url):
+            seen.append(url)
+            return None, "stub"
+        monkeypatch.setattr(nrc, "_get_stocks2", _spy)
+        nrc.fetch_kr_highlow(limit=5)
+        assert seen, "52주 수집기가 한 번도 안 불렸다"
+        assert any(f"sortType={_CONTROL_SORT}" in u for u in seen), seen
+        # 반대 증거 — 대조군이 시험 대상과 같아지면 대조군이 아니다(#25·#143)
+        assert _CONTROL_SORT != _SUBJECT_SORT
+        assert not any(f"sortType={_SUBJECT_SORT}&" in u for u in seen), seen
+
+    def test_subject_sort_is_the_value_the_movers_board_actually_sends(self,
+                                                                       monkeypatch):
+        """시험 대상도 마찬가지 — 급등·급락이 보내는 값이어야 한다."""
+        import bot.naver_ranking_client as nrc
+        from bot.scripts.kr_board_probe import _SUBJECT_SORT
+        seen: list = []
+        monkeypatch.setattr(nrc, "_get_stocks2",
+                            lambda url: (seen.append(url), (None, "stub"))[1])
+        monkeypatch.setattr(nrc, "_kr_bulk_fallback", lambda *a, **k: None)
+        nrc.fetch_kr_movers(limit=5)
+        assert any(f"sortType={_SUBJECT_SORT}&" in u for u in seen), seen
+
+    def test_control_verdict_splits_unreachable_from_value_rejected(self):
+        """갈래 넷, 처방이 전부 다르다(#82). 특히 '대조군만 행' 은 **주소가
+        살아 있다**는 뜻이라 새 주소를 찾으러 가면 안 된다."""
+        from bot.scripts.kr_board_probe import control_verdict as cv
+        assert cv(control_ok=True, subject_ok=True).startswith("✅")
+        v = cv(control_ok=True, subject_ok=False)
+        assert v.startswith("⚠️") and "살아 있습니다" in v, v
+        assert "새 주소가 아니라" in v, v
+        assert cv(control_ok=False, subject_ok=True).startswith("❓")
+        v4 = cv(control_ok=False, subject_ok=False)
+        assert v4.startswith("❌") and "판정 불가" in v4, v4
+
+    def test_shapes_include_the_control_branch(self):
+        """대조군 갈래가 ①-b 목록에 **있어야** 원문이 나란히 찍힌다(#51).
+        그리고 시험 대상 라벨이 '대조군' 을 참칭하면 안 된다(#292)."""
+        from bot.scripts.kr_board_probe import (_CONTROL_SORT, _LBL_CONTROL,
+                                                _LBL_SUBJECT, _SHAPES)
+        labs = [lab for lab, _p in _SHAPES]
+        assert _LBL_CONTROL in labs and _LBL_SUBJECT in labs, labs
+        assert "대조군" not in _LBL_SUBJECT, _LBL_SUBJECT
+        got = dict(_SHAPES)[_LBL_CONTROL]
+        assert got.get("sortType") == _CONTROL_SORT, got
+
+    def test_a_live_control_does_not_send_the_next_round_hunting_a_new_address(self):
+        """이 라운드의 급소 — 대조군이 행을 주면 주소는 살아 있다. 옛 판은
+        그 상태에서도 "다음 측정은 새 주소를 읽는 것" 을 낼 수 있었다."""
+        from bot.naver_diag import http_reason
+        from bot.scripts.kr_board_probe import (_LBL_CONTROL, _LBL_SUBJECT,
+                                                shape_verdict)
+        r400 = http_reason(400, 120, body=b'{"detail":"sortType"}')
+        v = shape_verdict([(_LBL_CONTROL, 5, ""), (_LBL_SUBJECT, 0, r400),
+                           ("dividend 갈래", 0, r400)])
+        assert "살아 있고" in v, v
+        assert "값 집합만 좁혀진" in v, v
+        assert "주소가 죽" not in v and "배당 랭킹 전용" not in v, v
+
+    def test_rows_from_an_unusable_branch_are_not_called_wirable(self):
+        """"행이 온다" 와 "이 두 보드가 쓸 수 있다" 는 다른 사실이다(#34) —
+        52주·배당 갈래는 행을 줘도 급등·급락을 못 만든다."""
+        from bot.naver_diag import http_reason
+        from bot.scripts.kr_board_probe import (_LBL_CONTROL, _LBL_SUBJECT,
+                                                shape_verdict)
+        r400 = http_reason(400, 120, body=b'{"detail":"sortType"}')
+        v = shape_verdict([(_LBL_CONTROL, 5, ""), ("dividend 갈래", 5, ""),
+                           (_LBL_SUBJECT, 0, r400)])
+        assert "그 모양으로 배선하면 됩니다" not in v, v
+        # 대상이 살아나면 그때는 배선 가능하다고 말한다(반대 증거, #25)
+        v2 = shape_verdict([(_LBL_CONTROL, 5, ""), (_LBL_SUBJECT, 5, "")])
+        assert v2.startswith("✅") and "배선하면 됩니다" in v2, v2
+
+    def test_section_control_prints_both_and_records_the_subject(self,
+                                                                 monkeypatch,
+                                                                 capsys):
+        """배선 — 두 줄을 찍고 `_SUBJECT_OK` 를 채운다. 순수 함수만 재면
+        호출부가 시험 대상을 아예 안 불러도 통과한다(#20)."""
+        import bot.scripts.kr_board_probe as pr
+
+        def _fake(url, **params):
+            if params.get("sortType") == pr._CONTROL_SORT:
+                return {"result": {"stocks": [{"itemCode": "005930"}]}}, ""
+            return None, "원천이 HTTP 400 — …"
+        monkeypatch.setattr(pr, "_get", _fake)
+        monkeypatch.setattr(pr, "_SUBJECT_OK", None, raising=False)
+        assert pr._section_control() is True
+        out = capsys.readouterr().out
+        assert f"sortType={pr._CONTROL_SORT}" in out, out
+        assert f"sortType={pr._SUBJECT_SORT}" in out, out
+        assert pr._SUBJECT_OK is False
+        assert "살아 있습니다" in out, out
+
+    def test_a_rejected_subject_still_runs_the_shape_section_and_reaches_rc(
+            self, monkeypatch, capsys):
+        """대조군이 살아 있어도 **시험 대상이 거절당했으면** 무엇이 거절되는지가
+        이 라운드의 질문이다 — 옛 판은 ①-b 를 건너뛰어 원문이 한 줄도 안
+        남았고(#143·#109) rc=0 이라 "이상 없음" 으로 읽혔다(#54·#41)."""
+        import bot.scripts.kr_board_probe as pr
+        called: list = []
+
+        def _ctl():
+            pr._SUBJECT_OK = False
+            return True
+        monkeypatch.setattr(pr, "_banner", lambda: True)
+        monkeypatch.setattr(pr, "_section_control", _ctl)
+        monkeypatch.setattr(pr, "_section_shape",
+                            lambda: called.append("shape"))
+        monkeypatch.setattr(pr, "_section_sorts", lambda: ())
+        monkeypatch.setattr(pr, "_section_venue", lambda: None)
+        monkeypatch.setattr(pr, "_section_nxt_universe", lambda: None)
+        monkeypatch.setattr(pr, "_section_venue_params", lambda: None)
+        rc = pr.main()
+        capsys.readouterr()
+        assert called == ["shape"], called
+        assert rc == 1, rc
+
+    def test_subject_flag_is_reset_each_run(self, monkeypatch, capsys):
+        """모듈 전역이라 앞 실행의 값이 다음 판정을 정하면 안 된다(#114·#30)."""
+        import bot.scripts.kr_board_probe as pr
+        pr._SUBJECT_OK = False
+        monkeypatch.setattr(pr, "_banner", lambda: True)
+        monkeypatch.setattr(pr, "_section_control", lambda: True)
+        monkeypatch.setattr(pr, "_section_shape",
+                            lambda: (_ for _ in ()).throw(
+                                AssertionError("대상을 못 쟀는데 ①-b 를 돌았다")))
+        monkeypatch.setattr(pr, "_section_sorts", lambda: ())
+        monkeypatch.setattr(pr, "_section_venue", lambda: None)
+        monkeypatch.setattr(pr, "_section_nxt_universe", lambda: None)
+        monkeypatch.setattr(pr, "_section_venue_params", lambda: None)
+        assert pr.main() == 0
+        capsys.readouterr()
+        assert pr._SUBJECT_OK is None
