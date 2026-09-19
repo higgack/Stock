@@ -66849,8 +66849,9 @@ class TestKrOverBoardMerged20260917:
         """
         import bot.finviz_client as fv
         import bot.prepost_client as pp
+        # 경로는 `finviz_client` 전역 **하나**다 — `prepost_client` 쪽을 갈아
+        # 봐야 아무것도 리다이렉트되지 않아 죽은 이름이었다(2026-09-19, #53).
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
         monkeypatch.setattr(pp, "_kr_movers_universe",
                             lambda: (["005930.KS"], {"005930.KS": "삼성전자"},
                                      {"005930.KS": 5.0}))
@@ -67072,6 +67073,8 @@ class TestKrOverBoardMerged20260917:
         고정 슬라이스가 이웃 `sm-note`(거래소 이름을 정당하게 담는 유일한 줄)
         까지 먹어 언젠가 거짓 빨간불이 된다(리뷰 L1 · #249·#60).
         """
+        import time as _t
+
         import bot.intl_pages as ip
         import bot.prepost_client as pp
 
@@ -67083,9 +67086,12 @@ class TestKrOverBoardMerged20260917:
             i = html.index("최근 ") if "최근 " in html else html.index("집계 진행 중")
             return html[i:html.index("</div>", i)]
 
-        failed = {"state": "failed", "ts_label": "09-17 17:00",
+        # ⚠️ `ts` 는 제품(`_kr_status_write`)이 **항상** 찍는다 — 2026-09-19 부터
+        # `running` 도장은 나이로 만료되므로(#394 상태 캐시판) `ts` 없는 픽스처는
+        # 원천이 내지 않는 모양이고 배너가 아예 안 그려진다(#155).
+        failed = {"state": "failed", "ts_label": "09-17 17:00", "ts": _t.time(),
                   "detail": "universe 실패(네이버 무버 0)"}
-        running = {"state": "running", "ts_label": "09-17 17:02"}
+        running = {"state": "running", "ts_label": "09-17 17:02", "ts": _t.time()}
         cases = [("실패·행없음", banner_of([], failed)),
                  ("실패·행있음", banner_of(self._rows(), failed)),
                  ("진행중·행없음", banner_of([], running)),
@@ -67213,8 +67219,7 @@ class TestKrBoardsReviewFixes20260916:
         """
         import bot.finviz_client as fv
         import bot.prepost_client as pp
-        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)   # 경로는 여기 하나(#53)
         monkeypatch.setattr(pp, "_kr_movers_universe",
                             lambda: (["005930.KS"], {"005930.KS": "삼성전자"}, {}))
         calls = []
@@ -75753,8 +75758,10 @@ class TestPrepostStoredSnapshot20260919:
         import time
         import bot.finviz_client as fv
         import bot.prepost_client as pp
+        # ⚠️ 경로는 `finviz_client` 전역 **하나**다 — `prepost_client` 쪽을
+        # 갈아 봐야 아무것도 리다이렉트되지 않아 죽은 import 였다(#53).
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+        assert not hasattr(pp, "_CACHE_DIR"), "죽은 이름이 되살아났다(#53)"
         f = tmp_path / name
         f.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
         os.utime(f, (time.time() - age_h * 3600,) * 2)
@@ -75803,11 +75810,12 @@ class TestPrepostStoredSnapshot20260919:
         import bot.finviz_client as fv
         import bot.prepost_client as pp
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
         monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
         out = pp.fetch_kr_prepost_movers()
         assert out["up"] == [] and out["stale"] is False, out
         assert out["stale_min"] is None, out
+        # 파일이 아예 없는 것 ↔ 있는데 못 읽은 것(#82·#379).
+        assert out["stored_unreadable"] is False, out
 
     # ── ② 라이브엔 라벨이 없다 ──────────────────────────────────────
     def test_live_in_window_snapshot_carries_no_stored_label(
@@ -75834,6 +75842,8 @@ class TestPrepostStoredSnapshot20260919:
         assert out["stale"] is True and out["in_window"] is True, out
         note = pp.stored_note(out, "프리마켓 08:00–09:00")
         assert "저장분" in note and "다음 창" not in note, note
+        # 사유도 못박는다 — 창 밖 문구로 바꿔치는 변형이 통과했다(리뷰 실측).
+        assert "이번 창" in note and "창 밖" not in note, note
 
     # ── ③ 문구 단일 출처 ───────────────────────────────────────────
     def test_stored_note_states_age_as_a_number_and_claims_nothing_unmeasured(
@@ -75872,9 +75882,7 @@ class TestPrepostStoredSnapshot20260919:
     # ── ④ 화면 E2E — 배선을 떼는 변형은 순수 테스트가 못 잡는다(#20) ──
     def _cache_dirs(self, tmp_path, monkeypatch):
         import bot.finviz_client as fv
-        import bot.prepost_client as pp
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
 
     def test_kr_page_draws_the_stored_rows_and_a_visible_stored_line(
             self, tmp_path, monkeypatch):
@@ -75895,6 +75903,10 @@ class TestPrepostStoredSnapshot20260919:
         hit = [n for n in notes if "저장분" in n]
         assert hit, notes
         assert "2026-09-18 19:52" in hit[0] and "27시간 전" in hit[0], hit[0]
+        # 창 인자를 떼는 변형은 순수 테스트가 못 잡는다(#20) — 화면에서 본다.
+        assert "다음 창(" in hit[0], hit[0]
+        # 부제가 '실시간' 이라고 적으면 한 화면이 두 말을 한다(#34·#55).
+        assert "네이버 실시간" not in html and "💾 저장분(27시간 전)" in html
         # 클래스를 쓰면 CSS 도 있어야 한다(#201·#273).
         assert re.search(r"\.sm-note\s*\{", html)
 
@@ -75910,6 +75922,12 @@ class TestPrepostStoredSnapshot20260919:
         notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
         hit = [n for n in notes if "저장분" in n]
         assert hit and "30시간 전" in hit[0], notes
+        # 부제도 payload 판정을 따른다 — 저장분에 '실시간'·'라이브' 금지
+        # (#34·#55). 두 축을 **둘 다** 집는다: 한쪽만 재면 나머지를 하드코딩
+        # 으로 되돌리는 변형이 통과했다(뮤테이션 실측).
+        assert "가격·등락=시간외 라이브" not in html
+        assert "가격·등락=집계 시점 시간외가" in html
+        assert "네이버 실시간" not in html and "💾 저장분(30시간 전)" in html
         assert re.search(r"\.sm-note\s*\{", html)
 
     def test_live_page_has_no_stored_line(self, tmp_path, monkeypatch):
@@ -75966,3 +75984,254 @@ class TestPrepostStoredSnapshot20260919:
             for k in kws:
                 assert isinstance(k.value, ast.Name) \
                     and k.value.id == "_STORED_FOREVER", ast.dump(k.value)
+
+    # ── ⑥ 재스캔은 여전히 걸린다 — 저장분에 **영원히 얼지** 않는다 ─────
+    def test_in_window_and_behind_still_kicks_a_rescan(
+            self, tmp_path, monkeypatch):
+        """창 **안**인데 집계가 뒤처졌으면 저장분을 주되 **재스캔을 건다**.
+
+        `(live or not in_win)` 단락을 `stale is not None` 으로 되돌리는 변형이
+        506개를 전부 통과했다(독립 리뷰 실측) — 그 변형은 보드를 저장분에
+        **영원히 얼려** 이 커밋의 목적을 정반대로 뒤집는데 아무도 안 봤다
+        (#20 배선은 태워야 보인다 · #291 발화 경로 없는 가드는 가드가 아니다).
+        """
+        kicked = []
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 1.0)       # 1시간 전 > 2분 TTL
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: True)
+        monkeypatch.setattr(pp, "_kick_kr_refresh", lambda: kicked.append(1))
+        out = pp.fetch_kr_prepost_movers()
+        assert out["up"], out                     # 저장분은 그대로 준다
+        assert kicked, "창 안 + 뒤처짐인데 재스캔을 안 걸었다 — 보드가 영원히 언다"
+        # 반대 증거: 창 **밖**이면 걸지 않는다(순손실 요청 금지, #25·#310).
+        kicked.clear()
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        assert pp.fetch_kr_prepost_movers()["up"] and not kicked
+
+    def test_us_in_window_and_behind_still_kicks_a_rescan(
+            self, tmp_path, monkeypatch):
+        """형제(US)도 같은 단락을 쓴다 — 한쪽만 재면 갈린다(#38·#147)."""
+        kicked = []
+        pp = self._env(tmp_path, monkeypatch, "us_prepost_movers_v2.json",
+                       self._SNAP_US, 2.0)       # 2시간 전 > 30분 TTL
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: True)
+        monkeypatch.setattr(pp, "_kick_refresh", lambda: kicked.append(1))
+        out = pp.fetch_us_prepost_movers()
+        assert out["up"] and kicked, (out.get("ts"), kicked)
+        kicked.clear()
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: False)
+        assert pp.fetch_us_prepost_movers()["up"] and not kicked
+
+    def test_age_is_measured_before_the_content(self, tmp_path, monkeypatch):
+        """나이를 **먼저** 잰다 — 두 줄을 맞바꾸는 변형이 통과했다(리뷰 실측).
+
+        읽는 사이 재집계가 끝나면 순서가 뒤집힌 코드는 **방금 쓰인 mtime** 을
+        보고 저장분 경로 전체를 '라이브'로 그린다(#160 그 사이 갱신된 값의
+        나이를 옛 값에 붙이지 말 것). 경쟁은 흉내 내되 **시간에 기대지
+        않는다** — `_cached` 가 불리는 그 순간 mtime 을 '방금'으로 민다
+        (sleep·순서 단언은 단독 green / 전체 red 가 된다, #128·#130).
+        """
+        import os
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 1.0)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: True)
+        monkeypatch.setattr(pp, "_kick_kr_refresh", lambda: None)
+        real, f = pp._cached, tmp_path / "kr_prepost_v1.json"
+
+        def _racing(name, *a, **kw):
+            if name == "kr_prepost_v1.json":
+                os.utime(f, None)              # 재집계가 방금 끝났다
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(pp, "_cached", _racing)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["stale"] is True, \
+            "내용을 먼저 읽어 옛 payload 에 '방금' 나이가 붙었다(#160)"
+        assert out["stale_min"] >= 59, out
+
+    # ── ⑦ 상태도 나이로 버리지 않는다 — 지킬 수 없는 약속 금지(#380) ───
+    def _status(self, tmp_path, name, state, age_h, **kw):
+        import json
+        import time
+        kw.update({"state": state, "ts": time.time() - age_h * 3600,
+                   "ts_label": "2026-09-18 19:52"})
+        (tmp_path / name).write_text(json.dumps(kw, ensure_ascii=False),
+                                     encoding="utf-8")
+
+    def test_a_failed_scan_is_not_promised_away_after_a_day(
+            self, tmp_path, monkeypatch):
+        """옛 `ttl=86400` 은 저장분과 함께 **실패 사실까지** 지웠다.
+
+        그러면 파이프라인이 깨진 채 보드가 건강해 보이고, 이 커밋이 새로
+        붙인 "다음 창에서 자동 갱신됩니다"가 **지킬 수 없는 약속**이 된다
+        (#380 '기다리면 채워진다'는 재지 않은 약속 · #41·#43).
+        """
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, 27.0)
+        self._status(tmp_path, "kr_prepost_status.json", "failed", 26.0,
+                     detail="universe 실패(네이버 무버 0)")
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        out = pp.fetch_kr_prepost_movers()
+        assert (out.get("status") or {}).get("state") == "failed", out.get("status")
+        note = pp.stored_note(out, "프리마켓 08:00–09:00")
+        assert "실패" in note and "다음 창" not in note, note
+        # 기계 상세(예외·사유 문자열)는 사용자 화면에 안 싣는다(#391).
+        assert "universe" not in note, note
+        # 그리고 상태 파일 자체도 26시간 뒤 살아 있어야 배너가 뜬다.
+        assert pp.kr_prepost_status().get("state") == "failed"
+
+    def test_a_dead_running_stamp_stops_claiming_progress(self):
+        """`failed` 는 만료 안 하고 `running` 은 만료한다 — 상태 파일이 영구
+        보존이 되면서 죽은 스캔의 도장이 '진행 중'을 **영원히** 말할 수 있게
+        됐다(#25 늘 뜨는 배지 · #41 여유로 사실을 덮지 말 것).
+        """
+        import time
+        import bot.prepost_client as pp
+        now = time.time()
+        assert pp.scan_state({"state": "running", "ts": now}) == "running"
+        assert pp.scan_state(
+            {"state": "running", "ts": now - pp._RUNNING_STALE_SEC - 60}) == ""
+        assert pp.scan_state({"state": "failed", "ts": now - 86400 * 7}) == "failed"
+        assert pp.scan_state({"state": "done", "ts": now}) == ""
+        assert pp.scan_state(None) == "" and pp.scan_state({}) == ""
+        # 문턱은 재발동 백오프와 **같은 값**이어야 두 축이 안 갈린다(#38).
+        import ast
+        import pathlib
+        src = pathlib.Path("bot/prepost_client.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for fn in ("fetch_us_prepost_movers", "fetch_kr_prepost_movers"):
+            node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                        and n.name == fn)
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            assert "_RUNNING_STALE_SEC" in names, f"{fn}: 백오프가 리터럴로 돌아갔다"
+
+    def test_both_status_readers_have_no_expiry(self):
+        """상태 읽기에 24h 가 되살아나면 실패 사실이 다시 조용히 사라진다."""
+        import ast
+        import pathlib
+        src = pathlib.Path("bot/prepost_client.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for fn in ("prepost_status", "kr_prepost_status"):
+            node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                        and n.name == fn)
+            kws = [k for c in ast.walk(node) if isinstance(c, ast.Call)
+                   and isinstance(c.func, ast.Name) and c.func.id == "_cached"
+                   for k in c.keywords if k.arg == "ttl"]
+            assert kws, f"{fn}: _cached(ttl=) 호출이 없다"
+            for k in kws:
+                assert isinstance(k.value, ast.Name) \
+                    and k.value.id == "_STORED_FOREVER", ast.dump(k.value)
+
+    def test_us_page_states_the_failure_on_the_rows_path(
+            self, tmp_path, monkeypatch):
+        """US 는 실패 배너가 `building` 분기 **안**이라 표가 있으면 도달
+        불가였다(리뷰 H2) — 저장분 줄이 그 사실을 대신 말한다(#38 단일출처).
+        """
+        import re
+        pp = self._env(tmp_path, monkeypatch, "us_prepost_movers_v2.json",
+                       self._SNAP_US, 30.0)
+        self._status(tmp_path, "us_prepost_movers_status.json", "failed", 29.0,
+                     detail="boom")
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: False)
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        notes = re.findall(r'<div class="sm-note">(.*?)</div>', html)
+        hit = [n for n in notes if "저장분" in n]
+        assert hit and "실패" in hit[0] and "다음 창" not in hit[0], notes
+        assert "boom" not in html, "기계 상세가 사용자 화면에 샜다(#391)"
+
+    # ── ⑧ 저장분 '없음' 과 '못 읽음' 은 다른 사실(#82·#379) ────────────
+    def test_a_torn_snapshot_file_is_not_called_missing(
+            self, tmp_path, monkeypatch):
+        """`_cache_write` 는 truncate 후 쓰기라 **쓰다 만 파일**이 실재한다
+        (#379). 그때 `_cached` 는 None 을 주는데, 그걸 '한 번도 집계한 적
+        없음'과 한 문장으로 뭉치면 운영자를 엉뚱한 데로 보낸다(#54·#292).
+        """
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        (tmp_path / "kr_prepost_v1.json").write_text('{"up": [',
+                                                     encoding="utf-8")
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["up"] == [] and out["stored_unreadable"] is True, out
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        assert "읽지 못했습니다" in html, html[:600]
+        assert "저장분도 없습니다" not in html
+        assert pp.stored_missing_note({}) == "(직전 집계 저장분도 없습니다.)"
+
+    def test_us_torn_snapshot_file_is_not_called_missing(
+            self, tmp_path, monkeypatch):
+        """형제(KR)만 덮여 있어, US 에서 단일출처를 옛 리터럴로 되돌리는
+        변형이 통과했다(뮤테이션 실측) — '없음' 만 재면 '못 읽음' 갈래가
+        사라져도 단언이 만족된다(#38·#82·#91b).
+        """
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        (tmp_path / "us_prepost_movers_v2.json").write_text('{"up": [',
+                                                            encoding="utf-8")
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: False)
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        assert "읽지 못했습니다" in html and "저장분도 없습니다" not in html
+
+    def test_us_empty_page_says_there_is_no_stored_snapshot_either(
+            self, tmp_path, monkeypatch):
+        """형제(KR)만 덮여 있어 US 문구를 지우는 변형이 통과했다(리뷰 M2)."""
+        import bot.prepost_client as pp
+        self._cache_dirs(tmp_path, monkeypatch)
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: False)
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        assert "데이터가 없습니다" in html and "저장분도 없습니다" in html
+
+    def test_a_dead_running_stamp_is_not_drawn_on_the_page(
+            self, tmp_path, monkeypatch):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 화면에서 본다.
+
+        상태 파일이 영구 보존이 되면서, 페이지가 `st["state"]` 를 그대로 읽으면
+        죽은 스캔의 `running` 도장이 **영원히** '집계 진행 중' 배너를 띄운다.
+        """
+        import bot.prepost_client as pp
+        self._cache_dirs(tmp_path, monkeypatch)
+        self._status(tmp_path, "kr_prepost_status.json", "running", 5.0)
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        from bot.intl_pages import render_kr_prepost_page
+        assert "집계 진행 중" not in render_kr_prepost_page()
+        # 반대 증거: 방금 찍힌 도장이면 배너가 떠야 한다(#25).
+        self._status(tmp_path, "kr_prepost_status.json", "running", 0.0)
+        assert "집계 진행 중" in render_kr_prepost_page()
+
+    def test_us_dead_running_stamp_is_not_drawn_on_the_page(
+            self, tmp_path, monkeypatch):
+        """형제(US)의 `building` 분기도 같은 술어를 써야 한다(#38)."""
+        import bot.prepost_client as pp
+        self._cache_dirs(tmp_path, monkeypatch)
+        self._status(tmp_path, "us_prepost_movers_status.json", "running", 5.0)
+        monkeypatch.setattr(pp, "_in_extended_window", lambda *a, **k: True)
+        monkeypatch.setattr(pp, "_kick_refresh", lambda: None)
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        # ⚠️ `"산출 진행 중" not in html` 로 재면 **폴백 문구**('첫 산출 진행
+        # 중')가 그 부분문자열을 담아 단언이 뒤집힌다(#75) — 살아 있는 배너만
+        # 갖는 `(시작 …)` 를 집는다.
+        assert "첫 산출 진행 중" in html and "(시작 " not in html, html[:500]
+        self._status(tmp_path, "us_prepost_movers_status.json", "running", 0.0)
+        html2 = render_us_prepost_page()
+        assert "(시작 " in html2 and "첫 산출 진행 중" not in html2
+
+    def test_a_future_mtime_never_prints_a_negative_age(
+            self, tmp_path, monkeypatch):
+        """시계가 뒤로 가거나 파일 시각이 앞서면 `-1분 전` 이 찍힌다(#34).
+
+        나이는 정의상 음수가 될 수 없으므로 판정 단계에서 0 으로 자른다 —
+        화면이 스스로 말이 안 되는 수를 적으면 사용자는 전부를 의심한다(#33).
+        """
+        pp = self._env(tmp_path, monkeypatch, "kr_prepost_v1.json",
+                       self._SNAP_KR, -2.0)          # mtime 이 2시간 **앞**
+        monkeypatch.setattr(pp, "_in_kr_extended_window", lambda *a, **k: False)
+        out = pp.fetch_kr_prepost_movers()
+        assert out["stale_min"] == 0, out
+        assert "-" not in pp.stored_note(out, "창").split("집계")[-1]

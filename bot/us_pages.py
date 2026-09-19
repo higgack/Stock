@@ -382,13 +382,20 @@ def render_us_prepost_page() -> str:
     2026-06-16 '전시장 정규장 무버' — 시간외 급변은 뉴스주라 무버 랭킹에 직격). 급등락
     (정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick. 종목 → 우리 종목분석(lookup)."""
     try:
-        from bot.prepost_client import fetch_us_prepost_movers, stored_note
+        from bot.prepost_client import (fetch_us_prepost_movers,
+                                        freshness_label, scan_state,
+                                        stored_missing_note, stored_note)
         data = fetch_us_prepost_movers()
     except Exception as exc:
         log.warning("us prepost page fetch failed: %s", exc)
         data = {"up": [], "down": [], "ts": "", "source": "", "session": "",
-                "stale": False, "stale_min": None, "in_window": None}
-        stored_note = lambda *a, **k: ""       # noqa: E731 — import 실패 폴백
+                "stale": False, "stale_min": None, "in_window": None,
+                "status": {}, "stored_unreadable": False}
+        # import 실패 폴백 — 단일출처가 없으니 아무 주장도 하지 않는다(#165·#54).
+        stored_note = lambda *a, **k: ""            # noqa: E731
+        stored_missing_note = lambda *a, **k: ""    # noqa: E731
+        scan_state = lambda *a, **k: ""             # noqa: E731
+        freshness_label = lambda *a, **k: ""        # noqa: E731
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
@@ -398,14 +405,17 @@ def render_us_prepost_page() -> str:
         if data.get("building"):
             st = data.get("status") or {}
             ts_lb = _html.escape(str(st.get("ts_label") or ""))
-            if st.get("state") == "failed":
+            # `running` 은 나이로 만료 — 죽은 스캔의 도장이 영원히 '진행 중'
+            # 이라고 말하지 않게(#25·#38, 형제 KR 과 같은 술어).
+            _sstate = scan_state(st)
+            if _sstate == "failed":
                 detail = _html.escape(str(st.get("detail") or ""))
                 body = (f'<div class="empty">⚠️ 최근 산출 실패'
                         + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
                         f'연장거래({_ext_window_kst()})에만 데이터가 '
                         '있습니다. 정규장 중·장 완전 종료 시에는 직전 연장 스냅샷을 '
                         '보여줍니다.</div>')
-            elif st.get("state") == "running":
+            elif _sstate == "running":
                 done, total = st.get("done"), st.get("total")
                 prog = (f" — 배치 {done}/{total}"
                         if done is not None and total else "")
@@ -419,8 +429,10 @@ def render_us_prepost_page() -> str:
         else:
             # 여기 = **저장분조차 없음**(있으면 위에서 서빙) — 그 사실을
             # 적어야 '창 밖이라 안 보이는 것'과 안 갈린다(#82·#43, KR 동일).
+            # '없음' 과 '못 읽음' 은 처방이 다르다 — 문구는 형제(KR)와 같은
+            # 단일출처가 가른다(#82·#379·#38).
             body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
-                    '(직전 집계 저장분도 없습니다.)<br>'
+                    + _html.escape(stored_missing_note(data)) + '<br>'
                     f'연장거래({_ext_window_kst()}) 시간에 '
                     '확인해 주세요.</div>')
     else:
@@ -441,8 +453,13 @@ def render_us_prepost_page() -> str:
         _sn = stored_note(data, _ext_window_kst())
         if _sn:
             body = f'<div class="sm-note">{_html.escape(_sn)}</div>' + body
+    # 저장분이면 부제가 '실시간'·'라이브' 라고 적지 않는다 — 본문(💾 저장분
+    # 30시간 전)과 한 화면이 두 말을 한다(#34·#55·#136, 형제 KR 과 같은 함수).
+    _price_lbl = ("가격·등락=시간외 라이브" if not data.get("stale")
+                  else "가격·등락=집계 시점 시간외가")
     sub = (f"전시장 무버 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
-           "네이버 실시간 · 가격·등락=시간외 라이브 · 거래량·거래대금=정규장 누적"
+           + (freshness_label(data) or "네이버 실시간") + " · " + _price_lbl
+           + " · 거래량·거래대금=정규장 누적"
            "(시간외분은 네이버 미제공) · 연장거래 창에서 30분 · "
            + _ext_window_kst()
            + (f" · 마지막 갱신 {ts}" if ts else ""))

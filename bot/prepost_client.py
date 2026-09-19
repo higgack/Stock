@@ -30,25 +30,31 @@ import threading as _threading
 import time
 from datetime import datetime, timedelta, timezone
 
-# ⚠️ `_CACHE_DIR` 는 이 모듈에서 **직접 쓰이지 않는다** — 캐시 경로는 `_cached`·
-# `_cache_write`·`cache_age_sec` 가 각자 `finviz_client` 전역에서 읽는다. 즉 테스트가
-# `prepost_client._CACHE_DIR` 만 갈아끼우면 **아무것도 리다이렉트되지 않는다**(둘 다
-# 갈아야 한다 — 기존 픽스처가 그래서 둘 다 patch 한다). 그 관용구를 깨지 않으려고
-# 이름만 남긴다(#55 다음 사람이 오해하지 않게 적는다).
-from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached, _now_label,
-                              cache_age_sec)
+# ⚠️ 캐시 **경로**는 이 모듈에 없다 — `_cached`·`_cache_write`·`cache_age_sec` 가
+# 각자 `finviz_client._CACHE_DIR` 를 읽는다. 그러니 테스트가 `prepost_client.
+# _CACHE_DIR` 를 갈아끼워 봐야 **아무것도 리다이렉트되지 않는다**. 그래서 그 이름을
+# 여기로 import 하지 않는다 — 있으면 다음 사람이 그걸 갈면 되는 줄 안다(#53·#55).
+from bot.finviz_client import _cache_write, _cached, _now_label, cache_age_sec
 
 log = logging.getLogger("bot.prepost_client")
 
 # 저장분을 읽을 때 쓰는 "만료 없음" — 이 보드의 데이터는 **연장거래 창에서만**
 # 생기고 창 밖에선 재스캔을 아예 안 한다(아래 `fetch_*` 의 `if not in_win: pass`).
 # 그래서 24h TTL 은 금요일 마지막 집계를 토요일 같은 시각에 죽여 **주말·연휴 내내
-# 보드를 정의상 빈칸**으로 만든다(2026-09-19 실측 재현: 금 19:52 집계가 토 22:5x
-# 에 폐기 → "데이터가 없습니다"). 낡은 값이 빈 값보다 낫고 낡았다는 사실은 화면
-# 라벨이 말한다(사용자 2026-09-19 "장전장후 시간대가 아니라면 가장 최종데이터를
-# 그대로 남겨줘" · #41 여유로 사실을 덮지 말 것 · #171 가드가 '못 만든다'로 끝나면
+# 보드를 정의상 빈칸**으로 만든다(2026-09-19 실측 재현: 금 19:52 집계 → **토 19:52
+# 에 폐기** → 사용자가 본 토 22:5x 화면이 "데이터가 없습니다"). 낡은 값이 빈 값보다
+# 낫고 낡았다는 사실은 화면 라벨이 말한다(사용자 2026-09-19 "장전장후 시간대가
+# 아니라면 가장 최종데이터를 그대로 남겨줘" · #41 여유로 사실을 덮지 말 것 ·
+# #171 가드가 '못 만든다'로 끝나면
 # 그 자리가 영원히 비는지 먼저 물을 것 · #384 만료 맵은 버리지 않는다).
 _STORED_FOREVER = float("inf")
+
+# `running` 도장의 유효기간 — 재발동 백오프와 **같은 값**을 쓴다(#38). 스캔
+# 프로세스가 중간에 죽으면 그 도장이 남는데, 저장분과 함께 상태 파일도 영구
+# 보존하게 되면서 화면이 '진행 중'이라고 **영원히** 거짓말할 수 있다(#25 늘 뜨는
+# 배지는 아무것도 안 재는 것과 같다). 이 시각을 넘기면 다음 창 접근이 어차피
+# 다시 kick 하므로 두 축이 같은 값이어야 갈리지 않는다.
+_RUNNING_STALE_SEC = 1800
 
 _PREPOST_CACHE = "us_prepost_movers_v2.json"   # 전시장 정규장 무버 (v2: 2026-06-16 정규장
 #   거래대금 value 필드 추가 — v1 옛 스냅샷은 value 없어 '—'. 버전 bump 으로 즉시
@@ -212,7 +218,16 @@ def _status_write(state: str, **kw) -> None:
 
 
 def prepost_status() -> dict:
-    return _cached(_PREPOST_STATUS, ttl=86400) or {}
+    """마지막 스캔의 결과 — **나이로 버리지 않는다**(`_STORED_FOREVER`).
+
+    재발동 백오프는 이미 `age < 300`·`age < _RUNNING_STALE_SEC` 로 **나이를 직접**
+    보므로 상한을 없애도 kick 동작은 한 글자도 안 바뀐다. 바뀌는 것은 화면이다 —
+    옛 24h 상한은 저장분과 함께 **실패 사실까지** 지워, 파이프라인이 깨진 채 보드가
+    건강해 보이게 했다(#41 여유로 사실을 덮지 말 것 · #380 "다음 갱신에 나옵니다"가
+    지킬 수 없는 약속이 되는 자리). `running` 이 영원히 남지 않게 거르는 것은
+    `scan_state` 다 — 이 함수는 **파일에 있는 사실**만 돌려준다.
+    """
+    return _cached(_PREPOST_STATUS, ttl=_STORED_FOREVER) or {}
 
 
 def _bare_us(tk) -> str:
@@ -404,23 +419,26 @@ def fetch_us_prepost_movers() -> dict:
     snap_age = cache_age_sec(_PREPOST_CACHE)
     stale = _cached(_PREPOST_CACHE, ttl=_STORED_FOREVER)
     live = _prepost_live(snap_age, now.timestamp())
+    # 상태도 **여기서 한 번** 읽어 저장분 경로가 같이 싣는다 — 마지막 스캔이
+    # 실패했으면 화면이 "다음 창에서 자동 갱신됩니다"라고 약속하면 안 된다(#380).
+    st = prepost_status()
 
     def _serve(d: dict) -> dict:
         """저장분이면 **나이를 같이** 싣는다 — 화면이 '최신'으로 그리지 않게
-        (#43·#163 되살린 값에는 기준시각을 반드시 같이)."""
-        return {**d, "stale": not live, "in_window": in_win,
-                "stale_min": (int(snap_age // 60)
+        (#43·#163 되살린 값에는 기준시각을 반드시 같이). 나이는 음수가 될 수
+        없다 — 시계가 뒤로 가면 `-1분 전` 이 찍힌다(#34)."""
+        return {**d, "stale": not live, "in_window": in_win, "status": st,
+                "stale_min": (max(0, int(snap_age // 60))
                               if snap_age is not None else None)}
 
     if stale is not None and (live or not in_win):
         return _serve(stale)
-    st = prepost_status()
     age = time.time() - (st.get("ts") or 0)
     if not in_win:
         pass                                  # 장 마감 — 스캔 안 함(stale 서빙)
     elif st.get("state") == "failed" and age < 300:
         pass
-    elif st.get("state") == "running" and age < 1800:
+    elif st.get("state") == "running" and age < _RUNNING_STALE_SEC:
         pass
     else:
         _kick_refresh()
@@ -428,9 +446,13 @@ def fetch_us_prepost_movers() -> dict:
         return _serve(stale)
     # 창 밖이면 building=False → 페이지가 '연장거래 시간에 확인' 안내(스캔 표시 X).
     # 저장분이 **아예 없는** 유일한 경로 — 그래서 stale 이 아니라 '없음'이다(#82).
+    # `stored_unreadable` = 파일은 있는데 내용을 못 읽었다(`_cache_write` 는
+    # truncate 후 쓰기라 쓰다 만 파일이 실재한다, #379) — '한 번도 집계한 적
+    # 없음'과 처방이 다르다(#82·#54).
     return {"up": [], "down": [], "ts": "", "source": "", "session": "",
             "building": in_win, "status": st, "stale": False,
-            "stale_min": None, "in_window": in_win}
+            "stale_min": None, "in_window": in_win,
+            "stored_unreadable": snap_age is not None}
 
 
 # ── KR 장전·장후 시간외(단일가) 급등·급락 — 미국 prepost 의 KR 버전 ─────────
@@ -541,7 +563,8 @@ def _kr_status_write(state: str, **kw) -> None:
 
 
 def kr_prepost_status() -> dict:
-    return _cached(_KR_PREPOST_STATUS, ttl=86400) or {}
+    """마지막 스캔의 결과 — 나이로 버리지 않는다. 사유는 형제(`prepost_status`)."""
+    return _cached(_KR_PREPOST_STATUS, ttl=_STORED_FOREVER) or {}
 
 
 def _kr_movers_universe() -> tuple[list, dict, dict]:
@@ -755,30 +778,81 @@ def fetch_kr_prepost_movers() -> dict:
     snap_age = cache_age_sec(_KR_PREPOST_CACHE)
     stale = _cached(_KR_PREPOST_CACHE, ttl=_STORED_FOREVER)
     live = _kr_prepost_live(snap_age, now_kst)
+    st = kr_prepost_status()                    # 사유는 형제(US)의 주석
 
     def _serve(d: dict) -> dict:
-        return {**d, "stale": not live, "in_window": in_win,
-                "stale_min": (int(snap_age // 60)
+        return {**d, "stale": not live, "in_window": in_win, "status": st,
+                "stale_min": (max(0, int(snap_age // 60))
                               if snap_age is not None else None)}
 
     if stale is not None and (live or not in_win):
         return _serve(stale)
-    st = kr_prepost_status()
     age = time.time() - (st.get("ts") or 0)
     if not in_win:
         pass
     elif st.get("state") == "failed" and age < 300:
         pass
-    elif st.get("state") == "running" and age < 1800:
+    elif st.get("state") == "running" and age < _RUNNING_STALE_SEC:
         pass
     else:
         _kick_kr_refresh()
     if stale is not None:
         return _serve(stale)
     # 저장분이 **아예 없는** 유일한 경로 — '없음'이지 저장분이 아니다(#82).
+    # `stored_unreadable` = 파일은 있는데 내용을 못 읽었다(`_cache_write` 는
+    # truncate 후 쓰기라 쓰다 만 파일이 실재한다, #379) — '한 번도 집계한 적
+    # 없음'과 처방이 다르다(#82·#54).
     return {"up": [], "down": [], "ts": "", "source": "", "session": "",
             "building": in_win, "status": st, "stale": False,
-            "stale_min": None, "in_window": in_win}
+            "stale_min": None, "in_window": in_win,
+            "stored_unreadable": snap_age is not None}
+
+
+def scan_state(status: dict | None) -> str:
+    """마지막 스캔의 **지금도 참인** 상태 — `'failed'` / `'running'` / `''`.
+
+    `running` 은 **나이로 만료**시킨다: 스캔이 중간에 죽으면 그 도장이 남는데
+    상태 파일을 영구 보존하게 되면서(`prepost_status`) 화면이 '진행 중'이라고
+    영원히 거짓말할 수 있다(#25·#260). 문턱은 재발동 백오프와 같은 값이라 그
+    시각을 넘기면 다음 창 접근이 어차피 다시 kick 한다(#38).
+    `failed` 는 만료시키지 않는다 — 다음 성공이 `done` 으로 덮을 때까지 그것이
+    마지막 사실이고, 여유로 사실을 덮으면 안 된다(#41).
+    """
+    st = status or {}
+    state = str(st.get("state") or "")
+    if state == "failed":
+        return "failed"
+    if state == "running" and (
+            time.time() - (st.get("ts") or 0)) < _RUNNING_STALE_SEC:
+        return "running"
+    return ""
+
+
+def freshness_label(data: dict | None) -> str:
+    """부제의 신선도 문구 — 저장분에 '실시간' 이라고 적지 않는다.
+
+    본문이 "27시간 전 저장분"이라고 적는데 부제는 "네이버 실시간"이라고 적으면
+    한 화면이 두 말을 한다(#34·#55). 잰 것은 **우리 스냅샷의 나이**까지다(#375).
+    """
+    d = data or {}
+    if not d.get("stale"):
+        return "네이버 실시간"
+    from bot.naver_diag import stale_label
+    m = d.get("stale_min")
+    ago = stale_label(m * 60 if isinstance(m, int) else None)
+    return "💾 저장분" + (f"({ago})" if ago else "") + " · 실시간 아님"
+
+
+def stored_missing_note(data: dict | None) -> str:
+    """저장분이 **아예 없음** ↔ **읽지 못함** — 처방이 다르다(#82).
+
+    `_cache_write` 는 truncate 후 쓰기라 쓰다 만 파일을 읽을 수 있고(#379),
+    깨진 파일은 내용은 못 읽어도 mtime 은 남는다. 둘을 한 문장으로 뭉치면
+    "한 번도 집계한 적 없음"으로 읽혀 운영자를 엉뚱한 데로 보낸다(#54·#292).
+    """
+    if (data or {}).get("stored_unreadable"):
+        return "(직전 집계 저장분이 있지만 읽지 못했습니다 — 다음 집계가 다시 씁니다.)"
+    return "(직전 집계 저장분도 없습니다.)"
 
 
 def stored_note(data: dict | None, window: str = "") -> str:
@@ -808,9 +882,18 @@ def stored_note(data: dict | None, window: str = "") -> str:
         why = "이번 창 집계가 아직 갱신되지 않아 직전 집계를 보여줍니다"
     else:
         why = "마지막 집계를 그대로 보여줍니다"
-    # 이미 창 안이면 '다음 창' 이 거짓이다 — 그 경우 꼬리를 안 붙인다(#55).
-    tail = (f" 다음 창({window})에서 자동 갱신됩니다."
-            if (window and iw is not True) else "")
+    # 꼬리는 **지킬 수 있는 약속일 때만** 붙인다.
+    #  · 마지막 스캔이 실패했으면 자동 갱신은 지킬 수 없는 약속이다 — 약속 대신
+    #    그 사실을 적는다(#380). 기계 상세(예외 문자열)는 안 싣는다(#391).
+    #  · 이미 창 **안**이면 '다음 창' 이 거짓이다(#55).
+    #  · 창 판정을 못 받았으면(iw None) 갱신 시점도 모르는 것이므로 단정하지
+    #    않는다 — 안 잰 것을 미래형으로 적으면 그게 #165 다.
+    if scan_state(d.get("status")) == "failed":
+        tail = " 마지막 집계 시도는 실패해 아직 갱신되지 않았습니다."
+    elif window and iw is False:
+        tail = f" 다음 창({window})에서 자동 갱신됩니다."
+    else:
+        tail = ""
     return ("💾 저장분" + (f" — {when}" if when else "") + f" · {why}."
             + tail)
 
