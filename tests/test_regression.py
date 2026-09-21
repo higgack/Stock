@@ -74374,6 +74374,206 @@ class TestPublicReason20260919:
         assert head_v in html2
 
 
+class TestVolumeBannerAudience20260921:
+    """거래량 상위 ℹ️ 배너가 **운영자 상세**를 방문자 화면에 그대로 실었다.
+
+    사용자 캡처(2026-09-21 22:35): 배너 한 줄에 pykrx 함수명·예외 클래스
+    (`get_market_price_change_by_ticker 실패(IndexError)`), zod 리터럴
+    (`expected "dividend"`), 우리 내부 추론("판별 유니온의 한 갈래로 보이지만
+    그건 재지 않았습니다"), 그리고 **값이 잘려 나간 라벨**(`원문: ·`)이 그대로
+    떴다. #391 이 급등·급락에서 고친 바로 그 증상인데 이 보드엔 안 닿았다.
+
+    원인은 `public_reason` 이 경계를 **다시 추론**하기 때문이다 —
+    `compose_reason` 은 경계를 **알면서** 그 지식을 버리고(#123 계열),
+    `public_reason` 은 마커 세 개짜리 열거로 되짚는다(#24). 그래서 그 목록에
+    없는 기계 상세(zod 해설·pykrx 덤프)는 머리에 남고, 목록에 있는 마커가
+    `원문: {why}` 안에서 걸리면 라벨만 남는다.
+    """
+
+    def _reason(self):
+        """화면에 뜬 그 사유를 **제품 생산부로** 만든다(#118·#155)."""
+        from bot import naver_diag as nd
+        from bot.kr_volume_client import learn_fail_reason
+        raw = nd.http_reason(400, body=(
+            b'{"message":"sortType: Invalid input: expected \\"dividend\\""}'))
+        notes = [
+            "네이버 목록을 못 받아 KRX 벌크(2026-09-21 종가)로 대체했습니다",
+            "2026-09-21 종가입니다 — 09-21 19:56에 받았습니다 · "
+            "갱신은 백그라운드가 받습니다 · 지난 시도가 10분 전 실패했습니다"
+            "(1분 걸림): " + self._bulk_fail(),
+        ]
+        return nd.compose_reason(notes, learn_fail_reason(raw))
+
+    @staticmethod
+    def _bulk_fail():
+        """KRX 벌크 실패 사유 — **제품 코드가 만드는 그 문자열**(#19)."""
+        import bot.kr_bulk_rank as kb
+        stock = object()
+        tried = [f"2026091{i}: get_market_price_change_by_ticker 실패"
+                 f"(IndexError) · get_market_ohlcv_by_ticker 실패(KeyError)"
+                 for i in (7, 8, 9)]
+        # 생산부를 직접 태운다 — 손으로 적은 문자열은 포맷이 바뀌어도
+        # 통과한다(#19 소스가 아니라 값으로).
+        return kb._bulk_fail_reason(6, tried) if hasattr(
+            kb, "_bulk_fail_reason") else (
+            f"KRX 벌크가 6거래일에서 행을 못 냈습니다 — " + " / ".join(tried))
+
+    def test_the_banner_carries_no_operator_detail(self):
+        """방문자 화면엔 함수명·예외·zod 원문·우리 내부 추론이 없다."""
+        from bot.naver_diag import public_reason
+        screen = public_reason(self._reason())
+        for bad in ("get_market_price_change_by_ticker", "IndexError",
+                    "KeyError", 'expected "dividend"', "판별 유니온",
+                    "재지 않았습니다", "허용값 목록은"):
+            assert bad not in screen, f"{bad!r} 가 화면에 남았다:\n{screen}"
+
+    def test_no_dangling_label_when_the_value_is_cut(self):
+        """`원문:` 라벨만 남기고 값을 자르면 화면이 스스로 거짓말한다(#43·#54)."""
+        from bot.naver_diag import public_reason
+        screen = public_reason(self._reason())
+        assert "원문:" not in screen, screen
+
+    def test_the_visitor_facts_survive(self):
+        """줄이는 것이 **지우는 것**이 되면 안 된다 — 갈래는 남는다(#43·#82)."""
+        from bot.naver_diag import public_reason
+        screen = public_reason(self._reason())
+        for keep in ("네이버 목록을 못 받아 KRX 벌크(2026-09-21 종가)로 대체했습니다",
+                     "09-21 19:56에 받았습니다", "갱신은 백그라운드가 받습니다",
+                     "지난 시도가 10분 전 실패했습니다",
+                     "KRX 벌크가 6거래일에서 행을 못 냈습니다",
+                     "원천이 우리 요청을 거절했습니다"):
+            assert keep in screen, f"{keep!r} 가 사라졌다:\n{screen}"
+
+    def test_the_full_text_is_still_reachable_for_operators(self):
+        """값은 그대로 두고 **화면만** 줄인다 — 감사·로그·`--why` 는 전문(#45)."""
+        full = self._reason()
+        assert "get_market_price_change_by_ticker" in full
+        assert 'expected "dividend"' in full
+
+    def test_the_board_renders_without_the_operator_detail(self, monkeypatch):
+        """배선 — 순수 함수만 재면 **렌더가 안 부르는** 변형을 못 잡는다(#20).
+
+        그리고 경계 표식 자체가 화면에 새면 그게 새 결함이다 — 방문자는
+        `⟪상세⟫` 가 무슨 뜻인지 모른다(#43 침묵이 최악이지만 뜻 모를 기호도
+        정보가 아니다).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np_
+        rows = [{"ticker": "005930.KS", "name": "삼성전자", "price": 74000.0,
+                 "pct": 1.37, "vol": 12_000_000.0, "value": 8880.0,
+                 "mcap": 4_400_000.0, "high": None, "low": None, "ind": None}]
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda *a, **k: {
+            "rows": rows, "ts": "09-21 22:35", "limit": 50,
+            "reason": self._reason(), "sort": "거래량(KRX 벌크)",
+            "has_hl": False, "hl_keys": [], "partial": False,
+            "scanned": 1, "excluded": 0, "stale": True, "stale_min": 160,
+            "fallback": True, "asof": "2026-09-21",
+            "source": "KRX 벌크 종가 · 2026-09-21 종가 기준"})
+        html = np_.render_kr_volume_page()
+        from bot.naver_diag import _DETAIL_MARK
+        for bad in ("get_market_price_change_by_ticker", "IndexError",
+                    'expected "dividend"', "원문:", _DETAIL_MARK.strip()):
+            assert bad not in html, f"{bad!r} 가 HTML 에 남았다"
+        assert "KRX 벌크가 6거래일에서 행을 못 냈습니다" in html
+        assert "원천이 우리 요청을 거절했습니다" in html
+
+    def test_the_boundary_is_drawn_without_a_bulk_layer_too(self):
+        """벌크 표식이 **없는** 사유에서도 경계가 그어진다.
+
+        ⚠️ 이게 이 델타의 핵심 축인데 다른 단언은 전부 눈이 멀어 있었다(뮤테이션
+        M1 생존): 배너 픽스처엔 `_bulk_fail_reason` 의 표식이 **더 앞에** 있어
+        조립부가 표식을 안 찍어도 거기서 잘린다. 그리고 `http_reason` 모양은
+        옛 열거(`_MACHINE_MARKS`)가 대신 잡는다 — 열거가 **눈머는 자리**는
+        그 어구가 `원문: {…}` **안**에 있을 때뿐이고, 그게 바로 화면에
+        `원문: ·` 를 남긴 그 결함이다(#75 옆 픽스처가 대신 만족시킨다).
+        """
+        from bot import naver_diag as nd
+        from bot.kr_volume_client import learn_fail_reason
+        raw = nd.http_reason(400, body=(
+            b'{"message":"sortType: Invalid input: expected \\"dividend\\""}'))
+        why = learn_fail_reason(raw)
+        assert "원문:" in why and nd.carries_dump(why), why
+        screen = nd.public_reason(nd.compose_reason(["사람 문장입니다"], why))
+        assert screen.startswith("사람 문장입니다"), screen
+        assert "원문:" not in screen and "판별 유니온" not in screen, screen
+        assert "원천이 우리 요청을 거절했습니다" in screen, screen
+
+    def test_a_marker_inside_a_human_note_keeps_later_human_text(self):
+        """사람 문장 **안**에 경계가 박혀 있어도 뒤의 사람 문장은 화면에 남는다.
+
+        벌크 실패 사유(`_bulk_fail_reason`)는 표식을 품은 채 `attempt_note` 를
+        타고 **사람 슬롯**으로 들어온다. 첫 판은 기계 상세를 그 뒤에 그냥 이어
+        붙여서, '가장 이른 표식' 뒤로 밀린 사람 문장이 통째로 먹혔다 — 급등·
+        급락의 `엔드포인트 계약 변경 의심(우리가 고칠 것)` 이 화면에서 사라졌다.
+
+        ⚠️ 전체 게이트에서만 빨간불이었다: 앞선 테스트가 `KRX_ID` 를 넣어 놓아
+        pykrx 가 소켓 가드까지 가서 `ConnectionError` 를 내고, 그래야 표식을
+        품은 memo 가 만들어진다(#128·#311 단독 green · 전체 red). 여기서는 그
+        상태를 **값으로** 재현해 세션 순서에 기대지 않는다(#20·#91c).
+        """
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+        memo = kb._bulk_fail_reason(5, [
+            "20260921: get_market_price_change_by_ticker 실패(ConnectionError)"])
+        assert nd._DETAIL_MARK in memo, memo
+        shape = nd.shape_reason("domestic/stock/list", {"result": {"items": []}})
+        r = nd.compose_reason([f"KRX 폴백도 비었습니다 — {memo}"], shape)
+        assert r.count(nd._DETAIL_MARK) == 1, r      # 경계는 언제나 하나
+        screen = nd.public_reason(r)
+        assert "계약 변경" in screen, screen
+        assert "ConnectionError" not in screen, screen
+        assert "ConnectionError" in r, r              # 운영자 채널엔 남는다
+
+    def test_no_marker_when_there_is_nothing_to_cut_before_it(self):
+        """머리가 없으면 표식을 찍지 않는다 — `mark_detail` 이 그렇게 적어 뒀고,
+        **적어 둔 규약은 가드가 있어야 규약**이다(#286·#291). 감사·`--check` 는
+        원문 사유를 그대로 찍으므로 앞머리 기호는 소음이다."""
+        from bot import naver_diag as nd
+        raw = nd.http_reason(429, 500)
+        assert nd._DETAIL_MARK not in nd.mark_detail("", raw)
+        assert nd._DETAIL_MARK not in nd.compose_reason([], raw)
+        assert nd._DETAIL_MARK in nd.compose_reason(["머리"], raw)
+
+    def test_a_dump_free_sentence_in_the_machine_slot_survives(self):
+        """줄이는 것이 **지우는 것**이 되면 안 된다 — `det` 슬롯엔 `http_reason`
+        의 덤프만 오는 게 아니다(#395·#43).
+
+        `shape_reason`·`parse_reason` 은 덤프 없이 "누가 고칠 것"만 말하는 짧은
+        사람 문장이라 화면에 남아야 한다. 첫 판이 표식을 **무조건** 찍어 그
+        갈래가 통째로 사라졌고(급등·급락이 다시 "(잠시 후 다시 시도)" 만 적음)
+        `make test` 전체 실행이 그걸 잡았다 — `-k` 로 좁힌 실행은 못 봤다
+        (#363·#366 선택 실행은 그 선택 밖을 못 본다).
+        """
+        from bot import naver_diag as nd
+        sh = nd.shape_reason("domestic/stock/list", {"result": {"items": []}})
+        assert not nd.carries_dump(sh), sh
+        kept = nd.public_reason(nd.compose_reason(["KRX 폴백도 비었습니다"], sh))
+        assert "계약 변경" in kept, kept
+        assert nd.machine_detail_at(nd.compose_reason(["머리"], sh)) < 0
+        # 반대 증거 — 덤프를 품으면 경계가 그어진다(#25 '있다'만 묻지 말 것)
+        raw = nd.http_reason(400, 120, body='{"message":"sortType: bad"}')
+        assert nd.carries_dump(raw), raw
+        cut = nd.public_reason(nd.compose_reason(["머리"], raw))
+        assert "sortType" not in cut and cut.startswith("머리"), cut
+
+    def test_the_operator_dump_says_how_many_it_cut(self):
+        """표본을 3건으로 자르면 **자른 사실**을 말한다 — 머리는 6거래일인데
+        몸통이 3건이면 나머지를 우리가 안 본 것으로 읽는다(#45)."""
+        import bot.kr_bulk_rank as kb
+        tried = [f"2026090{i}: 행 없음" for i in range(1, 7)]
+        why = kb._bulk_fail_reason(6, tried)
+        assert "외 3건" in why, why
+        # 3건 이하면 자를 게 없으니 아무 말도 안 한다(#25 늘 뜨는 문구 금지)
+        assert "외 " not in kb._bulk_fail_reason(2, tried[:2])
+        # 표본이 아예 없으면 덤프도 경계도 없다 — 사람 문장 하나뿐
+        bare = kb._bulk_fail_reason(0, [])
+        from bot.naver_diag import machine_detail_at
+        assert machine_detail_at(bare) < 0 and bare.endswith("못 냈습니다"), bare
+
+
 class TestKrBoardReviewFollowups20260919B:
     """배포전 독립 리뷰(2026-09-19) — Blocking 1 · High 5 · Medium 8 · Low 6.
 

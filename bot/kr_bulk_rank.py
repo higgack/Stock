@@ -40,6 +40,8 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from bot import naver_diag as _nd
+
 log = logging.getLogger("bot.kr_bulk_rank")
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -588,8 +590,33 @@ def _kr_bulk_rows_uncached(max_back: int, *,
             memo = " · ".join(n for n in (nwhy, note) if n)
             return rows, d.strftime("%Y-%m-%d"), memo
         tried.append(f"{ds}: {note or '행 없음'}")
-    return [], "", (f"KRX 벌크가 {len(tried)}거래일에서 행을 못 냈습니다 — "
-                    + " / ".join(tried[:3]))
+    return [], "", _bulk_fail_reason(len(tried), tried)
+
+
+def _bulk_fail_reason(days: int, tried: list) -> str:
+    """KRX 벌크가 한 행도 못 낸 사유 — **사람 문장 + 경계 뒤 함수·예외 덤프**.
+
+    이 문자열은 `_record` 에 저장돼 `attempt_note` → `stale_note` 를 타고 보드
+    사유의 **사람 문장 안**으로 들어간다. 옛 판은 덤프를 그대로 이어 붙여
+    `get_market_price_change_by_ticker 실패(IndexError)` 가 대시보드 배너에
+    떴다(사용자 캡처 2026-09-21) — 청중이 둘인데 한 칸에 담은 것이다(#45·#391).
+    경계를 찍어 두면 `public_reason` 이 **거기서 자르고**, 운영자 채널(감사·
+    로그·`--why`)은 전문을 그대로 읽는다.
+
+    ⚠️ 표본을 3건으로 자르면서 **자른 사실을 말한다** — 머리는 6거래일이라
+    적는데 몸통이 3건이면 사용자가 나머지를 우리가 안 본 것으로 읽는다(#45).
+    """
+    head = f"KRX 벌크가 {int(days)}거래일에서 행을 못 냈습니다"
+    rest = [str(t) for t in (tried or [])]
+    if not rest:
+        return head
+    dump = " / ".join(rest[:3])
+    if len(rest) > 3:
+        dump += f" / 외 {len(rest) - 3}건"
+    # `compose_reason` 이 아니라 **직접** 표식을 찍는다 — 이 덤프엔
+    # `_MACHINE_MARKS` 어구가 없어 `carries_dump` 가 못 알아본다. 덤프인 줄
+    # 아는 쪽이 긋는 것이 이 표식의 규약이다(#86).
+    return _nd.mark_detail(head, dump)
 
 
 def _run_attempt(max_back: int, *, write: bool) -> tuple[list, str, str]:
