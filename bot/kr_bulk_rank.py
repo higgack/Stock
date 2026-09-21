@@ -207,7 +207,9 @@ def _kis_names(*, write: bool = True) -> tuple[dict, str]:
     try:
         from bot.bollinger_board import _kis_master_rows
     except Exception as exc:                                   # noqa: BLE001
-        return {}, f"KIS 마스터 실패({type(exc).__name__})"
+        # 방문자가 읽을 결과는 `종목명 미확보 …`(`_rows_on` 이 적는다) 이고
+        # 예외 클래스는 운영자 것이다 — 머리 없는 상세로 보낸다(#45·#398).
+        return {}, _nd.mark_detail("", f"KIS 마스터 실패({type(exc).__name__})")
     books = (("kospi", ".KS"), ("kosdaq", ".KQ"))
     filled = 0
     for book, suf in books:
@@ -225,7 +227,8 @@ def _kis_names(*, write: bool = True) -> tuple[dict, str]:
             if len(code) == 6:
                 out[code] = (str(r.get("name") or ""), suf)
     if not out:
-        return {}, "KIS 마스터가 0종목(" + " · ".join(notes) + ")"
+        return {}, _nd.mark_detail(
+            "", "KIS 마스터가 0종목(" + " · ".join(notes) + ")")
     note = " · ".join(notes)
     if write and filled == len(books):
         from bot.finviz_client import _cache_write
@@ -235,23 +238,31 @@ def _kis_names(*, write: bool = True) -> tuple[dict, str]:
 
 
 def _rows_on(stock, ds: str, names: dict) -> tuple[list, str]:
-    """`ds`(YYYYMMDD) 하루치 전종목 행. (행, 메모)."""
-    notes: list = []
+    """`ds`(YYYYMMDD) 하루치 전종목 행. (행, 메모).
 
-    def _note(m: str) -> None:
+    ⚠️ 메모는 **청중이 둘**이다(#45·#391·#398): `종목명 미확보 12종목` 은
+    방문자가 읽어야 할 사실이지만 `get_market_cap_by_ticker 실패(TypeError: …)`
+    는 운영자 것이다. 이 메모는 `stale_note` 를 타고 보드 배너의 **사람 문장
+    안**으로 들어가므로, 덤프인 줄 아는 **여기서** 경계를 찍는다(#86).
+    """
+    notes: list = []
+    devs: list = []
+
+    def _note(m: str, *, dev: bool = False) -> None:
         if m:
-            notes.append(m)
+            (devs if dev else notes).append(m)
 
     # 종목명·등락률·거래량·거래대금을 한 호출로 주는 프레임(있으면 1순위)
     chg, m = _frame(stock, "get_market_price_change_by_ticker", ds, ds,
                     market="ALL")
-    _note(m)
+    _note(m, dev=True)          # `{함수명} 실패({예외})` — 운영자 채널
     ohlcv, m = _frame(stock, "get_market_ohlcv_by_ticker", ds, market="ALL")
-    _note(m)
+    _note(m, dev=True)
     if chg is None and ohlcv is None:
-        return [], " · ".join(notes) or "가격 프레임을 하나도 못 받았습니다"
+        return [], _nd.mark_detail("가격 프레임을 하나도 못 받았습니다",
+                                   " · ".join(devs))
     cap, m = _frame(stock, "get_market_cap_by_ticker", ds, market="ALL")
-    _note(m)
+    _note(m, dev=True)
 
     c_name = _col(chg, "종목명") if chg is not None else None
     c_close = _col(chg, "종가") if chg is not None else None
@@ -330,7 +341,7 @@ def _rows_on(stock, ds: str, names: dict) -> tuple[list, str]:
         _note(f"종목명 미확보 {unnamed}종목(코드로 표기)")
     if not rows:
         _note("전 행이 가격 0 이거나 걸러졌습니다")
-    return rows, " · ".join(notes)
+    return rows, _nd.mark_detail(" · ".join(notes), " · ".join(devs))
 
 
 # ── 캐시 · 시도 기록 ─────────────────────────────────────────────────────
@@ -534,7 +545,10 @@ def stale_note(asof: str, age_sec, rec=None, now: float | None = None,
     note = attempt_note(rec, _now, board_empty=False)
     if note and "받는 중" not in note:
         parts.append(note)
-    return " · ".join(parts)
+    # ⚠️ `" · ".join` 이 아니다 — 메모·예외 사유가 표식을 품은 채 **가운데**로
+    # 들어오므로 그냥 이으면 그 뒤의 `지난 시도가 …` 가 화면에서 통째로
+    # 사라진다(실측, #398). 경계는 언제나 하나다.
+    return _nd.join_notes(parts)
 
 
 def _recv_label(now: float, age_sec) -> str:
@@ -587,7 +601,10 @@ def _kr_bulk_rows_uncached(max_back: int, *,
         ds = d.strftime("%Y%m%d")
         rows, note = _rows_on(stock, ds, names)
         if rows:
-            memo = " · ".join(n for n in (nwhy, note) if n)
+            # 조각마다 표식을 품을 수 있으므로 **경계를 하나로** 모은다
+            # (`" · ".join` 이면 앞 조각의 표식 뒤로 뒤 조각의 사람 문장이
+            # 밀려 화면에서 사라진다, #398).
+            memo = _nd.join_notes([nwhy, note])
             return rows, d.strftime("%Y-%m-%d"), memo
         tried.append(f"{ds}: {note or '행 없음'}")
     return [], "", _bulk_fail_reason(len(tried), tried)
@@ -636,7 +653,10 @@ def _run_attempt(max_back: int, *, write: bool) -> tuple[list, str, str]:
             _record({"started": t0, "finished": time.time(), "ok": False,
                      "secs": round(time.time() - t0, 1), "rows": 0,
                      "fails": _fails_after(False),
-                     "reason": f"예외({type(exc).__name__}: {str(exc)[:120]})"})
+                     "reason": _nd.mark_detail(
+                         "수집 중 예외가 났습니다",
+                         _nd.mask_secrets(
+                             f"예외({type(exc).__name__}: {str(exc)[:120]})"))})
         raise
     if write:
         if rows:

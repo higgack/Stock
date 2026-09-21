@@ -74406,17 +74406,16 @@ class TestVolumeBannerAudience20260921:
 
     @staticmethod
     def _bulk_fail():
-        """KRX 벌크 실패 사유 — **제품 코드가 만드는 그 문자열**(#19)."""
+        """KRX 벌크 실패 사유 — **제품 코드가 만드는 그 문자열**(#19).
+
+        손으로 적은 폴백을 두지 않는다 — 그러면 생산부가 사라져도 이 픽스처가
+        대신 그럴듯한 문자열을 만들어 **무엇을 재는지 모르게** 된다(#19·#291).
+        """
         import bot.kr_bulk_rank as kb
-        stock = object()
         tried = [f"2026091{i}: get_market_price_change_by_ticker 실패"
                  f"(IndexError) · get_market_ohlcv_by_ticker 실패(KeyError)"
                  for i in (7, 8, 9)]
-        # 생산부를 직접 태운다 — 손으로 적은 문자열은 포맷이 바뀌어도
-        # 통과한다(#19 소스가 아니라 값으로).
-        return kb._bulk_fail_reason(6, tried) if hasattr(
-            kb, "_bulk_fail_reason") else (
-            f"KRX 벌크가 6거래일에서 행을 못 냈습니다 — " + " / ".join(tried))
+        return kb._bulk_fail_reason(6, tried)
 
     def test_the_banner_carries_no_operator_detail(self):
         """방문자 화면엔 함수명·예외·zod 원문·우리 내부 추론이 없다."""
@@ -74527,15 +74526,169 @@ class TestVolumeBannerAudience20260921:
         assert "ConnectionError" not in screen, screen
         assert "ConnectionError" in r, r              # 운영자 채널엔 남는다
 
-    def test_no_marker_when_there_is_nothing_to_cut_before_it(self):
-        """머리가 없으면 표식을 찍지 않는다 — `mark_detail` 이 그렇게 적어 뒀고,
-        **적어 둔 규약은 가드가 있어야 규약**이다(#286·#291). 감사·`--check` 는
-        원문 사유를 그대로 찍으므로 앞머리 기호는 소음이다."""
+    def test_a_headless_detail_is_still_cut_from_the_screen(self):
+        """머리가 없는 조각도 **경계를 긋는다**(2026-09-21 전제 변경, #222).
+
+        옛 계약은 "머리가 없으면 표식을 안 찍는다" 였다. 그러면 머리를
+        **호출부가 대는** 조각(`_kis_names` 의 why)이 화면에 그대로 샜다 —
+        경계는 조각이 혼자 설 때가 아니라 **합쳐질 때** 뜻이 생긴다.
+        남는 보장(화면을 비우지 않는다·기호를 흘리지 않는다)은 그대로 잰다.
+        """
         from bot import naver_diag as nd
         raw = nd.http_reason(429, 500)
-        assert nd._DETAIL_MARK not in nd.mark_detail("", raw)
-        assert nd._DETAIL_MARK not in nd.compose_reason([], raw)
+        assert nd._DETAIL_MARK in nd.mark_detail("", raw)
+        assert nd._DETAIL_MARK in nd.compose_reason([], raw)
         assert nd._DETAIL_MARK in nd.compose_reason(["머리"], raw)
+        # 혼자 서도 화면은 갈래를 말하고(#43) 기호·원문은 안 샌다.
+        alone = nd.public_reason(nd.compose_reason([], raw))
+        assert alone and nd._DETAIL_MARK not in alone, alone
+        assert "HTTP 429" not in alone, alone
+        # 갈래를 모르는 상세(우리 수집기 메모)도 침묵하지 않는다.
+        opaque = nd.public_reason(nd.mark_detail("", "KIS 마스터가 0종목(ConnectionError)"))
+        assert opaque and "ConnectionError" not in opaque, opaque
+        assert nd._DETAIL_MARK not in opaque, opaque
+
+    def test_the_collector_memo_never_reaches_the_screen(self):
+        """행을 **찾은** 경로의 메모도 운영자 채널이다(독립 리뷰 2026-09-21 F1).
+
+        `_bulk_fail_reason` 은 '전 거래일 실패' 경로만 덮었다. 실제로 더 자주
+        도는 것은 **행을 찾았는데 경고가 남은** 경로이고, 그 메모(`_rows_on`
+        의 pykrx 함수명·예외, `_kis_names` 의 KIS 덤프)가 `stale_note` 를 타고
+        배너에 그대로 떴다(실측 재현). 방문자 문장은 남고 덤프만 잘린다.
+        """
+        import types, time
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+
+        import pytest
+        # 제품 생산부를 태운다 — 속성이 없는 stock 이면 `_frame` 이 운영자
+        # 메모를 만든다(#20 헬퍼만 재면 배선을 못 잡는다).
+        rows, note = kb._rows_on(types.SimpleNamespace(), "20260921", {})
+        assert not rows
+        assert nd._MARK_CORE in note, f"생산부가 경계를 안 그었다: {note!r}"
+
+        # `_kis_names` 도 **실제로** 태운다 — 손으로 적으면 그 경계를 지우는
+        # 변형이 통과한다(M6 실측 생존, #19·#20).
+        import bot.finviz_client as fv
+        import bot.bollinger_board as bb
+
+        def _boom(book):
+            raise ConnectionError("zip 을 못 받았습니다")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(fv, "_cached", lambda *a, **k: None)
+            mp.setattr(bb, "_kis_master_rows", _boom)
+            nwhy = kb._kis_names(write=False)[1]
+        assert nd._MARK_CORE in nwhy, f"KIS why 가 경계를 안 그었다: {nwhy!r}"
+
+        # ⚠️ 같은 함수에 **누출 분기가 둘**이다(0종목 · import 실패). 하나만
+        # 덮으면 다른 쪽을 되돌리는 변형이 통과한다(M6 실측 생존, #267·#291).
+        import sys
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(fv, "_cached", lambda *a, **k: None)
+            mp.setitem(sys.modules, "bot.bollinger_board", types.SimpleNamespace())
+            nwhy2 = kb._kis_names(write=False)[1]
+        assert "KIS 마스터 실패" in nwhy2, nwhy2
+        assert nd._MARK_CORE in nwhy2, f"import 실패 분기가 경계를 안 그었다: {nwhy2!r}"
+        assert "ImportError" not in nd.public_reason(
+            nd.compose_reason(["벌크로 대체했습니다", nwhy2], "")), nwhy2
+
+        # 메모 합치기도 **수집기 본문**을 태운다(M5 실측 생존).
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_pykrx", lambda: (types.SimpleNamespace(), ""))
+            mp.setattr(kb, "_kis_names", lambda **k: ({}, nwhy))
+            mp.setattr(kb, "_rows_on", lambda *a, **k: ([{"t": "005930"}], note))
+            mp.setattr(kb, "today_is_final", lambda *a, **k: True)
+            _rows, _asof, memo = kb._kr_bulk_rows_uncached(3, write=False)
+        assert memo.count(nd._MARK_CORE) == 1, f"경계가 하나가 아니다: {memo!r}"
+        now = time.time()
+        sn = kb.stale_note("2026-09-21", 3600.0, None, now,
+                           refreshing="live", memo=memo)
+        screen = nd.public_reason(nd.compose_reason(["벌크로 대체했습니다", sn], ""))
+        for bad in ("get_market_price_change_by_ticker", "없음(설치본)",
+                    "ConnectionError", "KIS 마스터", nd._DETAIL_MARK):
+            assert bad not in screen, f"{bad!r} 가 화면에 남았다:\n{screen}"
+        assert "가격 프레임을 하나도 못 받았습니다" in screen, screen
+        assert "2026-09-21 종가입니다" in screen, screen
+        # 운영자 채널엔 그대로 남는다(#45 청중이 둘 — 버리는 게 아니다).
+        assert "get_market_price_change_by_ticker" in memo
+
+    def test_a_crash_reason_is_masked_and_cut(self):
+        """수집 중 예외 사유는 **마스킹**하고 자른다(§Secrets · 리뷰 F2).
+
+        실측: `_run_attempt` 가 남긴 `예외(ConnectionError: HTTPSConnectionPool
+        (host=…) … url: /getJsonData.cmd?apikey=…)` 가 `attempt_note` 를 타고
+        **공개 대시보드 배너**에 URL 속 토큰까지 그대로 실렸다.
+        """
+        import time
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+
+        seen: list = []
+        # ⚠️ 메시지가 길면 `str(exc)[:120]` 절단이 토큰을 지워 **마스킹을 재지
+        # 못한다**(M2 실측 생존 — 재는 대상이 맞나, #91b). 토큰을 120자 안에.
+        boom = ConnectionError(
+            "KRX 거부: /getJsonData.cmd?apikey=SECRETTOKEN1234567 (재시도 초과)")
+        assert len(str(boom)) < 120 and "SECRETTOKEN1234567" in str(boom)[:120]
+
+        def _raise(*a, **k):
+            raise boom
+
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_kr_bulk_rows_uncached", _raise)
+            mp.setattr(kb, "_record", lambda d: seen.append(d))
+            mp.setattr(kb, "_fails_after", lambda ok: 1)
+            with pytest.raises(ConnectionError):
+                kb._run_attempt(3, write=True)
+        rec = [d for d in seen if d.get("reason")]
+        assert rec, "예외 사유가 기록되지 않았다"
+        reason = rec[-1]["reason"]
+        assert "SECRETTOKEN1234567" not in reason, "운영자 원장에도 비밀값 금지"
+        screen = nd.public_reason(nd.compose_reason(
+            [f"지난 시도가 4분 전 실패했습니다(10초 걸림): {reason}"], ""))
+        for bad in ("HTTPSConnectionPool", "ConnectionError",
+                    "SECRETTOKEN1234567", "getJsonData", nd._DETAIL_MARK):
+            assert bad not in screen, f"{bad!r} 가 화면에 남았다:\n{screen}"
+        assert "수집 중 예외가 났습니다" in screen, screen
+        assert "지난 시도가 4분 전 실패했습니다" in screen, screen
+
+    def test_a_note_after_a_marked_memo_is_not_swallowed(self):
+        """`stale_note` 도 **경계를 하나로** 모은다 — `" · ".join` 이면 표식 뒤의
+        `지난 시도가 …` 가 통째로 사라진다(#398 의 조립부 규칙이 여기도)."""
+        import time
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+        now = time.time()
+        memo = nd.mark_detail("종목명 미확보 12종목(코드로 표기)", "덤프A")
+        rec = {"started": now - 300, "finished": now - 290, "ok": False,
+               "secs": 10.0, "rows": 0, "reason": "수집 중 예외가 났습니다"}
+        out = kb.stale_note("2026-09-21", 3600.0, rec, now,
+                            refreshing="live", memo=memo)
+        assert out.count(nd._DETAIL_MARK) == 1, out
+        screen = nd.public_reason(nd.compose_reason([out], ""))
+        assert "종목명 미확보 12종목(코드로 표기)" in screen, screen
+        assert "지난 시도가" in screen, screen
+        assert "덤프A" not in screen, screen
+
+    def test_the_mark_is_found_even_when_the_spaces_are_gone(self):
+        """표식을 **공백까지 포함해** 찾으면 `.strip()` 한 번에 경계를 놓친다.
+
+        실측: `public_reason` 이 맨 앞에서 `.strip()` 을 해 머리 없는 조각
+        (`_DETAIL_MARK + dump`)의 앞 공백이 사라지자 경계가 통째로 안 잡혀
+        덤프가 그대로 화면에 샜다. 공백 없는 **핵**으로 찾는다(#65).
+        """
+        from bot import naver_diag as nd
+        stripped = (nd._DETAIL_MARK + "덤프X").strip()
+        assert nd._DETAIL_MARK not in stripped, "픽스처가 상태를 재현 못 한다"
+        assert nd.split_detail(stripped) == ("", "덤프X"), nd.split_detail(stripped)
+        assert nd.machine_detail_at(stripped) == 0, nd.machine_detail_at(stripped)
+        assert nd.carries_dump(stripped)
+        # 결합기도 같은 핵을 본다 — 앞 조각이 공백을 잃어도 경계는 하나다.
+        joined = nd.join_notes(["사람 문장", stripped, "뒤 사람 문장"])
+        assert joined.count(nd._MARK_CORE) == 1, joined
+        screen = nd.public_reason(joined)
+        assert "덤프X" not in screen and "뒤 사람 문장" in screen, screen
 
     def test_a_dump_free_sentence_in_the_machine_slot_survives(self):
         """줄이는 것이 **지우는 것**이 되면 안 된다 — `det` 슬롯엔 `http_reason`

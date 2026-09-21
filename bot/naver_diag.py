@@ -407,6 +407,11 @@ _MACHINE_MARKS = ("원천이 HTTP ", "원천에 닿지 못함", "원천이 200 �
 # 사적 문자라 원천 본문이 이걸 담을 일은 없고, 설령 담아도 **더 자르는** 쪽이라
 # 새지 않는다(그 표본은 언제나 기계 슬롯 = 실제 경계보다 뒤다).
 _DETAIL_MARK = " ⟪상세⟫ "
+# ⚠️ 탐색은 **공백 없는 핵**으로 한다 — 표식의 앞뒤 공백은 `.strip()`·`" · "`
+# 결합·정규화에서 쉽게 사라지고, 그러면 `find` 가 경계를 놓쳐 상세가 통째로
+# 화면에 샌다(2026-09-21 실측: 머리 없는 조각이 그 모양이었다). 공백에 기대는
+# 탐색은 언젠가 진다(#65 문자열이 아니라 구조로).
+_MARK_CORE = _DETAIL_MARK.strip()
 
 
 def carries_dump(machine: str) -> bool:
@@ -420,19 +425,59 @@ def carries_dump(machine: str) -> bool:
     된다(#395 지우지 말고 좁힐 것 · #43 · 게이트가 실측으로 잡았다).
     """
     m = str(machine or "")
-    return bool(m) and (_DETAIL_MARK in m or any(k in m for k in _MACHINE_MARKS))
+    return bool(m) and (_MARK_CORE in m or any(k in m for k in _MACHINE_MARKS))
+
+
+def split_detail(text: str) -> tuple[str, str]:
+    """한 조각을 `(사람 문장, 운영자 상세)` 로 가른다(순수).
+
+    표식이 없으면 전부 사람 문장이다 — 덤프인 줄 아는 쪽이 찍고 읽는 쪽은
+    읽기만 한다(#86). 표식이 여럿이면 **가장 이른 것**이 경계다.
+    """
+    # ⚠️ 먼저 `.strip()` 하면 표식의 **앞 공백**이 사라져 `find` 가 못 찾는다
+    # (머리 없이 상세만 있는 조각 = `_DETAIL_MARK + dump` 가 그 모양이다).
+    # 자른 **뒤에** 조각마다 다듬는다.
+    t = str(text or "")
+    i = t.find(_MARK_CORE)
+    if i < 0:
+        return t.strip(), ""
+    return t[:i].strip(), t[i + len(_MARK_CORE):].strip()
+
+
+def join_notes(parts) -> str:
+    """조각 여럿을 **경계 하나**로 잇는다(순수) — 앞은 전부 사람, 뒤는 전부 상세.
+
+    ⚠️ `" · ".join(parts)` 로 그냥 이으면 **앞 조각의 표식 뒤로 뒤 조각의 사람
+    문장이 밀려** 화면에서 통째로 사라진다(2026-09-21 실측: 벌크 메모가 표식을
+    품은 채 `stale_note` 의 `parts` 중간에 들어가 그 뒤의 `지난 시도가 …` 가
+    먹혔다). 조각마다 갈라서 머리는 머리끼리·상세는 상세끼리 모은다.
+    """
+    heads: list = []
+    tails: list = []
+    for x in (parts or []):
+        h, d = split_detail(x)
+        if h:
+            heads.append(h)
+        if d:
+            tails.append(d)
+    return mark_detail(" · ".join(heads), " · ".join(tails))
 
 
 def mark_detail(head: str, detail: str) -> str:
     """사람 문장 + **경계 표식** + 운영자 상세(순수). 표식을 쓰는 **유일한 곳**.
 
-    사람 문장이 없으면 표식을 찍지 않는다 — 자를 머리가 없는데 경계를 그으면
-    `public_reason` 이 화면을 통째로 비우거나(#43) 기호만 남긴다.
+    ⚠️ 머리가 없어도 **표식을 찍는다**(2026-09-21 전제 변경, #222). 옛 판은
+    "자를 머리가 없으면 경계를 긋지 않는다" 였는데, 머리를 **호출부가 대는**
+    조각(`_kis_names` 의 why — 방문자가 읽을 결과는 `_rows_on` 이 적고 예외
+    클래스만 남는다)이 그대로 화면에 샜다(실측: `KIS 마스터가 0종목(kospi
+    실패(ConnectionError) …)`). 경계는 조각이 **혼자 설 때**가 아니라 **합쳐질
+    때** 뜻이 생기므로, 긋는 것은 구조이고 화면을 비우지 않는 책임은
+    `public_reason` 이 진다(#119 규율 대신 구조).
     """
     h, d = str(head or "").strip(), str(detail or "").strip()
     if not d:
         return h
-    return f"{h}{_DETAIL_MARK}{d}" if h else d
+    return f"{h}{_DETAIL_MARK}{d}"
 
 
 def machine_detail_at(reason: str) -> int:
@@ -450,7 +495,7 @@ def machine_detail_at(reason: str) -> int:
     """
     r = str(reason or "")
     hits = [i for i in (r.find(m) for m in _MACHINE_MARKS) if i >= 0]
-    i = r.find(_DETAIL_MARK)
+    i = r.find(_MARK_CORE)
     if i >= 0:
         hits.append(i)
     return min(hits) if hits else -1
@@ -475,31 +520,18 @@ def compose_reason(human, machine: str = "") -> str:
     표식' 뒤로 밀려 통째로 먹힌다. 결과는 언제나 **경계 하나**이고 앞은 전부
     사람, 뒤는 전부 상세다.
     """
-    heads: list = []
-    tails: list = []
-    for x in (human or []):
-        # 사람 문장 **안**에 이미 경계가 박혀 있을 수 있다
-        # (`kr_bulk_rank._bulk_fail_reason` 이 `attempt_note` 를 타고 들어온다).
-        # 그때 뒤에 그냥 이어 붙이면 **그 뒤의 사람 문장까지 상세로 먹힌다**
-        # — 경계는 하나여야 하므로 **이어 붙이지 말고 가른다**(실측: 급등·급락
-        # 의 '계약 변경' 이 그렇게 사라졌다, #45·#398).
-        t = str(x or "").strip()
-        if not t:
-            continue
-        i = t.find(_DETAIL_MARK)
-        if i < 0:
-            heads.append(t)
-            continue
-        h, d = t[:i].rstrip(), t[i + len(_DETAIL_MARK):].strip()
-        if h:
-            heads.append(h)
-        if d:
-            tails.append(d)
+    # 사람 문장 **안**에 이미 경계가 박혀 있을 수 있다
+    # (`kr_bulk_rank` 의 메모·예외 사유가 `attempt_note` 를 타고 들어온다).
+    # `join_notes` 가 조각마다 갈라 **경계를 하나로** 모은다(#398).
+    parts = list(human or [])
     m = str(machine or "").strip()
     if m:
         # 기계 슬롯은 **덤프를 품었을 때만** 상세다 — `carries_dump` 참조.
-        (tails if carries_dump(m) else heads).append(m)
-    return mark_detail(" · ".join(heads), " · ".join(tails))
+        # 표식을 이미 품었으면 `join_notes` 가 그 자리에서 가른다. 없으면
+        # **통째로 상세**이므로 머리 없는 표식을 앞에 붙여 꼬리로 보낸다.
+        parts.append(_DETAIL_MARK + m
+                     if carries_dump(m) and _MARK_CORE not in m else m)
+    return join_notes(parts)
 
 
 # 화면용 갈래 이름 — **코드도 덤프도 없이** "무슨 일이냐"만 말한다.
@@ -585,7 +617,15 @@ def public_reason(reason: str) -> str:
         return r
     head = r[:i].rstrip().rstrip("·—").rstrip()
     gloss = screen_gloss(r[i:])
-    return " · ".join(x for x in (head, gloss) if x) or r
+    out = " · ".join(x for x in (head, gloss) if x)
+    if out:
+        return out
+    # 남는 문장이 없다. 표식이 **있었으면** 원문을 되돌려줄 수 없다 — 그게
+    # 정확히 운영자 채널이기 때문이다. 침묵도 안 된다(#43) → 사유가 어디
+    # 있는지 말한다(#82 갈래를 이름으로 · 무엇을 못 하는지까지).
+    if _MARK_CORE in r:
+        return "자세한 사유는 운영자 로그에 있습니다"
+    return r
 
 
 def stale_label(age_sec: float | int | None) -> str:
