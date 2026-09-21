@@ -34,9 +34,10 @@ import argparse
 import sys
 import time as _time
 
-_AUDIT_VER = 3
+_AUDIT_VER = 4
 _GAP_OK = 1.0        # 교차출처 허용 차이(%) — 정의가 같으면 소수점까지 맞는다
 _SUM_OK = 5.0        # 분기합 vs 연간 허용 차이(%)
+_BASIS_OK = 1.0      # CAPEX 구성 항등식(|yfCAPEX| = 유형+무형) 허용 차이(%)
 
 
 def _pct(a, b) -> float | None:
@@ -85,10 +86,16 @@ def verdict_line(bad: int, unknown: int, bad_axes=None,
     return (f"불일치 {bad}건{f' — {b}' if b else ''} — 위 결함 줄 참조{tail}")
 
 
-def _mark(gap: float | None, tol: float) -> str:
+def _mark(gap: float | None, tol: float, explained: str = "") -> str:
+    """차이 → 판정 글자. `explained` 가 있으면 허용치를 넘어도 ✅ 이고
+    **사유를 그 줄에 붙인다** — 설명된 차이와 조용한 차이를 가른다(#182).
+
+    ⚠️ 차이의 **크기는 그대로 찍는다**. 설명이 붙었다고 사실을 지우면
+    여유로 사실을 덮는 것이다(#41)."""
     if gap is None:
         return "❓ 판정불가"
-    return ("✅" if gap <= tol else "❌") + f" 차이 {gap:.2f}%"
+    ok = gap <= tol or bool(explained)
+    return ("✅" if ok else "❌") + f" 차이 {gap:.2f}%" + explained
 
 
 def q_end(year: int, quarter: int) -> str:
@@ -131,6 +138,68 @@ def missing_for_window(annual_period: str, have: set) -> list[str]:
             out.append(p)
         p = prev_quarter_end(p)
     return out
+
+
+def bundled_intangible(dart_fin: dict | None, yf_row: dict | None):
+    """yfinance `CAPEX` 가 **묶어 온** 무형자산취득 크기(못 재면 None).
+
+    2026-09-21 일일 감사가 181710.KS 를 8기간(분기 5·연간 3) 전부 ❌ 로
+    찍었는데, 재료를 맞춰 보니 여덟 줄 모두
+    `|yf CAPEX| = DART 유형 + 무형` 이고 `DART FCF − yf FCF = 무형` 이었다.
+    즉 값이 틀린 게 아니라 **CAPEX 정의가 다르다** — 제품은 FnGuide 기준
+    (유형만, #215 사용자 결정)이고 yfinance 는 무형을 묶는다.
+
+    ⚠️ 뜻을 추측하지 않는다 — **항등식이 설 때만** 그 무형 크기를 돌려준다
+    (#106). 무형이 0 이거나 재료가 없으면 None 이라, '묶였는지 모르는' 경우는
+    설명되지 않고 종전대로 ❌ 로 남는다(#165 재지 않은 것을 사유로 쓰지 말 것).
+    """
+    from bot.fcf import _CAPEX_NAMES, _first, dart_capex, dart_intangible
+    tang = dart_capex(dart_fin)
+    intan = dart_intangible(dart_fin)          # 계정명은 `bot.fcf` 상수가 쥔다
+    cap = _first(yf_row or {}, _CAPEX_NAMES)
+    if tang is None or intan is None or cap is None or not intan:
+        return None
+    both = tang + intan                        # `tang`·`intan` 둘 다 ≥ 0 이고
+    if abs(abs(cap) - both) > _BASIS_OK / 100.0 * both:   # intan > 0 이라 both > 0
+        return None
+    return intan
+
+
+def basis_note(dart_fin: dict | None, yf_row: dict | None, v, y):
+    """교차출처 차이가 **CAPEX 정의차로 전부 설명되나** → (설명됨, 문구).
+
+    ⚠️ 이건 tautology 가 아니다(#291·#293) — 좌변 재료는 DART(OCF·유형·무형)
+    이고 우변은 yfinance(OCF·CAPEX)다. 잔차가 0 이 되려면 두 OCF 가 같고
+    **동시에** yfinance CAPEX 의 구성이 유형+무형이어야 하므로, 옛 판보다
+    오히려 더 많은 것을 잰다(CAPEX 구성까지).
+
+    ⚠️ 설명이 서면 ✅ 다 — 이 차이는 우리가 고칠 수 있는 것이 아니고(산식은
+    사용자가 정한 FnGuide 기준이며 yfinance 는 무형을 따로 주지 않는다),
+    못 고칠 ❌ 가 매일 오면 진짜 ❌ 를 가린다(#260·#182). 화면은 이미 두 탭이
+    서로를 가리키며 원천과 산식을 밝힌다(#102·#186·#220).
+    """
+    g = _pct(v, y)
+    if g is None or g <= _GAP_OK:
+        # 설명할 차이가 없다 — 정상 행마다 문구가 붙으면 소음이다(#25·#260).
+        return False, ""
+    ig = bundled_intangible(dart_fin, yf_row)
+    if ig is None:
+        return False, ""
+    r = _pct(v - ig, y)
+    if r is None or r > _GAP_OK:
+        return False, ""
+    # ⚠️ 유형은 **제품이 쓰는 그 값**(`dart_capex`)을 적는다 — 여기서 계정을
+    # 다시 고르면 화면과 갈린다(#38·#215 가 고친 그 갈라짐).
+    # ⚠️ 왼쪽 숫자는 **원천이 준 yfinance CAPEX** 다. 첫 판은 `유형 + 무형`
+    # (전부 DART 파생)을 적고 라벨만 "yf CAPEX" 라 붙여, 등식이 구조상 항상
+    # 맞아 **아무것도 검산되지 않았다**(독립 리뷰 실측: 504.9억을 500.0억이라
+    # 적었다). 틀린 라벨은 라벨이 없는 것보다 나쁘다(#292·#202·#33).
+    from bot.fcf import _CAPEX_NAMES, _first, dart_capex
+    tang = dart_capex(dart_fin)
+    cap = abs(_first(yf_row or {}, _CAPEX_NAMES))
+    return True, (f" — CAPEX 정의차(yf CAPEX {cap / 1e8:,.1f}억 ≈ "
+                  f"유형 {tang / 1e8:,.1f} + 무형 {ig / 1e8:,.1f}) · "
+                  f"보정 후 {r:.2f}%")
 
 
 def _materials(dart_fin: dict, yf_row: dict) -> str:
@@ -400,6 +469,7 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         flag(not _sm, "①누적오염(DART)")
     # ② 교차출처 — 같은 기간의 DART 값과 yfinance 값
     say("     ② 교차출처(DART ↔ yfinance)")
+    _yqd, _yad = dict(yq), dict(ya)
     seen = 0
     for q in qs:
         v = (q.get("financials") or {}).get("FCF")
@@ -415,12 +485,13 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         # 말하고 **어느 구성요소가 갈렸는지는 버렸다** — 그러면 원인 규명이
         # 추측으로 시작된다(#356 한 줄만 올리는 구조면 그 줄이 자족해야
         # 한다 · #93 숫자는 행동으로 이어질 때만 쓸모가 있다).
-        _bad = g is not None and g > _GAP_OK
+        _fin, _row = q.get("financials") or {}, _yqd.get(p) or {}
+        _expl, _why = basis_note(_fin, _row, v, y)
+        _bad = (not _expl) and g is not None and g > _GAP_OK
         say(f"        {q.get('label')} ({p})  DART {v / 1e8:,.1f}억 vs "
-            f"yfinance {y / 1e8:,.1f}억  " + _mark(g, _GAP_OK)
-            + ("  " + _materials(q.get("financials") or {},
-                                 dict(yq).get(p) or {}) if _bad else ""))
-        flag(None if g is None else g <= _GAP_OK, "②교차출처(분기)")
+            f"yfinance {y / 1e8:,.1f}억  " + _mark(g, _GAP_OK, _why)
+            + ("  " + _materials(_fin, _row) if _bad else ""))
+        flag(None if g is None else (_expl or g <= _GAP_OK), "②교차출처(분기)")
     if not seen:
         # ⚠️ 대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54).
         say("        ❌ 대조된 기간이 0건 — 기간 키가 안 맞는다"
@@ -441,11 +512,13 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             continue
         g = _pct(v, a)
         # 분기와 **같은 규약** — 형제를 안 고치면 연간 ❌ 만 재료 없이 나간다(#38).
-        _bad = g is not None and g > _GAP_OK
+        _row = _yad.get(p) or {}
+        _expl, _why = basis_note(fin, _row, v, a)
+        _bad = (not _expl) and g is not None and g > _GAP_OK
         say(f"        FY{y0} ({p})  DART {v / 1e8:,.1f}억 vs "
-            f"yfinance {a / 1e8:,.1f}억  " + _mark(g, _GAP_OK)
-            + ("  " + _materials(fin, dict(ya).get(p) or {}) if _bad else ""))
-        flag(None if g is None else g <= _GAP_OK, "②교차출처(연간)")
+            f"yfinance {a / 1e8:,.1f}억  " + _mark(g, _GAP_OK, _why)
+            + ("  " + _materials(fin, _row) if _bad else ""))
+        flag(None if g is None else (_expl or g <= _GAP_OK), "②교차출처(연간)")
     return {"lines": out, "bad": bad, "unknown": unknown,
             "bad_axes": bad_axes, "unknown_axes": unknown_axes}
 
@@ -467,7 +540,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"=== FCF 정확도 감사 v{_AUDIT_VER} (재무캐시 v{_FIN_CACHE_VER}) ===")
     print("① 재계산  ② 교차출처(DART↔yfinance)  ③ 표면일치  "
           "④ 분기합↔연간  ⑤ 누적냄새")
-    print(f"허용 차이: 교차출처 {_GAP_OK}% · 검산 {_SUM_OK}%")
+    print(f"허용 차이: 교차출처 {_GAP_OK}% · 검산 {_SUM_OK}% · "
+          f"CAPEX 구성 항등식 {_BASIS_OK}%"
+          " (교차출처 차이가 무형자산취득으로 전부 설명되면 ✅ · #396)")
     print(f"자격증명 DART_API_KEY={env_source('DART_API_KEY') or '없음'}")
     # ⚠️ **어느 파이썬으로 도는지 찍는다.** 2026-08-22 실측: venv 밖에서
     # 돌려 `yfinance` 가 없자 스냅샷이 통째로 비었는데 감사는 ✅ 를 찍었다

@@ -6414,8 +6414,13 @@ class TestQuarterlyMultiMarket20260816:
         ⚠️ 2026-08-23 정정: 옛 판은 무형자산취득까지 더했다. LG이노텍
         011070.KS 실측으로 FnGuide 와 어긋난 폭이 무형자산취득 크기와
         맞았다(FY2025 우리 5,769 vs FnGuide 7,204, 차 1,435).
-        이 정의는 yfinance `Capital Expenditure` 와도 같아 시장 간 정의가
-        하나로 맞는다. 유형자산취득이 없으면 FCF 를 만들지 않는다.
+        ⚠️ 2026-09-21 재정정(#396): 이 자리에 "이 정의는 yfinance
+        `Capital Expenditure` 와도 같아 시장 간 정의가 하나로 맞는다" 고
+        적혀 있었는데 **재지 않은 단언**이었다(#165). 181710.KS 8기간
+        실측에서 `|yf CAPEX| = 유형 + 무형` 이 전부 성립했다 — yfinance 는
+        무형을 묶는다. 계약은 그대로다(유형만) — 지우지 않고 **새 계약으로
+        다시 쓴다**(#222). 이 문장을 되돌리면 #215→#288 루프가 재발한다.
+        유형자산취득이 없으면 FCF 를 만들지 않는다.
         """
         from bot.dart_quarterly import _attach_fcf
         e = [{"financials": {"영업활동현금흐름": 1241e8,
@@ -76339,3 +76344,274 @@ class TestPrepostStoredSnapshot20260919:
         age_clause = note.split(" 집계 · ", 1)[1].split(".", 1)[0]
         assert "-" not in age_clause, (age_clause, note)
         assert "분 전" in age_clause, (age_clause, note)
+
+
+class TestFcfCapexBasisGap20260921:
+    """감사 ② 가 **정의 차이**를 결함으로 찍고 있었다(2026-09-21 일일 감사).
+
+    `코드 739de2ec2a` 실행의 ❌ 8건이 전부 `181710.KS` 였고 분기 5·연간 3
+    전 기간에서 산수가 하나로 맞았다:
+
+        |yfinance CAPEX| = DART 유형자산취득 + 무형자산취득
+        DART FCF − yfinance FCF = 무형자산취득          (8/8, 표시 반올림 0.1 이내)
+
+    즉 값이 틀린 게 아니라 CAPEX 정의가 다르다 — 제품은 FnGuide 기준
+    (유형만, #215 사용자 결정)이고 yfinance 는 무형을 묶는다. 우리가 고칠
+    수 있는 것이 아니고(원천이 무형을 따로 주지 않는다) 화면은 이미 두 탭이
+    서로를 가리키며 원천·산식을 밝힌다(#102·#186·#220) — 그런데도 매일 ❌ 가
+    오면 **진짜 ❌ 를 가린다**(#260). 설명되는 차이는 설명하고 ✅, 설명 안
+    되는 잔차만 ❌ 다(#182 '설명된 낡음'과 같은 규약).
+
+    ⚠️ 이 실측이 `bot/fcf.py`·`bot/dart_quarterly.py` 가 #215 에서 덧붙인
+    "yfinance 와도 정의가 같아 시장 간 기준이 하나로 맞는다" 를 **반증**했다
+    — 재지 않은 단언이었다(#165). 같은 커밋에서 두 주석을 고쳤다.
+
+    ⚠️ 못 보는 축(#274): 그 주석이 **다시 그런 주장을 적는 것**은 여기서
+    막지 않는다. 문구 denylist 는 표현만 바꾸면 통과하므로(#373) 가드는
+    문장이 아니라 **측정**이다 — 아래 E2E 가 실제로 두 정의를 갈라야만
+    통과한다.
+    """
+
+    _E = 1e8
+    # 181710.KS FY2023 실측(억). 원차 17.92% 가 감사 원문과 같다.
+    _OCF, _TANG, _INTAN = 1653.1, 3179.2, 333.2
+
+    def _fin(self, **kw):
+        f = {"영업활동현금흐름": self._OCF * self._E,
+             "유형자산취득": self._TANG * self._E,
+             "무형자산취득": self._INTAN * self._E}
+        f.update(kw)
+        return f
+
+    def _row(self, ocf=None, capex=None, direct=True):
+        """yfinance 현금흐름 한 행.
+
+        ⚠️ 실제 181710.KS 응답은 `Free Cash Flow` 를 **같이** 준다(감사 원문의
+        `FCF직접` 칸이 그 증거다). 그러면 `fcf_from_row` 가 그 값을 먼저 쓰므로
+        파생 경로만 태우는 픽스처는 제품이 가는 길을 안 탄다(#155·#79)."""
+        o = (self._OCF if ocf is None else ocf) * self._E
+        c = ((self._TANG + self._INTAN) if capex is None else capex) * self._E
+        r = {"Operating Cash Flow": o, "Capital Expenditure": -c}
+        if direct:
+            r["Free Cash Flow"] = o - c
+        return r
+
+    # ── 순수 판정 ────────────────────────────────────────────────
+    def test_identity_holds_so_the_gap_is_named(self):
+        from bot.scripts.fcf_audit import bundled_intangible
+        got = bundled_intangible(self._fin(), self._row())
+        assert got == pytest.approx(self._INTAN * self._E)
+        # DART 는 취득 부호 규약이 원천마다 갈린다 — 크기만 쓴다(#88·#227).
+        neg = bundled_intangible(self._fin(무형자산취득=-self._INTAN * self._E),
+                                 self._row())
+        assert neg == pytest.approx(self._INTAN * self._E)
+
+    def test_capex_without_intangibles_is_not_explained(self):
+        """반대 증거 — 항등식이 안 서면 설명하지 않는다(#25·#106)."""
+        from bot.scripts.fcf_audit import bundled_intangible
+        assert bundled_intangible(self._fin(), self._row(capex=self._TANG)) is None
+
+    def test_missing_materials_are_not_explained(self):
+        """무형·CAPEX 가 없거나 무형이 0 이면 '묶였는지 모르는' 것이다(#165)."""
+        from bot.scripts.fcf_audit import bundled_intangible
+        f = self._fin()
+        f.pop("무형자산취득")
+        assert bundled_intangible(f, self._row()) is None
+        # ⚠️ 무형 0 은 **항등식이 서는 픽스처**로 재야 한다(#91c). CAPEX 를
+        # 유형+무형으로 두면 항등식 쪽이 먼저 걸러 `not intan` 가드를 지워도
+        # 통과한다 — 그러면 차이 0 인 행에 "무형 0.0억 정의차" 라는 틀린
+        # 라벨이 붙는다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+        assert bundled_intangible(self._fin(무형자산취득=0.0),
+                                  self._row(capex=self._TANG)) is None
+        assert bundled_intangible(self._fin(), {"Operating Cash Flow": 1.0}) is None
+        assert bundled_intangible(None, None) is None
+
+    def test_note_states_the_composition_by_value(self):
+        """'정의가 다르다'만 말하면 얼마나·왜 다른지 알 방법이 없다(#202·#33)."""
+        from bot.scripts.fcf_audit import basis_note
+        v = (self._OCF - self._TANG) * self._E
+        y = (self._OCF - self._TANG - self._INTAN) * self._E
+        ok, why = basis_note(self._fin(), self._row(), v, y)
+        assert ok and "3,512.4" in why and "3,179.2" in why and "333.2" in why, why
+        assert "보정 후 0.00%" in why, why
+
+    def test_both_tabs_name_the_capex_basis_difference(self):
+        """❌ 를 ✅ 로 내린 근거가 "화면이 이미 말한다" 였다 — 그 근거가 참이
+        되게 **같은 커밋에서** 화면이 사유를 대게 했다(독립 리뷰, #202·#209).
+
+        옛 각주는 '값이 다를 수 있습니다' 까지만 적고 원인도 크기도 말하지
+        않았다. 그리고 두 탭 중 한쪽만 고치면 또 갈린다(#38·#147) — 문장은
+        `bot.fcf.CAPEX_BASIS_NOTE` 단일 출처이고 **두 렌더러가 다 싣는지**를
+        값으로 잰다(#20 소스 문자열이 아니라 결과로).
+        """
+        import ast
+        import html as _h
+        import textwrap
+        from bot.dashboard import compact_amount, trend_chart_geometry
+        from bot.fcf import CAPEX_BASIS_NOTE
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+
+        def _fn(name, **extra):
+            fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                       and n.name == name), None)
+            assert fn, name
+            ns = {"esc": _h.escape, "compact_amount": compact_amount,
+                  "currency": "KRW",
+                  "trend_chart_geometry": trend_chart_geometry, **extra}
+            exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
+            return ns[name]
+
+        items = [{"label": "26.1Q", "매출": 1e12, "영업이익": 2e11,
+                  "당기순이익": 1e11, "FCF": 1011e8, "quarter": 1},
+                 {"label": "26.2Q", "매출": 1.1e12, "영업이익": 2.2e11,
+                  "당기순이익": 1.2e11, "FCF": 900e8, "quarter": 2}]
+        kr = _fn("_kr_fin_trend_table")("분기별 재무추이", items,
+                                        lambda q: q["label"])
+        assert CAPEX_BASIS_NOTE in kr, kr[-1500:]
+
+        IS = [{"period": f"2026-0{m}-30", "Total Revenue": 1000 + m,
+               "Operating Income": 200 + m, "Net Income": 100 + m}
+              for m in (3, 6, 9)]
+        CF = [{"period": f"2026-0{m}-30", "Operating Cash Flow": 300 + m,
+               "Capital Expenditure": -80} for m in (3, 6, 9)]
+        yf = _fn("_profit_trend")(IS, 5, lambda p: p[:7], "분기추이", "QoQ",
+                                  "분기", CF, True)
+        assert CAPEX_BASIS_NOTE in yf, yf[-1500:]
+        # 반대 증거 — 비-KR 탭엔 붙지 않는다(형제 탭이 DART 가 아니다, #25).
+        assert CAPEX_BASIS_NOTE not in _fn("_profit_trend")(
+            IS, 5, lambda p: p[:7], "분기추이", "QoQ", "분기", CF, False)
+
+    def test_note_prints_the_source_capex_not_our_sum(self):
+        """왼쪽 숫자는 **원천이 준 yfinance CAPEX** 여야 한다.
+
+        첫 판은 `유형 + 무형`(전부 DART 파생)을 적고 라벨만 `yf CAPEX` 라
+        붙였다 — 등식이 구조상 항상 맞아 아무것도 검산되지 않았고, 원천 값과
+        다른 수가 화면에 실렸다(독립 리뷰 실측). 항등식 허용치 안에서
+        **일부러 어긋난** 픽스처라야 그 차이가 보인다(#91c·#292·#202).
+        """
+        from bot.scripts.fcf_audit import basis_note
+        fin = {"영업활동현금흐름": 5000 * self._E,
+               "유형자산취득": 400 * self._E, "무형자산취득": 100 * self._E}
+        row = self._row(ocf=5000, capex=504.0)          # 500 이 아니라 504
+        v, y = 4600 * self._E, (5000 - 504.0) * self._E
+        ok, why = basis_note(fin, row, v, y)
+        assert ok, why
+        assert "yf CAPEX 504.0억" in why, why
+        assert "500.0억" not in why, why
+
+    def test_residual_between_one_and_five_percent_is_still_a_defect(self):
+        """잔차 문턱은 이 축의 **계약 전부**다 — 5배로 풀면 깨지는 픽스처를 둔다.
+
+        독립 리뷰 실측: `> _GAP_OK` 를 `> _SUM_OK`(1%→5%) 로 바꿔도 전 슈트가
+        green 이었다. 유일한 미설명 픽스처의 잔차가 19.6% 라 그 사이가
+        통째로 비어 있었다(#372a·#91c).
+        """
+        from bot.scripts.fcf_audit import basis_note
+        fin = {"영업활동현금흐름": 5000 * self._E,
+               "유형자산취득": 400 * self._E, "무형자산취득": 100 * self._E}
+        row = self._row(ocf=4900, capex=500.0)          # OCF 가 100억 어긋난다
+        v, y = 4600 * self._E, 4400 * self._E
+        assert basis_note(fin, row, v, y) == (False, "")   # 잔차 2.27%
+
+    def test_direct_source_fcf_that_disagrees_is_not_explained(self):
+        """원천이 `Free Cash Flow` 를 직접 주고 그 값이 우리 정의와 갈리면
+        설명하지 않는다 — 우리가 재지 않은 정의를 사유로 쓰지 않는다(#165)."""
+        from bot.scripts.fcf_audit import basis_note
+        row = self._row()
+        row["Free Cash Flow"] = row["Free Cash Flow"] * 1.05
+        v = (self._OCF - self._TANG) * self._E
+        assert basis_note(self._fin(), row, v, row["Free Cash Flow"]) == (False, "")
+
+    def test_a_small_gap_gets_no_note_at_all(self):
+        """설명은 **판정을 뒤집을 때만** 붙는다 — 늘 뜨는 문구는 아무것도
+        안 재는 것과 같다(#25·#260). 무형이 작아 원차가 이미 허용치 안이면
+        정상 행에 `CAPEX 정의차` 가 붙지 않아야 한다."""
+        from bot.scripts.fcf_audit import basis_note
+        fin = {"영업활동현금흐름": 10000 * self._E,
+               "유형자산취득": 100 * self._E, "무형자산취득": 1 * self._E}
+        row = {"Operating Cash Flow": 10000 * self._E,
+               "Capital Expenditure": -101 * self._E}
+        assert basis_note(fin, row, 9900 * self._E, 9899 * self._E) == (False, "")
+
+    def test_a_real_mismatch_is_still_a_defect(self):
+        """OCF 가 갈리면 잔차가 남는다 — 정의차 면제가 진짜 결함을 삼키면 안 된다."""
+        from bot.scripts.fcf_audit import basis_note
+        v = (self._OCF - self._TANG) * self._E
+        y = (1200.0 - self._TANG - self._INTAN) * self._E
+        assert basis_note(self._fin(), self._row(ocf=1200.0), v, y) == (False, "")
+
+    def test_mark_keeps_the_size_visible(self):
+        """설명이 붙어도 차이의 **크기는 그대로** 찍는다(#41)."""
+        from bot.scripts.fcf_audit import _mark
+        assert _mark(17.92, 1.0, " — 사유") == "✅ 차이 17.92% — 사유"
+        assert _mark(17.92, 1.0) == "❌ 차이 17.92%"
+        assert _mark(None, 1.0, " — 사유") == "❓ 판정불가"
+
+    # ── 배선(#20 — 헬퍼만 재면 호출부를 떼는 변형을 못 잡는다) ──
+    def _audit(self, monkeypatch, *, ocf=None, capex=None):
+        import datetime as _dt
+
+        import bot.dart_quarterly as dq
+        import bot.scripts.fcf_audit as fa
+        import bot.stock_snapshot as ss
+        yr = _dt.date.today().year
+        per = [(yr - 1, q) for q in (1, 2, 3, 4)]
+        ends = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
+        # ⚠️ 픽스처는 **제품이 실제로 내는 모양**이어야 한다(#155): DART 쪽
+        # `FCF` 는 `get_quarterly_series` 가 반환 직전에 `_attach_fcf` 로 채운다
+        # — 손으로 넣으면 산식이 갈려도 이 테스트가 못 본다.
+        # 연간은 분기 4배로 둬 **④검산** 축이 이 픽스처 때문에 터지지 않게 한다
+        # (무관한 축이 빨간불이면 재는 대상이 흐려진다, #91b).
+        _a = {"Operating Cash Flow": self._row(ocf, capex)["Operating Cash Flow"] * 4,
+              "Capital Expenditure": self._row(ocf, capex)["Capital Expenditure"] * 4}
+        snap = {"financials": {"cash_flow": {
+            "quarterly": [dict(self._row(ocf, capex),
+                               period=f"{y0}-{ends[q]}") for y0, q in per],
+            "annual": [dict(_a, period=f"{yr - 1}-12-31")]}}}
+        qs = [{"label": f"{str(y0)[2:]}.{q}Q", "year": y0, "quarter": q,
+               "financials": self._fin()} for y0, q in per]
+        _ann = {"financials": {k: v * 4 for k, v in self._fin().items()}}
+        dq._attach_fcf(qs)
+        dq._attach_fcf([_ann])
+        # ⚠️ `fa` 에는 `collect_stock_snapshot` 이 **없다**(`audit_one` 이 함수
+        # 안에서 `bot.stock_snapshot` 에서 import 한다) — `raising=False` 로
+        # 거기 꽂으면 아무것도 안 바뀌는 조용한 no-op 이고, 나중에 원천 이름이
+        # 바뀌어도 그 사실이 안 드러난다(#25 '있다'만 묻는 검사는 눈이 먼다).
+        assert not hasattr(fa, "collect_stock_snapshot")
+        monkeypatch.setattr(ss, "collect_stock_snapshot", lambda *a, **k: snap)
+        monkeypatch.setattr(dq, "get_quarterly_series", lambda *a, **k: qs)
+        _ = fa
+
+        class _D:
+            def get_normalized_financials(_s, tk, year=None):
+                return _ann
+        r = fa.audit_one("181710.KS", _D())
+        return r, "\n".join(r["lines"])
+
+    def test_audit_no_longer_flags_the_definition_gap(self, monkeypatch):
+        r, body = self._audit(monkeypatch)
+        assert "②교차출처" not in " ".join(r["bad_axes"]), body
+        assert body.count("CAPEX 정의차") >= 5, body       # 분기 4 + 연간 ≥1
+        # 크기는 그대로 보인다 — 여유로 사실을 덮지 않는다(#41).
+        assert "✅ 차이 17.92%" in body, body
+
+    def test_annual_axis_got_the_same_rule(self, monkeypatch):
+        """형제를 같은 커밋에서 — 한쪽만 고치면 연간 ❌ 만 남는다(#38·#147)."""
+        _r, body = self._audit(monkeypatch)
+        fy = [l for l in body.splitlines() if l.strip().startswith("FY")]
+        assert fy and all("CAPEX 정의차" in l for l in fy), fy
+
+    def test_audit_still_flags_a_real_mismatch(self, monkeypatch):
+        """반대 증거 — 면제가 전부를 통과시키면 축이 죽은 것이다(#25·#291)."""
+        r, body = self._audit(monkeypatch, ocf=1200.0)
+        assert "②교차출처(분기)" in r["bad_axes"], body
+        assert "②교차출처(연간)" in r["bad_axes"], body
+        # ⚠️ 페이지 전체 grep 이면 **연간 줄이 분기 줄을 대신 만족**시킨다
+        # (실측: 분기 call site 의 재료를 지운 뮤테이션이 통과했다, #75).
+        # 분기·연간을 각각 잘라서 본다(#55).
+        for kind in ("Q (", "FY"):
+            rows = [l for l in body.splitlines()
+                    if "❌ 차이" in l and kind in l]
+            assert rows, (kind, body)
+            assert all("↳ DART OCF" in l for l in rows), (kind, rows)

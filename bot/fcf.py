@@ -75,9 +75,21 @@ def fcf_from_row(row: dict | None) -> float | None:
 # DART 는 CAPEX 를 단일 계정으로 주지 않는다 — 취득이 자산 종류별로 온다.
 # ⚠️ **유형자산취득만** 쓴다. 사용자가 신뢰 기준으로 제시한 FnGuide 산식이
 # `CAPEX = 유형자산의증가` 이고 무형은 안 들어간다(LG이노텍 011070.KS 세 해
-# 실측, #215). yfinance `Capital Expenditure`(PP&E 취득)와도 정의가 같아
-# 시장 간 기준이 하나로 맞는다.
+# 실측, #215).
+# ⚠️ #215 는 여기에 "yfinance `Capital Expenditure`(PP&E 취득)와도 정의가
+# 같아 시장 간 기준이 하나로 맞는다" 고 덧붙였는데 그건 **재지 않은
+# 단언**이었다(#165). 2026-09-21 181710.KS 실측 8기간(분기 5·연간 3)에서
+# `|yf CAPEX| = 유형 + 무형` 이 전부 성립했다 — yfinance 는 무형을 묶어
+# 준다. 산식은 그대로 둔다(FnGuide 기준이 정본이고 사용자 결정이다) —
+# 바뀐 건 **정의가 하나로 맞는다는 주장**뿐이고, 그 차이는 화면이 이미
+# 말하며(#102·#186·#220) 감사는 `scripts.fcf_audit.bundled_intangible`
+# 로 잰다.
 _DART_CAPEX_KEY = "유형자산취득"
+# ⚠️ 무형도 **상수**로 둔다. 감사의 정의차 판정(#396)이 이 계정을 읽는데
+# 한쪽만 리터럴이면 canonical 이름이 바뀌는 날 `dart_capex` 는 계속 돌고
+# 무형만 조용히 None 이 되어 그 판정이 통째로 죽는다(#214 가 중복 키로
+# 지배주주자본을 몇 달 잃은 그 형태).
+_DART_INTANGIBLE_KEY = "무형자산취득"
 
 
 def dart_capex(fin: dict | None):
@@ -95,6 +107,30 @@ def dart_capex(fin: dict | None):
     된 뒤로는 여기서 `float()` 가 던지면 화면 렌더 경로가 통째로 터진다.
     """
     v = _num((fin or {}).get(_DART_CAPEX_KEY))
+    return None if v is None else abs(v)
+
+
+# 두 탭의 FCF 기준 차이를 **화면이 말하는 한 문장** — 단일 출처(#38).
+# ⚠️ 왜 필요한가: 2026-09-21 에 감사 ② 가 이 차이를 ❌ 로 찍던 것을 ✅ 로
+# 내렸다(#396). 그 근거가 "화면이 이미 말한다" 였는데, 각주는 '값이 다를 수
+# 있습니다' 까지만 적고 **원인도 크기도** 말하지 않았다 — 그러면 측정한 사실이
+# 전체 로그에만 남고 사용자는 또 묻는다(#202 '다르다'만 말하면 안 통한다 ·
+# #186·#209 같은 질문이 세 번 왔다). 판정을 내릴 때 그 근거가 참이 되게 만든다.
+# ⚠️ 범위를 넘겨 주장하지 않는다(#165) — 우리가 잰 것은 일부 종목이고,
+# 모든 발행사가 그런지는 재지 않았다.
+CAPEX_BASIS_NOTE = (
+    "두 탭의 <b>FCF 기준이 다릅니다</b> — DART 쪽 CAPEX 는 "
+    "<b>유형자산 취득만</b>이고(FnGuide 산식) yfinance CAPEX 에는 "
+    "<b>무형자산 취득</b>이 함께 들어오는 경우가 있어(일부 종목 실측) "
+    "그만큼 차이가 납니다")
+
+
+def dart_intangible(fin: dict | None):
+    """DART 재무 dict → 무형자산취득 크기(없으면 None). `dart_capex` 의 짝.
+
+    ⚠️ FCF 산식에는 **안 들어간다**(#215 FnGuide 기준). 이건 교차출처 감사가
+    yfinance CAPEX 의 구성을 재려고 읽는 값이다(#396)."""
+    v = _num((fin or {}).get(_DART_INTANGIBLE_KEY))
     return None if v is None else abs(v)
 
 

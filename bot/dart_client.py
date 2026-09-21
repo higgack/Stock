@@ -246,7 +246,11 @@ _DART_CODE_MAP: dict[str, str] = {
     "dart_CashFlowsFromUsedInOperatingActivities": "영업활동현금흐름",
     "us-gaap_NetCashProvidedByUsedInOperatingActivities": "영업활동현금흐름",
     # ⚠️ CAPEX 는 DART 에 **단일 표준 계정이 없다** — 회사마다 유형자산·
-    # 무형자산 취득을 따로 적는다. 둘을 합산해야 FnGuide CAPEX 와 맞는다.
+    # 무형자산 취득을 따로 적는다. 옛 주석은 여기에 "둘을 합산해야 FnGuide
+    # CAPEX 와 맞는다" 고 적었는데 #215(2026-08-23 LG이노텍 세 해 실측)가
+    # 반증했다 — FnGuide 산식은 `CAPEX = 유형자산의증가` 라 **유형만**이고,
+    # 선택은 `bot.fcf.dart_capex` 단일 출처가 한다. 무형은 FCF 에 안 들어가고
+    # 교차출처 감사가 yfinance CAPEX 구성을 잴 때만 읽는다(#396·#38·#147).
     "ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities":
         "유형자산취득",
     "dart_PurchaseOfPropertyPlantAndEquipment": "유형자산취득",
