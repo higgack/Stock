@@ -400,15 +400,104 @@ def reason_rank(reason: str) -> int:
 # 사람 문장이라 여기 넣지 않는다(#274 이 검사가 못 보는 축을 밝혀 둔다).
 _MACHINE_MARKS = ("원천이 HTTP ", "원천에 닿지 못함", "원천이 200 을 줬는데")
 
+# **경계 표식** — 조립부가 "여기부터 운영자 채널" 이라고 찍는다. 열거(`_MACHINE_
+# MARKS`)로 되짚으면 목록 밖 상세(zod 해설·pykrx 덤프)가 머리에 남고, 목록에
+# 든 어구가 `원문: {…}` **안**에서 걸리면 라벨만 남는다(2026-09-21 실측: 541자
+# 중 63자만 잘려 `원문: ·` 가 화면에 떴다) — 아는 쪽이 적는다(#24·#86·#123).
+# 사적 문자라 원천 본문이 이걸 담을 일은 없고, 설령 담아도 **더 자르는** 쪽이라
+# 새지 않는다(그 표본은 언제나 기계 슬롯 = 실제 경계보다 뒤다).
+_DETAIL_MARK = " ⟪상세⟫ "
+# ⚠️ 탐색은 **공백 없는 핵**으로 한다 — 표식의 앞뒤 공백은 `.strip()`·`" · "`
+# 결합·정규화에서 쉽게 사라지고, 그러면 `find` 가 경계를 놓쳐 상세가 통째로
+# 화면에 샌다(2026-09-21 실측: 머리 없는 조각이 그 모양이었다). 공백에 기대는
+# 탐색은 언젠가 진다(#65 문자열이 아니라 구조로).
+_MARK_CORE = _DETAIL_MARK.strip()
+
+
+def carries_dump(machine: str) -> bool:
+    """이 문자열이 **운영자 전용 상세**(원문 덤프)를 품고 있나(순수).
+
+    ⚠️ 표식을 **무조건** 찍으면 안 된다 — `det` 슬롯에는 `http_reason` 의
+    덤프만 오는 게 아니라 `shape_reason`·`parse_reason` 이 만드는 **덤프 없는
+    짧은 사람 문장**("원천 응답 구조가 우리 예상과 다릅니다(계약 변경 — 우리가
+    고칠 것)")도 온다. 무조건 자르면 그 갈래가 화면에서 통째로 사라져 다시
+    "(잠시 후 다시 시도)" 만 남는다 — 줄이는 것이 **지우는 것**이 되면 안
+    된다(#395 지우지 말고 좁힐 것 · #43 · 게이트가 실측으로 잡았다).
+    """
+    m = str(machine or "")
+    return bool(m) and (_MARK_CORE in m or any(k in m for k in _MACHINE_MARKS))
+
+
+def split_detail(text: str) -> tuple[str, str]:
+    """한 조각을 `(사람 문장, 운영자 상세)` 로 가른다(순수).
+
+    표식이 없으면 전부 사람 문장이다 — 덤프인 줄 아는 쪽이 찍고 읽는 쪽은
+    읽기만 한다(#86). 표식이 여럿이면 **가장 이른 것**이 경계다.
+    """
+    # ⚠️ 먼저 `.strip()` 하면 표식의 **앞 공백**이 사라져 `find` 가 못 찾는다
+    # (머리 없이 상세만 있는 조각 = `_DETAIL_MARK + dump` 가 그 모양이다).
+    # 자른 **뒤에** 조각마다 다듬는다.
+    t = str(text or "")
+    i = t.find(_MARK_CORE)
+    if i < 0:
+        return t.strip(), ""
+    return t[:i].strip(), t[i + len(_MARK_CORE):].strip()
+
+
+def join_notes(parts) -> str:
+    """조각 여럿을 **경계 하나**로 잇는다(순수) — 앞은 전부 사람, 뒤는 전부 상세.
+
+    ⚠️ `" · ".join(parts)` 로 그냥 이으면 **앞 조각의 표식 뒤로 뒤 조각의 사람
+    문장이 밀려** 화면에서 통째로 사라진다(2026-09-21 실측: 벌크 메모가 표식을
+    품은 채 `stale_note` 의 `parts` 중간에 들어가 그 뒤의 `지난 시도가 …` 가
+    먹혔다). 조각마다 갈라서 머리는 머리끼리·상세는 상세끼리 모은다.
+    """
+    heads: list = []
+    tails: list = []
+    for x in (parts or []):
+        h, d = split_detail(x)
+        if h:
+            heads.append(h)
+        if d:
+            tails.append(d)
+    return mark_detail(" · ".join(heads), " · ".join(tails))
+
+
+def mark_detail(head: str, detail: str) -> str:
+    """사람 문장 + **경계 표식** + 운영자 상세(순수). 표식을 쓰는 **유일한 곳**.
+
+    ⚠️ 머리가 없어도 **표식을 찍는다**(2026-09-21 전제 변경, #222). 옛 판은
+    "자를 머리가 없으면 경계를 긋지 않는다" 였는데, 머리를 **호출부가 대는**
+    조각(`_kis_names` 의 why — 방문자가 읽을 결과는 `_rows_on` 이 적고 예외
+    클래스만 남는다)이 그대로 화면에 샜다(실측: `KIS 마스터가 0종목(kospi
+    실패(ConnectionError) …)`). 경계는 조각이 **혼자 설 때**가 아니라 **합쳐질
+    때** 뜻이 생기므로, 긋는 것은 구조이고 화면을 비우지 않는 책임은
+    `public_reason` 이 진다(#119 규율 대신 구조).
+    """
+    h, d = str(head or "").strip(), str(detail or "").strip()
+    if not d:
+        return h
+    return f"{h}{_DETAIL_MARK}{d}"
+
 
 def machine_detail_at(reason: str) -> int:
     """사유 안에서 **기계 상세가 시작하는 위치**(순수). 없으면 -1.
 
     클라이언트가 사유를 조립할 때 "기계 상세를 꼬리에 두었나"를 회귀가 이
     함수로 잰다 — 규율로 기억할 일을 구조로(#119).
+
+    표식이 있으면 **그 자리**가 경계다(표식 자체는 뒤쪽 = 운영자 채널에 남는다
+    — 그래야 자르는 쪽이 표식을 따로 벗길 일이 없고, 표식이 화면에 샐 경로가
+    구조적으로 없다, #119). `compose_reason` 이 만든 사유엔 표식이 **하나**뿐이다
+    (조립부가 이어 붙이지 않고 가른다) — 그래도 **가장 이른 것**을 택하는 것은
+    손으로 이어 붙인 문자열에 대한 방어다. 표식이 없는 사유(`http_reason` 만으로
+    만든 것)는 옛 열거로 되짚는다.
     """
     r = str(reason or "")
     hits = [i for i in (r.find(m) for m in _MACHINE_MARKS) if i >= 0]
+    i = r.find(_MARK_CORE)
+    if i >= 0:
+        hits.append(i)
     return min(hits) if hits else -1
 
 
@@ -420,13 +509,29 @@ def compose_reason(human, machine: str = "") -> str:
     갈라져 있었다: 급등·급락은 사람 문장 뒤에, 거래량 상위는 **맨 앞**에 두고
     있었다). 그리고 꼬리로 밀면 감사 줄도 **가장 행동 가능한 것이 머리**에
     온다(#275).
+
+    경계는 `_DETAIL_MARK` 로 **찍는다** — 읽는 쪽이 어구를 열거해 되짚으면
+    목록 밖 상세가 새고 목록 안 어구가 값 한가운데서 걸린다(#24·#86).
+    단 **덤프를 품은 것에만** 긋는다(`carries_dump`): 이 슬롯엔 덤프 없는 짧은
+    사람 문장(`shape_reason`·`parse_reason`)도 오고, 그건 화면에 남아야 한다.
+
+    ⚠️ 그리고 **이어 붙이지 말고 가른다** — 사람 문장 안에 이미 경계가 박힌
+    경우(벌크 실패 사유)에 그냥 이어 붙이면 뒤에 오는 사람 문장이 '가장 이른
+    표식' 뒤로 밀려 통째로 먹힌다. 결과는 언제나 **경계 하나**이고 앞은 전부
+    사람, 뒤는 전부 상세다.
     """
-    parts = [str(x).strip() for x in (human or []) if str(x or "").strip()]
-    out = " · ".join(parts)
+    # 사람 문장 **안**에 이미 경계가 박혀 있을 수 있다
+    # (`kr_bulk_rank` 의 메모·예외 사유가 `attempt_note` 를 타고 들어온다).
+    # `join_notes` 가 조각마다 갈라 **경계를 하나로** 모은다(#398).
+    parts = list(human or [])
     m = str(machine or "").strip()
-    if not m:
-        return out
-    return f"{out} · {m}" if out else m
+    if m:
+        # 기계 슬롯은 **덤프를 품었을 때만** 상세다 — `carries_dump` 참조.
+        # 표식을 이미 품었으면 `join_notes` 가 그 자리에서 가른다. 없으면
+        # **통째로 상세**이므로 머리 없는 표식을 앞에 붙여 꼬리로 보낸다.
+        parts.append(_DETAIL_MARK + m
+                     if carries_dump(m) and _MARK_CORE not in m else m)
+    return join_notes(parts)
 
 
 # 화면용 갈래 이름 — **코드도 덤프도 없이** "무슨 일이냐"만 말한다.
@@ -487,6 +592,18 @@ def public_reason(reason: str) -> str:
     필드 사유를 ` · ` 로 잇는다 — 그리고 `allowed_values`(#388)가 바로 그
     경계로 키를 귀속시키므로 표본에서 그 글자를 없앨 수도 없다).
 
+    ⚠️ 그 꼬리를 **어구 열거로 되짚던 판**은 절반만 잘랐다(2026-09-21 실측
+    541자 중 63자): zod 해설·pykrx 덤프는 `_MACHINE_MARKS` 에 없어 머리에
+    남았고, 목록에 든 `원천이 HTTP ` 가 하필 `원문: {…}` **안**에서 걸려
+    화면에 `원문: ·` 라는 값 없는 라벨이 떴다(#54·#292). 지금은 조립부가
+    `_DETAIL_MARK` 로 경계를 **찍고** 여기서 그걸 자른다 — 아는 쪽이 적는
+    것이 열거보다 언제나 낫다(#86·#24·#123 계열).
+
+    ⚠️ 그래서 **사람 문장 안에 상세를 품는 생산부**도 그 표식을 쓴다
+    (`kr_bulk_rank._bulk_fail_reason` — 벌크 실패 사유는 `attempt_note` 를
+    타고 사람 문장 **안**으로 들어온다). 표식이 여럿이면 가장 이른 것이
+    이기므로 그 상세부터 잘린다.
+
     ⚠️ **남는 문장이 없으면 원문을 그대로 돌려준다** — 사유가 통째로 기계
     상세뿐인 보드(폴백이 없어 사람 문장이 안 붙는 경우)에서 이걸 지우면 화면이
     "불러올 수 없습니다" 만 적고 **왜인지 한 마디도 안 하게** 된다. 침묵이
@@ -500,7 +617,15 @@ def public_reason(reason: str) -> str:
         return r
     head = r[:i].rstrip().rstrip("·—").rstrip()
     gloss = screen_gloss(r[i:])
-    return " · ".join(x for x in (head, gloss) if x) or r
+    out = " · ".join(x for x in (head, gloss) if x)
+    if out:
+        return out
+    # 남는 문장이 없다. 표식이 **있었으면** 원문을 되돌려줄 수 없다 — 그게
+    # 정확히 운영자 채널이기 때문이다. 침묵도 안 된다(#43) → 사유가 어디
+    # 있는지 말한다(#82 갈래를 이름으로 · 무엇을 못 하는지까지).
+    if _MARK_CORE in r:
+        return "자세한 사유는 운영자 로그에 있습니다"
+    return r
 
 
 def stale_label(age_sec: float | int | None) -> str:

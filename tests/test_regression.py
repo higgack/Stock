@@ -4650,21 +4650,26 @@ class TestDetailNewsResearchFallback:
      • KR research_reports 가 리서치 액션 탭에 렌더
     """
 
-    def _mock_news_clients(self):
+    def _mock_news_clients(self, monkeypatch):
+        # ⚠️ **monkeypatch 로 꽂는다.** 옛 판은 `sys.modules[...]` 에 직접
+        # 대입해 진짜 `bot.naver_news_client`·`bot.kabutan_news` 를 가짜
+        # 모듈로 **영구 대체**했다 — 이 테스트 뒤에 도는 전부가 `fetch_news`
+        # 하나뿐인 스텁을 본다. 같은 형태가 `tests/test_dart_production.py`
+        # 의 httpx 에서 실제로 9건을 깨뜨렸다(2026-09-21 · #30·#312·#344).
         import sys, types
         naver = types.ModuleType("bot.naver_news_client")
         naver.fetch_news = lambda q, days_back=28, max_items=10: [
             {"date": "2026-06-07", "title": "네이버 2분기 실적 호조",
              "source": "한경", "link": "http://x", "summary": "s"}]
-        sys.modules["bot.naver_news_client"] = naver
+        monkeypatch.setitem(sys.modules, "bot.naver_news_client", naver)
         kab = types.ModuleType("bot.kabutan_news")
         kab.fetch_news = lambda c, days_back=28, max_items=10: [
             {"date": "2026-06-07", "title": "トヨタ決算",
              "source": "Kabutan", "link": "http://y", "summary": "s"}]
-        sys.modules["bot.kabutan_news"] = kab
+        monkeypatch.setitem(sys.modules, "bot.kabutan_news", kab)
 
-    def test_news_fallback_schema_and_kr_native(self):
-        self._mock_news_clients()
+    def test_news_fallback_schema_and_kr_native(self, monkeypatch):
+        self._mock_news_clients(monkeypatch)
         from bot.stock_snapshot import _collect_news_fallback
         snap = {"kr": {"corp_name": "네이버"}, "long_name": "NAVER"}
         _collect_news_fallback("035420.KS", snap)
@@ -4674,8 +4679,8 @@ class TestDetailNewsResearchFallback:
         assert n["publisher"] == "한경", "source→publisher 매핑 깨짐"
         assert n.get("kr_native") is True, "KR 은 kr_native 태그 필수"
 
-    def test_news_fallback_jp_not_kr_native(self):
-        self._mock_news_clients()
+    def test_news_fallback_jp_not_kr_native(self, monkeypatch):
+        self._mock_news_clients(monkeypatch)
         from bot.stock_snapshot import _collect_news_fallback
         snap = {}
         _collect_news_fallback("7203.T", snap)
@@ -19768,7 +19773,11 @@ class TestHighlowSlotScan:
     def test_run_slot_off_session_gates(self, monkeypatch):
         # 장 밖(전 시장 닫힘) → 전부 게이트 fetch(EOD 1회 후 freeze, force 안 함).
         import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        _pt.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이 샌드박스엔
+        # **설치돼 있어 실제로 돈다**(2026-09-21 실측). 옛 주석은 "VM 에서만"
+        # 이라 적어, sys.modules 오염으로 이 줄이 AttributeError 를 내던
+        # 것을 몇 주 동안 '샌드박스라 skip' 으로 오독하게 만들었다 —
+        # `importorskip` 은 **ImportError 만** skip 한다(#55·#25).
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         import bot.finviz_client as fc
         import bot.highlow_scan as hs
@@ -19801,7 +19810,11 @@ class TestHighlowSlotScan:
     def test_run_slot_paused_falls_back_to_gate(self, monkeypatch):
         # YF_PAUSE 중엔 장중이어도 force 안 함(게이트 폴백 → 스테일 유지·스캔 0).
         import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        _pt.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이 샌드박스엔
+        # **설치돼 있어 실제로 돈다**(2026-09-21 실측). 옛 주석은 "VM 에서만"
+        # 이라 적어, sys.modules 오염으로 이 줄이 AttributeError 를 내던
+        # 것을 몇 주 동안 '샌드박스라 skip' 으로 오독하게 만들었다 —
+        # `importorskip` 은 **ImportError 만** skip 한다(#55·#25).
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         import bot.finviz_client as fc
         import bot.highlow_scan as hs
@@ -19878,7 +19891,11 @@ class TestLightBoardWarm:
     def test_warm_light_boards_gating(self, monkeypatch):
         # 진입점 스모크(§7d) + 게이트 — 장중 전 보드 데움, naverpause 시 네이버 skip.
         import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        _pt.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이 샌드박스엔
+        # **설치돼 있어 실제로 돈다**(2026-09-21 실측). 옛 주석은 "VM 에서만"
+        # 이라 적어, sys.modules 오염으로 이 줄이 AttributeError 를 내던
+        # 것을 몇 주 동안 '샌드박스라 skip' 으로 오독하게 만들었다 —
+        # `importorskip` 은 **ImportError 만** skip 한다(#55·#25).
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         from datetime import datetime, timezone
         import bot.finviz_client as fc
@@ -33697,14 +33714,18 @@ class TestPerBandSummary20260822:
             orig = pb.__dict__.get("_stub")
             import sys
             import types
+            import pytest as _pt
             mod = types.ModuleType("bot.world_quote")
             mod.fetch_world_quote = lambda t: {"price": price}
-            sys.modules["bot.world_quote"] = mod
-            try:
-                return pb.live_price("AAPL", ref)
-            finally:
-                sys.modules.pop("bot.world_quote", None)
-                assert orig is None
+            # ⚠️ 옛 판은 `finally` 에서 **pop** 했다 — 원래 진짜 모듈이
+            # 들어 있었으면 그걸 지워 버린다(다음 import 가 모듈 전역을
+            # 초기화한 새 객체를 만든다). monkeypatch 는 있던 것을 되돌리고
+            # 없던 것만 지운다.
+            with _pt.MonkeyPatch.context() as _mp:
+                _mp.setitem(sys.modules, "bot.world_quote", mod)
+                out = pb.live_price("AAPL", ref)
+            assert orig is None
+            return out
         assert _run(150.0, 100.0) == 150.0      # 한 달 +50% 는 정당하다
         assert _run(40.0, 100.0) == 40.0        # −60% 도 통과
         assert _run(100000.0, 100.0) is None    # 자릿수 사고
@@ -52328,7 +52349,8 @@ class TestUsageCommandSurfacesUnpriced20260908:
     # 조용하다" 이므로 **출력 문자열**로 다시 쓴다(리팩터에 강하고 뮤테이션엔
     # 더 민감하다 — 계산만 하고 안 찍는 변형도 여기서 잡힌다).
     def _report(self, monkeypatch, rows):
-        pytest.importorskip("telegram")   # 샌드박스엔 없다 — VM 에서 돈다
+        pytest.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이
+        # 샌드박스엔 **설치돼 있어 실제로 돈다**(2026-09-21 실측 · #55).
         import bot.telegram_bot as tb
         import bot.usage_tracker as ut
         monkeypatch.setattr(ut, "load_records", lambda *a, **k: rows)
@@ -53263,7 +53285,8 @@ class TestNoModelWindowIsMeasured20260909:
         assert "실제 비용은 더 큼" in notes[0], notes
 
     def test_usage_report_says_when(self, monkeypatch):
-        pytest.importorskip("telegram")        # 샌드박스엔 없다 — VM 에서 돈다
+        pytest.importorskip("telegram")        # 의존성 없는 환경용 안전망 —
+        # 이 샌드박스엔 **설치돼 있어 실제로 돈다**(2026-09-21 실측 · #55).
         import bot.telegram_bot as tb
         import bot.usage_tracker as ut
         monkeypatch.setattr(ut, "load_records",
@@ -59565,9 +59588,15 @@ class TestNoOutboundHttpInTests20260911:
             assert home not in val.parents and val != home, f"{dotted} → {val}"
         # 그리고 conftest 가 그걸 **되돌리지 않는다** — 되돌리면 늦게 끝난
         # 스레드가 운영 경로로 쓴다(위 `test_session_scope_is_measured…` 와 같은 계약).
-        src = pathlib.Path(_cf.__file__).read_text(encoding="utf-8")
-        body = src[src.index("def _redirect_disk_caches"):]
-        assert "yield" not in body, "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다"
+        # ⚠️ 옛 판은 `src[src.index("def _redirect_disk_caches"):]` 로 **파일
+        # 끝까지**를 본문이라 보고 `yield` 를 찾았다 — conftest 뒤에 무관한
+        # fixture 가 하나 붙자(2026-09-21 sys.modules 오염 가드) 멀쩡한 코드를
+        # 틀렸다고 했다. 계약은 "이 **함수**가 제너레이터가 아니다" 이지
+        # "파일 어디에도 yield 가 없다" 가 아니다(#60 창으로 재면 무너진다 ·
+        # #174 본문만 잘라서 볼 것 · #55).
+        assert not any(isinstance(nd, (_ast.Yield, _ast.YieldFrom))
+                       for nd in _ast.walk(_fn)), (
+            "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다")
 
 
 class TestNaverSpaProbe20260911:
@@ -71446,10 +71475,23 @@ class TestDartInvestmentNoticeUnparsed20260917:
         import types
         from datetime import datetime
         monkeypatch.setenv("HOME", str(tmp_path))
-        for mod in [m for m in list(sys.modules) if m.startswith("bot.dart_feed")]:
-            sys.modules.pop(mod, None)
+        # ⚠️ `monkeypatch.delitem` 으로 뺀다 — 직접 `pop` 하면 그 자리에
+        # **tmp HOME 으로 경로 상수를 구운 새 모듈 객체**가 영구히 남아, 뒤에
+        # `bot.dart_feed` 를 쓰는 테스트가 이미 지워진 tmp 를 본다(teardown 이
+        # 옛 객체를 되돌려 준다). 2026-09-21 에 루트 conftest 의 sys.modules
+        # 오염 가드가 이 자리를 잡았다(#30·#312·#344·#87a).
+        import bot as _botpkg
+        # ⚠️ 아래 import 는 `sys.modules` 만이 아니라 **`bot` 패키지의 속성**
+        # 도 새 모듈로 다시 묶는다. monkeypatch 는 `sys.modules` 만 되돌리므로
+        # `from bot import dart_feed` 를 쓰는 호출부(대시보드·감사)가 tmp
+        # 경로로 구운 모듈을 계속 본다 — **import 전에** 그 속성을 잡아 둬야
+        # teardown 이 원본으로 되돌린다(독립 리뷰 2026-09-21 실측).
+        if hasattr(_botpkg, "dart_feed"):
+            monkeypatch.setattr(_botpkg, "dart_feed", _botpkg.dart_feed)
+        for mod in [m for m in list(sys.modules)
+                    if m.startswith("bot.dart_feed")]:
+            monkeypatch.delitem(sys.modules, mod, raising=False)
         m = importlib.import_module("bot.dart_feed")
-        m = importlib.reload(m)
         monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
         monkeypatch.setattr(m, "_budget_today", lambda: 0)
         monkeypatch.setattr(m, "_budget_add", lambda n: None)
@@ -71487,9 +71529,23 @@ class TestDartInvestmentNoticeUnparsed20260917:
         import sys
         from datetime import datetime
         monkeypatch.setenv("HOME", str(tmp_path))
-        for mod in [x for x in list(sys.modules) if x.startswith("bot.dart_feed")]:
-            sys.modules.pop(mod, None)
-        m = importlib.reload(importlib.import_module("bot.dart_feed"))
+        # ⚠️ `monkeypatch.delitem` 으로 뺀다 — 직접 `pop` 하면 그 자리에
+        # **tmp HOME 으로 경로 상수를 구운 새 모듈 객체**가 영구히 남아, 뒤에
+        # `bot.dart_feed` 를 쓰는 테스트가 이미 지워진 tmp 를 본다(teardown 이
+        # 옛 객체를 되돌려 준다). 2026-09-21 에 루트 conftest 의 sys.modules
+        # 오염 가드가 이 자리를 잡았다(#30·#312·#344·#87a).
+        import bot as _botpkg
+        # ⚠️ 아래 import 는 `sys.modules` 만이 아니라 **`bot` 패키지의 속성**
+        # 도 새 모듈로 다시 묶는다. monkeypatch 는 `sys.modules` 만 되돌리므로
+        # `from bot import dart_feed` 를 쓰는 호출부(대시보드·감사)가 tmp
+        # 경로로 구운 모듈을 계속 본다 — **import 전에** 그 속성을 잡아 둬야
+        # teardown 이 원본으로 되돌린다(독립 리뷰 2026-09-21 실측).
+        if hasattr(_botpkg, "dart_feed"):
+            monkeypatch.setattr(_botpkg, "dart_feed", _botpkg.dart_feed)
+        for mod in [x for x in list(sys.modules)
+                    if x.startswith("bot.dart_feed")]:
+            monkeypatch.delitem(sys.modules, mod, raising=False)
+        m = importlib.import_module("bot.dart_feed")
         monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
         monkeypatch.setattr(m, "_budget_today", lambda: 0)
         monkeypatch.setattr(m, "_budget_add", lambda n: None)
@@ -74318,6 +74374,359 @@ class TestPublicReason20260919:
         assert head_v in html2
 
 
+class TestVolumeBannerAudience20260921:
+    """거래량 상위 ℹ️ 배너가 **운영자 상세**를 방문자 화면에 그대로 실었다.
+
+    사용자 캡처(2026-09-21 22:35): 배너 한 줄에 pykrx 함수명·예외 클래스
+    (`get_market_price_change_by_ticker 실패(IndexError)`), zod 리터럴
+    (`expected "dividend"`), 우리 내부 추론("판별 유니온의 한 갈래로 보이지만
+    그건 재지 않았습니다"), 그리고 **값이 잘려 나간 라벨**(`원문: ·`)이 그대로
+    떴다. #391 이 급등·급락에서 고친 바로 그 증상인데 이 보드엔 안 닿았다.
+
+    원인은 `public_reason` 이 경계를 **다시 추론**하기 때문이다 —
+    `compose_reason` 은 경계를 **알면서** 그 지식을 버리고(#123 계열),
+    `public_reason` 은 마커 세 개짜리 열거로 되짚는다(#24). 그래서 그 목록에
+    없는 기계 상세(zod 해설·pykrx 덤프)는 머리에 남고, 목록에 있는 마커가
+    `원문: {why}` 안에서 걸리면 라벨만 남는다.
+    """
+
+    def _reason(self):
+        """화면에 뜬 그 사유를 **제품 생산부로** 만든다(#118·#155)."""
+        from bot import naver_diag as nd
+        from bot.kr_volume_client import learn_fail_reason
+        raw = nd.http_reason(400, body=(
+            b'{"message":"sortType: Invalid input: expected \\"dividend\\""}'))
+        notes = [
+            "네이버 목록을 못 받아 KRX 벌크(2026-09-21 종가)로 대체했습니다",
+            "2026-09-21 종가입니다 — 09-21 19:56에 받았습니다 · "
+            "갱신은 백그라운드가 받습니다 · 지난 시도가 10분 전 실패했습니다"
+            "(1분 걸림): " + self._bulk_fail(),
+        ]
+        return nd.compose_reason(notes, learn_fail_reason(raw))
+
+    @staticmethod
+    def _bulk_fail():
+        """KRX 벌크 실패 사유 — **제품 코드가 만드는 그 문자열**(#19).
+
+        손으로 적은 폴백을 두지 않는다 — 그러면 생산부가 사라져도 이 픽스처가
+        대신 그럴듯한 문자열을 만들어 **무엇을 재는지 모르게** 된다(#19·#291).
+        """
+        import bot.kr_bulk_rank as kb
+        tried = [f"2026091{i}: get_market_price_change_by_ticker 실패"
+                 f"(IndexError) · get_market_ohlcv_by_ticker 실패(KeyError)"
+                 for i in (7, 8, 9)]
+        return kb._bulk_fail_reason(6, tried)
+
+    def test_the_banner_carries_no_operator_detail(self):
+        """방문자 화면엔 함수명·예외·zod 원문·우리 내부 추론이 없다."""
+        from bot.naver_diag import public_reason
+        screen = public_reason(self._reason())
+        for bad in ("get_market_price_change_by_ticker", "IndexError",
+                    "KeyError", 'expected "dividend"', "판별 유니온",
+                    "재지 않았습니다", "허용값 목록은"):
+            assert bad not in screen, f"{bad!r} 가 화면에 남았다:\n{screen}"
+
+    def test_no_dangling_label_when_the_value_is_cut(self):
+        """`원문:` 라벨만 남기고 값을 자르면 화면이 스스로 거짓말한다(#43·#54)."""
+        from bot.naver_diag import public_reason
+        screen = public_reason(self._reason())
+        assert "원문:" not in screen, screen
+
+    def test_the_visitor_facts_survive(self):
+        """줄이는 것이 **지우는 것**이 되면 안 된다 — 갈래는 남는다(#43·#82)."""
+        from bot.naver_diag import public_reason
+        screen = public_reason(self._reason())
+        for keep in ("네이버 목록을 못 받아 KRX 벌크(2026-09-21 종가)로 대체했습니다",
+                     "09-21 19:56에 받았습니다", "갱신은 백그라운드가 받습니다",
+                     "지난 시도가 10분 전 실패했습니다",
+                     "KRX 벌크가 6거래일에서 행을 못 냈습니다",
+                     "원천이 우리 요청을 거절했습니다"):
+            assert keep in screen, f"{keep!r} 가 사라졌다:\n{screen}"
+
+    def test_the_full_text_is_still_reachable_for_operators(self):
+        """값은 그대로 두고 **화면만** 줄인다 — 감사·로그·`--why` 는 전문(#45)."""
+        full = self._reason()
+        assert "get_market_price_change_by_ticker" in full
+        assert 'expected "dividend"' in full
+
+    def test_the_board_renders_without_the_operator_detail(self, monkeypatch):
+        """배선 — 순수 함수만 재면 **렌더가 안 부르는** 변형을 못 잡는다(#20).
+
+        그리고 경계 표식 자체가 화면에 새면 그게 새 결함이다 — 방문자는
+        `⟪상세⟫` 가 무슨 뜻인지 모른다(#43 침묵이 최악이지만 뜻 모를 기호도
+        정보가 아니다).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np_
+        rows = [{"ticker": "005930.KS", "name": "삼성전자", "price": 74000.0,
+                 "pct": 1.37, "vol": 12_000_000.0, "value": 8880.0,
+                 "mcap": 4_400_000.0, "high": None, "low": None, "ind": None}]
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda *a, **k: {
+            "rows": rows, "ts": "09-21 22:35", "limit": 50,
+            "reason": self._reason(), "sort": "거래량(KRX 벌크)",
+            "has_hl": False, "hl_keys": [], "partial": False,
+            "scanned": 1, "excluded": 0, "stale": True, "stale_min": 160,
+            "fallback": True, "asof": "2026-09-21",
+            "source": "KRX 벌크 종가 · 2026-09-21 종가 기준"})
+        html = np_.render_kr_volume_page()
+        from bot.naver_diag import _DETAIL_MARK
+        for bad in ("get_market_price_change_by_ticker", "IndexError",
+                    'expected "dividend"', "원문:", _DETAIL_MARK.strip()):
+            assert bad not in html, f"{bad!r} 가 HTML 에 남았다"
+        assert "KRX 벌크가 6거래일에서 행을 못 냈습니다" in html
+        assert "원천이 우리 요청을 거절했습니다" in html
+
+    def test_the_boundary_is_drawn_without_a_bulk_layer_too(self):
+        """벌크 표식이 **없는** 사유에서도 경계가 그어진다.
+
+        ⚠️ 이게 이 델타의 핵심 축인데 다른 단언은 전부 눈이 멀어 있었다(뮤테이션
+        M1 생존): 배너 픽스처엔 `_bulk_fail_reason` 의 표식이 **더 앞에** 있어
+        조립부가 표식을 안 찍어도 거기서 잘린다. 그리고 `http_reason` 모양은
+        옛 열거(`_MACHINE_MARKS`)가 대신 잡는다 — 열거가 **눈머는 자리**는
+        그 어구가 `원문: {…}` **안**에 있을 때뿐이고, 그게 바로 화면에
+        `원문: ·` 를 남긴 그 결함이다(#75 옆 픽스처가 대신 만족시킨다).
+        """
+        from bot import naver_diag as nd
+        from bot.kr_volume_client import learn_fail_reason
+        raw = nd.http_reason(400, body=(
+            b'{"message":"sortType: Invalid input: expected \\"dividend\\""}'))
+        why = learn_fail_reason(raw)
+        assert "원문:" in why and nd.carries_dump(why), why
+        screen = nd.public_reason(nd.compose_reason(["사람 문장입니다"], why))
+        assert screen.startswith("사람 문장입니다"), screen
+        assert "원문:" not in screen and "판별 유니온" not in screen, screen
+        assert "원천이 우리 요청을 거절했습니다" in screen, screen
+
+    def test_a_marker_inside_a_human_note_keeps_later_human_text(self):
+        """사람 문장 **안**에 경계가 박혀 있어도 뒤의 사람 문장은 화면에 남는다.
+
+        벌크 실패 사유(`_bulk_fail_reason`)는 표식을 품은 채 `attempt_note` 를
+        타고 **사람 슬롯**으로 들어온다. 첫 판은 기계 상세를 그 뒤에 그냥 이어
+        붙여서, '가장 이른 표식' 뒤로 밀린 사람 문장이 통째로 먹혔다 — 급등·
+        급락의 `엔드포인트 계약 변경 의심(우리가 고칠 것)` 이 화면에서 사라졌다.
+
+        ⚠️ 전체 게이트에서만 빨간불이었다: 앞선 테스트가 `KRX_ID` 를 넣어 놓아
+        pykrx 가 소켓 가드까지 가서 `ConnectionError` 를 내고, 그래야 표식을
+        품은 memo 가 만들어진다(#128·#311 단독 green · 전체 red). 여기서는 그
+        상태를 **값으로** 재현해 세션 순서에 기대지 않는다(#20·#91c).
+        """
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+        memo = kb._bulk_fail_reason(5, [
+            "20260921: get_market_price_change_by_ticker 실패(ConnectionError)"])
+        assert nd._DETAIL_MARK in memo, memo
+        shape = nd.shape_reason("domestic/stock/list", {"result": {"items": []}})
+        r = nd.compose_reason([f"KRX 폴백도 비었습니다 — {memo}"], shape)
+        assert r.count(nd._DETAIL_MARK) == 1, r      # 경계는 언제나 하나
+        screen = nd.public_reason(r)
+        assert "계약 변경" in screen, screen
+        assert "ConnectionError" not in screen, screen
+        assert "ConnectionError" in r, r              # 운영자 채널엔 남는다
+
+    def test_a_headless_detail_is_still_cut_from_the_screen(self):
+        """머리가 없는 조각도 **경계를 긋는다**(2026-09-21 전제 변경, #222).
+
+        옛 계약은 "머리가 없으면 표식을 안 찍는다" 였다. 그러면 머리를
+        **호출부가 대는** 조각(`_kis_names` 의 why)이 화면에 그대로 샜다 —
+        경계는 조각이 혼자 설 때가 아니라 **합쳐질 때** 뜻이 생긴다.
+        남는 보장(화면을 비우지 않는다·기호를 흘리지 않는다)은 그대로 잰다.
+        """
+        from bot import naver_diag as nd
+        raw = nd.http_reason(429, 500)
+        assert nd._DETAIL_MARK in nd.mark_detail("", raw)
+        assert nd._DETAIL_MARK in nd.compose_reason([], raw)
+        assert nd._DETAIL_MARK in nd.compose_reason(["머리"], raw)
+        # 혼자 서도 화면은 갈래를 말하고(#43) 기호·원문은 안 샌다.
+        alone = nd.public_reason(nd.compose_reason([], raw))
+        assert alone and nd._DETAIL_MARK not in alone, alone
+        assert "HTTP 429" not in alone, alone
+        # 갈래를 모르는 상세(우리 수집기 메모)도 침묵하지 않는다.
+        opaque = nd.public_reason(nd.mark_detail("", "KIS 마스터가 0종목(ConnectionError)"))
+        assert opaque and "ConnectionError" not in opaque, opaque
+        assert nd._DETAIL_MARK not in opaque, opaque
+
+    def test_the_collector_memo_never_reaches_the_screen(self):
+        """행을 **찾은** 경로의 메모도 운영자 채널이다(독립 리뷰 2026-09-21 F1).
+
+        `_bulk_fail_reason` 은 '전 거래일 실패' 경로만 덮었다. 실제로 더 자주
+        도는 것은 **행을 찾았는데 경고가 남은** 경로이고, 그 메모(`_rows_on`
+        의 pykrx 함수명·예외, `_kis_names` 의 KIS 덤프)가 `stale_note` 를 타고
+        배너에 그대로 떴다(실측 재현). 방문자 문장은 남고 덤프만 잘린다.
+        """
+        import types, time
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+
+        import pytest
+        # 제품 생산부를 태운다 — 속성이 없는 stock 이면 `_frame` 이 운영자
+        # 메모를 만든다(#20 헬퍼만 재면 배선을 못 잡는다).
+        rows, note = kb._rows_on(types.SimpleNamespace(), "20260921", {})
+        assert not rows
+        assert nd._MARK_CORE in note, f"생산부가 경계를 안 그었다: {note!r}"
+
+        # `_kis_names` 도 **실제로** 태운다 — 손으로 적으면 그 경계를 지우는
+        # 변형이 통과한다(M6 실측 생존, #19·#20).
+        import bot.finviz_client as fv
+        import bot.bollinger_board as bb
+
+        def _boom(book):
+            raise ConnectionError("zip 을 못 받았습니다")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(fv, "_cached", lambda *a, **k: None)
+            mp.setattr(bb, "_kis_master_rows", _boom)
+            nwhy = kb._kis_names(write=False)[1]
+        assert nd._MARK_CORE in nwhy, f"KIS why 가 경계를 안 그었다: {nwhy!r}"
+
+        # ⚠️ 같은 함수에 **누출 분기가 둘**이다(0종목 · import 실패). 하나만
+        # 덮으면 다른 쪽을 되돌리는 변형이 통과한다(M6 실측 생존, #267·#291).
+        import sys
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(fv, "_cached", lambda *a, **k: None)
+            mp.setitem(sys.modules, "bot.bollinger_board", types.SimpleNamespace())
+            nwhy2 = kb._kis_names(write=False)[1]
+        assert "KIS 마스터 실패" in nwhy2, nwhy2
+        assert nd._MARK_CORE in nwhy2, f"import 실패 분기가 경계를 안 그었다: {nwhy2!r}"
+        assert "ImportError" not in nd.public_reason(
+            nd.compose_reason(["벌크로 대체했습니다", nwhy2], "")), nwhy2
+
+        # 메모 합치기도 **수집기 본문**을 태운다(M5 실측 생존).
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_pykrx", lambda: (types.SimpleNamespace(), ""))
+            mp.setattr(kb, "_kis_names", lambda **k: ({}, nwhy))
+            mp.setattr(kb, "_rows_on", lambda *a, **k: ([{"t": "005930"}], note))
+            mp.setattr(kb, "today_is_final", lambda *a, **k: True)
+            _rows, _asof, memo = kb._kr_bulk_rows_uncached(3, write=False)
+        assert memo.count(nd._MARK_CORE) == 1, f"경계가 하나가 아니다: {memo!r}"
+        now = time.time()
+        sn = kb.stale_note("2026-09-21", 3600.0, None, now,
+                           refreshing="live", memo=memo)
+        screen = nd.public_reason(nd.compose_reason(["벌크로 대체했습니다", sn], ""))
+        for bad in ("get_market_price_change_by_ticker", "없음(설치본)",
+                    "ConnectionError", "KIS 마스터", nd._DETAIL_MARK):
+            assert bad not in screen, f"{bad!r} 가 화면에 남았다:\n{screen}"
+        assert "가격 프레임을 하나도 못 받았습니다" in screen, screen
+        assert "2026-09-21 종가입니다" in screen, screen
+        # 운영자 채널엔 그대로 남는다(#45 청중이 둘 — 버리는 게 아니다).
+        assert "get_market_price_change_by_ticker" in memo
+
+    def test_a_crash_reason_is_masked_and_cut(self):
+        """수집 중 예외 사유는 **마스킹**하고 자른다(§Secrets · 리뷰 F2).
+
+        실측: `_run_attempt` 가 남긴 `예외(ConnectionError: HTTPSConnectionPool
+        (host=…) … url: /getJsonData.cmd?apikey=…)` 가 `attempt_note` 를 타고
+        **공개 대시보드 배너**에 URL 속 토큰까지 그대로 실렸다.
+        """
+        import time
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+
+        seen: list = []
+        # ⚠️ 메시지가 길면 `str(exc)[:120]` 절단이 토큰을 지워 **마스킹을 재지
+        # 못한다**(M2 실측 생존 — 재는 대상이 맞나, #91b). 토큰을 120자 안에.
+        boom = ConnectionError(
+            "KRX 거부: /getJsonData.cmd?apikey=SECRETTOKEN1234567 (재시도 초과)")
+        assert len(str(boom)) < 120 and "SECRETTOKEN1234567" in str(boom)[:120]
+
+        def _raise(*a, **k):
+            raise boom
+
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_kr_bulk_rows_uncached", _raise)
+            mp.setattr(kb, "_record", lambda d: seen.append(d))
+            mp.setattr(kb, "_fails_after", lambda ok: 1)
+            with pytest.raises(ConnectionError):
+                kb._run_attempt(3, write=True)
+        rec = [d for d in seen if d.get("reason")]
+        assert rec, "예외 사유가 기록되지 않았다"
+        reason = rec[-1]["reason"]
+        assert "SECRETTOKEN1234567" not in reason, "운영자 원장에도 비밀값 금지"
+        screen = nd.public_reason(nd.compose_reason(
+            [f"지난 시도가 4분 전 실패했습니다(10초 걸림): {reason}"], ""))
+        for bad in ("HTTPSConnectionPool", "ConnectionError",
+                    "SECRETTOKEN1234567", "getJsonData", nd._DETAIL_MARK):
+            assert bad not in screen, f"{bad!r} 가 화면에 남았다:\n{screen}"
+        assert "수집 중 예외가 났습니다" in screen, screen
+        assert "지난 시도가 4분 전 실패했습니다" in screen, screen
+
+    def test_a_note_after_a_marked_memo_is_not_swallowed(self):
+        """`stale_note` 도 **경계를 하나로** 모은다 — `" · ".join` 이면 표식 뒤의
+        `지난 시도가 …` 가 통째로 사라진다(#398 의 조립부 규칙이 여기도)."""
+        import time
+        from bot import naver_diag as nd
+        import bot.kr_bulk_rank as kb
+        now = time.time()
+        memo = nd.mark_detail("종목명 미확보 12종목(코드로 표기)", "덤프A")
+        rec = {"started": now - 300, "finished": now - 290, "ok": False,
+               "secs": 10.0, "rows": 0, "reason": "수집 중 예외가 났습니다"}
+        out = kb.stale_note("2026-09-21", 3600.0, rec, now,
+                            refreshing="live", memo=memo)
+        assert out.count(nd._DETAIL_MARK) == 1, out
+        screen = nd.public_reason(nd.compose_reason([out], ""))
+        assert "종목명 미확보 12종목(코드로 표기)" in screen, screen
+        assert "지난 시도가" in screen, screen
+        assert "덤프A" not in screen, screen
+
+    def test_the_mark_is_found_even_when_the_spaces_are_gone(self):
+        """표식을 **공백까지 포함해** 찾으면 `.strip()` 한 번에 경계를 놓친다.
+
+        실측: `public_reason` 이 맨 앞에서 `.strip()` 을 해 머리 없는 조각
+        (`_DETAIL_MARK + dump`)의 앞 공백이 사라지자 경계가 통째로 안 잡혀
+        덤프가 그대로 화면에 샜다. 공백 없는 **핵**으로 찾는다(#65).
+        """
+        from bot import naver_diag as nd
+        stripped = (nd._DETAIL_MARK + "덤프X").strip()
+        assert nd._DETAIL_MARK not in stripped, "픽스처가 상태를 재현 못 한다"
+        assert nd.split_detail(stripped) == ("", "덤프X"), nd.split_detail(stripped)
+        assert nd.machine_detail_at(stripped) == 0, nd.machine_detail_at(stripped)
+        assert nd.carries_dump(stripped)
+        # 결합기도 같은 핵을 본다 — 앞 조각이 공백을 잃어도 경계는 하나다.
+        joined = nd.join_notes(["사람 문장", stripped, "뒤 사람 문장"])
+        assert joined.count(nd._MARK_CORE) == 1, joined
+        screen = nd.public_reason(joined)
+        assert "덤프X" not in screen and "뒤 사람 문장" in screen, screen
+
+    def test_a_dump_free_sentence_in_the_machine_slot_survives(self):
+        """줄이는 것이 **지우는 것**이 되면 안 된다 — `det` 슬롯엔 `http_reason`
+        의 덤프만 오는 게 아니다(#395·#43).
+
+        `shape_reason`·`parse_reason` 은 덤프 없이 "누가 고칠 것"만 말하는 짧은
+        사람 문장이라 화면에 남아야 한다. 첫 판이 표식을 **무조건** 찍어 그
+        갈래가 통째로 사라졌고(급등·급락이 다시 "(잠시 후 다시 시도)" 만 적음)
+        `make test` 전체 실행이 그걸 잡았다 — `-k` 로 좁힌 실행은 못 봤다
+        (#363·#366 선택 실행은 그 선택 밖을 못 본다).
+        """
+        from bot import naver_diag as nd
+        sh = nd.shape_reason("domestic/stock/list", {"result": {"items": []}})
+        assert not nd.carries_dump(sh), sh
+        kept = nd.public_reason(nd.compose_reason(["KRX 폴백도 비었습니다"], sh))
+        assert "계약 변경" in kept, kept
+        assert nd.machine_detail_at(nd.compose_reason(["머리"], sh)) < 0
+        # 반대 증거 — 덤프를 품으면 경계가 그어진다(#25 '있다'만 묻지 말 것)
+        raw = nd.http_reason(400, 120, body='{"message":"sortType: bad"}')
+        assert nd.carries_dump(raw), raw
+        cut = nd.public_reason(nd.compose_reason(["머리"], raw))
+        assert "sortType" not in cut and cut.startswith("머리"), cut
+
+    def test_the_operator_dump_says_how_many_it_cut(self):
+        """표본을 3건으로 자르면 **자른 사실**을 말한다 — 머리는 6거래일인데
+        몸통이 3건이면 나머지를 우리가 안 본 것으로 읽는다(#45)."""
+        import bot.kr_bulk_rank as kb
+        tried = [f"2026090{i}: 행 없음" for i in range(1, 7)]
+        why = kb._bulk_fail_reason(6, tried)
+        assert "외 3건" in why, why
+        # 3건 이하면 자를 게 없으니 아무 말도 안 한다(#25 늘 뜨는 문구 금지)
+        assert "외 " not in kb._bulk_fail_reason(2, tried[:2])
+        # 표본이 아예 없으면 덤프도 경계도 없다 — 사람 문장 하나뿐
+        bare = kb._bulk_fail_reason(0, [])
+        from bot.naver_diag import machine_detail_at
+        assert machine_detail_at(bare) < 0 and bare.endswith("못 냈습니다"), bare
+
+
 class TestKrBoardReviewFollowups20260919B:
     """배포전 독립 리뷰(2026-09-19) — Blocking 1 · High 5 · Medium 8 · Low 6.
 
@@ -76615,3 +77024,221 @@ class TestFcfCapexBasisGap20260921:
                     if "❌ 차이" in l and kind in l]
             assert rows, (kind, body)
             assert all("↳ DART OCF" in l for l in rows), (kind, rows)
+
+
+class TestSysModulesLeakGuard20260921:
+    """`sys.modules` 를 되돌리지 않고 끝난 테스트를 **그 자리에서** 잡는다.
+
+    2026-09-21 실측: `tests/` 전체 실행이 9건 빨간불인데 그 9건만 골라 돌리면
+    green 이라, 배포 때마다 base 와 대조해 "같으니 무관" 으로 넘기며 몇 주를
+    보냈다. 원인은 하나 — `tests/test_dart_production.py` 가
+    `sys.modules["httpx"]` 를 `SimpleNamespace` 로 직접 대입하고 복원하지
+    않은 것이다. 알파벳순으로 앞이라 뒤에서 `telegram`·`langgraph` 를 처음
+    import 하는 테스트가 전부 `AttributeError` 로 죽었고, `importorskip` 은
+    ImportError 만 skip 하므로 그게 **실패**로 남았다.
+
+    규율("복원해라")로는 이미 네 번 졌다(#30·#312·#344·#384) — 구조로
+    옮겼다(#119). 여기서는 그 가드가 **정말 발화하는지**를 값으로 잰다
+    (#291 발화 경로 없는 가드는 가드가 아니다 · #20 배선까지).
+    """
+
+    @staticmethod
+    def _run(tmp_path, body: str, *before: str):
+        """루트 conftest 를 `-p conftest` 로 주입해 임시 테스트를 돌린다.
+
+        ⚠️ 임시 파일을 레포 밖에 두는 이유: `tests/` 안에 두면 같은 순간
+        도는 다른 수집에 걸리고, 지우기 전에 죽으면 추적 파일로 남는다
+        (#383·#328). 밖에 두면 루트 conftest 가 자동으로는 안 걸리므로
+        **플러그인으로 명시 주입**한다.
+        """
+        import subprocess
+        import sys as _s
+        # `before` 는 **이 임시 테스트 앞에 돌릴 제품 노드** — 앞 테스트가
+        # 남긴 상태를 뒤에서 재는 형태의 계약에 쓴다.
+        f = tmp_path / "test_probe.py"
+        f.write_text(body, encoding="utf-8")
+        r = subprocess.run(
+            [_s.executable, "-m", "pytest", "-q", "-p", "conftest",
+             "-p", "no:cacheprovider", *before, str(f)],
+            cwd=str(pathlib.Path(__file__).resolve().parent.parent),
+            capture_output=True, text=True, timeout=300)
+        return r.stdout + r.stderr
+
+    def test_a_direct_assignment_is_caught_and_names_the_culprit(self, tmp_path):
+        """옛 `_stub` 과 같은 형태 — 직접 대입하고 복원하지 않는다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_leak():\n"
+            "    sys.modules['httpx'] = types.SimpleNamespace(get=lambda *a: None)\n"))
+        assert "1 error" in out, out[-2000:]
+        # ⚠️ **범인을 지목해야** 한다 — 세션 끝에 한 번만 보면 '오염이 있다'
+        # 까지만 알고 어느 테스트인지 모른다(#114).
+        assert "test_leak" in out, out[-2000:]
+        assert "httpx" in out and "모듈이 아니다" in out, out[-2000:]
+
+    def test_replacing_a_real_module_is_caught(self, tmp_path):
+        """진짜 모듈을 가짜 `ModuleType` 으로 바꾸는 형태(뉴스 클라이언트·
+        `bot.dart_feed` pop+import 가 그것이다) — 타입만 보면 못 잡는다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_swap():\n"
+            "    import json\n"
+            "    assert json is not None\n"
+            "    sys.modules['json'] = types.ModuleType('json')\n"))
+        assert "1 error" in out and "test_swap" in out, out[-2000:]
+        assert "다른 객체로 교체됨" in out, out[-2000:]
+
+    def test_a_fake_module_object_is_caught(self, tmp_path):
+        """가짜 **ModuleType** 으로 대체하는 형태 — 타입만 보면 못 잡는다.
+
+        세션 시작에 없던 이름이면 '정상 import' 와 구별해야 하는데, 손으로
+        만든 모듈은 `__spec__` 이 None 이고 진짜 import 는 내장까지
+        `ModuleSpec` 을 갖는다. 이 축이 없으면 `_mock_news_clients` 가
+        하던 모양이 통째로 샌다(독립 리뷰 2026-09-21 실측: 첫 범인이
+        통과하고 두 번째 테스트가 error 라 범인도 오지목됐다)."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_fake_mod():\n"
+            "    m = types.ModuleType('bot.naver_news_client')\n"
+            "    m.fetch_news = lambda *a, **k: []\n"
+            "    sys.modules['bot.naver_news_client'] = m\n"))
+        assert "1 error" in out and "test_fake_mod" in out, out[-2000:]
+        assert "손으로 만든 빈 모듈" in out, out[-2000:]
+
+    def test_a_c_extension_shim_is_not_a_false_positive(self, tmp_path):
+        """디스크에 없는 이름의 빈 모듈은 **정당**하다 — C 확장이 그렇게
+        등록한다(실측 오탐: `_openssl`·`_cython_3_2_4`·
+        `xml.parsers.expat.model`). 진짜가 있는데 덮은 경우만 오염이다.
+
+        이 반대 증거가 없으면 가드가 매 실행 3건을 떠들어 진짜를
+        가린다(#25·#260)."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_shim():\n"
+            "    sys.modules['_zz_no_such_c_ext'] = types.ModuleType('x')\n"
+            "    sys.modules['_zz_no_such_c_ext.lib'] = types.ModuleType('y')\n"))
+        assert "1 passed" in out and "error" not in out, out[-2000:]
+
+    def test_a_missing_module_is_caught(self, tmp_path):
+        """복원 없는 `pop` — 순회만으로는 **사라진 것**이 안 보인다.
+
+        `finally: pop` 으로 정리한다고 써 놓고 원래 있던 진짜 모듈까지
+        지우는 형태다(독립 리뷰 실측: 옛 판에서 `2 passed`)."""
+        # ⚠️ 첫 픽스처는 **같은 테스트 안에서** import 했다 지웠다 — 그건
+        # 기준선에 들어간 적이 없어 순 효과가 0 이고, 가드가 안 잡는 것이
+        # 옳다. 진짜 케이스는 **이미 기준선에 있는** 모듈을 지우는 것이라
+        # 앞 테스트가 그걸 편입시켜야 발화한다(#91c).
+        out = self._run(tmp_path, (
+            "import sys\n\n\n"
+            "def test_warms_it():\n"
+            "    import bot.fcf\n"
+            "    assert bot.fcf is not None\n\n\n"
+            "def test_pop():\n"
+            "    sys.modules.pop('bot.fcf', None)\n"))
+        assert "1 error" in out and "test_pop" in out, out[-2000:]
+        assert "사라졌다" in out, out[-2000:]
+
+    def test_the_first_offender_is_named_not_the_next_test(self, tmp_path):
+        """범인 지목이 **한 칸 밀리지 않는다**.
+
+        옛 판은 가짜 모듈을 기준선에 편입해 버려, 다음 테스트가 그 가짜를
+        '교체' 로 볼 때에야 error 가 났다 — 고치라고 지목된 것이 무고한
+        뒤 테스트였다(#114 마지막으로 본 것이 남는다)."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_guilty():\n"
+            "    sys.modules['bot.kabutan_news'] = types.ModuleType('x')\n\n\n"
+            "def test_innocent():\n"
+            "    assert True\n"))
+        assert "test_guilty" in out, out[-2000:]
+        assert "test_innocent" not in out, out[-2000:]
+
+    def test_monkeypatch_is_not_a_false_positive(self, tmp_path):
+        """정상 사용은 통과해야 한다 — 반대 증거가 없으면 가드가 시끄러워져
+        진짜를 가린다(#25·#260).
+
+        autouse fixture 는 요청형보다 **먼저** setup 되므로 teardown 은
+        나중이다 — `monkeypatch` 가 이미 되돌린 뒤에 본다. 그 순서가 이
+        테스트의 계약이다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_clean(monkeypatch):\n"
+            "    monkeypatch.setitem(sys.modules, 'httpx',\n"
+            "                        types.SimpleNamespace(g=1))\n"
+            "    assert sys.modules['httpx'].g == 1\n"))
+        assert "1 passed" in out and "error" not in out, out[-2000:]
+
+    def test_a_leak_does_not_cascade_into_the_next_test(self, tmp_path):
+        """오염 뒤 테스트가 **연쇄로 깨지지 않는다**.
+
+        처음엔 `pytest_runtest_teardown` 훅에서 raise 했는데, 그러면 pytest 의
+        SetupState 가 정리를 못 마쳐 뒤 테스트가 `previous item was not torn
+        down properly` 로 줄줄이 깨졌다(실측). autouse fixture 로 옮긴 이유가
+        그것이고, 이 테스트가 그 선택을 고정한다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_leak():\n"
+            "    sys.modules['httpx'] = types.SimpleNamespace(g=1)\n\n\n"
+            "def test_after():\n"
+            "    assert 1 + 1 == 2\n"))
+        # ⚠️ 오염 테스트도 **본문은 passed** 로 센다(실패는 teardown 이다) —
+        # 그래서 `2 passed, 1 error` 다. 뒤 테스트가 실제로 돌았다는 증거가
+        # 바로 그 둘째 passed 다.
+        # ⚠️ 주 계약은 **결과**다 — 연쇄가 나면 뒤 테스트가 안 돌아
+        # `1 passed, 2 errors` 가 된다. 둘째 passed 가 곧 "연쇄 없음" 이다.
+        assert "2 passed" in out and "1 error" in out, out[-2000:]
+        # ⚠️ 증상 이름도 보되 **`AssertionError:` 접두까지** 집는다. 첫 판은
+        # 맨 문구로 재서 `conftest` fixture 의 **독스트링**(왜 훅이 아니라
+        # fixture 인지 설명하며 그 문구를 인용한다)이 실패 출력에 실리자
+        # 스스로 걸렸다 — 규칙을 설명하는 글이 그 규칙의 검사를 만족시키는
+        # 형태다(#59b·#250·#268).
+        assert ("AssertionError: previous item was not torn down properly"
+                not in out), out[-2000:]
+
+    def test_the_dart_feed_test_leaves_no_stale_package_attribute(self, tmp_path):
+        """`sys.modules` 복원만으로는 부족하다 — **패키지 속성**도 되돌아와야.
+
+        `monkeypatch.delitem` + `import_module` 은 `sys.modules` 를 되돌리지만
+        그 import 가 다시 묶은 `bot.dart_feed` **속성**은 그대로 둔다. 그러면
+        `from bot import dart_feed` 를 쓰는 호출부(`bot/dashboard.py` ·
+        `bot/scripts/dart_mcap_audit.py`)가 tmp HOME 으로 구운 모듈을 계속
+        본다(독립 리뷰 2026-09-21 실측).
+
+        ⚠️ 프로브가 그 패턴을 **복제하면** 제품의 그 줄을 지워도 통과한다
+        (#19) — 제품 노드를 실제로 앞에 태우고 **그 뒤 상태**를 잰다."""
+        # ⚠️ 마커 파일·대소문자 무시 검사를 한 번 얹었다가 **뺐다** — 실측상
+        # 발화 경로가 없다(#291·#373 가드는 늘릴수록 강해지지 않는다):
+        # 제품 노드가 사라지면 pytest 가 `no tests ran` 을 내 아래
+        # `"passed" in out` 이 잡고, 프로브 수집 실패는 `-q` 요약에
+        # **소문자** `1 error` 로 나오며(대문자 `ERROR: not found` 는 앞
+        # 경우뿐이다), 임시 파일이 수집에서 빠지면 같은 하네스를 쓰는 이
+        # 클래스의 다른 9건이 먼저 깨진다.
+        out = self._run(
+            tmp_path,
+            "import sys\n\n\n"
+            "def test_after():\n"
+            "    import bot\n"
+            "    assert bot.dart_feed is sys.modules['bot.dart_feed'], (\n"
+            "        '패키지 속성이 stale — from bot import dart_feed 가 옛 것을 본다')\n",
+            "tests/test_regression.py::TestDartInvestmentNoticeUnparsed20260917")
+        assert " failed" not in out and " error" not in out, out[-2500:]
+        assert "passed" in out, out[-2500:]
+
+    def test_the_guard_lives_in_the_root_conftest(self):
+        """`tests/conftest.py` 에 두면 `pytest bot/tests` 단독 실행에서 통째로
+        안 걸린다 — 바깥 원천 차단이 루트에 있는 것과 **같은 이유**다(#24).
+        그리고 기준선은 세션 시작에 떠야 `bot/tests/conftest.py` 가 모듈
+        레벨에서 꽂는 MagicMock 이 자동 면제된다(면제 목록을 손으로 적으면
+        반드시 새 항목을 놓친다)."""
+        import ast as _ast
+        root = pathlib.Path(__file__).resolve().parent.parent / "conftest.py"
+        tree = _ast.parse(root.read_text(encoding="utf-8"))
+        names = {getattr(n, "name", "") for n in tree.body}
+        assert "pytest_sessionstart" in names, "기준선 스냅샷 훅이 없다"
+        assert "_module_pollution" in names, "판정 함수가 없다"
+        fx = next(n for n in tree.body
+                  if getattr(n, "name", "") == "_no_sys_modules_leak")
+        assert any(isinstance(d, _ast.Call)
+                   and any(k.arg == "autouse" and k.value.value is True
+                           for k in d.keywords)
+                   for d in fx.decorator_list), "autouse 가 아니다"
