@@ -7413,3 +7413,137 @@ OCF 가 같고 동시에 yfinance CAPEX 의 구성이 유형+무형이어야 했
 스냅샷 monkeypatch 절반이 `raising=False` 에 가려진 no-op 이었다.
 
 뮤테이션을 둘째 라운드로 파일 셋에 걸쳐 다시 돌려 16종이 전부 잡혔다.
+
+### 실수 #397
+
+**전체 실행에서만 빨간불인 9건을 몇 주 동안 '선재 실패'로 넘겼다 —
+되돌리지 않은 `sys.modules` 하나였다**(2026-09-21): 한 테스트가
+`sys.modules["httpx"]` 를 직접 대입하고 복원하지 않아 뒤에서
+`telegram`·`langgraph` 를 처음 import 하는 테스트가 `AttributeError` 로
+죽었다 — `importorskip` 은 **ImportError 만** skip 하므로 그건 실패였고,
+거짓 주석("telegram 이 없다")이 오진을 굳혔다(#55·#25).
+**대조군이 같은 조건일 때만** base 대조가 참이다(#91b·#392).
+규율로 네 번 졌으므로(#30·#312·#344·#384) 구조로 옮겼다(#119) — 루트
+conftest 의 autouse fixture 가 세션 스냅샷 대비 ①모듈 아님 ②객체 교체
+③가짜 빈 모듈 ④pop 후 미복원을 잡는다(이름 열거 없음 #24 = 의도된 mock
+자동 면제).
+⚠️ **`sys.modules` 복원만으론 부족** — 패키지 속성(`bot.dart_feed`)도
+되돌릴 것.
+⚠️ `__spec__ is None` 은 **레포 패키지 안에서만** 결함 — 밖은 C-확장이라
+오탐이다("오직 `__main__`" 은 한 스냅샷을 전수로 적은 것, #286).
+⚠️ `pytest_runtest_teardown` 훅에서 raise 금지(SetupState 가 정리를 못
+마쳐 연쇄) · 계약은 결과로 잴 것 — fixture 독스트링(#59b·#250)이 내
+단언을 스스로 만족시켰다.
+→ REFERENCE §실수 #397
+
+
+사용자가 #396 배포를 끝낸 뒤 "끝까지 다 잡아줘" 라고 했다. 대상은 배포
+검증마다 따라다니던 `tests/` 9건이었다. 그 9건은 전체 실행에서만 빨간불
+이었고 그 9개만 골라 돌리면 양쪽 다 통과했다.
+
+트레이스백을 받자 아홉 줄이 한 뿌리로 모였다. 둘은
+`AttributeError: 'types.SimpleNamespace' object has no attribute
+'HTTPStatusError'`, 셋은 같은 객체의 `'Proxy'` 였고, 넷은 그 뒤 부분
+초기화된 모듈이 남아 생긴 `KeyError: 'tradingagents.agents'` 와 usage
+계열이었다. `sys.modules["httpx"]` 가 스텁으로 갈린 채였다.
+
+전수 grep 이 `sys.modules[...]` 직접 대입 네 자리를 냈다.
+`tests/test_dart_production.py` 의 `TestFscBreaker20260821._stub` 가
+`SimpleNamespace(get=_get)` 를 꽂고 `finally` 에서는 `_FAIL` 만 비웠다.
+`bot/fsc_client.py` 가 함수 안에서 `import httpx` 를 하므로 그 스텁은
+실제로 먹었고 그대로 남았다. `tests/test_regression.py` 의
+`_mock_news_clients` 는 진짜 `bot.naver_news_client` 와 `bot.kabutan_news`
+를 가짜 모듈로 바꾸고 되돌리지 않았다. `bot.world_quote` 자리는
+`finally` 에서 `pop` 해 원래 있던 진짜 모듈까지 지웠다.
+`bot/tests/conftest.py` 의 MagicMock 은 별도 프로세스라 무관했다.
+
+세 자리를 `monkeypatch.setitem`·`monkeypatch.setattr` 로 바꾸자 그 클래스
+실행 뒤 `sys.modules.get("httpx")` 가 `None` 이 되었다. 원래 없던 상태로
+정확히 돌아왔다. `bot.fsc_client.fsc_key_ready` 도 원본 함수였다.
+
+루트 conftest 에 오염 감지를 넣었다. `pytest_sessionstart` 가 기준선을
+뜨고, autouse fixture 가 각 teardown 에서 두 가지를 보게 했다. 세션 시작 뒤
+새로 나타난 값이 모듈이 아니거나, 기준선에 있던 이름이 다른 객체로
+바뀐 경우였다. 기준선을 세션 시작에 뜨기 때문에 `bot/tests/conftest.py` 가
+모듈 레벨에서 꽂는 MagicMock 은 면제 목록 없이 자동으로 빠졌다.
+
+첫 판은 `pytest_runtest_teardown` 훅에서 예외를 던졌다. 프로브를 돌리자
+뒤 테스트가 `previous item was not torn down properly` 로 연쇄로 깨졌다.
+autouse fixture 로 옮기자 오염 둘만 ERROR 가 되고 나머지 넷은 그대로
+통과했다. autouse 는 요청형 fixture 보다 먼저 setup 되어 teardown 이
+나중이라, monkeypatch 가 이미 되돌린 뒤를 봤다.
+
+가드를 켜고 전체를 돌리자 9건이 2건이 되었고 통과 수가 4,720 에서
+4,728 로 늘었다. 그동안 실패로 세어지던 것들이 실제로 실행된 결과였다.
+
+남은 둘 중 하나는 가드가 새로 잡은 것이었다.
+`TestDartInvestmentNoticeUnparsed20260917` 의 두 테스트가 `HOME` 을 tmp 로
+바꾼 뒤 `bot.dart_feed` 를 `sys.modules` 에서 `pop` 하고 다시 import 했다.
+그 자리에 tmp 경로로 상수를 구운 새 모듈 객체가 영구히 남았다. 전체 실행
+로그의 `RuntimeWarning: 'bot.dart_feed' found in sys.modules after import
+of package 'bot'` 가 그 흔적이었다. `monkeypatch.delitem` 으로 바꾸자
+teardown 이 옛 객체를 되돌렸다.
+
+다른 하나는 옛 회귀가 무너진 것이었다.
+`test_production_disk_caches_are_redirected` 가
+`src[src.index("def _redirect_disk_caches"):]` 로 파일 끝까지를 함수 본문
+이라 보고 `yield` 를 찾았다. conftest 뒤에 무관한 fixture 가 하나 붙자
+멀쩡한 코드를 틀렸다고 했다. AST 로 그 함수만 잘라 `Yield` 노드를 보게
+고쳤다.
+
+`importorskip("telegram")` 옆 주석 다섯 자리가 "샌드박스엔 없다" 라고
+적고 있었다. 실측은 telegram·langgraph·httpx 가 전부 설치돼 있다는
+것이었다. 그 거짓 주석이 몇 주 동안 오진을 굳혔다. `importorskip` 자체는
+의존성 없는 환경의 안전망이라 남기고 문구만 사실로 바꿨다.
+
+가드를 회귀로 고정했다. 루트 conftest 를 `-p conftest` 로 주입해 레포 밖
+임시 파일을 돌리는 방식이라, 임시 테스트가 수집에 섞이지 않았다. 다섯
+테스트가 직접 대입 적발, 모듈 교체 적발, monkeypatch 오탐 없음, 연쇄
+붕괴 없음, 가드가 루트에 산다는 것을 각각 값으로 쟀다.
+
+그 회귀를 쓰다 한 번 더 같은 병을 밟았다. 연쇄 붕괴 검사를
+`"not torn down properly" not in out` 으로 썼는데, fixture 독스트링이 왜
+훅이 아니라 fixture 인지 설명하며 그 문구를 인용하고 있었고 실패 출력에
+독스트링이 통째로 실렸다. 단언이 자기 설명에 걸렸다. 주 계약을
+결과로 옮기고 증상 이름은 `AssertionError:` 접두까지 집게 했다.
+
+뮤테이션 네 종이 전부 잡혔다. 모듈 아닌 값 검사 제거, 객체 교체 검사
+제거, autouse 끄기, 그리고 `_stub` 을 옛 직접 대입으로 되돌리기였다.
+마지막 것이 ERROR 로 잡혔다. 이 가드가 있었다면 그 9건 사고는 애초에
+나지 않았다. 복원 뒤 md5 가 원본과 같았다.
+
+독립 리뷰가 배포 전에 네 구멍을 잡았다. 첫째는 기준선이 새로 나타난 모듈을
+무조건 흡수한 것이었다. 손으로 만든 빈 `ModuleType` 이 레포 모듈 자리를
+차지해도 보고되지 않았고, 흡수된 이름 때문에 다음 테스트가 범인으로
+지목됐다. 둘째는 삭제가 안 보인 것이었다. `pop` 만 하고 되돌리지 않으면
+기준선에는 남아 있는데 `sys.modules` 에는 없었고, 그 상태를 아무도 세지
+않았다. 셋째는 패키지 속성이었다. `delitem` 뒤 다시 import 하면
+`sys.modules["bot.dart_feed"]` 는 teardown 이 되돌렸지만 `bot` 패키지의
+`dart_feed` 속성은 새 객체를 가리킨 채 남았고, `from bot import dart_feed`
+가 옛 것을 봤다. 넷째는 내가 넣은 `_MOD_REPORTED` 였다. 한 번 보고한
+이름을 다시 안 보게 만들어 두 번째 누출을 가렸고, 값을 더하는 것이 없어
+지웠다.
+
+빈 모듈 축을 `__spec__ is None` 으로 잡자 오탐이 쏟아졌다. 처음에는
+`_cython_3_*` 와 `xml.parsers.expat.*` 와 `_openssl` 이 걸렸고, 디스크
+소스 확인을 더한 뒤에도 `cryptography.hazmat.primitives.*` 가 걸렸다.
+내가 "그런 모듈은 `__main__` 뿐" 이라고 적은 것은 한 스냅샷을 전수인 양
+옮긴 것이었다. 축을 레포 최상위 패키지 안으로 좁히자 오탐이 사라졌고,
+그 패키지 목록은 `__init__.py` 유무로 파일 시스템에서 파생시켰다. 실측
+집합은 `bot`·`tests`·`trade` 였다.
+
+`importlib.util.find_spec` 은 쓸 수 없었다. 그 함수는 `sys.modules` 를
+먼저 보고, 캐시된 모듈의 `__spec__` 이 `None` 이면 `ValueError` 를
+던졌다. 그것이 바로 재려던 상태였다. `PathFinder.find_spec` 으로
+우회했다가 레포 경계 축으로 바꾸면서 통째로 걷어냈다.
+
+뮤테이션 여덟 종을 다시 돌렸다. 일곱은 잡혔고 패키지 속성 복원을 지우는
+여덟째가 살아남았다. 리뷰 지적으로 넣은 그 두 줄에 가드가 없었다.
+하네스에 앞서 돌릴 노드를 받는 인자를 더하고, 제품 노드를 실제로 앞에
+태운 뒤 `bot.dart_feed is sys.modules['bot.dart_feed']` 를 보는 테스트를
+넣었다. 프로브가 그 복원 패턴을 스스로 흉내내면 제품에서 지워도 통과하기
+때문에 흉내내지 않았다. 다시 돌리자 여덟 종이 전부 잡혔고, 여덟째에서
+빨간불이 된 것은 새로 넣은 그 테스트 하나였다.
+
+세 트리가 전부 통과했다. `tests/` 4,739 · `bot/tests` 183 ·
+`trade/tests` 1,275 였다. 가드 회귀는 열 개였다.

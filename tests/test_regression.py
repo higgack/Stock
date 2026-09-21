@@ -4650,21 +4650,26 @@ class TestDetailNewsResearchFallback:
      • KR research_reports 가 리서치 액션 탭에 렌더
     """
 
-    def _mock_news_clients(self):
+    def _mock_news_clients(self, monkeypatch):
+        # ⚠️ **monkeypatch 로 꽂는다.** 옛 판은 `sys.modules[...]` 에 직접
+        # 대입해 진짜 `bot.naver_news_client`·`bot.kabutan_news` 를 가짜
+        # 모듈로 **영구 대체**했다 — 이 테스트 뒤에 도는 전부가 `fetch_news`
+        # 하나뿐인 스텁을 본다. 같은 형태가 `tests/test_dart_production.py`
+        # 의 httpx 에서 실제로 9건을 깨뜨렸다(2026-09-21 · #30·#312·#344).
         import sys, types
         naver = types.ModuleType("bot.naver_news_client")
         naver.fetch_news = lambda q, days_back=28, max_items=10: [
             {"date": "2026-06-07", "title": "네이버 2분기 실적 호조",
              "source": "한경", "link": "http://x", "summary": "s"}]
-        sys.modules["bot.naver_news_client"] = naver
+        monkeypatch.setitem(sys.modules, "bot.naver_news_client", naver)
         kab = types.ModuleType("bot.kabutan_news")
         kab.fetch_news = lambda c, days_back=28, max_items=10: [
             {"date": "2026-06-07", "title": "トヨタ決算",
              "source": "Kabutan", "link": "http://y", "summary": "s"}]
-        sys.modules["bot.kabutan_news"] = kab
+        monkeypatch.setitem(sys.modules, "bot.kabutan_news", kab)
 
-    def test_news_fallback_schema_and_kr_native(self):
-        self._mock_news_clients()
+    def test_news_fallback_schema_and_kr_native(self, monkeypatch):
+        self._mock_news_clients(monkeypatch)
         from bot.stock_snapshot import _collect_news_fallback
         snap = {"kr": {"corp_name": "네이버"}, "long_name": "NAVER"}
         _collect_news_fallback("035420.KS", snap)
@@ -4674,8 +4679,8 @@ class TestDetailNewsResearchFallback:
         assert n["publisher"] == "한경", "source→publisher 매핑 깨짐"
         assert n.get("kr_native") is True, "KR 은 kr_native 태그 필수"
 
-    def test_news_fallback_jp_not_kr_native(self):
-        self._mock_news_clients()
+    def test_news_fallback_jp_not_kr_native(self, monkeypatch):
+        self._mock_news_clients(monkeypatch)
         from bot.stock_snapshot import _collect_news_fallback
         snap = {}
         _collect_news_fallback("7203.T", snap)
@@ -19768,7 +19773,11 @@ class TestHighlowSlotScan:
     def test_run_slot_off_session_gates(self, monkeypatch):
         # 장 밖(전 시장 닫힘) → 전부 게이트 fetch(EOD 1회 후 freeze, force 안 함).
         import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        _pt.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이 샌드박스엔
+        # **설치돼 있어 실제로 돈다**(2026-09-21 실측). 옛 주석은 "VM 에서만"
+        # 이라 적어, sys.modules 오염으로 이 줄이 AttributeError 를 내던
+        # 것을 몇 주 동안 '샌드박스라 skip' 으로 오독하게 만들었다 —
+        # `importorskip` 은 **ImportError 만** skip 한다(#55·#25).
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         import bot.finviz_client as fc
         import bot.highlow_scan as hs
@@ -19801,7 +19810,11 @@ class TestHighlowSlotScan:
     def test_run_slot_paused_falls_back_to_gate(self, monkeypatch):
         # YF_PAUSE 중엔 장중이어도 force 안 함(게이트 폴백 → 스테일 유지·스캔 0).
         import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        _pt.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이 샌드박스엔
+        # **설치돼 있어 실제로 돈다**(2026-09-21 실측). 옛 주석은 "VM 에서만"
+        # 이라 적어, sys.modules 오염으로 이 줄이 AttributeError 를 내던
+        # 것을 몇 주 동안 '샌드박스라 skip' 으로 오독하게 만들었다 —
+        # `importorskip` 은 **ImportError 만** skip 한다(#55·#25).
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         import bot.finviz_client as fc
         import bot.highlow_scan as hs
@@ -19878,7 +19891,11 @@ class TestLightBoardWarm:
     def test_warm_light_boards_gating(self, monkeypatch):
         # 진입점 스모크(§7d) + 게이트 — 장중 전 보드 데움, naverpause 시 네이버 skip.
         import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        _pt.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이 샌드박스엔
+        # **설치돼 있어 실제로 돈다**(2026-09-21 실측). 옛 주석은 "VM 에서만"
+        # 이라 적어, sys.modules 오염으로 이 줄이 AttributeError 를 내던
+        # 것을 몇 주 동안 '샌드박스라 skip' 으로 오독하게 만들었다 —
+        # `importorskip` 은 **ImportError 만** skip 한다(#55·#25).
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         from datetime import datetime, timezone
         import bot.finviz_client as fc
@@ -33697,14 +33714,18 @@ class TestPerBandSummary20260822:
             orig = pb.__dict__.get("_stub")
             import sys
             import types
+            import pytest as _pt
             mod = types.ModuleType("bot.world_quote")
             mod.fetch_world_quote = lambda t: {"price": price}
-            sys.modules["bot.world_quote"] = mod
-            try:
-                return pb.live_price("AAPL", ref)
-            finally:
-                sys.modules.pop("bot.world_quote", None)
-                assert orig is None
+            # ⚠️ 옛 판은 `finally` 에서 **pop** 했다 — 원래 진짜 모듈이
+            # 들어 있었으면 그걸 지워 버린다(다음 import 가 모듈 전역을
+            # 초기화한 새 객체를 만든다). monkeypatch 는 있던 것을 되돌리고
+            # 없던 것만 지운다.
+            with _pt.MonkeyPatch.context() as _mp:
+                _mp.setitem(sys.modules, "bot.world_quote", mod)
+                out = pb.live_price("AAPL", ref)
+            assert orig is None
+            return out
         assert _run(150.0, 100.0) == 150.0      # 한 달 +50% 는 정당하다
         assert _run(40.0, 100.0) == 40.0        # −60% 도 통과
         assert _run(100000.0, 100.0) is None    # 자릿수 사고
@@ -52328,7 +52349,8 @@ class TestUsageCommandSurfacesUnpriced20260908:
     # 조용하다" 이므로 **출력 문자열**로 다시 쓴다(리팩터에 강하고 뮤테이션엔
     # 더 민감하다 — 계산만 하고 안 찍는 변형도 여기서 잡힌다).
     def _report(self, monkeypatch, rows):
-        pytest.importorskip("telegram")   # 샌드박스엔 없다 — VM 에서 돈다
+        pytest.importorskip("telegram")   # 의존성 없는 환경용 안전망 — 이
+        # 샌드박스엔 **설치돼 있어 실제로 돈다**(2026-09-21 실측 · #55).
         import bot.telegram_bot as tb
         import bot.usage_tracker as ut
         monkeypatch.setattr(ut, "load_records", lambda *a, **k: rows)
@@ -53263,7 +53285,8 @@ class TestNoModelWindowIsMeasured20260909:
         assert "실제 비용은 더 큼" in notes[0], notes
 
     def test_usage_report_says_when(self, monkeypatch):
-        pytest.importorskip("telegram")        # 샌드박스엔 없다 — VM 에서 돈다
+        pytest.importorskip("telegram")        # 의존성 없는 환경용 안전망 —
+        # 이 샌드박스엔 **설치돼 있어 실제로 돈다**(2026-09-21 실측 · #55).
         import bot.telegram_bot as tb
         import bot.usage_tracker as ut
         monkeypatch.setattr(ut, "load_records",
@@ -59565,9 +59588,15 @@ class TestNoOutboundHttpInTests20260911:
             assert home not in val.parents and val != home, f"{dotted} → {val}"
         # 그리고 conftest 가 그걸 **되돌리지 않는다** — 되돌리면 늦게 끝난
         # 스레드가 운영 경로로 쓴다(위 `test_session_scope_is_measured…` 와 같은 계약).
-        src = pathlib.Path(_cf.__file__).read_text(encoding="utf-8")
-        body = src[src.index("def _redirect_disk_caches"):]
-        assert "yield" not in body, "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다"
+        # ⚠️ 옛 판은 `src[src.index("def _redirect_disk_caches"):]` 로 **파일
+        # 끝까지**를 본문이라 보고 `yield` 를 찾았다 — conftest 뒤에 무관한
+        # fixture 가 하나 붙자(2026-09-21 sys.modules 오염 가드) 멀쩡한 코드를
+        # 틀렸다고 했다. 계약은 "이 **함수**가 제너레이터가 아니다" 이지
+        # "파일 어디에도 yield 가 없다" 가 아니다(#60 창으로 재면 무너진다 ·
+        # #174 본문만 잘라서 볼 것 · #55).
+        assert not any(isinstance(nd, (_ast.Yield, _ast.YieldFrom))
+                       for nd in _ast.walk(_fn)), (
+            "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다")
 
 
 class TestNaverSpaProbe20260911:
@@ -71446,10 +71475,23 @@ class TestDartInvestmentNoticeUnparsed20260917:
         import types
         from datetime import datetime
         monkeypatch.setenv("HOME", str(tmp_path))
-        for mod in [m for m in list(sys.modules) if m.startswith("bot.dart_feed")]:
-            sys.modules.pop(mod, None)
+        # ⚠️ `monkeypatch.delitem` 으로 뺀다 — 직접 `pop` 하면 그 자리에
+        # **tmp HOME 으로 경로 상수를 구운 새 모듈 객체**가 영구히 남아, 뒤에
+        # `bot.dart_feed` 를 쓰는 테스트가 이미 지워진 tmp 를 본다(teardown 이
+        # 옛 객체를 되돌려 준다). 2026-09-21 에 루트 conftest 의 sys.modules
+        # 오염 가드가 이 자리를 잡았다(#30·#312·#344·#87a).
+        import bot as _botpkg
+        # ⚠️ 아래 import 는 `sys.modules` 만이 아니라 **`bot` 패키지의 속성**
+        # 도 새 모듈로 다시 묶는다. monkeypatch 는 `sys.modules` 만 되돌리므로
+        # `from bot import dart_feed` 를 쓰는 호출부(대시보드·감사)가 tmp
+        # 경로로 구운 모듈을 계속 본다 — **import 전에** 그 속성을 잡아 둬야
+        # teardown 이 원본으로 되돌린다(독립 리뷰 2026-09-21 실측).
+        if hasattr(_botpkg, "dart_feed"):
+            monkeypatch.setattr(_botpkg, "dart_feed", _botpkg.dart_feed)
+        for mod in [m for m in list(sys.modules)
+                    if m.startswith("bot.dart_feed")]:
+            monkeypatch.delitem(sys.modules, mod, raising=False)
         m = importlib.import_module("bot.dart_feed")
-        m = importlib.reload(m)
         monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
         monkeypatch.setattr(m, "_budget_today", lambda: 0)
         monkeypatch.setattr(m, "_budget_add", lambda n: None)
@@ -71487,9 +71529,23 @@ class TestDartInvestmentNoticeUnparsed20260917:
         import sys
         from datetime import datetime
         monkeypatch.setenv("HOME", str(tmp_path))
-        for mod in [x for x in list(sys.modules) if x.startswith("bot.dart_feed")]:
-            sys.modules.pop(mod, None)
-        m = importlib.reload(importlib.import_module("bot.dart_feed"))
+        # ⚠️ `monkeypatch.delitem` 으로 뺀다 — 직접 `pop` 하면 그 자리에
+        # **tmp HOME 으로 경로 상수를 구운 새 모듈 객체**가 영구히 남아, 뒤에
+        # `bot.dart_feed` 를 쓰는 테스트가 이미 지워진 tmp 를 본다(teardown 이
+        # 옛 객체를 되돌려 준다). 2026-09-21 에 루트 conftest 의 sys.modules
+        # 오염 가드가 이 자리를 잡았다(#30·#312·#344·#87a).
+        import bot as _botpkg
+        # ⚠️ 아래 import 는 `sys.modules` 만이 아니라 **`bot` 패키지의 속성**
+        # 도 새 모듈로 다시 묶는다. monkeypatch 는 `sys.modules` 만 되돌리므로
+        # `from bot import dart_feed` 를 쓰는 호출부(대시보드·감사)가 tmp
+        # 경로로 구운 모듈을 계속 본다 — **import 전에** 그 속성을 잡아 둬야
+        # teardown 이 원본으로 되돌린다(독립 리뷰 2026-09-21 실측).
+        if hasattr(_botpkg, "dart_feed"):
+            monkeypatch.setattr(_botpkg, "dart_feed", _botpkg.dart_feed)
+        for mod in [x for x in list(sys.modules)
+                    if x.startswith("bot.dart_feed")]:
+            monkeypatch.delitem(sys.modules, mod, raising=False)
+        m = importlib.import_module("bot.dart_feed")
         monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
         monkeypatch.setattr(m, "_budget_today", lambda: 0)
         monkeypatch.setattr(m, "_budget_add", lambda n: None)
@@ -76615,3 +76671,221 @@ class TestFcfCapexBasisGap20260921:
                     if "❌ 차이" in l and kind in l]
             assert rows, (kind, body)
             assert all("↳ DART OCF" in l for l in rows), (kind, rows)
+
+
+class TestSysModulesLeakGuard20260921:
+    """`sys.modules` 를 되돌리지 않고 끝난 테스트를 **그 자리에서** 잡는다.
+
+    2026-09-21 실측: `tests/` 전체 실행이 9건 빨간불인데 그 9건만 골라 돌리면
+    green 이라, 배포 때마다 base 와 대조해 "같으니 무관" 으로 넘기며 몇 주를
+    보냈다. 원인은 하나 — `tests/test_dart_production.py` 가
+    `sys.modules["httpx"]` 를 `SimpleNamespace` 로 직접 대입하고 복원하지
+    않은 것이다. 알파벳순으로 앞이라 뒤에서 `telegram`·`langgraph` 를 처음
+    import 하는 테스트가 전부 `AttributeError` 로 죽었고, `importorskip` 은
+    ImportError 만 skip 하므로 그게 **실패**로 남았다.
+
+    규율("복원해라")로는 이미 네 번 졌다(#30·#312·#344·#384) — 구조로
+    옮겼다(#119). 여기서는 그 가드가 **정말 발화하는지**를 값으로 잰다
+    (#291 발화 경로 없는 가드는 가드가 아니다 · #20 배선까지).
+    """
+
+    @staticmethod
+    def _run(tmp_path, body: str, *before: str):
+        """루트 conftest 를 `-p conftest` 로 주입해 임시 테스트를 돌린다.
+
+        ⚠️ 임시 파일을 레포 밖에 두는 이유: `tests/` 안에 두면 같은 순간
+        도는 다른 수집에 걸리고, 지우기 전에 죽으면 추적 파일로 남는다
+        (#383·#328). 밖에 두면 루트 conftest 가 자동으로는 안 걸리므로
+        **플러그인으로 명시 주입**한다.
+        """
+        import subprocess
+        import sys as _s
+        # `before` 는 **이 임시 테스트 앞에 돌릴 제품 노드** — 앞 테스트가
+        # 남긴 상태를 뒤에서 재는 형태의 계약에 쓴다.
+        f = tmp_path / "test_probe.py"
+        f.write_text(body, encoding="utf-8")
+        r = subprocess.run(
+            [_s.executable, "-m", "pytest", "-q", "-p", "conftest",
+             "-p", "no:cacheprovider", *before, str(f)],
+            cwd=str(pathlib.Path(__file__).resolve().parent.parent),
+            capture_output=True, text=True, timeout=300)
+        return r.stdout + r.stderr
+
+    def test_a_direct_assignment_is_caught_and_names_the_culprit(self, tmp_path):
+        """옛 `_stub` 과 같은 형태 — 직접 대입하고 복원하지 않는다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_leak():\n"
+            "    sys.modules['httpx'] = types.SimpleNamespace(get=lambda *a: None)\n"))
+        assert "1 error" in out, out[-2000:]
+        # ⚠️ **범인을 지목해야** 한다 — 세션 끝에 한 번만 보면 '오염이 있다'
+        # 까지만 알고 어느 테스트인지 모른다(#114).
+        assert "test_leak" in out, out[-2000:]
+        assert "httpx" in out and "모듈이 아니다" in out, out[-2000:]
+
+    def test_replacing_a_real_module_is_caught(self, tmp_path):
+        """진짜 모듈을 가짜 `ModuleType` 으로 바꾸는 형태(뉴스 클라이언트·
+        `bot.dart_feed` pop+import 가 그것이다) — 타입만 보면 못 잡는다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_swap():\n"
+            "    import json\n"
+            "    assert json is not None\n"
+            "    sys.modules['json'] = types.ModuleType('json')\n"))
+        assert "1 error" in out and "test_swap" in out, out[-2000:]
+        assert "다른 객체로 교체됨" in out, out[-2000:]
+
+    def test_a_fake_module_object_is_caught(self, tmp_path):
+        """가짜 **ModuleType** 으로 대체하는 형태 — 타입만 보면 못 잡는다.
+
+        세션 시작에 없던 이름이면 '정상 import' 와 구별해야 하는데, 손으로
+        만든 모듈은 `__spec__` 이 None 이고 진짜 import 는 내장까지
+        `ModuleSpec` 을 갖는다. 이 축이 없으면 `_mock_news_clients` 가
+        하던 모양이 통째로 샌다(독립 리뷰 2026-09-21 실측: 첫 범인이
+        통과하고 두 번째 테스트가 error 라 범인도 오지목됐다)."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_fake_mod():\n"
+            "    m = types.ModuleType('bot.naver_news_client')\n"
+            "    m.fetch_news = lambda *a, **k: []\n"
+            "    sys.modules['bot.naver_news_client'] = m\n"))
+        assert "1 error" in out and "test_fake_mod" in out, out[-2000:]
+        assert "손으로 만든 빈 모듈" in out, out[-2000:]
+
+    def test_a_c_extension_shim_is_not_a_false_positive(self, tmp_path):
+        """디스크에 없는 이름의 빈 모듈은 **정당**하다 — C 확장이 그렇게
+        등록한다(실측 오탐: `_openssl`·`_cython_3_2_4`·
+        `xml.parsers.expat.model`). 진짜가 있는데 덮은 경우만 오염이다.
+
+        이 반대 증거가 없으면 가드가 매 실행 3건을 떠들어 진짜를
+        가린다(#25·#260)."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_shim():\n"
+            "    sys.modules['_zz_no_such_c_ext'] = types.ModuleType('x')\n"
+            "    sys.modules['_zz_no_such_c_ext.lib'] = types.ModuleType('y')\n"))
+        assert "1 passed" in out and "error" not in out, out[-2000:]
+
+    def test_a_missing_module_is_caught(self, tmp_path):
+        """복원 없는 `pop` — 순회만으로는 **사라진 것**이 안 보인다.
+
+        `finally: pop` 으로 정리한다고 써 놓고 원래 있던 진짜 모듈까지
+        지우는 형태다(독립 리뷰 실측: 옛 판에서 `2 passed`)."""
+        # ⚠️ 첫 픽스처는 **같은 테스트 안에서** import 했다 지웠다 — 그건
+        # 기준선에 들어간 적이 없어 순 효과가 0 이고, 가드가 안 잡는 것이
+        # 옳다. 진짜 케이스는 **이미 기준선에 있는** 모듈을 지우는 것이라
+        # 앞 테스트가 그걸 편입시켜야 발화한다(#91c).
+        out = self._run(tmp_path, (
+            "import sys\n\n\n"
+            "def test_warms_it():\n"
+            "    import bot.fcf\n"
+            "    assert bot.fcf is not None\n\n\n"
+            "def test_pop():\n"
+            "    sys.modules.pop('bot.fcf', None)\n"))
+        assert "1 error" in out and "test_pop" in out, out[-2000:]
+        assert "사라졌다" in out, out[-2000:]
+
+    def test_the_first_offender_is_named_not_the_next_test(self, tmp_path):
+        """범인 지목이 **한 칸 밀리지 않는다**.
+
+        옛 판은 가짜 모듈을 기준선에 편입해 버려, 다음 테스트가 그 가짜를
+        '교체' 로 볼 때에야 error 가 났다 — 고치라고 지목된 것이 무고한
+        뒤 테스트였다(#114 마지막으로 본 것이 남는다)."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_guilty():\n"
+            "    sys.modules['bot.kabutan_news'] = types.ModuleType('x')\n\n\n"
+            "def test_innocent():\n"
+            "    assert True\n"))
+        assert "test_guilty" in out, out[-2000:]
+        assert "test_innocent" not in out, out[-2000:]
+
+    def test_monkeypatch_is_not_a_false_positive(self, tmp_path):
+        """정상 사용은 통과해야 한다 — 반대 증거가 없으면 가드가 시끄러워져
+        진짜를 가린다(#25·#260).
+
+        autouse fixture 는 요청형보다 **먼저** setup 되므로 teardown 은
+        나중이다 — `monkeypatch` 가 이미 되돌린 뒤에 본다. 그 순서가 이
+        테스트의 계약이다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_clean(monkeypatch):\n"
+            "    monkeypatch.setitem(sys.modules, 'httpx',\n"
+            "                        types.SimpleNamespace(g=1))\n"
+            "    assert sys.modules['httpx'].g == 1\n"))
+        assert "1 passed" in out and "error" not in out, out[-2000:]
+
+    def test_a_leak_does_not_cascade_into_the_next_test(self, tmp_path):
+        """오염 뒤 테스트가 **연쇄로 깨지지 않는다**.
+
+        처음엔 `pytest_runtest_teardown` 훅에서 raise 했는데, 그러면 pytest 의
+        SetupState 가 정리를 못 마쳐 뒤 테스트가 `previous item was not torn
+        down properly` 로 줄줄이 깨졌다(실측). autouse fixture 로 옮긴 이유가
+        그것이고, 이 테스트가 그 선택을 고정한다."""
+        out = self._run(tmp_path, (
+            "import sys, types\n\n\n"
+            "def test_leak():\n"
+            "    sys.modules['httpx'] = types.SimpleNamespace(g=1)\n\n\n"
+            "def test_after():\n"
+            "    assert 1 + 1 == 2\n"))
+        # ⚠️ 오염 테스트도 **본문은 passed** 로 센다(실패는 teardown 이다) —
+        # 그래서 `2 passed, 1 error` 다. 뒤 테스트가 실제로 돌았다는 증거가
+        # 바로 그 둘째 passed 다.
+        # ⚠️ 주 계약은 **결과**다 — 연쇄가 나면 뒤 테스트가 안 돌아
+        # `1 passed, 2 errors` 가 된다. 둘째 passed 가 곧 "연쇄 없음" 이다.
+        assert "2 passed" in out and "1 error" in out, out[-2000:]
+        # ⚠️ 증상 이름도 보되 **`AssertionError:` 접두까지** 집는다. 첫 판은
+        # 맨 문구로 재서 `conftest` fixture 의 **독스트링**(왜 훅이 아니라
+        # fixture 인지 설명하며 그 문구를 인용한다)이 실패 출력에 실리자
+        # 스스로 걸렸다 — 규칙을 설명하는 글이 그 규칙의 검사를 만족시키는
+        # 형태다(#59b·#250·#268).
+        assert ("AssertionError: previous item was not torn down properly"
+                not in out), out[-2000:]
+
+    def test_the_dart_feed_test_leaves_no_stale_package_attribute(self, tmp_path):
+        """`sys.modules` 복원만으로는 부족하다 — **패키지 속성**도 되돌아와야.
+
+        `monkeypatch.delitem` + `import_module` 은 `sys.modules` 를 되돌리지만
+        그 import 가 다시 묶은 `bot.dart_feed` **속성**은 그대로 둔다. 그러면
+        `from bot import dart_feed` 를 쓰는 호출부(`bot/dashboard.py` ·
+        `bot/scripts/dart_mcap_audit.py`)가 tmp HOME 으로 구운 모듈을 계속
+        본다(독립 리뷰 2026-09-21 실측).
+
+        ⚠️ 프로브가 그 패턴을 **복제하면** 제품의 그 줄을 지워도 통과한다
+        (#19) — 제품 노드를 실제로 앞에 태우고 **그 뒤 상태**를 잰다."""
+        # ⚠️ 마커 파일·대소문자 무시 검사를 한 번 얹었다가 **뺐다** — 실측상
+        # 발화 경로가 없다(#291·#373 가드는 늘릴수록 강해지지 않는다):
+        # 제품 노드가 사라지면 pytest 가 `no tests ran` 을 내 아래
+        # `"passed" in out` 이 잡고, 프로브 수집 실패는 `-q` 요약에
+        # **소문자** `1 error` 로 나오며(대문자 `ERROR: not found` 는 앞
+        # 경우뿐이다), 임시 파일이 수집에서 빠지면 같은 하네스를 쓰는 이
+        # 클래스의 다른 9건이 먼저 깨진다.
+        out = self._run(
+            tmp_path,
+            "import sys\n\n\n"
+            "def test_after():\n"
+            "    import bot\n"
+            "    assert bot.dart_feed is sys.modules['bot.dart_feed'], (\n"
+            "        '패키지 속성이 stale — from bot import dart_feed 가 옛 것을 본다')\n",
+            "tests/test_regression.py::TestDartInvestmentNoticeUnparsed20260917")
+        assert " failed" not in out and " error" not in out, out[-2500:]
+        assert "passed" in out, out[-2500:]
+
+    def test_the_guard_lives_in_the_root_conftest(self):
+        """`tests/conftest.py` 에 두면 `pytest bot/tests` 단독 실행에서 통째로
+        안 걸린다 — 바깥 원천 차단이 루트에 있는 것과 **같은 이유**다(#24).
+        그리고 기준선은 세션 시작에 떠야 `bot/tests/conftest.py` 가 모듈
+        레벨에서 꽂는 MagicMock 이 자동 면제된다(면제 목록을 손으로 적으면
+        반드시 새 항목을 놓친다)."""
+        import ast as _ast
+        root = pathlib.Path(__file__).resolve().parent.parent / "conftest.py"
+        tree = _ast.parse(root.read_text(encoding="utf-8"))
+        names = {getattr(n, "name", "") for n in tree.body}
+        assert "pytest_sessionstart" in names, "기준선 스냅샷 훅이 없다"
+        assert "_module_pollution" in names, "판정 함수가 없다"
+        fx = next(n for n in tree.body
+                  if getattr(n, "name", "") == "_no_sys_modules_leak")
+        assert any(isinstance(d, _ast.Call)
+                   and any(k.arg == "autouse" and k.value.value is True
+                           for k in d.keywords)
+                   for d in fx.decorator_list), "autouse 가 아니다"

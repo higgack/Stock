@@ -1962,11 +1962,10 @@ class TestFscBreaker20260821:
     있으면 그 전부가 순손실이다."""
 
     @staticmethod
-    def _stub(status, body=None):
+    def _stub(monkeypatch, status, body=None):
         import sys
         import types
         import bot.fsc_client as f
-        f._FAIL.clear()
         n = [0]
 
         class _R:
@@ -1979,64 +1978,64 @@ class TestFscBreaker20260821:
         def _get(*a, **k):
             n[0] += 1
             return _R()
-        sys.modules["httpx"] = types.SimpleNamespace(get=_get)
-        f.fsc_key_ready = lambda: True
-        f._env_key = lambda k: "KEY"
+        # ⚠️ **monkeypatch 로 꽂는다 — 직접 대입은 복원되지 않는다.**
+        # 옛 판은 `sys.modules["httpx"]` 를 그냥 대입하고 되돌리지 않아,
+        # 이 파일 뒤에 도는 `tests/` 전체가 가짜 httpx 를 봤다. 그러면
+        # `telegram`·`langgraph` 를 **처음** import 하는 테스트가
+        # `AttributeError: 'types.SimpleNamespace' object has no attribute
+        # 'Proxy'` 로 죽는데, `importorskip` 은 ImportError 만 skip 하므로
+        # 그게 skip 이 아니라 **실패**로 남는다(2026-09-21 실측 9건 —
+        # 선택 실행은 green 이고 전체 실행에서만 빨간불이라 몇 주 동안
+        # '샌드박스 선재 실패'로 오인됐다, #30·#312·#344·#128).
+        # `fsc_key_ready`·`_env_key`·`_FAIL` 도 같은 이유로 monkeypatch 다.
+        monkeypatch.setitem(sys.modules, "httpx",
+                            types.SimpleNamespace(get=_get))
+        monkeypatch.setattr(f, "_FAIL", {})   # 모듈 전역 — 사본을 쥐어 준다
+        monkeypatch.setattr(f, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(f, "_env_key", lambda k: "KEY")
         return f, n
 
-    def test_repeated_service_failure_stops_hammering(self):
-        f, n = self._stub(504)
-        try:
-            for i in range(11):
-                f._fetch("http://x", "opA", {"basDt": f"2026080{i % 9}"})
-        finally:
-            f._FAIL.clear()
+    def test_repeated_service_failure_stops_hammering(self, monkeypatch):
+        f, n = self._stub(monkeypatch, 504)
+        for i in range(11):
+            f._fetch("http://x", "opA", {"basDt": f"2026080{i % 9}"})
         assert n[0] <= f._FAIL_MAX, f"죽은 서비스를 {n[0]}회 두드렸다"
 
-    def test_client_errors_are_not_tripped(self):
+    def test_client_errors_are_not_tripped(self, monkeypatch):
         """4xx 는 파라미터·키 문제라 서비스 장애가 아니다 — 차단하면
         멀쩡한 다른 종목 조회까지 조용히 빈 결과가 된다."""
-        f, n = self._stub(400)
-        try:
-            for _ in range(5):
-                f._fetch("http://x", "opB", {})
-        finally:
-            f._FAIL.clear()
+        f, n = self._stub(monkeypatch, 400)
+        for _ in range(5):
+            f._fetch("http://x", "opB", {})
         assert n[0] == 5, f"4xx 로 차단됨({n[0]}회만 시도)"
 
-    def test_success_clears_the_breaker(self):
+    def test_success_clears_the_breaker(self, monkeypatch):
         """냉각 뒤 살아나면 즉시 정상 동작해야 한다 — 안 그러면 API 가
         복구돼도 화면이 계속 비어 있다."""
         import time
-        f, _n = self._stub(504)
+        f, _n = self._stub(monkeypatch, 504)
         f._fetch("http://x", "opC", {})
         f._fetch("http://x", "opC", {})
         assert f._breaker_open("opC"), "연속 실패인데 차단이 안 됨"
-        f2, _ = self._stub(200, {"response": {"body":
+        f2, _ = self._stub(monkeypatch, 200, {"response": {"body":
                                               {"items": {"item": [{"a": 1}]}}}})
         f2._FAIL["opC"] = (time.time() - f2._FAIL_COOL - 1, 9)   # 냉각 경과
-        try:
-            assert f2._fetch("http://x", "opC", {}) == [{"a": 1}]
-            # ⚠️ `_breaker_open` 으로만 보면 **냉각이 이미 지나** 어차피
-            # False 라 해제 여부와 무관하게 통과한다(뮤테이션이 실제로
-            # 통과했다). 카운터가 실제로 지워졌는지를 본다 — 안 지우면
-            # 다음 실패 1회에 곧장 차단으로 되돌아간다.
-            assert "opC" not in f2._FAIL, "성공했는데 실패 카운터가 남음"
-            assert not f2._breaker_open("opC")
-        finally:
-            f2._FAIL.clear()
+        assert f2._fetch("http://x", "opC", {}) == [{"a": 1}]
+        # ⚠️ `_breaker_open` 으로만 보면 **냉각이 이미 지나** 어차피
+        # False 라 해제 여부와 무관하게 통과한다(뮤테이션이 실제로
+        # 통과했다). 카운터가 실제로 지워졌는지를 본다 — 안 지우면
+        # 다음 실패 1회에 곧장 차단으로 되돌아간다.
+        assert "opC" not in f2._FAIL, "성공했는데 실패 카운터가 남음"
+        assert not f2._breaker_open("opC")
 
-    def test_breaker_is_per_operation(self):
+    def test_breaker_is_per_operation(self, monkeypatch):
         """한 엔드포인트가 죽었다고 다른 엔드포인트까지 막으면 안 된다."""
-        f, n = self._stub(504)
-        try:
-            f._fetch("http://x", "dead", {})
-            f._fetch("http://x", "dead", {})
-            before = n[0]
-            f._fetch("http://x", "alive", {})
-            assert n[0] == before + 1, "다른 op 까지 차단됐다"
-        finally:
-            f._FAIL.clear()
+        f, n = self._stub(monkeypatch, 504)
+        f._fetch("http://x", "dead", {})
+        f._fetch("http://x", "dead", {})
+        before = n[0]
+        f._fetch("http://x", "alive", {})
+        assert n[0] == before + 1, "다른 op 까지 차단됐다"
 
 
 class TestAnchorForms20260821:

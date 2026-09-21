@@ -1489,3 +1489,97 @@ E2E 가 두 정의를 실제로 가를 때만 통과한다. (b) 이 면제는 **
 종전대로 ❌ 다 — 그게 옳지만, 그런 원천이 나오면 갈래 이름이 하나 더 필요하다.
 (c) 이 종목 말고 몇 종목이 같은 정의차를 갖는지는 재지 않았다 — 감사 표본이
 도는 대로 다음 실행이 스스로 말한다(#82).
+
+## #397 — `sys.modules` 오염 가드 (2026-09-21)
+
+**증상**: `tests/` 전체 실행이 **9건 빨간불**인데 그 9건만 골라 돌리면 green.
+배포 때마다 base 와 대조해 "같으니 무관" 으로 넘기며 몇 주를 보냈다.
+
+**원인 하나**: `tests/test_dart_production.py::TestFscBreaker20260821._stub` 가
+`sys.modules["httpx"]` 를 `SimpleNamespace` 로 **직접 대입**하고 복원하지 않았다
+(`finally` 는 `_FAIL` 만 비웠다). 알파벳순으로 그 파일이 앞이라, 뒤에서
+`telegram`·`langgraph` 를 **처음** import 하는 테스트가 전부
+`AttributeError: … has no attribute 'Proxy'/'HTTPStatusError'` 로 죽었다.
+`importorskip` 은 **ImportError 만** skip 하므로 그게 skip 이 아니라 **실패**였고,
+`importorskip("telegram")` 옆의 "샌드박스엔 없다" 라는 **거짓 주석**(실측:
+telegram·langgraph·httpx 모두 설치돼 있다)이 그 오진을 굳혔다(#55·#25).
+
+| 자리 | 무엇 |
+|---|---|
+| `test_dart_production.py::TestFscBreaker20260821._stub` | `monkeypatch.setitem/setattr` — httpx·`_FAIL`·`fsc_key_ready`·`_env_key` |
+| `test_regression.py::_mock_news_clients` | 진짜 뉴스 클라이언트를 **영구 대체**하던 것 → `monkeypatch.setitem` |
+| `test_regression.py` `bot.world_quote` | `finally: pop` 이 원래 있던 진짜 모듈까지 지웠다 → `MonkeyPatch.context()` |
+| `TestDartInvestmentNoticeUnparsed20260917` ×2 | `bot.dart_feed` pop+import 가 **tmp HOME 으로 구운 모듈**을 남겼다 → `monkeypatch.delitem` + **패키지 속성** `monkeypatch.setattr(bot, "dart_feed", …)` |
+| `conftest.py` | `pytest_sessionstart` 기준선 + autouse fixture 오염 감지 |
+| `importorskip("telegram")` ×5 | 거짓 주석 정정(안전망 자체는 유지, #139) |
+
+**가드 설계** — 이름을 **열거하지 않는다**(#24). 세션 시작 스냅샷 대비 네 축:
+① 새로 나타난 값이 **모듈이 아니다**(SimpleNamespace·MagicMock) ② 기준선에 있던
+이름이 **다른 객체로 교체**됐다 ③ 손으로 만든 **빈 `ModuleType`**(`__spec__ is
+None`)이 **레포 패키지** 자리를 차지했다 ④ 기준선에 있던 이름이 `sys.modules`
+에서 **사라졌다**(`pop` 후 미복원). 기준선을 `pytest_sessionstart` 에 뜨므로
+`bot/tests/conftest.py` 가 모듈 레벨에서 꽂는 MagicMock 은 **자동 면제**다(면제
+목록을 손으로 적으면 반드시 새 항목을 놓친다).
+
+⚠️ **③ 은 레포 패키지 안에서만 결함이다.** `__spec__ is None` 을 전역에 걸면
+정상 C-확장·lazy 모듈이 줄줄이 걸린다(실측 오탐: `_cython_3_*` ·
+`xml.parsers.expat.*` · `_openssl` · 디스크 소스 확인을 더한 뒤에도
+`cryptography.hazmat.primitives.*`). 내가 "그런 모듈은 `__main__` 뿐" 이라고
+적은 것은 **한 스냅샷을 전수인 양** 옮긴 것이었다(#286·#25). 경계는
+`bot`·`tests`·`trade` — 이름을 적지 않고 **`__init__.py` 유무로 파일
+시스템에서 파생**시킨다(#24).
+
+⚠️ `importlib.util.find_spec` 으로는 못 잰다 — 그 함수는 `sys.modules` 를 먼저
+보고 캐시된 모듈의 `__spec__` 이 `None` 이면 `ValueError` 를 던진다. 그게 바로
+재려는 그 상태다(`PathFinder.find_spec` 으로 우회했다가 레포 경계 축으로
+바꾸면서 통째로 걷어냈다).
+
+⚠️ **`pytest_runtest_teardown` 훅에서 raise 하면 안 된다** — pytest 의 SetupState
+가 정리를 못 마쳐 뒤 테스트가 `previous item was not torn down properly` 로 연쇄로
+깨진다(실측). autouse fixture 는 요청형보다 **먼저** setup 되므로 teardown 이
+나중이라, `monkeypatch` 복원을 오염으로 오인하지도 않는다.
+
+**검증**: `tests/` 4,720 passed + 9 failed → **4,739 passed + 0 failed** ·
+`bot/tests` 183 · `trade/tests` 1,275. 뮤테이션 **8종 전부 잡힘**(축 4개 · autouse ·
+레포패키지 파생 · `_stub` 직접대입 되돌리기 · 패키지속성 복원 제거) — 특히
+**`_stub` 을 옛 직접 대입으로 되돌리는 변형이 ERROR 로 잡혔다**(이 가드가 있었다면
+그 9건 사고는 애초에 나지 않았다는 뜻). 회귀 **10건**은 루트 conftest 를
+`-p conftest` 로 주입해 **레포 밖** 임시 파일을 서브프로세스로 돌린다(임시 테스트가
+수집에 섞이지 않는다, #383) — 적발·범인 지목·오탐 없음·연쇄 없음·가드 위치를 각각
+값으로 잰다.
+
+⚠️ **패키지 속성 복원은 리뷰 지적으로 넣은 두 줄인데 무가드였다**(M8 생존, #291).
+프로브가 그 복원 패턴을 **스스로 흉내내면** 제품에서 지워도 통과하므로(#19),
+하네스에 "앞서 돌릴 노드" 인자를 더해 **제품 노드를 실제로 앞에 태운 뒤**
+`bot.dart_feed is sys.modules['bot.dart_feed']` 를 본다. 재실행에서 M8 이 잡혔고,
+빨간불이 된 것은 새로 넣은 그 테스트 하나였다(#267·#384 — 빨간불이 곧 '잡힘'은
+아니므로 **실패한 테스트 이름**까지 확인).
+
+⚠️ 그 회귀를 쓰다 **같은 병을 한 번 더 밟았다**: 연쇄 검사를
+`"not torn down properly" not in out` 으로 썼는데 fixture **독스트링**이 왜 훅이
+아니라 fixture 인지 설명하며 그 문구를 인용하고 있었고, 실패 출력에 독스트링이
+통째로 실린다(#59b·#250·#268). 주 계약을 **결과**(뒤 테스트가 돌았나)로 옮기고
+증상 이름은 `AssertionError:` 접두까지 집는다.
+
+⚠️ 같이 드러난 옛 결함: `test_production_disk_caches_are_redirected` 가
+`src[src.index("def _redirect_disk_caches"):]` 로 **파일 끝까지**를 함수 본문이라
+보고 `yield` 를 찾았다 — conftest 뒤에 무관한 fixture 가 붙자 멀쩡한 코드를
+틀렸다고 했다(#60·#174). AST 로 그 함수만 잘라 `Yield` 노드를 본다.
+
+**못 보는 축**(#274): (a) `importlib.reload` 는 **같은 객체를 제자리 재실행**하므로
+객체 동일성이 안 바뀌어 이 가드가 못 본다 — 모듈 전역 상태는 바뀐 채 남는다(레포에
+6자리). (b) conftest import 시점에 **이미** 오염된 것은 기준선에 편입되어 면제된다.
+(c) 보고 뒤 기준선을 **현재 값으로 갱신**하므로 같은 이름은 한 테스트당 한 번만
+보고된다 — 첫 범인이 정확히 지목되고 **두 번째 누출도 그다음 테스트에서 잡힌다**
+(옛 판의 `_MOD_REPORTED` 는 이름 단위로 영구 침묵시켜 두 번째 누출을 가렸다 —
+독립 리뷰 지적으로 삭제). (d) `__spec__` 축은 **레포 패키지 밖**을 안 본다 —
+서드파티끼리 서로를 가짜로 덮는 경우는 여기서 안 걸린다(오탐 비용이 그 감도보다
+크다, #25·#260).
+
+⚠️ **가드를 더 얹으려다 뺐다**: 배선 테스트에 "프로브가 실제로 돌았나" 마커
+파일과 대소문자 무시 오류 검사를 얹었는데, 뮤테이션으로 재니 **발화 경로가
+없었다**(실측 M10 생존). 제품 노드가 사라지면 pytest 가 `no tests ran` 을 내
+기존 `"passed" in out` 이 잡고, 프로브 수집 실패는 `-q` 요약에 **소문자**
+`1 error` 로 나오며(대문자 `ERROR: not found` 는 앞 경우뿐이다), 임시 파일이
+수집에서 빠지면 같은 하네스를 쓰는 나머지 9건이 먼저 깨진다. 되돌리고 그
+측정을 코드 주석에 남겼다 — 가드는 늘릴수록 강해지지 않는다(#291·#373).
