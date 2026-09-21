@@ -7343,6 +7343,8 @@ def _render_stock_info_html(rec: dict) -> str:
                               '처분액은 넣지 않습니다')
                 # ⚠️ 재무제표 탭은 yfinance 원천이다 — 같은 분기라도 값이 다를
                 # 수 있고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34·#186).
+                from bot.fcf import CAPEX_BASIS_NOTE
+                _notes.append('ℹ️ ' + CAPEX_BASIS_NOTE)
                 _notes.append('ℹ️ 이 표는 <b>DART</b> 원천 · <b>재무제표 탭</b>의 '
                               '수익성 추이는 yfinance 원천이라 같은 분기라도 값이 '
                               '다를 수 있습니다. 당기순이익은 <b>연결 총액</b>'
@@ -9280,6 +9282,11 @@ def _render_stock_info_html(rec: dict) -> str:
                          'CAPEX</b> (yfinance 현금흐름표 — 앞 세 항목은 '
                          '손익계산서). 원천이 FCF 를 직접 주면 그 값을 '
                          '그대로 씁니다</div>') if _has_fcf else ""
+            if _has_fcf and kr_source:
+                from bot.fcf import CAPEX_BASIS_NOTE
+                _fcf_note += ('\n<div style="font-size:11px;color:'
+                              'var(--fg-soft);margin-top:4px">ℹ️ '
+                              + CAPEX_BASIS_NOTE + '</div>')
             _fcf_note += ('\n<div style="font-size:11px;color:var(--fg-soft);'
                           'margin-top:4px">ℹ️ 이 탭은 <b>yfinance</b> 원천 —'
                           ' <b>밸류에이션 탭</b>의 분기별 재무추이는 DART'
