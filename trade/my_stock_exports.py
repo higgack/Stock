@@ -421,12 +421,14 @@ def _hist_table(hist: list[dict]) -> str:
             + "".join(trs) + "</table>")
 
 
-def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
+def _card_html(r: dict, hist: list[dict], media_prefix: str,
+               kr_master: dict | None = None) -> str:
     # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 질의를 못 만들면
     # 평문 — 규칙·URL 은 `trade.stock_link` 한 곳에 있다(#38).
     raw_name = r.get("stock_name") or r.get("ticker") or ""
     raw_tk = r.get("ticker") or ""
-    name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name))
+    name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name,
+                                                     kr_master=kr_master))
     tk = _html.escape(raw_tk)
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd">'
@@ -492,7 +494,15 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
                 + asof_footer(0, "종목", None,
                               max_ingest_iso(conn, "my_stock_exports"))
                 + "</div></body></html>")
-    cards = [_card_html(r, history(conn, r["ticker"]), media_url_prefix)
+    # 혼합시장 보드 — 보드의 나라는 **교역 상대국**이지 상장 시장이 아니다.
+    # 맨 6자리 행의 이름만 KRX 목록에 물어(페이지당 1회, 외부 호출 0, #113)
+    # 이름·코드가 **둘 다** 맞을 때만 링크가 붙고, 확인이 없으면 평문이다(#25).
+    # ⚠️ 이 보드에서 실측했다 — `삼성SDI (006400) 말레이시아 수출`(2026-09-22
+    # 채널 캡션). 형제 보드들엔 같은 규칙을 전시장 동일하게 걸 뿐이고 그쪽에서
+    # 봤다는 뜻은 아니다(§UNIVERSAL·#165).
+    _kr = _sl.kr_codes(r.get("stock_name") or "" for r in rows
+                       if re.fullmatch(r"\d{6}", r.get("ticker") or ""))
+    cards = [_card_html(r, history(conn, r["ticker"]), media_url_prefix, _kr)
              for r in rows]
     return (_HEAD + "<div class='wrap'>" + nav +
             "<h1>🐆 말레이시아 수출 데이터(종목별)</h1>"

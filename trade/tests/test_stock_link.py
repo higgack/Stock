@@ -19,6 +19,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+
+from trade import stock_link as _sl
 from pathlib import Path
 
 from trade import stock_link as sl
@@ -30,27 +32,48 @@ def _links(html: str) -> list[tuple[str, str]]:
     return _A.findall(html)
 
 
-@contextlib.contextmanager
-def _stub_resolver(mapping: dict):
-    """`price_provider.resolve_codes` 를 **리졸버 경계**에서 갈아끼운다.
+class _spy_kr_codes:
+    """`stock_link.kr_codes` 를 감싸 **인자와 호출 수**를 본다(#113·#61).
 
-    ⚠️ 한 단(`_load_krx_master`)만 스텁하면 나머지 세 단 — 운영자 오버라이드
-    (`~/.trade/stock_overrides.json`) · `_DIRECT_CODES`(레포 상수, `trade/CLAUDE.md`
-    가 **한 줄 추가를 정상 운영으로 규정**한다) · durable 캐시
-    (`~/.trade/stock_codes.json` + `TRADE_DATA_GO_KR_KEY`) — 가 살아 있어
-    **운영자의 홈 상태가 단언을 뒤집는다**(독립 리뷰 2026-09-22 실측: 세 경로로
-    재현). `_DATA_DIR` 는 import 시점 상수라 `monkeypatch.setenv` 로도 못 가린다
-    — 규율로 네 번 진 자리다(#30·#312·#344·#384). 경계에서 갈면 `kr_codes` 의
-    자기 계약(합성키 거르기·`fetch=False`)은 그대로 탄다.
-    """
+    보드가 부르는 이름(`_sl.kr_codes`)을 갈아끼워야 배선까지 잰다 — 오라클만
+    스텁하면 '페이지당 몇 번 조립했나'를 못 본다(#20)."""
+
+    def __init__(self, mapping: dict):
+        self.mapping, self.seen = mapping, []
+
+    def __enter__(self):
+        import trade.stock_link as m
+        self._real = m.kr_codes
+        def spy(names):
+            got = [str(n) for n in names if n]
+            self.seen.append(got)
+            return {n: self.mapping[n] for n in got if n in self.mapping}
+        m.kr_codes = spy
+        return self
+
+    def __exit__(self, *exc):
+        import trade.stock_link as m
+        m.kr_codes = self._real
+        return False
+
+
+@contextlib.contextmanager
+def _stub_master(mapping: dict):
+    """**신원 오라클**(`price_provider._load_krx_master`)을 경계에서 갈아끼운다.
+
+    2026-09-22 에 `kr_codes` 가 시세 사다리(`resolve_codes`)에서 거래소 목록으로
+    옮겨 왔다 — 사다리는 `_DIRECT_CODES` 로 상장사를 모회사로 바꾸므로 신원에
+    쓰면 양방향으로 틀린다(독립 리뷰 실측 · #34·#55).
+    ⚠️ 사다리도 **같이 막는다** — 오라클을 되돌리는 변형이 운영자 홈 상태로
+    우연히 통과하는 길을 없앤다(#139 2차 그물 · #30·#312·#344·#384)."""
     import trade.price_provider as pp
-    real = pp.resolve_codes
+    realm, realr = pp._load_krx_master, pp.resolve_codes
     try:
-        pp.resolve_codes = lambda names, **kw: {
-            n: mapping[n] for n in names if n in mapping}
+        pp._load_krx_master = lambda: dict(mapping)
+        pp.resolve_codes = lambda names, **kw: {}
         yield
     finally:
-        pp.resolve_codes = real
+        pp._load_krx_master, pp.resolve_codes = realm, realr
 
 
 def _js_fn(src: str, name: str) -> str:
@@ -162,44 +185,46 @@ class QueryRuleTests(unittest.TestCase):
 
     def test_kr_codes_rejects_synthetic_keys(self):
         """합성키(`nm:회사`)가 코드 자리에 앉으면 화면이 없는 종목코드를
-        있다고 말한다(#34·#43)."""
-        import trade.price_provider as pp
-        real = pp.resolve_codes
-        try:
-            pp.resolve_codes = lambda names, **kw: {"삼성전자": "005930",
-                                                    "이상한회사": "nm:이상한회사"}
+        있다고 말한다(#34·#43).
+
+        ⚠️ 2026-09-22 오라클 교체로 다시 썼다(#222) — 스텁을 `resolve_codes`
+        에서 **거래소 목록**(`_load_krx_master`)으로 옮겼다. 남는 보장은
+        '6자리가 아닌 값은 코드로 인정하지 않는다' 그대로다."""
+        with _stub_master({"삼성전자": "005930", "이상한회사": "nm:이상한회사"}):
             got = sl.kr_codes(["삼성전자", "이상한회사"])
-        finally:
-            pp.resolve_codes = real
         self.assertEqual(got, {"삼성전자": "005930"})
 
     def test_kr_codes_answers_with_the_caller_s_own_key(self):
-        """`resolve_codes` 는 `n.strip()` 한 키로 돌려준다 — 그대로 내보내면
-        앞뒤 공백이 붙은 이름을 넘긴 렌더러가 `code_by_name.get(raw_name)` 에서
-        **조용히** 못 찾는다(링크만 안 생기는 미스). 호출부 셋이 각자 정규화하면
-        갈라지므로 여기서 되돌린다(#38, 독립 리뷰 2026-09-22 L5)."""
-        import trade.price_provider as pp
-        real = pp.resolve_codes
-        try:
-            pp.resolve_codes = lambda names, **kw: {
-                n.strip(): "005930" for n in names if n.strip() == "삼성전자"}
-            got = sl.kr_codes([" 삼성전자 ", "삼성전자", "모르는회사"])
-        finally:
-            pp.resolve_codes = real
-        self.assertEqual(got, {" 삼성전자 ": "005930", "삼성전자": "005930"})
+        """정규화한 키로 돌려주면 앞뒤 공백이 붙은 이름을 넘긴 렌더러가
+        `code_by_name.get(raw_name)` 에서 **조용히** 못 찾는다(링크만 안 생기는
+        미스). 호출부 셋이 각자 정규화하면 갈라지므로 여기서 되돌린다(#38).
 
-    def test_kr_codes_reads_cache_only(self):
-        """렌더는 외부 호출 0 — `fetch=False` 를 빼면 페이지마다 네트워크가
-        붙는다(#116)."""
+        ⚠️ 마스터 키는 `.replace(" ", "")` 라 캡션의 내부 공백·`\xa0` 도 여기서
+        맞춘다(독립 리뷰 2026-09-22 L2 실측)."""
+        with _stub_master({"삼성전자": "005930"}):
+            got = sl.kr_codes([" 삼성전자 ", "삼성전자", "삼성 전자",
+                               "삼성\xa0전자", "모르는회사"])
+        # ⚠️ 앞뒤 `\xa0` 는 `.strip()` 이 이미 먹으므로 **내부**에 둬야 공백
+        # 정규화 축이 실제로 발화한다(#91c — 첫 픽스처는 앞쪽에 둬서 눈이 멀었다).
+        self.assertEqual(got, {" 삼성전자 ": "005930", "삼성전자": "005930",
+                               "삼성 전자": "005930", "삼성\xa0전자": "005930"})
+
+    def test_kr_codes_makes_no_outbound_call(self):
+        """렌더는 외부 호출 0 — 신원 오라클은 로컬 파일 + 메모이즈다(#116).
+
+        ⚠️ 옛 판은 `resolve_codes(fetch=False)` 를 단언했다(#222 다시 쓰기).
+        지금은 **그 사다리를 아예 안 탄다**는 것이 더 강한 계약이다 — 타면
+        `_DIRECT_CODES` 대용이 신원으로 새기 때문이다(독립 리뷰 2026-09-22 B1)."""
         import trade.price_provider as pp
-        seen = {}
+        called = []
         real = pp.resolve_codes
         try:
-            pp.resolve_codes = lambda names, **kw: seen.update(kw) or {}
-            sl.kr_codes(["삼성전자"])
+            pp.resolve_codes = lambda names, **kw: called.append(1) or {}
+            with _stub_master({"삼성전자": "005930"}):
+                self.assertEqual(sl.kr_codes(["삼성전자"]), {"삼성전자": "005930"})
         finally:
             pp.resolve_codes = real
-        self.assertIs(seen.get("fetch"), False)
+        self.assertEqual(called, [], "신원 확인이 시세 사다리를 탔다")
 
 
 class ProxyContractTests(unittest.TestCase):
@@ -216,6 +241,35 @@ class ProxyContractTests(unittest.TestCase):
 
 class BoardRenderTests(unittest.TestCase):
     """여덟 보드를 파서→DB→렌더로 통째로 태운다(#20)."""
+
+    def setUp(self):
+        """리졸버를 **클래스 전체**에서 경계 격리한다.
+
+        ⚠️ 2026-09-22 에 보드 넷(cn·my·tw·jp)이 KRX 마스터 대조를 쓰게 되면서
+        이 클래스의 **모든** 테스트가 `price_provider.resolve_codes` 를 타게
+        됐다 — 격리가 없으면 운영자의 `~/.trade` 상태(오버라이드·durable
+        캐시·`_DIRECT_CODES`)가 단언을 뒤집는다. 독립 리뷰가 바로 그것을
+        Blocking 으로 잡았고(#399), 규율로는 네 번 졌다(#30·#312·#344·#384)
+        — 그래서 개별 테스트가 어떻게 렌더하든(헬퍼든 직접이든) 걸리도록
+        `setUp` 에 둔다(#119 규율로 기억할 일을 구조로).
+        확인 목록이 필요한 테스트는 `self.codes` 를 채운다."""
+        import trade.price_provider as pp
+        self.codes: dict = {}
+        realm, realr = pp._load_krx_master, pp.resolve_codes
+        pp._load_krx_master = lambda: dict(self.codes)
+        pp.resolve_codes = lambda names, **kw: {}   # 사다리도 막는다(2차 그물)
+        self.addCleanup(lambda: setattr(pp, "resolve_codes", realr))
+        self.addCleanup(lambda: setattr(pp, "_load_krx_master", realm))
+
+    def test_the_resolver_is_boundary_isolated_in_this_class(self):
+        """위 `setUp` 이 실제로 걸렸나 — 이게 없으면 이 클래스의 보드
+        테스트가 운영자 홈 상태를 읽는다(#399 Blocking 재발). 모양이 아니라
+        **결과**로 잰다(#313)."""
+        import trade.price_provider as pp
+        self.codes = {"__probe__": "123456"}
+        self.assertEqual(pp._load_krx_master(), {"__probe__": "123456"})
+        self.assertEqual(pp.resolve_codes(["__probe__"]), {},
+                         "시세 사다리도 막혀 있어야 한다 — 신원으로 새면 안 된다")
 
     def _render(self, mod, opener, caption, *, arg=None):
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,6 +344,142 @@ class BoardRenderTests(unittest.TestCase):
             self.assertEqual(_links(html), [], f"{mod.__name__}: {cap[:22]}")
             self.assertIn("무명전자", html, "링크를 안 걸어도 이름은 보인다")
 
+    def test_mixed_market_board_links_a_korean_listing_when_the_exchange_confirms(self):
+        """혼합시장 보드의 한국 상장사 — **거래소 목록이 확인할 때만** 링크.
+
+        보드의 나라는 **교역 상대국**이지 상장 시장이 아니다: 2026-09-22 실측으로
+        `삼성SDI (006400)` 이 **말레이시아 수출** 보드에 실린다. 한 보드가 한
+        시장을 선언할 수 없으니 `local=` 만으로는 그 카드가 영원히 평문이었다
+        (#171 가드가 '못 만든다'로 끝나면 그 자리가 영원히 비는지 먼저 물을 것).
+
+        확인은 추측이 아니라 대조이고 **이름·코드가 둘 다** 맞아야 한다(#25) —
+        한쪽만 보면 CN A주 6자리가 통과하거나 동명 회사가 남의 코드를 얻는다."""
+        from trade import (my_stock_exports as mys, cn_stock_exports as cns,
+                           jp_stock_exports as jps, tw_monthly_revenue as twr)
+        # 전시장 동일 — 한 보드에서만 되는 게 아니다(§UNIVERSAL). 네 보드를 전수로
+        # 도는 이유: 배선을 한 곳만 떼는 변형이 나머지 테스트를 전부 통과한다
+        # (2026-09-22 실측 M6·M7 생존 — 발화 경로 없는 배선은 없는 것이다, #291).
+        boards = (
+            (mys, "open_my_stock_db",
+             "삼성SDI (006400)\n말레이시아 수출\n26년 8월 Update\n\n수출액 YoY: +97.0%"),
+            (cns, "open_cn_stock_db",
+             "삼성SDI (006400)\n중국 수출\n26년 8월 Update\n\n수출액 YoY: +1.0%"),
+            (jps, "open_jp_stock_db",
+             "삼성SDI (006400) 일본 수출 Update\n26년 8월\n\n수출액: YoY +1.0%"),
+            (twr, "open_tw_revenue_db",
+             "삼성SDI (006400) 월매출\n26년 8월\n\nREV 약 1,000억 TWD\n"
+             "MoM +1.0% · YoY +1.0%\n\nhttps://badonion.co.kr/twse-revenue"),
+        )
+        for mod, opener, cap in boards:
+            self.codes = {"삼성SDI": "006400"}
+            self.assertIn(("../lookup/006400", "삼성SDI"),
+                          _links(self._render(mod, opener, cap)), mod.__name__)
+            # 코드가 다르면 확인이 아니다
+            self.codes = {"삼성SDI": "999999"}
+            self.assertEqual(_links(self._render(mod, opener, cap)), [],
+                             f"{mod.__name__}: 코드 불일치인데 링크가 붙었다")
+            # 목록에 **이 이름이** 없으면 평문 — 목록이 비어 있어서가 아니라
+            # 이름이 안 맞아서다(= '코드만 보는' 변형이 여기서 잡힌다)
+            self.codes = {"다른회사": "006400"}
+            self.assertEqual(_links(self._render(mod, opener, cap)), [],
+                             f"{mod.__name__}: 이름이 목록에 없는데 링크가 붙었다")
+            # 마스터 자체가 없는 환경(미빌드·읽기 실패)도 종전처럼 평문
+            self.codes = {}
+            html = self._render(mod, opener, cap)
+            self.assertEqual(_links(html), [], f"{mod.__name__}: 확인 없이 링크")
+            self.assertIn("삼성SDI", html, "링크를 안 걸어도 이름은 보인다")
+
+    def test_a_tokyo_code_outside_the_japan_board_stays_plain(self):
+        """일본판 대조 수단이 이 레포에 없다 — 없는 근거를 지어내지 않는다(#165).
+
+        `Taiyo Yuden (6976)` 은 **중국 수출** 보드에 온다(2026-09-22 실측).
+        KRX 목록이 그 이름을 그 코드로 푼다고 우겨도 6976 은 6자리가 아니라
+        확인 축(규칙 3)에 닿지 않는다 = 그 축이 KR 전용임을 못박는다."""
+        from trade import cn_stock_exports as cns
+        cap = ("Taiyo Yuden (6976)\n중국 수출\n26년 8월 Update\n\n"
+               "수출액 YoY: +40.5%")
+        self.codes = {"Taiyo Yuden": "6976"}
+        html = self._render(cns, "open_cn_stock_db", cap)
+        self.assertEqual(_links(html), [])
+        self.assertIn("Taiyo Yuden", html)
+
+    def test_mixed_board_asks_the_exchange_only_about_bare_six_digit_rows(self):
+        """US 심볼 행까지 거래소에 물으면 헛돈다(#61) — 그리고 페이지당 1회(#113).
+
+        ⚠️ **인자**를 본다. 링크 결과만 보면 필터를 지워도 값이 같아 통과한다
+        (2026-09-22 실측 N4~N7 생존 — 목록에 없는 이름은 어차피 {} 를 돌려준다).
+        ⚠️ **네 보드 전수**다. 한 보드만 재면 나머지 셋에서 지우는 변형이
+        통과하고, 그때 `docs/tests.md` 는 그 축을 덮었다고 적는다(#286·#291)."""
+        from trade import (my_stock_exports as mys, cn_stock_exports as cns,
+                           jp_stock_exports as jps, tw_monthly_revenue as twr)
+        boards = (
+            (mys, "open_my_stock_db",
+             ["삼성SDI (006400)\n말레이시아 수출\n26년 8월 Update\n\n수출액 YoY: +97.0%",
+              "Penguin Solutions (PENG)\n말레이시아 수출\n26년 8월 Update\n\n"
+              "수출액 YoY: +1.0%"], "../lookup/PENG", "Penguin Solutions"),
+            (cns, "open_cn_stock_db",
+             ["삼성SDI (006400)\n중국 수출\n26년 8월 Update\n\n수출액 YoY: +1.0%",
+              "TTM Technologies (TTMI)\n중국 수출\n26년 8월 Update\n\n수출액 YoY: +1.0%"],
+             "../lookup/TTMI", "TTM Technologies"),
+            (jps, "open_jp_stock_db",
+             ["삼성SDI (006400) 일본 수출 Update\n26년 8월\n\n수출액: YoY +1.0%",
+              "Lumentum (LITE) 일본 수출 Update\n26년 8월\n\n수출액: YoY +1.0%"],
+             "../lookup/LITE", "Lumentum"),
+            (twr, "open_tw_revenue_db",
+             ["삼성SDI (006400) 월매출\n26년 8월\n\nREV 약 1,000억 TWD\n"
+              "MoM +1.0% · YoY +1.0%\n\nhttps://badonion.co.kr/twse-revenue",
+              "TSMC 월매출\n26년 8월\n\nREV 약 2,000억 TWD\nMoM +1.0% · YoY +1.0%\n\n"
+              "https://badonion.co.kr/twse-revenue"], "../lookup/TSMC", "TSMC"),
+        )
+        for mod, opener, caps, other_href, other_label in boards:
+            calls = _spy_kr_codes({"삼성SDI": "006400"})
+            with calls:
+                with tempfile.TemporaryDirectory() as tmp:
+                    c = getattr(mod, opener)(Path(tmp) / "t.db")
+                    for cap in caps:
+                        mod.ingest(c, cap)
+                    html = mod.render_html(c)
+            self.assertEqual(len(calls.seen), 1,
+                             f"{mod.__name__}: 페이지당 1회 — {len(calls.seen)}회")
+            self.assertEqual(calls.seen[0], ["삼성SDI"],
+                             f"{mod.__name__}: 맨 6자리가 아닌 행까지 물었다")
+            got = dict(_links(html))
+            self.assertEqual(got.get("../lookup/006400"), "삼성SDI", mod.__name__)
+            self.assertEqual(got.get(other_href), other_label, mod.__name__)
+
+    def test_the_identity_oracle_is_the_exchange_list_not_the_price_ladder(self):
+        """신원은 **거래소 목록**이 답한다 — 시세 사다리가 아니다.
+
+        `price_provider.resolve_codes` 는 값을 *보여주기* 위한 경로라
+        `_DIRECT_CODES` 가 상장사를 모회사로 바꾼다(`코오롱플라스틱 → 120110`
+        코오롱인더스트리 — 진짜 코드 138490 의 KIS 시세가 없어 운영자가 고른
+        대용이라고 소스 주석이 밝힌다). 그걸 신원에 쓰면 **양방향으로** 틀린다
+        (독립 리뷰 2026-09-22 실측): 진짜 코드는 대조가 어긋나 평문이 되고,
+        대용 코드는 확인을 통과해 **남의 회사 화면**이 열린다(#34·#55).
+
+        그래서 이 테스트는 사다리를 **일부러 살려 두고**(`resolve_codes` 가
+        대용을 돌려주게) 결과가 마스터 값이어야 함을 잰다 — 오라클을 되돌리는
+        변형이 여기서 잡힌다(#91b 재는 대상이 맞나)."""
+        import trade.price_provider as pp
+        real, realm = pp.resolve_codes, pp._load_krx_master
+        try:
+            pp.resolve_codes = lambda names, **kw: {"코오롱플라스틱": "120110"}
+            pp._load_krx_master = lambda: {"코오롱플라스틱": "138490",
+                                           "SK하이닉스": "000660"}
+            got = _sl.kr_codes(["코오롱플라스틱"])
+            self.assertEqual(got, {"코오롱플라스틱": "138490"},
+                             "시세 대용(120110)이 신원으로 새어 나왔다")
+            # 표기 변형(`_NAME_ALIASES`)은 신원을 안 바꾸므로 푼다
+            self.assertEqual(_sl.kr_codes(["Sk하이닉스"]), {"Sk하이닉스": "000660"})
+            # 비-ASCII 공백이 끼어도 마스터 키와 맞춘다(키는 호출부 원문 그대로)
+            self.assertEqual(_sl.kr_codes(["\xa0SK 하이닉스"]),
+                             {"\xa0SK 하이닉스": "000660"})
+            # 마스터가 없으면 아무것도 확인하지 않는다(= 전 칩 평문)
+            pp._load_krx_master = lambda: {}
+            self.assertEqual(_sl.kr_codes(["코오롱플라스틱"]), {})
+        finally:
+            pp.resolve_codes, pp._load_krx_master = real, realm
+
     def test_korea_export_board_links_by_code(self):
         from trade import kr_stock_exports as krs
         html = self._render(krs, "open_kr_stock_db",
@@ -311,51 +501,46 @@ class BoardRenderTests(unittest.TestCase):
         """회사별 보드는 코드가 없다 — 시세 칩이 쓰는 그 리졸버가 푼 코드로
         건다(#150). 리졸버가 못 풀면 평문(빈 href 금지, #144).
 
-        ⚠️ 스텁은 `_stub_resolver`(리졸버 **경계**)로 건다 — 한 단만 갈면
+        ⚠️ 스텁은 `_stub_master`(리졸버 **경계**)로 건다 — 한 단만 갈면
         운영자의 `~/.trade` 상태가 단언을 뒤집는다(그 docstring 참조)."""
         from trade import kr_stock_imports as kri
         cap = ("8월 수입 한국\n\n▶️ 삼성전자 — 반도체 장비\n"
                "26년08월: $158.5M (+105.3% YoY) (+11.8% MoM)")
-        with _stub_resolver({"삼성전자": "005930"}):
+        with _stub_master({"삼성전자": "005930"}):
             html = self._render(kri, "open_kr_stock_import_db", cap)
         self.assertIn(("../lookup/005930", "삼성전자"), _links(html))
-        with _stub_resolver({}):
+        with _stub_master({}):
             bare = self._render(kri, "open_kr_stock_import_db", cap)
         self.assertEqual(_links(bare), [], "못 푼 회사에 링크를 만들면 죽은 링크다")
         self.assertIn("삼성전자", bare)
         self.assertIn(".sl-link{", bare, "CSS 는 링크 유무와 무관하게 정의된다")
 
     def test_name_resolution_is_one_call_per_page(self):
-        """카드마다 부르면 캐시 파일을 행 수만큼 다시 읽는다(#113)."""
+        """카드마다 부르면 이름표를 행 수만큼 다시 조립한다(#113).
+
+        ⚠️ 2026-09-22 오라클 교체로 다시 썼다(#222) — 옛 판은 `resolve_codes`
+        호출 수를 셌는데 이제 그 사다리를 안 탄다. 계약("페이지당 1회 ·
+        이 이름들만")은 그대로이므로 **`kr_codes` 자체**를 스파이한다."""
         from trade import kr_stock_imports as kri
-        import trade.price_provider as pp
-        calls = []
-        real = pp.resolve_codes
-        try:
-            pp.resolve_codes = lambda names, **kw: calls.append(list(names)) or {}
+        calls = _spy_kr_codes({"삼성전자": "005930"})
+        with calls:
             with tempfile.TemporaryDirectory() as tmp:
                 c = kri.open_kr_stock_import_db(Path(tmp) / "t.db")
                 for nm in ("삼성전자", "SK하이닉스", "LG전자"):
-                    # 픽스처는 **제품 삽입 경로**로 심는다(#323 — 손으로 짠
-                    # INSERT 는 스키마가 바뀌면 조용히 다른 것을 잰다).
+                    # 픽스처는 **제품 삽입 경로**로 심는다(#323).
                     kri.ingest(c, f"8월 수입 한국\n\n▶️ {nm} — 반도체 장비\n"
                                   "26년08월: $158.5M (+105.3% YoY)")
                 kri.render_html(c)
-        finally:
-            pp.resolve_codes = real
-        self.assertEqual(len(calls), 1, f"페이지당 1회여야 한다 — {len(calls)}회")
-        self.assertEqual(sorted(calls[0]), ["LG전자", "SK하이닉스", "삼성전자"])
+        self.assertEqual(len(calls.seen), 1,
+                         f"페이지당 1회여야 한다 — {len(calls.seen)}회")
+        self.assertEqual(sorted(calls.seen[0]), ["LG전자", "SK하이닉스", "삼성전자"])
 
     def test_export_board_resolves_only_the_codeless_rows_once(self):
         """한국 수출 보드는 금액판(합성키) 행만 이름으로 푼다 — 코드가 이미
-        있는 행까지 넘기면 리졸버가 헛돈다(#61). 그리고 페이지당 1회(#113)."""
+        있는 행까지 넘기면 조회가 헛돈다(#61). 그리고 페이지당 1회(#113)."""
         from trade import kr_stock_exports as krs
-        import trade.price_provider as pp
-        calls = []
-        real = pp.resolve_codes
-        try:
-            pp.resolve_codes = lambda names, **kw: (calls.append(list(names))
-                                                    or {"LS ELECTRIC": "010120"})
+        calls = _spy_kr_codes({"LS ELECTRIC": "010120"})
+        with calls:
             with tempfile.TemporaryDirectory() as tmp:
                 c = krs.open_kr_stock_db(Path(tmp) / "t.db")
                 krs.ingest(c, "HPSP (403870)\n한국 수출\n26년 7월 Update\n\n"
@@ -363,11 +548,10 @@ class BoardRenderTests(unittest.TestCase):
                 krs.ingest(c, "8월 수출 한국\n\n▶️ LS ELECTRIC — 배전반\n"
                               "26년08월: $158.5M (+105.3% YoY)")
                 html = krs.render_html(c)
-        finally:
-            pp.resolve_codes = real
-        self.assertEqual(len(calls), 1, f"페이지당 1회여야 한다 — {len(calls)}회")
-        self.assertEqual(calls[0], ["LS ELECTRIC"],
-                         "코드가 이미 있는 행은 리졸버에 안 넘긴다")
+        self.assertEqual(len(calls.seen), 1,
+                         f"페이지당 1회여야 한다 — {len(calls.seen)}회")
+        self.assertEqual(calls.seen[0], ["LS ELECTRIC"],
+                         "코드가 이미 있는 행은 조회에 안 넘긴다")
         got = dict(_links(html))
         self.assertEqual(got.get("../lookup/403870"), "HPSP")
         self.assertEqual(got.get("../lookup/010120"), "LS ELECTRIC")
@@ -558,10 +742,10 @@ class ReferenceBookTests(unittest.TestCase):
               "companies": ["삼성전자", "모르는회사", "하나마이크론"]}]
 
     def _render(self, codes: dict, rows=None) -> str:
-        # ⚠️ 스텁은 **리졸버 경계**(`_stub_resolver`) — 한 단만 갈면 운영자의
+        # ⚠️ 스텁은 **리졸버 경계**(`_stub_master`) — 한 단만 갈면 운영자의
         # `~/.trade` 상태·`_DIRECT_CODES` 한 줄이 단언을 뒤집는다(그 docstring).
         from trade import reference_book as R
-        with _stub_resolver(codes):
+        with _stub_master(codes):
             return R.render_page(rows if rows is not None else self._ROWS)
 
     def test_company_chip_links_when_a_code_resolves(self):
