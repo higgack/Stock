@@ -30,6 +30,7 @@ from pathlib import Path
 from trade.archive_template import (asof_footer, back_nav_html, card_html,
                                     max_ingest_iso)
 from trade.cn_stock_flow import _CSS, _THEME_JS
+from trade import stock_link as _sl
 
 PARSE_VER = 2
 TABLE = "tw_monthly_revenue"
@@ -309,8 +310,12 @@ def _hist_table(hist: list[dict]) -> str:
 
 
 def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
-    name = _html.escape(r.get("stock_name") or r.get("ticker") or "")
-    tk = _html.escape(r.get("ticker") or "")
+    # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 질의를 못 만들면
+    # 평문 — 규칙·URL 은 `trade.stock_link` 한 곳에 있다(#38).
+    raw_name = r.get("stock_name") or r.get("ticker") or ""
+    raw_tk = r.get("ticker") or ""
+    name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name))
+    tk = _html.escape(raw_tk)
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd"><span class="kr-item">{name}</span>'
                f'<span class="kr-code">{tk}</span>'

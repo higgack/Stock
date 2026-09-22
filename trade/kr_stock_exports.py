@@ -33,6 +33,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from trade import badonion_metrics as _metrics
+from trade import stock_link as _sl
 from trade import kr_company_flow as _flow
 from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
@@ -428,7 +429,7 @@ details.kr-card > .kr-sum::after{content:"▸ 펼치기(차트·월별)";color:v
 .kr-htbl th{color:var(--muted);font-weight:500}
 .kr-htbl td:first-child,.kr-htbl th:first-child{text-align:left;color:var(--text)}
 .empty{color:var(--muted);font-size:14px;padding:40px 0;text-align:center}
-"""
+""" + _sl.LINK_CSS
 
 _THEME_JS = (
     "<script>function applyDarkMode(){var h=(new Date().getUTCHours()+9)%24;"
@@ -479,12 +480,20 @@ def _hist_table(hist: list[dict]) -> str:
             + "".join(trs) + "</table>")
 
 
-def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
+def _card_html(r: dict, hist: list[dict], media_prefix: str,
+               code_by_name: dict | None = None) -> str:
     raw_code = r.get("stock_code") or ""
     # 합성키(`nm:회사명`)는 **코드가 아니다** — 그대로 찍으면 화면이 없는
     # 종목코드를 있다고 말한다(#34·#43). 6자리 숫자일 때만 코드로 인정한다.
-    code = _html.escape(raw_code if re.fullmatch(r"\d{6}", raw_code) else "")
-    name = _html.escape(r.get("stock_name") or code or "")
+    code6 = raw_code if re.fullmatch(r"\d{6}", raw_code) else ""
+    code = _html.escape(code6)
+    raw_name = r.get("stock_name") or code6 or ""
+    # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 금액판 행은 코드가
+    # 합성키라 여기 오는 `code6` 가 빈 문자열인데, 그 경우 이름→코드는 이미
+    # 시세 칩이 쓰는 리졸버가 푼다 — 호출부가 페이지당 한 번 풀어 넘긴다.
+    name = _sl.linked_name(raw_name, _sl.lookup_href(
+        code6, raw_name, local="KR",
+        query=(code_by_name or {}).get(raw_name, "")))
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd">'
                f'<span class="kr-item">{name}</span>'
@@ -556,7 +565,13 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
                 + asof_footer(0, "종목", None,
                               max_ingest_iso(conn, "kr_stock_exports"))
                 + "</div></body></html>")
-    cards = [_card_html(r, history(conn, r["stock_code"]), media_url_prefix)
+    # 이름→코드는 **페이지당 한 번**(#113) — 카드마다 부르면 캐시 파일을
+    # 행 수만큼 다시 읽는다. 코드가 이미 있는 행은 리졸버가 필요 없다.
+    _code_by_name = _sl.kr_codes(
+        r.get("stock_name") or "" for r in rows
+        if not re.fullmatch(r"\d{6}", r.get("stock_code") or ""))
+    cards = [_card_html(r, history(conn, r["stock_code"]), media_url_prefix,
+                        _code_by_name)
              for r in rows]
     return (_HEAD + "<div class='wrap'>"
             f"{back_nav_html()}"

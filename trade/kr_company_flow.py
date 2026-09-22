@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trade import stock_link as _sl
 from trade.archive_template import (asof_footer, back_nav_html,
                                     card_html, max_ingest_iso)
 
@@ -288,7 +289,7 @@ details.krf-card > .krf-sum::after{content:"▸ 펼치기(차트·월별)";color
 .krf-htbl th{color:var(--muted);font-weight:500}
 .krf-htbl td:first-child,.krf-htbl th:first-child{text-align:left;color:var(--text)}
 .empty{color:var(--muted);font-size:14px;padding:40px 0;text-align:center}
-"""
+""" + _sl.LINK_CSS
 
 _THEME_JS = (
     "<script>function applyDarkMode(){var h=(new Date().getUTCHours()+9)%24;"
@@ -329,8 +330,14 @@ def _hist_table(hist: list[dict], flow: Flow) -> str:
             '<th>YoY</th><th>MoM</th></tr>' + "".join(trs) + "</table>")
 
 
-def _card_html(r: dict, hist: list[dict], flow: Flow, media_prefix: str) -> str:
-    name = _html.escape(r.get("company") or "")
+def _card_html(r: dict, hist: list[dict], flow: Flow, media_prefix: str,
+               code_by_name: dict | None = None) -> str:
+    # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 이 보드는
+    # 회사명만 있고 코드가 없으므로, 시세 칩이 쓰는 그 리졸버가 푼
+    # 코드로 건다 — 호출부가 페이지당 한 번 풀어 넘긴다(#113·#150).
+    raw_name = r.get("company") or ""
+    name = _sl.linked_name(raw_name, _sl.lookup_href(
+        query=(code_by_name or {}).get(raw_name, "")))
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="krf-hd"><span class="krf-item">{name}</span>'
                f'<span class="krf-mo">📅 {mo}</span></div>']
@@ -376,8 +383,9 @@ def render_html(conn: sqlite3.Connection, flow: Flow, *,
                 "데이터(나쁜양파·회사별)가 없습니다.</div>"
                 + asof_footer(0, "회사", None, max_ingest_iso(conn, flow.table))
                 + "</div></body></html>")
+    _code_by_name = _sl.kr_codes(r.get("company") or "" for r in rows)
     cards = [_card_html(r, history(conn, flow, r["company"]), flow,
-                        media_url_prefix) for r in rows]
+                        media_url_prefix, _code_by_name) for r in rows]
     return (head + "<div class='wrap'>" + back_nav_html() + title +
             f"<div class='sub'>Badonions 한국 {flow.marker} 캡션을 "
             "<b>회사별</b>로 정리한 페이지 · 새 월이 오면 카드가 자동 교체되고 "

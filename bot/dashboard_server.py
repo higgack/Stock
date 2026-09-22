@@ -346,7 +346,15 @@ def _rewrite_trade_html(body: bytes, token: str) -> bytes:
       JPEG. 8765 직접 접속(원본 ../media/)은 프록시를 안 거쳐 그대로 정상."""
     body = body.replace(b"/dashboard/", b"/trade/")
     mpfx = (f"/{token}".encode() if token else b"") + b"/trade/media/"
-    return body.replace(b"../media/", mpfx)
+    body = body.replace(b"../media/", mpfx)
+    # 상대 ../lookup/ → /<token>/lookup/ (NOAH 루트). 수출입 종목카드 제목이
+    # NOAH 종목분석 화면으로 가는 딥링크(사용자 2026-09-22) — trade 백엔드는
+    # NOAH 토큰을 모르므로 media 와 **같은 규칙**으로 여기서 절대화한다.
+    # 절대경로로 적어 두면 토큰이 떨어져 404 이고(#359), 상대로 두면 동결
+    # 아카이브처럼 한 단계 아래 페이지에서 깊이가 어긋난다 — 그래서 토큰 포함
+    # 절대로 바꾼다(트레일링슬래시·깊이 무관).
+    lpfx = (f"/{token}".encode() if token else b"") + b"/lookup/"
+    return body.replace(b"../lookup/", lpfx)
 
 
 # ── 유동성 보드 실시간 오버레이 소스 ──────────────────────────────────

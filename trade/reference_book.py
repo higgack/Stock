@@ -216,6 +216,15 @@ def unmatched_candidates(rows: list[dict], db_path=None,
 
 # 테마 = 대시보드와 동일 시간기반(KST 19-07 = body.dark). 라이트 기본 + body.dark 오버라이드
 # (사용자 2026-06-18 'light/black 시간에 맞게 안 변해' — 기존 prefers-color-scheme OS기반 폐기).
+
+def _sl_css() -> str:
+    """종목 딥링크 스타일 — 단일 출처(`trade.stock_link.LINK_CSS`)에서 가져온다.
+    복제하면 보드마다 밑줄이 갈린다(#38·#201 클래스만 쓰고 정의를 빠뜨리면 조용히
+    스타일이 빠진다)."""
+    from trade import stock_link as _sl
+    return _sl.LINK_CSS
+
+
 _CSS = """
 *{box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;
@@ -267,7 +276,7 @@ body.dark .rfbar #rfq{background:#0d1117;border-color:#1f3354;color:#e6edf3}
 .rf .umt thead th{border-bottom-color:#bcd2f7}
 body.dark .rf{background:#0e1726;border-color:#1f3354}body.dark .rf>summary{color:#6cb6ff}
 body.dark .rf .umt thead th{border-color:#1f3354}
-"""
+""" + _sl_css()
 
 _JS = """
 (function(){
@@ -442,10 +451,25 @@ def _render_reinforce(reinforce: list[tuple[str, list[str]]] | None) -> str:
 def render_page(rows: list[dict], *, now: datetime | None = None,
                 unmatched: list[tuple[str, list[str], int]] | None = None,
                 reinforce: list[tuple[str, list[str]]] | None = None) -> str:
-    """검색 가능한 자체완결 HTML. 순수."""
+    """검색 가능한 자체완결 HTML.
+
+    순수 아님(2026-09-22) — 관련상장사 딥링크용 이름→KRX 코드 맵을 **로컬**
+    에서 한 번 읽는다(`stock_link.kr_codes`, 외부 호출 0). 해석 수단이 없으면
+    빈 맵이라 전 칩이 평문으로 렌더된다.
+    """
     from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 복원(공용)
     from trade import mti_companies as _mc                # 검색 동의어(PCB→인쇄회로)
+    from trade import stock_link as _sl                   # 회사명 → NOAH 종목분석
     e = _html.escape
+    # 관련상장사 → `/lookup/<코드>` 딥링크(사용자 2026-09-22 "종목이 있는 대시보드에
+    # 종목들은 모두"). 이름→KRX 코드는 **페이지당 한 번**(#113) 로컬 해석(외부 호출
+    # 0) 이고, 못 푼 이름은 평문 그대로다 — 죽은 링크를 만들지 않는다(#144·#43).
+    try:
+        code_by_name = _sl.kr_codes(
+            c for r in rows for c in (r.get("companies") or []))
+    except Exception as exc:                 # 곁들이가 본체를 지우면 안 된다(#315)
+        log.warning("reference_book: 종목코드 해석 실패 — 링크 없이 렌더: %s", exc)
+        code_by_name = {}
     now = now or datetime.now(_KST)
     inds = sorted({r["industry"] for r in rows if r.get("industry")})
     chips = "".join(f'<span class="chip" data-i="{e(i)}">{e(i)}</span>' for i in inds)
@@ -453,7 +477,10 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
     for r in rows:
         hs = ", ".join(r.get("hs") or [])
         cos = r.get("companies") or []
-        co_html = ("".join(f'<span class="x">{e(c)}</span>' for c in cos)
+        co_html = ("".join(
+            f'<span class="x">'
+            f'{_sl.linked_name(c, _sl.lookup_href(query=code_by_name.get(c, "")))}'
+            f'</span>' for c in cos)
                    if cos else '<span class="none">—</span>')
         parts = [r["name"], r["mti6"], r["industry"], hs, " ".join(cos)]
         syn = " ".join(_mc.search_synonyms(r["name"]))
