@@ -19914,6 +19914,20 @@ def resolve_name_to_ticker(query: str) -> str | None:
             return t
     except Exception:
         pass
+    # 접미사 없는 6자리 숫자 = KRX 코드 — 아래 '티커 모양이면 통과' 에 먼저
+    # 걸려 `005930` 이 **미국 심볼로 해석**되고 있었다(2026-09-22 수출입
+    # 종목카드 딥링크를 붙이며 발각). 이 레포는 "무접미 6자리 = KR" 을 이미
+    # 규약으로 쓴다(JP·TW 는 4자리, CN 6자리는 .SS/.SZ — `_ticker_market`
+    # 실측 주석). KS/KQ 는 KRX 목록이 가른다(`naver_pages` 선행 사례와 같은
+    # 한 줄). ⚠️ 목록을 못 받으면 `.KS` 그대로다 — 코스닥이면 빈 화면이
+    # 되지만 '미국 심볼 오해석'보다는 낫고, 목록은 7일 디스크 캐시라
+    # 운영에선 거의 항상 있다(#165 재지 않은 것을 단정하지 않는다).
+    if len(q) == 6 and q.isdigit():
+        try:
+            from bot.market import normalize_kr_ticker_suffix
+            return normalize_kr_ticker_suffix(f"{q}.KS")
+        except Exception:
+            return f"{q}.KS"
     # Already looks like a ticker → skip further resolution
     if re.match(r'^[A-Z0-9][A-Z0-9.\-]{0,9}$', q.upper()):
         return None

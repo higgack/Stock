@@ -77242,3 +77242,72 @@ class TestSysModulesLeakGuard20260921:
                    and any(k.arg == "autouse" and k.value.value is True
                            for k in d.keywords)
                    for d in fx.decorator_list), "autouse 가 아니다"
+
+
+class TestTradeStockDeepLink20260922:
+    """수출입 종목카드 → `/lookup/` 딥링크의 NOAH 쪽 두 관문(사용자 2026-09-22).
+
+    trade 쪽 규칙·보드 E2E 는 `trade/tests/test_stock_link.py` 가 잰다. 여기선
+    **NOAH 가 지키는 계약** 둘만 본다 — 질의 해석과 프록시 절대화.
+    """
+
+    def test_bare_six_digit_resolves_to_kr_not_us(self):
+        """`/lookup/005930` 이 **미국 심볼로 해석**되던 것(2026-09-22 발각).
+        이 레포는 "무접미 6자리 = KR" 을 이미 규약으로 쓴다.
+
+        목록을 못 받는 경우(=여기 스텁)도 `.KS` 로 KR 경로에 남는 것이 계약이다
+        — 그때가 문서에 적은 '열화 경로' 이고, 시계·네트워크에 기대지 않도록
+        목록을 주입해 결정적으로 잰다(#128)."""
+        import bot.market as m
+        import bot.dashboard as d
+        saved = m._kr_market_code_sets
+        try:
+            m._kr_market_code_sets = lambda: (set(), set())
+            assert d.resolve_name_to_ticker("005930") == "005930.KS"
+        finally:
+            m._kr_market_code_sets = saved
+
+    def test_kosdaq_code_gets_kq_from_the_krx_lists(self):
+        """KS/KQ 는 추측이 아니라 KRX 목록이 가른다 — `.KS` 로 굳으면
+        코스닥 종목이 빈 화면이 된다."""
+        import bot.market as m
+        import bot.dashboard as d
+        saved = m._kr_market_code_sets
+        try:
+            m._kr_market_code_sets = lambda: ({"005930"}, {"403870"})
+            assert d.resolve_name_to_ticker("403870") == "403870.KQ"
+            assert d.resolve_name_to_ticker("005930") == "005930.KS"
+        finally:
+            m._kr_market_code_sets = saved
+
+    def test_other_shapes_are_untouched(self):
+        """영문 심볼·별칭 경로는 그대로 — 6자리 분기가 남의 질의를 삼키면
+        안 된다(#146 증상이 아니라 원인으로 거를 것)."""
+        import bot.dashboard as d
+        assert d.resolve_name_to_ticker("TTMI") is None      # 티커 모양 → 통과
+        assert d.resolve_name_to_ticker("Advantest") == "6857.T"
+        assert d.resolve_name_to_ticker("12345") is None     # 5자리는 KR 코드가 아니다
+        assert d.resolve_name_to_ticker("1234567") is None
+
+    def test_proxy_absolutizes_lookup_and_media_together(self):
+        """`../lookup/` 은 `../media/` 와 **같은 규칙**으로 토큰 포함 절대가
+        된다 — 절대로 적으면 토큰이 떨어져 404 다(#359). media 규칙을 깨면
+        카드 이미지가 회색이 되므로 둘을 한 번에 잰다(#38)."""
+        from bot import dashboard_server as ds
+        body = (b'<img src="../media/a/b.jpg">'
+                b'<a href="../lookup/005930">x</a>')
+        assert ds._rewrite_trade_html(body, "tok") == (
+            b'<img src="/tok/trade/media/a/b.jpg">'
+            b'<a href="/tok/lookup/005930">x</a>')
+        assert ds._rewrite_trade_html(body, "") == (
+            b'<img src="/trade/media/a/b.jpg">'
+            b'<a href="/lookup/005930">x</a>')
+
+    def test_trade_side_uses_that_exact_prefix(self):
+        """trade 가 쓰는 접두가 프록시가 바꾸는 접두와 갈리면 전 보드 링크가
+        조용히 404 다 — 값으로 못박는다(#38·#19 리터럴 복제 금지)."""
+        from trade import stock_link as sl
+        from bot import dashboard_server as ds
+        out = ds._rewrite_trade_html(
+            f'href="{sl.LOOKUP_PREFIX}TTMI"'.encode(), "")
+        assert out == b'href="/lookup/TTMI"', out

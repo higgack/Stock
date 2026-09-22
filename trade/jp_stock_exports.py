@@ -39,6 +39,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from trade import badonion_metrics as _metrics
+from trade import stock_link as _sl
 from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
 
@@ -302,7 +303,7 @@ details.kr-card > .kr-sum::after{content:"▸ 펼치기(차트·월별)";color:v
 .kr-htbl th{color:var(--muted);font-weight:500}
 .kr-htbl td:first-child,.kr-htbl th:first-child{text-align:left;color:var(--text)}
 .empty{color:var(--muted);font-size:14px;padding:40px 0;text-align:center}
-"""
+""" + _sl.LINK_CSS
 
 _THEME_JS = (
     "<script>function applyDarkMode(){var h=(new Date().getUTCHours()+9)%24;"
@@ -357,8 +358,12 @@ def _hist_table(hist: list[dict]) -> str:
 
 
 def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
-    name = _html.escape(r.get("stock_name") or r.get("ticker") or "")
-    tk = _html.escape(r.get("ticker") or "")
+    # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 질의를 못 만들면
+    # 평문 — 규칙·URL 은 `trade.stock_link` 한 곳에 있다(#38).
+    raw_name = r.get("stock_name") or r.get("ticker") or ""
+    raw_tk = r.get("ticker") or ""
+    name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name, jp_local=True))
+    tk = _html.escape(raw_tk)
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd">'
                f'<span class="kr-item">{name}</span>'

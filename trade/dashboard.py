@@ -339,6 +339,9 @@ def _load_heatmap_html(customs_db_path: Path | str | None) -> str:
         return ""
 
 
+from trade import stock_link as _sl
+
+
 def _asof_label(basdt: str) -> str:
     """EOD 기준일(YYYYMMDD) → 한글 요일 1자('목'). 파싱 실패 시 ''. KIS 현재가
     대비 '며칠 종가'인지 한눈에 — data.go.kr EOD는 보통 T+1 지연이라 토요일엔
@@ -375,6 +378,12 @@ def _stock_quotes_for(payload: list[dict]) -> dict:
         out = {}
         for nm, q in quotes.items():
             d = {"p": round(q.price), "c": round(q.change_pct, 2)}
+            # 회사별 섹션 제목 → 종목분석 화면 딥링크의 재료(사용자 2026-09-22).
+            # 6자리 숫자일 때만 싣는다 — 합성키가 코드 자리에 앉으면 화면이
+            # 없는 종목코드를 있다고 말한다(#34·#43).
+            _sym = str(getattr(q, "symbol", "") or "")
+            if len(_sym) == 6 and _sym.isdigit():
+                d["s"] = _sym
             # EOD(지연 종가)만 기준일 요일 라벨 — KIS 현재가(최신)는 라벨 없음.
             if getattr(q, "source", "kis") == "eod":
                 lbl = _asof_label(getattr(q, "as_of", ""))
@@ -1362,6 +1371,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .stock-px.up{color:var(--tone-export)}
 .stock-px.down{color:var(--tone-import)}
 .section-px{font-size:14px;font-weight:700;margin-left:8px;vertical-align:middle}
+""" + _sl.LINK_CSS + """
 .section-px.up{color:var(--tone-export)}
 .section-px.down{color:var(--tone-import)}
 .px-asof{font-size:.8em;color:#888;font-weight:400;margin-left:2px}
@@ -1432,6 +1442,21 @@ function stockPx(name){
   var asof=q.d?' <span class="px-asof">('+q.d+')</span>':'';
   var tt=(q.d?'('+q.d+') 종가 ':'종가 ')+(Number(q.p)||0).toLocaleString()+'원';
   return ' <span class="stock-px '+cls+'" title="'+tt+'">'+sign+c.toFixed(1)+'%</span>'+asof;
+}
+// 회사명 → NOAH 종목분석 화면(`../lookup/<코드>`) 딥링크(사용자 2026-09-22
+// "회사별도 똑같이 종목화면으로"). 재료는 STOCK_QUOTES 가 이미 들고 있는 KRX
+// 코드뿐 — 없으면 링크를 만들지 않는다(빈/틀린 href 는 죽은 링크, #144·#43).
+// 접두는 종목별 보드와 **같은 상대경로**라 NOAH 프록시가 토큰 포함 절대로
+// 바꾼다(#38·#359 — 절대로 적으면 토큰이 떨어져 404).
+function stockHref(name){
+  var q=pxLookup(name); var s=q&&q.s?String(q.s):'';
+  return /^[0-9]{6}$/.test(s)?'../lookup/'+encodeURIComponent(s):'';
+}
+// 링크 마크업 단일 출처 — 섹션 제목·모달 관련종목이 같은 함수를 쓴다(#38).
+// href 가 비면 평문 그대로(죽은 링크를 만들지 않는다, #144·#43).
+function slLink(text, href){
+  return href?('<a class="sl-link" href="'+esc(href)+'" title="종목분석 화면으로">'+
+    esc(text)+'</a>'):esc(text);
 }
 // 회사별 섹션 헤더용 — 회사명=종목이므로 종가+등락률을 더 크게.
 function sectionStockPx(name){
@@ -1798,7 +1823,8 @@ function renderModalCard(a, primary){
   let stocksHtml='';
   if(primary&&a.stocks&&a.stocks.length){
     stocksHtml='<div class="stocks"><span class="label">관련종목</span>'+
-      a.stocks.map(s=>'<span class="stock">'+esc(s)+stockPx(s)+'</span>').join('')+
+      a.stocks.map(s=>'<span class="stock">'+slLink(s,stockHref(s))+stockPx(s)+
+        '</span>').join('')+
       (a.has_etc?'<span class="stock">등</span>':'')+'</div>';
   }
   let imagesHtml='';
@@ -1896,13 +1922,15 @@ function matches(a){
 // just [items-count]. Empty entries are dropped silently. The optional
 // `newBadge` flag puts a small NEW chip next to the title for sections
 // whose item/company first appeared within the last 7 days.
-function renderSection(title, subtitles, miniCardsHtml, newBadge, headerExtra){
+function renderSection(title, subtitles, miniCardsHtml, newBadge, headerExtra, titleHref){
   const lines=(subtitles||[]).filter(Boolean)
     .map(s=>'<div class="sub-line">'+esc(s)+'</div>').join('');
   const badge=newBadge?' <span class="section-new">NEW</span>':'';
+  // titleHref 는 회사별 뷰만 넘긴다 — 품목·산업·국가·지역 축은 종목이 아니다.
+  const t=slLink(title, titleHref);
   return '<section class="section">'+
     '<div class="section-header">'+
-      '<h2>'+esc(title)+(headerExtra||'')+badge+'</h2>'+
+      '<h2>'+t+(headerExtra||'')+badge+'</h2>'+
       lines+
     '</div>'+
     '<div class="section-items">'+miniCardsHtml+'</div>'+
@@ -2086,7 +2114,8 @@ function buildCompaniesView(filtered){
     const cards=items.map(renderMiniCard).join('');
     // 회사명=종목 → 헤더에 그 회사 EOD 가격(있을 때). 모달 칩과 둘 다 유지.
     return renderSection(name, [items.length+'개 품목'], cards,
-                         isCompanyNew(name), sectionStockPx(name));
+                         isCompanyNew(name), sectionStockPx(name),
+                         stockHref(name));
   }).join('');
 }
 

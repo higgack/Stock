@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from trade import dashboard, price_provider
+from trade.tests.test_stock_link import _js_fn  # 중괄호로 함수 본문만(#60)
 
 
 def _q(code, name, price, pct):
@@ -19,7 +20,13 @@ class StockQuotesMapTests(unittest.TestCase):
         with mock.patch.object(price_provider, "provider_active", return_value=True), \
              mock.patch.object(price_provider, "get_quotes_by_name", return_value=fake):
             out = dashboard._stock_quotes_for(payload)
-        self.assertEqual(out["삼성전자"], {"p": 351500, "c": -2.5})
+        # 2026-09-22: `s`(6자리 KRX 코드)가 하나 더 실린다 — 칩·섹션 제목이
+        # `/lookup/<코드>` 딥링크를 만드는 재료다(#399). 옛 계약("칸은 p·c
+        # 둘뿐")은 지우지 말고 **다시 쓴다**(#222) — 남는 보장은 값 자체와
+        # "합성키(`nm:…`)는 코드로 싣지 않는다"(#34, 아래 별도 테스트).
+        self.assertEqual({k: out["삼성전자"][k] for k in ("p", "c")},
+                         {"p": 351500, "c": -2.5})
+        self.assertEqual(out["삼성전자"]["s"], "005930")
         self.assertEqual(out["이오테크닉스"]["c"], 1.7)
 
     def test_only_matched_names_included(self):
@@ -62,10 +69,18 @@ class StockQuotesMapTests(unittest.TestCase):
 
 class FrontendWiringTests(unittest.TestCase):
     def test_js_has_stockpx_helper_and_chip_uses_it(self):
+        """관련종목 칩이 이름과 시세 칩을 같이 낸다.
+
+        2026-09-22: 옛 판은 `"esc(s)+stockPx(s)"` 라는 **소스 문자열**을 단언해,
+        칩에 딥링크를 붙이며 `slLink(s,stockHref(s))+stockPx(s)` 로 바뀌자
+        멀쩡한 코드를 틀렸다고 했다(#19 — 값이 걸린 곳은 동작으로 재야 한다).
+        계약은 "칩이 이름 + 시세를 낸다" 이지 그 표기가 아니다(#222).
+        """
         self.assertIn("function stockPx(", dashboard._JS)
         self.assertIn("STOCK_QUOTES", dashboard._JS)
-        # 관련종목 칩이 stockPx(s)를 부른다
-        self.assertIn("esc(s)+stockPx(s)", dashboard._JS)
+        chip = _js_fn(dashboard._JS, "renderModalCard")
+        self.assertIn("stockPx(s)", chip, "칩이 시세를 안 부른다")
+        self.assertIn("class=\"stock\"", chip)
 
     def test_css_has_stock_px_classes(self):
         self.assertIn(".stock-px", dashboard._CSS)
