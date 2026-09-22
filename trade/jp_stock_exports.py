@@ -362,7 +362,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     # 평문 — 규칙·URL 은 `trade.stock_link` 한 곳에 있다(#38).
     raw_name = r.get("stock_name") or r.get("ticker") or ""
     raw_tk = r.get("ticker") or ""
-    name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name, jp_local=True))
+    name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name, local="JP"))
     tk = _html.escape(raw_tk)
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd">'

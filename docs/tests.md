@@ -1700,7 +1700,7 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 샌드박스는 KRX 에 닿을 수 없어 원인은 단정하지 않는다(#12·#165) — 다음 VM
 실행의 `--why` 출력이 갈래를 말한다(#82).
 
-## #399 — 종목 딥링크 (`trade/tests/test_stock_link.py`, 33건 + 회귀 5건)
+## #399 — 종목 딥링크 (`trade/tests/test_stock_link.py`, 39건 + 회귀 5건)
 
 사용자 2026-09-22 "종목제목을 클릭하면 캡쳐된 종목화면으로 … 종목이 있는
 대시보드에 종목들은 모두 적용 … 회사별도 똑같이". 거는 자리가 열한 곳이라
@@ -1708,17 +1708,25 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 
 | 축 | 무엇을 재나 | 테스트 |
 |---|---|---|
-| ① 질의 규칙 | 규칙마다 **그 규칙을 지우면 깨지는** 값 하나씩(#91) | `QueryRuleTests` 8건 |
+| ① 질의 규칙 | 규칙마다 **그 규칙을 지우면 깨지는** 값 하나씩(#91) | `QueryRuleTests` 12건 |
+| ①-b 시장 선언 | 맨 숫자 티커는 **보드가 선언한 시장**에서만 질의가 된다(#34) | `…::test_bare_six_digits_only_on_a_board_that_declares_kr` · `…::test_tokyo_code_width_is_exactly_four` · `BoardRenderTests::test_bare_numeric_tickers_do_not_borrow_another_market` |
+| ①-c 이스케이프 | 캡션에서 온 이름·아무 href 나 받는 헬퍼 둘 다(#291) | `…::test_linked_name_escapes_the_href_too` · `DashboardModalStocksTests::test_caption_names_are_escaped_in_both_branches` · `…::test_sllink_escapes_the_href_attribute` |
 | ② 보드 E2E | 파서·DB·렌더를 **통째로** 태워 href 값을 본다(#20) | `BoardRenderTests` 8보드 |
 | ③ 회사별 탭 | `buildCompaniesView` 를 node 로 **실행**(#253) | `DashboardCompanyViewTests` |
 | ④ 모달 칩 | `renderModalCard` 실행 — 이름만 링크, 시세 칩은 그대로 | `DashboardModalStocksTests` |
 | ⑤ 레퍼런스북 | `render_page` 통째 + 페이지당 1회 해석(#113) | `ReferenceBookTests` 6건 |
+| ⑧ 리졸버 격리 | 스텁을 **경계**(`resolve_codes`)에 걸어 운영자 홈 상태를 안 본다(#30) | `_stub_resolver` 를 쓰는 `BoardRenderTests`·`ReferenceBookTests` |
 | ⑥ 프록시 계약 | trade 접두 ↔ NOAH 프록시 접두가 **같은 값**(#38) | `ProxyContractTests` |
 | ⑦ 목적지 리졸버 | `/lookup/005930` 이 KR 로 해석되나(KS/KQ 판정 포함) | `tests/test_regression.py::TestTradeStockDeepLink20260922` |
 
-⚠️ **뮤테이션에서 배운 것**(8종, 전부 잡힘): 배선 제거(모달 칩·섹션 제목·
-레퍼런스북 칩) · `slLink` href 가드 제거 · `stockHref` 6자리 가드 제거 ·
-행마다 해석(페이지당 1회 계약) · 리졸버 실패가 페이지를 죽임 · CSS 제거.
+⚠️ **뮤테이션에서 배운 것.** 내가 돌린 8종은 전부 잡혔지만 **그 집합이 너무
+좁았다** — 독립 리뷰가 52종을 돌려 **9종 생존**을 실측했다(2026-09-22). 생존분은
+전부 "이번에 새로 만든 축에 발화 경로가 없다"(#20·#291)의 변주다: `local=`
+배선 넷(제거·뒤집기·게이트 제거 ×2) · `esc(text)`/`esc(href)` 둘(캡션에서 온
+이름의 **유일한** 관문인데 벗겨도 전 슈트 통과 — 리뷰가 원시 마크업 주입을
+재현했다) · payload 여분 키 · 도쿄 코드 폭 · 재키잉. 열 개를 전부 잡게 고쳤고
+**한 번은 치환 0건으로 '건너뜀'** 이었다(앵커 들여쓰기가 틀렸다 — #267 통과·
+건너뜀 어느 쪽이든 그 자리를 실제로 쳤는지 먼저 본다).
 1차에서 **`stockHref` 6자리 가드**가 살아남았다 — 서버가 이미 합성키를
 거르므로 그 가드에 **도달하는 픽스처가 없었다**(#291). `s:"nm:회사"` 를
 실은 payload 로 렌더를 태워 발화시켰다(#139 2차 그물).
@@ -1728,7 +1736,16 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 정식 접근 경로다. 그리고 링크가 **실제로 열리는지**(NOAH 가 그 티커를
 그리는지)는 여기서 안 잰다 — 리졸버 해석까지가 이 슈트의 범위다.
 
-⚠️ 붙이지 않은 자리 둘: 레퍼런스북 **미매칭 후보**(아직 그 품목의 상장사로
+⚠️ 붙이지 않은 자리 **셋**: 레퍼런스북 **미매칭 후보**(아직 그 품목의 상장사로
 확정되지 않았고 칩의 주 동작이 '반영' 버튼) · **DART 보강 후보**(셀이 회사명을
 콤마로 이은 한 문자열이라 칩으로 쪼개면 그 셀 textContent 를 읽는 CSV 경로가
-바뀐다). 둘 다 값이 아니라 **범위** 판단이므로 여기 적어 둔다(#43).
+바뀐다) · 회사별 섹션 **부제**(`stocksSubtitle` — `관련종목: A · B 외 3개` 는
+잘린 요약 줄이고, **같은 종목이 바로 아래 모달 칩에서 링크된다**). 셋 다 값이
+아니라 **범위** 판단이므로 여기 적어 둔다(#43). 처음에 '둘' 이라 적어 부제를
+빠뜨렸다 — 독립 리뷰가 잡았다(#45 총계와 소계가 다른 모집단을 세면 갈라진다).
+
+⚠️ **못 보는 축 하나 더**(#274): `esc(href)`·`_html.escape(href)` 는 오늘의
+유일한 생산자(`lookup_href`·`stockHref`)가 퍼센트 인코딩만 내보내므로 **제품
+경로에서는 no-op** 이다. 그래서 두 헬퍼(`linked_name`·`slLink`)를 **직접**
+태워 계약을 잰다 — 시그니처가 "아무 href 나 받는다" 인 이상 그 계약은 실재하고,
+도달 경로 없는 가드는 가드가 아니다(#291·#373 없는 계약을 지어내지도 말 것).

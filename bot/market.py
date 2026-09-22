@@ -11,6 +11,14 @@ Detection is purely suffix-based — `.KS`/`.KQ` Korean, `.T` Japanese,
 to parse 6-digit-no-suffix as Korean because that collides with US
 exchange tickers like `Z` or `T` and the user already includes the
 suffix when typing in the channel (the help text shows the form).
+
+⚠️ That last sentence is about **this module's** shape detection, which is
+unchanged. The `/lookup/` gateway is a different layer and since 2026-09-22 it
+*does* map a bare 6-digit query to KR before shape detection
+(`bot.dashboard.resolve_name_to_ticker` → `normalize_kr_ticker_suffix`), because
+a link built from a trade board carries a KRX code with no suffix and used to
+resolve as a US symbol. Read this paragraph before concluding the repo never
+maps bare 6-digit to KR (#55 — a stale explanation is a bug).
 """
 
 from __future__ import annotations

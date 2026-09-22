@@ -19922,6 +19922,9 @@ def resolve_name_to_ticker(query: str) -> str | None:
     # 한 줄). ⚠️ 목록을 못 받으면 `.KS` 그대로다 — 코스닥이면 빈 화면이
     # 되지만 '미국 심볼 오해석'보다는 낫고, 목록은 7일 디스크 캐시라
     # 운영에선 거의 항상 있다(#165 재지 않은 것을 단정하지 않는다).
+    # ⚠️ 콜드 미스면 pykrx 왕복 2회가 **이 요청을 막는다**(#116). 새 비용은
+    # 아니다 — 아래 이름 분기(DART)가 같은 함수를 이미 부르고 그쪽은 DART
+    # 조회까지 먼저 한다. 즉 이 분기가 오히려 싼 경로다(콜드 시간은 안 쟀다).
     if len(q) == 6 and q.isdigit():
         try:
             from bot.market import normalize_kr_ticker_suffix

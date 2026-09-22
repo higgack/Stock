@@ -12,6 +12,7 @@
      인지(둘이 갈리면 전 보드 링크가 404 다, #38).
 """
 
+import contextlib
 import json
 import re
 import shutil
@@ -28,6 +29,28 @@ _A = re.compile(r'<a class="sl-link" href="([^"]+)"[^>]*>(.*?)</a>')
 def _links(html: str) -> list[tuple[str, str]]:
     return _A.findall(html)
 
+
+@contextlib.contextmanager
+def _stub_resolver(mapping: dict):
+    """`price_provider.resolve_codes` 를 **리졸버 경계**에서 갈아끼운다.
+
+    ⚠️ 한 단(`_load_krx_master`)만 스텁하면 나머지 세 단 — 운영자 오버라이드
+    (`~/.trade/stock_overrides.json`) · `_DIRECT_CODES`(레포 상수, `trade/CLAUDE.md`
+    가 **한 줄 추가를 정상 운영으로 규정**한다) · durable 캐시
+    (`~/.trade/stock_codes.json` + `TRADE_DATA_GO_KR_KEY`) — 가 살아 있어
+    **운영자의 홈 상태가 단언을 뒤집는다**(독립 리뷰 2026-09-22 실측: 세 경로로
+    재현). `_DATA_DIR` 는 import 시점 상수라 `monkeypatch.setenv` 로도 못 가린다
+    — 규율로 네 번 진 자리다(#30·#312·#344·#384). 경계에서 갈면 `kr_codes` 의
+    자기 계약(합성키 거르기·`fetch=False`)은 그대로 탄다.
+    """
+    import trade.price_provider as pp
+    real = pp.resolve_codes
+    try:
+        pp.resolve_codes = lambda names, **kw: {
+            n: mapping[n] for n in names if n in mapping}
+        yield
+    finally:
+        pp.resolve_codes = real
 
 
 def _js_fn(src: str, name: str) -> str:
@@ -74,9 +97,17 @@ class QueryRuleTests(unittest.TestCase):
         for t in ("TTMI", "DELL", "TXN", "ASX", "MXL", "PTON", "LITE", "COHU"):
             self.assertEqual(sl.lookup_query(t, "아무이름"), t)
 
-    def test_bare_six_digits_go_through_as_kr(self):
-        """맨 6자리는 그대로 — KS/KQ 는 KRX 목록을 가진 NOAH 가 가른다."""
-        self.assertEqual(sl.lookup_query("403870", "HPSP"), "403870")
+    def test_bare_six_digits_only_on_a_board_that_declares_kr(self):
+        r"""맨 6자리는 그대로 — KS/KQ 는 KRX 목록을 가진 NOAH 가 가른다.
+
+        ⚠️ 선언이 없으면 만들지 않는다. 중국·대만 보드의 티커 정규식이
+        `[A-Za-z0-9.\-]{2,10}` 이라 A주 코드 모양을 **받는데**(실측), 그걸 KR 로
+        보면 `600519` 가 `600519.KS`(= 남의 회사 분석 화면)로 간다 — 링크가
+        없으면 평문이지만 **틀린 링크는 거짓말**이다(#144·#43·#34)."""
+        self.assertEqual(sl.lookup_query("403870", "HPSP", local="KR"), "403870")
+        self.assertEqual(sl.lookup_query("403870", "HPSP"), "",
+                         "선언 없는 보드의 맨 6자리에 시장을 추측해 붙이면 안 된다")
+        self.assertEqual(sl.lookup_query("600519", "어떤회사"), "")
 
     def test_alias_resolvable_name_wins_over_unusable_ticker(self):
         """Advantest(6857) — 접미사도 영문자도 6자리도 아니지만 NOAH 별칭표가
@@ -88,12 +119,19 @@ class QueryRuleTests(unittest.TestCase):
         바꾸면 **다른 시장**을 연다(#34)."""
         self.assertEqual(sl.lookup_query("TSM", "TSMC"), "TSM")
 
-    def test_jp_local_code_only_on_the_japan_board(self):
+    def test_tokyo_local_code_only_on_a_board_that_declares_jp(self):
         """Kioxia(285A) — 도쿄 신표기. 보드 국적 힌트는 숫자 티커가 실제로
         관측된 일본 보드에서만 쓴다(#165)."""
-        self.assertEqual(sl.lookup_query("285A", "Kioxia", jp_local=True), "285A.T")
+        self.assertEqual(sl.lookup_query("285A", "Kioxia", local="JP"), "285A.T")
         self.assertEqual(sl.lookup_query("285A", "Kioxia"), "",
                          "힌트 없는 보드까지 .T 를 붙이면 남의 시장을 연다")
+
+    def test_tokyo_code_width_is_exactly_four(self):
+        """도쿄 코드는 4자 — 폭을 안 재면 5자리(`12345`)가 `12345.T` 가 된다
+        (독립 리뷰 실측 M40: 폭 가드를 지워도 전 슈트 통과했다, #91c)."""
+        self.assertEqual(sl.lookup_query("12345", "모르는이름", local="JP"), "")
+        self.assertEqual(sl.lookup_query("123", "모르는이름", local="JP"), "")
+        self.assertEqual(sl.lookup_query("6857", "모르는이름", local="JP"), "6857.T")
 
     def test_unresolvable_gets_no_query(self):
         self.assertEqual(sl.lookup_query("", ""), "")
@@ -113,6 +151,15 @@ class QueryRuleTests(unittest.TestCase):
         self.assertIn("A&amp;B", out)
         self.assertIn('href="../lookup/X"', out)
 
+    def test_linked_name_escapes_the_href_too(self):
+        """`href` 이스케이프는 이 **공개 헬퍼의 시그니처 계약**이지
+        `lookup_href` 출력의 성질이 아니다 — 오늘 그 출력은 퍼센트 인코딩이라
+        no-op 이므로, 가드가 실제로 발화하는 입력으로 잰다(#291 도달 경로 없는
+        가드는 가드가 아니다)."""
+        out = sl.linked_name("회사", '../lookup/X"><img src=x onerror=alert(1)>')
+        self.assertNotIn("<img", out)
+        self.assertIn("&quot;&gt;&lt;img", out)
+
     def test_kr_codes_rejects_synthetic_keys(self):
         """합성키(`nm:회사`)가 코드 자리에 앉으면 화면이 없는 종목코드를
         있다고 말한다(#34·#43)."""
@@ -125,6 +172,21 @@ class QueryRuleTests(unittest.TestCase):
         finally:
             pp.resolve_codes = real
         self.assertEqual(got, {"삼성전자": "005930"})
+
+    def test_kr_codes_answers_with_the_caller_s_own_key(self):
+        """`resolve_codes` 는 `n.strip()` 한 키로 돌려준다 — 그대로 내보내면
+        앞뒤 공백이 붙은 이름을 넘긴 렌더러가 `code_by_name.get(raw_name)` 에서
+        **조용히** 못 찾는다(링크만 안 생기는 미스). 호출부 셋이 각자 정규화하면
+        갈라지므로 여기서 되돌린다(#38, 독립 리뷰 2026-09-22 L5)."""
+        import trade.price_provider as pp
+        real = pp.resolve_codes
+        try:
+            pp.resolve_codes = lambda names, **kw: {
+                n.strip(): "005930" for n in names if n.strip() == "삼성전자"}
+            got = sl.kr_codes([" 삼성전자 ", "삼성전자", "모르는회사"])
+        finally:
+            pp.resolve_codes = real
+        self.assertEqual(got, {" 삼성전자 ": "005930", "삼성전자": "005930"})
 
     def test_kr_codes_reads_cache_only(self):
         """렌더는 외부 호출 0 — `fetch=False` 를 빼면 페이지마다 네트워크가
@@ -201,6 +263,33 @@ class BoardRenderTests(unittest.TestCase):
         self.assertEqual(got.get("../lookup/285A.T"), "Kioxia")
         self.assertIn(".sl-link{", html)
 
+    def test_bare_numeric_tickers_do_not_borrow_another_market(self):
+        """선언(`local=`) 없는 보드의 맨 숫자 티커는 **평문**이다.
+
+        ⚠️ 이 축이 무가드였다(독립 리뷰 2026-09-22 실측 M46~M49: `local=` 배선을
+        떼거나 뒤집는 변형 넷이 전부 통과). 그러면 말레이시아 보드의
+        `Foo Corp (5347)` 이 `../lookup/5347.T`(도쿄) 로, 중국 보드의
+        `(600519)` 가 `../lookup/600519`(→ NOAH 가 `.KS` 로 해석) 로 간다 —
+        둘 다 **남의 회사 분석 화면**이다(#34·#144).
+
+        이름은 별칭표가 못 푸는 것으로 둔다 — 풀리면 규칙 4 가 먼저 걸려
+        이 축을 안 태운다(#91b 재는 대상이 맞나)."""
+        from trade import cn_stock_exports as cns, my_stock_exports as mys
+        cases = [
+            (mys, "open_my_stock_db",
+             "무명전자 (5347)\n말레이시아 수출\n26년 7월 Update\n\n수출액 YoY: +1.0%"),
+            (mys, "open_my_stock_db",
+             "무명전자 (600519)\n말레이시아 수출\n26년 7월 Update\n\n수출액 YoY: +1.0%"),
+            (cns, "open_cn_stock_db",
+             "무명전자 (6857)\n중국 수출\n26년 7월 Update\n\n수출액 YoY: +1.0%"),
+            (cns, "open_cn_stock_db",
+             "무명전자 (000001)\n중국 수출\n26년 7월 Update\n\n수출액 YoY: +1.0%"),
+        ]
+        for mod, opener, cap in cases:
+            html = self._render(mod, opener, cap)
+            self.assertEqual(_links(html), [], f"{mod.__name__}: {cap[:22]}")
+            self.assertIn("무명전자", html, "링크를 안 걸어도 이름은 보인다")
+
     def test_korea_export_board_links_by_code(self):
         from trade import kr_stock_exports as krs
         html = self._render(krs, "open_kr_stock_db",
@@ -220,20 +309,18 @@ class BoardRenderTests(unittest.TestCase):
 
     def test_company_board_links_through_the_price_resolver(self):
         """회사별 보드는 코드가 없다 — 시세 칩이 쓰는 그 리졸버가 푼 코드로
-        건다(#150). 리졸버가 못 풀면 평문(빈 href 금지, #144)."""
+        건다(#150). 리졸버가 못 풀면 평문(빈 href 금지, #144).
+
+        ⚠️ 스텁은 `_stub_resolver`(리졸버 **경계**)로 건다 — 한 단만 갈면
+        운영자의 `~/.trade` 상태가 단언을 뒤집는다(그 docstring 참조)."""
         from trade import kr_stock_imports as kri
-        import trade.price_provider as pp
         cap = ("8월 수입 한국\n\n▶️ 삼성전자 — 반도체 장비\n"
                "26년08월: $158.5M (+105.3% YoY) (+11.8% MoM)")
-        real = pp._load_krx_master
-        try:
-            pp._load_krx_master = lambda: {"삼성전자": "005930"}
+        with _stub_resolver({"삼성전자": "005930"}):
             html = self._render(kri, "open_kr_stock_import_db", cap)
-            self.assertIn(("../lookup/005930", "삼성전자"), _links(html))
-            pp._load_krx_master = lambda: {}
+        self.assertIn(("../lookup/005930", "삼성전자"), _links(html))
+        with _stub_resolver({}):
             bare = self._render(kri, "open_kr_stock_import_db", cap)
-        finally:
-            pp._load_krx_master = real
         self.assertEqual(_links(bare), [], "못 푼 회사에 링크를 만들면 죽은 링크다")
         self.assertIn("삼성전자", bare)
         self.assertIn(".sl-link{", bare, "CSS 는 링크 유무와 무관하게 정의된다")
@@ -363,8 +450,12 @@ class DashboardCompanyViewTests(unittest.TestCase):
         finally:
             for k, v in saved.items():
                 setattr(pp, k, v)
-        self.assertEqual(got["삼성전자"].get("s"), "005930")
-        self.assertNotIn("s", got["이상한회사"], "합성키를 코드로 싣지 않는다(#34)")
+        # 키 **집합**으로 잰다 — `.get("s")` 만 보면 여분 키가 새도 통과한다
+        # (독립 리뷰 실측 M35, #91b 재는 대상이 맞나).
+        self.assertEqual(set(got["삼성전자"]), {"p", "c", "s"})
+        self.assertEqual(got["삼성전자"]["s"], "005930")
+        self.assertEqual(set(got["이상한회사"]), {"p", "c"},
+                         "합성키를 코드로 싣지 않는다(#34)")
 
 
 class DashboardModalStocksTests(unittest.TestCase):
@@ -382,7 +473,8 @@ class DashboardModalStocksTests(unittest.TestCase):
             "function findPeerStocks(a){return [];}\n")
     _POST = ("\nvar A={id:'x',item:'디램',dir:'export',status:'confirmed',"
              "country:'말레이시아',posted_at:'2026-08-01',media:[],"
-             "stocks:['삼성전자','모르는회사','합성키회사'],has_etc:true};\n"
+             "stocks:['삼성전자','모르는회사','합성키회사','<b>회사</b>&'],"
+             "has_etc:true};\n"
              "console.log(JSON.stringify({p:renderModalCard(A,true),"
              "s:renderModalCard(A,false)}));")
 
@@ -414,6 +506,39 @@ class DashboardModalStocksTests(unittest.TestCase):
         self.assertNotIn("lookup/nm", out["p"])
         self.assertEqual([h for h, _ in _links(out["p"])], ["../lookup/005930"])
 
+    def test_caption_names_are_escaped_in_both_branches(self):
+        """종목명은 **텔레그램 캡션**에서 온 남의 문자열이고, `slLink` 의
+        `esc(text)` 가 화면에 닿기 전 유일한 관문이다.
+
+        ⚠️ 그 축이 무가드였다(독립 리뷰 2026-09-22 실측 M19: `esc(text)` 를
+        벗기면 칩에 원시 마크업이 실린다 —
+        `title="종목분석 화면으로"><img src=x onerror=alert(1)></a>`). 내가
+        #222 로 형제 테스트를 다시 쓰면서 이 축을 떨어뜨렸다(#378·#395 다시
+        쓰는 것은 줄이는 것이 아니다). 링크가 **붙는 쪽·안 붙는 쪽 둘 다** 잰다."""
+        linked = self._run({"<b>회사</b>&": {"p": 1, "c": 0.0, "s": "005930"}})["p"]
+        self.assertIn(">&lt;b&gt;회사&lt;/b&gt;&amp;<", linked)
+        self.assertNotIn("<b>회사</b>", linked)
+        self.assertIn("../lookup/005930", linked, "이 갈래는 링크가 붙어야 한다")
+        plain = self._run({})["p"]            # 코드 없음 → 평문 가지
+        self.assertIn("&lt;b&gt;회사&lt;/b&gt;&amp;", plain)
+        self.assertNotIn("<b>회사</b>", plain)
+        self.assertNotIn("sl-link", plain)
+
+    def test_sllink_escapes_the_href_attribute(self):
+        """`slLink(text, href)` 는 **아무 href 나 받는 공개 마크업 헬퍼**다 —
+        속성값 이스케이프는 그 시그니처의 계약이다.
+
+        ⚠️ 오늘의 유일한 생산자(`stockHref`)는 `'../lookup/'+encodeURIComponent(6자리)`
+        라 이 가드가 **제품 경로에서는 no-op** 이고, 그래서 `esc(href)` 를 벗기는
+        변형이 전 슈트를 통과했다(독립 리뷰 실측 M18). 도달 경로 없는 가드는
+        가드가 아니므로(#291) 헬퍼를 **직접** 태워 발화시킨다."""
+        out = _node_run(self, ("esc", "slLink"),
+                        "", "\nconsole.log(JSON.stringify({h:slLink("
+                        "'회사', '../lookup/X\"><img src=x onerror=alert(1)>')}));",
+                        {})
+        self.assertNotIn("<img", out["h"])
+        self.assertIn("&quot;&gt;&lt;img", out["h"])
+
     def test_sibling_card_has_no_stock_row(self):
         # 이전발표(secondary) 카드는 원래 관련종목을 안 그린다 — 링크를 붙이며
         # 그 계약을 바꾸지 않았는지 같이 본다(#222).
@@ -432,14 +557,12 @@ class ReferenceBookTests(unittest.TestCase):
               "hs": ["8542311000"],
               "companies": ["삼성전자", "모르는회사", "하나마이크론"]}]
 
-    def _render(self, master: dict, rows=None) -> str:
-        from trade import price_provider as pp, reference_book as R
-        saved = pp._load_krx_master
-        try:
-            pp._load_krx_master = lambda: master
+    def _render(self, codes: dict, rows=None) -> str:
+        # ⚠️ 스텁은 **리졸버 경계**(`_stub_resolver`) — 한 단만 갈면 운영자의
+        # `~/.trade` 상태·`_DIRECT_CODES` 한 줄이 단언을 뒤집는다(그 docstring).
+        from trade import reference_book as R
+        with _stub_resolver(codes):
             return R.render_page(rows if rows is not None else self._ROWS)
-        finally:
-            pp._load_krx_master = saved
 
     def test_company_chip_links_when_a_code_resolves(self):
         html = self._render({"삼성전자": "005930", "하나마이크론": "067310"})

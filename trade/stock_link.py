@@ -53,12 +53,11 @@ _KR_CODE = re.compile(r"^\d{6}$")                       # KRX 6자리(무접미)
 # 도쿄 신·구 표기: 4자리 숫자(6857) 또는 3자리+영문자(285A, Kioxia 실측).
 _JP_CODE = re.compile(r"^\d{3}[0-9A-Za-z]$")
 _SUFFIXED = (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".BJ", ".HK")
-_HANGUL = re.compile(r"[가-힣]")
 
 
 def lookup_query(ticker: str = "", name: str = "", *,
-                 jp_local: bool = False) -> str:
-    """`/lookup/<q>` 에 넣을 질의. 만들 수 없으면 ""(= 링크 없음).
+                 local: str = "") -> str:
+    r"""`/lookup/<q>` 에 넣을 질의. 만들 수 없으면 ""(= 링크 없음).
 
     순서에 근거가 있다(전부 실측 픽스처 기준 — 지어낸 규칙이 아니다):
 
@@ -66,22 +65,28 @@ def lookup_query(ticker: str = "", name: str = "", *,
     2. **영문자만인 티커는 그대로.** 관측된 보드 대부분이 미국 상장 심볼이다
        (`TTMI`·`DELL`·`TXN`·`ASX`·`MXL`·`PTON`·`LITE`·`COHU`·`PENG`) —
        NOAH 해석기가 티커 모양이면 그대로 통과시킨다.
-    3. **맨 6자리 숫자는 그대로.** 이 레포는 "접미사 없는 6자리 = KR" 을 이미
-       규약으로 쓴다(JP·TW 는 4자리, CN 6자리는 `.SS`/`.SZ` 를 단다 —
-       `bot.dashboard._ticker_market` 의 실측 주석). KS/KQ 판별은 KRX 목록을
+    3. **`local="KR"` 보드의 맨 6자리 숫자는 그대로.** KS/KQ 판별은 KRX 목록을
        가진 NOAH 쪽(`resolve_name_to_ticker`)이 한다 — 렌더가 그 목록을
        받아오면 페이지마다 네트워크가 붙는다(#116).
+       ⚠️ **보드가 선언해야 한다.** 맨 6자리를 무조건 KR 로 보면 CN A주 코드
+       (`600519`·`000001` — `.SS`/`.SZ` 가 맞다)가 `600519.KS` 로 간다. 중국·
+       대만 보드의 티커 정규식이 `[A-Za-z0-9.\-]{2,10}` 이라 그 모양을 **받는다**
+       (실측 — 실제로 A주 회사가 올라오는지는 안 쟀다, #165). 링크가 없으면
+       평문이지만 틀린 링크는 **남의 회사 분석 화면**을 연다(#144·#43).
     4. **영문 별칭이 이름을 풀면 이름을 질의로.** `Advantest → 6857.T` 처럼
        NOAH 가 **같은 표**(`bot.market.resolve_english_alias`)로 푸는 것만
        인정한다 — 우리가 시장을 추측하는 게 아니라 이미 측정된 매핑이다.
-    5. **일본 보드의 도쿄 코드 모양**이면 `.T`. 여기만 보드 국적을 힌트로 쓴다
-       — 숫자 티커가 실제로 관측된 보드가 일본(6857·285A)뿐이기 때문이고,
-       그 사실이 이 규칙의 근거다(#165: 재지 않은 시장은 힌트를 안 만든다).
+    5. **`local="JP"` 보드의 도쿄 코드 모양**이면 `.T`(6857·285A 실측).
     6. 그 밖 → "" (평문). 이름이 한글이어도 여기선 안 쓴다 — 한글 이름의
        코드 해석은 `kr_company_flow` 처럼 **이미 이름→코드 리졸버를 가진**
        호출부가 코드를 넘겨 주는 쪽이 정확하다(#150 이미 부르는 호출이
        답을 갖고 있나).
+
+    `local` 은 **보드가 선언하는 축**이다 — 맨 숫자 코드가 어느 시장 것인지는
+    캡션이 아니라 그 보드가 안다(#34 한 규칙이 두 시장을 대표하면 한쪽은 반드시
+    거짓말). 선언하지 않은 보드에서 맨 숫자는 질의를 못 만든다 = 평문.
     """
+    mkt = (local or "").strip().upper()
     t = (ticker or "").strip()
     if t:
         up = t.upper()
@@ -89,12 +94,12 @@ def lookup_query(ticker: str = "", name: str = "", *,
             return up
         if _ALPHA_ONLY.match(t):
             return up
-        if _KR_CODE.match(t):
+        if mkt == "KR" and _KR_CODE.match(t):
             return t
     nm = (name or "").strip()
     if nm and _alias_hit(nm):
         return nm
-    if jp_local and t and _JP_CODE.match(t):
+    if mkt == "JP" and t and _JP_CODE.match(t):
         return t.upper() + ".T"
     return ""
 
@@ -116,10 +121,11 @@ def _alias_hit(name: str) -> bool:
 
 
 def lookup_href(ticker: str = "", name: str = "", *,
-                jp_local: bool = False, query: str = "") -> str:
+                local: str = "", query: str = "") -> str:
     """`../lookup/<질의>` (만들 수 없으면 ""). `query` 를 주면 그걸 그대로 쓴다
-    (이름→코드 리졸버를 이미 가진 호출부용)."""
-    q = (query or "").strip() or lookup_query(ticker, name, jp_local=jp_local)
+    (이름→코드 리졸버를 이미 가진 호출부용). `local` = 그 보드의 맨 숫자 코드가
+    어느 시장 것인지(`lookup_query` 참조)."""
+    q = (query or "").strip() or lookup_query(ticker, name, local=local)
     if not q or not _TICKER_OK.match(q):
         return ""
     return LOOKUP_PREFIX + _up.quote(q, safe="")
@@ -129,17 +135,17 @@ def linked_name(name: str, href: str) -> str:
     """이스케이프된 종목명 — href 가 있으면 `<a>` 로 감싼다(없으면 평문).
 
     카드 헤더의 `<span class="…-item">` **안쪽**만 만든다 — 바깥 마크업·CSS 를
-    안 건드려야 여섯 보드의 레이아웃이 그대로다(§미니멀 코드)."""
+    안 건드려야 여섯 보드의 레이아웃이 그대로다(§미니멀 코드).
+
+    ⚠️ 두 인자 **모두** 이스케이프한다. `name` 은 텔레그램 캡션에서 온 남의
+    문자열이고, `href` 는 이 모듈의 `lookup_href` 가 주면 퍼센트 인코딩이라
+    오늘은 no-op 이지만 이 함수는 **아무 href 나 받는 공개 헬퍼**다 — 속성값
+    이스케이프는 그 시그니처의 계약이지 `lookup_href` 출력의 성질이 아니다."""
     label = _html.escape(str(name or ""))
     if not href:
         return label
     return (f'<a class="sl-link" href="{_html.escape(href)}" '
             f'title="종목분석 화면으로">{label}</a>')
-
-
-def has_hangul(s: str) -> bool:
-    """한글이 섞였나 — 이름→코드 해석을 시도할 값어치가 있는지 가르는 값."""
-    return bool(_HANGUL.search(str(s or "")))
 
 
 def kr_codes(names) -> dict[str, str]:
@@ -156,12 +162,22 @@ def kr_codes(names) -> dict[str, str]:
     링크가 안 생길 뿐이다(워머가 채우면 다음 렌더에 붙는다, #116).
     ⚠️ 6자리 숫자만 인정한다 — 합성키(`nm:회사`)가 코드 자리에 앉으면 화면이
     없는 종목코드를 있다고 말한다(#34·#43).
+    ⚠️ 돌려주는 키는 **호출부가 준 그 문자열**이다. `resolve_codes` 는 내부에서
+    `n.strip()` 한 키로 돌려주므로, 앞뒤 공백이 있는 이름을 넘긴 렌더러가
+    `code_by_name.get(raw_name)` 로 찾으면 조용히 못 찾는다(= 링크만 안 생기는
+    조용한 미스). 호출부 셋이 각자 정규화하면 갈라지므로 여기서 되돌린다(#38).
     """
+    orig = [str(n) for n in names if n]
     try:
         from trade import price_provider
-        raw = price_provider.resolve_codes([str(n) for n in names if n],
-                                           fetch=False)
+        raw = price_provider.resolve_codes(orig, fetch=False)
     except Exception:                                     # noqa: BLE001
         return {}
-    return {k: str(v) for k, v in (raw or {}).items()
-            if _KR_CODE.match(str(v or ""))}
+    codes = {k: str(v) for k, v in (raw or {}).items()
+             if _KR_CODE.match(str(v or ""))}
+    out: dict[str, str] = {}
+    for n in orig:
+        c = codes.get(n) or codes.get(n.strip())
+        if c and n not in out:
+            out[n] = c
+    return out

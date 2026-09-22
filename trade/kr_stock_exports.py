@@ -492,7 +492,8 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
     # 합성키라 여기 오는 `code6` 가 빈 문자열인데, 그 경우 이름→코드는 이미
     # 시세 칩이 쓰는 리졸버가 푼다 — 호출부가 페이지당 한 번 풀어 넘긴다.
     name = _sl.linked_name(raw_name, _sl.lookup_href(
-        code6, raw_name, query=(code_by_name or {}).get(raw_name, "")))
+        code6, raw_name, local="KR",
+        query=(code_by_name or {}).get(raw_name, "")))
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd">'
                f'<span class="kr-item">{name}</span>'
