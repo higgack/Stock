@@ -1788,3 +1788,34 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 ⚠️ 테스트 스텁도 **신원 경계**(`_stub_master`)로 옮겼고 시세 사다리는 같이
 막는다 — 오라클을 되돌리는 변형이 운영자 홈 상태로 우연히 통과하는 길을
 없앤다(#139 2차 그물). 뮤테이션 8종 전부 CAUGHT.
+
+## #401 — 일본 마스터 프로브 + 자식 프로세스 그물 (`trade/tests/test_jp_master_probe.py` 33건 · `tests/test_regression.py` 2건)
+
+#400 이 남긴 자리 — 일본 상장사는 대조할 목록이 없어 평문이다. 어떤 원천이
+**코드→이름**을 주는지 **재기만** 하는 프로브를 먼저 심었다(#151·#345 이름을
+추측해 배선하면 죽은 경로를 배포한다). 샌드박스는 yahoo·jpx 를 프록시가 막아
+외부를 한 줄도 못 재므로 판정은 VM 실행이 한다.
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 제품 술어 | 코드 모양을 **복제하지 않고 import** 한다 — 제품은 `285A` 를 링크하는데 `^\d{4}$` 를 복제하면 못 센다(#35·#38) | `BoardScanTests::test_scan_uses_the_product_code_shape_not_a_narrower_copy` |
+| ② 보드 전수 | 표 이름을 박지 않고 `sqlite_master` 에서 고른다(#24) | `::test_scan_reads_every_company_board_not_one_hardcoded_table` |
+| ③ 읽기 실패 | 삼키면 '보드에 없다' 와 '못 읽었다' 가 같은 화면이 된다(#82·#143) | `::test_an_unreadable_board_is_reported_not_swallowed` |
+| ④ 시장 선언 | `local="XX"` 를 **AST 키워드 인자**로 — 소스 문자열은 독스트링이 대신 만족시킨다(#59b) | `DeclaringMarketTests::test_a_docstring_mentioning_local_does_not_count_as_a_declaration` |
+| ⑤ 계수 정직성 | 전부 실패한 단계를 '쟀다' 로 세면 rc 가 거짓 ✅ 가 된다(#54) | `EntrypointTests::test_a_successful_step_four_adds_exactly_one_measured_step` · `::test_rc_is_one_when_nothing_could_be_measured` |
+| ⑥ 자른 사실 | 상한에 걸리면 **몇 개를 뺐는지** 말한다(#45) | `::test_the_cap_says_how_many_it_left_out` |
+| ⑦ HTTP vs 파싱 | 403 을 '표본 파싱 불가' 라 적으면 원천을 고치러 간다(#82) | `::test_step_six_blames_http_not_parsing_when_the_file_is_not_200` |
+| ⑧ 표본 범위 | 후보 페이지마다 하나씩 — 日 한 쪽만 보면 "영문 목록이 있나"가 안 닫힌다(#143·#156) | `::test_step_six_samples_one_file_per_candidate_page` |
+| ⑨ 쓰기 경계 | DB **내용·mtime** 불변. SQLite 곁파일(`-shm`/`-wal`)은 예외로 **명시**한다(#264·#286) | `::test_the_probe_leaves_every_db_byte_and_mtime_untouched` |
+| ⑩ 자식 그물 | 루트 conftest 의 소켓 패치는 **이 프로세스만** 덮는다 — 자식도 막히는가(리터럴 IP 로) | `tests/test_regression.py::TestNoOutboundHttpInTests20260911::test_child_processes_are_blocked_too` |
+| ⑪ 과잉 차단 금지 | 루프백은 통과 · 기존 `sitecustomize` 를 **가리지 않는다** — 실행한 경로를 **값으로**(#25·#91b) | `::test_child_guard_keeps_loopback_and_the_original_sitecustomize` |
+
+⚠️ **왜 값으로 재나(⑪).** 첫 판은 `'sitecustomize' in sys.modules` 로 쟀는데
+**우리 것**이 들어와도 참이라 체이닝을 지워도 통과했다(뮤테이션 생존 실측).
+자식이 실행한 원본 경로를 `sitecustomize.ORIGINAL` 로 남겨 그 값을 본다.
+
+⚠️ **못 보는 축**(#274): 파이썬이 아닌 자식(curl·git), `-I`/`-E`/`-S` 로 띄운
+파이썬, 그리고 `env=` 를 직접 조립해 넘기는 호출은 `PYTHONPATH`·`site` 를 안
+읽어 ⑩ 의 그물 밖이다. 그리고 프로브의
+지문(`banner`)은 **이 파일 하나**를 잰다 — 판정을 다른 모듈로 빼면 범위를 같이
+넓혀야 한다.
