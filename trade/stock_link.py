@@ -56,7 +56,7 @@ _SUFFIXED = (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".BJ", ".HK")
 
 
 def lookup_query(ticker: str = "", name: str = "", *,
-                 local: str = "") -> str:
+                 local: str = "", kr_master: dict | None = None) -> str:
     r"""`/lookup/<q>` 에 넣을 질의. 만들 수 없으면 ""(= 링크 없음).
 
     순서에 근거가 있다(전부 실측 픽스처 기준 — 지어낸 규칙이 아니다):
@@ -65,43 +65,70 @@ def lookup_query(ticker: str = "", name: str = "", *,
     2. **영문자만인 티커는 그대로.** 관측된 보드 대부분이 미국 상장 심볼이다
        (`TTMI`·`DELL`·`TXN`·`ASX`·`MXL`·`PTON`·`LITE`·`COHU`·`PENG`) —
        NOAH 해석기가 티커 모양이면 그대로 통과시킨다.
-    3. **`local="KR"` 보드의 맨 6자리 숫자는 그대로.** KS/KQ 판별은 KRX 목록을
-       가진 NOAH 쪽(`resolve_name_to_ticker`)이 한다 — 렌더가 그 목록을
-       받아오면 페이지마다 네트워크가 붙는다(#116).
-       ⚠️ **보드가 선언해야 한다.** 맨 6자리를 무조건 KR 로 보면 CN A주 코드
-       (`600519`·`000001` — `.SS`/`.SZ` 가 맞다)가 `600519.KS` 로 간다. 중국·
-       대만 보드의 티커 정규식이 `[A-Za-z0-9.\-]{2,10}` 이라 그 모양을 **받는다**
-       (실측 — 실제로 A주 회사가 올라오는지는 안 쟀다, #165). 링크가 없으면
-       평문이지만 틀린 링크는 **남의 회사 분석 화면**을 연다(#144·#43).
+    3. **맨 6자리 숫자는 KR 로 확인됐을 때만.** 확인 수단이 둘이다.
+       (a) 보드가 `local="KR"` 로 **선언**했거나,
+       (b) `kr_master`(KRX 상장 이름→코드 목록)가 이 **이름을 이 코드로** 푼다.
+       (b)는 추측이 아니라 **거래소 목록과의 대조**다 — 이름과 코드가 **양쪽
+       다** 맞을 때만 인정하므로, 이름만 우연히 겹치거나 코드만 겹치는 경우는
+       통과하지 못한다(#25 '있다'만 묻지 말고 반대 증거도 볼 것).
+       ⚠️ **왜 (b)가 필요한가.** 보드의 나라는 **교역 상대국**이지 상장 시장이
+       아니다 — 말레이시아 수출 보드에 `삼성SDI (006400)`, 중국 수출 보드에
+       `Taiyo Yuden (6976)` 이 실린다(2026-09-22 실측). 한 보드가 한 시장을
+       선언할 수 없으므로 (a)만으로는 그 카드들이 영원히 평문이다(#171 가드가
+       '못 만든다'로 끝나면 그 자리가 영원히 비는지 먼저 물을 것).
+       ⚠️ **그래도 추측은 안 한다.** 맨 6자리를 무조건 KR 로 보면 CN A주 코드
+       (`600519`·`000001` — `.SS`/`.SZ` 가 맞다)가 `600519.KS`(**남의 회사
+       분석 화면**)로 간다. 중국·대만 보드의 티커 정규식이
+       `[A-Za-z0-9.\-]{2,10}` 이라 그 모양을 **받는다**(실측). 확인이 없으면
+       링크가 없다 — 평문이 틀린 링크보다 낫다(#144·#43).
+       KS/KQ 판별은 여기서 하지 않는다 — KRX 목록을 가진 NOAH 쪽
+       (`resolve_name_to_ticker`)이 한다(렌더가 그 목록을 받아오면 페이지마다
+       네트워크가 붙는다, #116).
     4. **영문 별칭이 이름을 풀면 이름을 질의로.** `Advantest → 6857.T` 처럼
        NOAH 가 **같은 표**(`bot.market.resolve_english_alias`)로 푸는 것만
        인정한다 — 우리가 시장을 추측하는 게 아니라 이미 측정된 매핑이다.
     5. **`local="JP"` 보드의 도쿄 코드 모양**이면 `.T`(6857·285A 실측).
-    6. 그 밖 → "" (평문). 이름이 한글이어도 여기선 안 쓴다 — 한글 이름의
-       코드 해석은 `kr_company_flow` 처럼 **이미 이름→코드 리졸버를 가진**
-       호출부가 코드를 넘겨 주는 쪽이 정확하다(#150 이미 부르는 호출이
-       답을 갖고 있나).
+       ⚠️ 3(b)에 해당하는 **일본판 대조 수단은 이 레포에 없다** — 그래서 JP
+       보드가 아닌 곳의 도쿄 코드(`Taiyo Yuden (6976)` on 중국 보드)는 그대로
+       평문이다. 별칭표에 이름을 하나씩 더하는 건 종목별 패치라 안 한다
+       (§UNIVERSAL). 없는 근거를 지어내지 않는다(#165).
+    6. 그 밖 → "" (평문).
 
-    `local` 은 **보드가 선언하는 축**이다 — 맨 숫자 코드가 어느 시장 것인지는
-    캡션이 아니라 그 보드가 안다(#34 한 규칙이 두 시장을 대표하면 한쪽은 반드시
-    거짓말). 선언하지 않은 보드에서 맨 숫자는 질의를 못 만든다 = 평문.
+    `local` 은 **보드가 선언하는 축**이고 `kr_master` 는 **거래소 목록이 답하는
+    축**이다 — 둘 다 없으면 맨 숫자는 질의를 못 만든다(#34 한 규칙이 두 시장을
+    대표하면 한쪽은 반드시 거짓말).
     """
     mkt = (local or "").strip().upper()
     t = (ticker or "").strip()
+    nm = (name or "").strip()
     if t:
         up = t.upper()
         if up.endswith(_SUFFIXED) and _TICKER_OK.match(t):
             return up
         if _ALPHA_ONLY.match(t):
             return up
-        if mkt == "KR" and _KR_CODE.match(t):
+        if _KR_CODE.match(t) and (mkt == "KR" or kr_confirms(nm, t, kr_master)):
             return t
-    nm = (name or "").strip()
     if nm and _alias_hit(nm):
         return nm
     if mkt == "JP" and t and _JP_CODE.match(t):
         return t.upper() + ".T"
     return ""
+
+
+def kr_confirms(name: str, code: str, master: dict | None) -> bool:
+    """KRX 상장 목록이 **이 이름을 이 코드로** 푸는가 — 양쪽 다 맞을 때만 True.
+
+    ⚠️ 한쪽만 보면 안 된다. 코드만 보면 CN A주 6자리가 통과하고, 이름만 보면
+    동명 회사가 남의 코드를 얻는다. 둘의 **일치**가 곧 확인이다(#25).
+    ⚠️ 못 보는 축(#274): 다른 시장 회사가 KRX 상장사와 이름이 **정확히** 같고
+    캡션 코드까지 그 KRX 코드와 같으면 통과한다. 6자리 완전일치 + 이름 완전일치가
+    동시에 나야 하므로 관측된 적은 없지만, 재지 않았으므로 없다고 하지 않는다(#165).
+    """
+    if not (name and code and master):
+        return False
+    c = master.get(name) or master.get(name.strip())
+    return bool(c) and str(c) == code
 
 
 def _alias_hit(name: str) -> bool:
@@ -121,11 +148,13 @@ def _alias_hit(name: str) -> bool:
 
 
 def lookup_href(ticker: str = "", name: str = "", *,
-                local: str = "", query: str = "") -> str:
+                local: str = "", query: str = "",
+                kr_master: dict | None = None) -> str:
     """`../lookup/<질의>` (만들 수 없으면 ""). `query` 를 주면 그걸 그대로 쓴다
     (이름→코드 리졸버를 이미 가진 호출부용). `local` = 그 보드의 맨 숫자 코드가
-    어느 시장 것인지(`lookup_query` 참조)."""
-    q = (query or "").strip() or lookup_query(ticker, name, local=local)
+    어느 시장 것인지, `kr_master` = KRX 상장 이름→코드 목록(`lookup_query` 참조)."""
+    q = (query or "").strip() or lookup_query(ticker, name, local=local,
+                                              kr_master=kr_master)
     if not q or not _TICKER_OK.match(q):
         return ""
     return LOOKUP_PREFIX + _up.quote(q, safe="")
@@ -149,35 +178,52 @@ def linked_name(name: str, href: str) -> str:
 
 
 def kr_codes(names) -> dict[str, str]:
-    """{회사명: KRX 6자리 코드} — **한 페이지에 한 번** 부른다(#113 루프 안에서
-    부르면 카드 수만큼 캐시 파일을 다시 읽는다).
+    """{회사명: KRX 상장 6자리} — **신원 확인 전용**(딥링크가 쓴다).
+    **한 페이지에 한 번** 부른다(#113 루프 안에서 부르면 카드 수만큼 다시 읽는다).
 
-    이름→코드 해석은 이 레포가 **이미 갖고 있다** — 수출입 대시보드의 시세 칩이
-    쓰는 `price_provider.resolve_codes`(운영자 /map 오버라이드 → 직접코드 →
-    KRX 로컬 마스터 → durable 캐시)가 그것이다(#150 이미 부르는 호출이 답을
-    갖고 있나). 여기서 이름 매칭을 새로 짜면 시세 칩이 붙는 회사와 링크가 붙는
-    회사가 갈린다(#38).
+    ⚠️ **시세 사다리(`price_provider.resolve_codes`)를 쓰면 안 된다.** 그쪽은
+    값을 *보여주기* 위한 경로라 `_DIRECT_CODES` 가 상장사를 **모회사로 바꿔**
+    놓는다 — `코오롱플라스틱 → 120110`(코오롱인더스트리; 진짜 코드 138490 의
+    KIS 시세가 없어 운영자가 고른 대용이라고 소스 주석이 밝힌다) ·
+    `HD현대미포조선 → 329180` 등 25건. 시세엔 옳지만 신원엔 양방향으로 틀린다
+    (2026-09-22 실측): 캡션이 **진짜 코드**를 들고 오면 대조가 어긋나 멀쩡한
+    상장사가 평문이 되고, 캡션이 **대용 코드**면 확인을 통과해 **남의 회사
+    분석 화면**이 열린다(#34 한 표가 두 뜻을 대표하면 한쪽은 반드시 거짓말).
+    운영자 `/map` 오버라이드도 같은 슬롯이라 의도(신원 ↔ 시세대용)를 가를 수
+    없어 보지 않는다 — 재지 않은 것을 신원 근거로 쓰지 않는다(#165).
 
-    ⚠️ `fetch=False` — 렌더는 **캐시만** 읽는다. 외부 호출 0이고, 못 푼 이름은
-    링크가 안 생길 뿐이다(워머가 채우면 다음 렌더에 붙는다, #116).
-    ⚠️ 6자리 숫자만 인정한다 — 합성키(`nm:회사`)가 코드 자리에 앉으면 화면이
-    없는 종목코드를 있다고 말한다(#34·#43).
-    ⚠️ 돌려주는 키는 **호출부가 준 그 문자열**이다. `resolve_codes` 는 내부에서
-    `n.strip()` 한 키로 돌려주므로, 앞뒤 공백이 있는 이름을 넘긴 렌더러가
-    `code_by_name.get(raw_name)` 로 찾으면 조용히 못 찾는다(= 링크만 안 생기는
-    조용한 미스). 호출부 셋이 각자 정규화하면 갈라지므로 여기서 되돌린다(#38).
+    신원은 **거래소 목록**만 답한다(#86): `_load_krx_master()`(build_krx_codes
+    가 만든 전 상장종목 이름→코드, 공백제거 키) + `_NAME_ALIASES`(표기 변형 —
+    `Sk하이닉스 → SK하이닉스` 류라 신원을 안 바꾼다). 둘 다 로컬·메모이즈라
+    **외부 호출 0** 이고, 마스터가 없으면 {} 라 전 칩이 평문으로 렌더된다.
+
+    ⚠️ 돌려주는 키는 **호출부가 준 그 문자열**이다 — 정규화한 키로 돌려주면
+    렌더러가 `code_by_name.get(raw_name)` 로 찾을 때 조용히 못 찾는다.
     """
     orig = [str(n) for n in names if n]
+    if not orig:
+        return {}
     try:
-        from trade import price_provider
-        raw = price_provider.resolve_codes(orig, fetch=False)
+        from trade.price_provider import _NAME_ALIASES, _load_krx_master
+        master = _load_krx_master()
     except Exception:                                     # noqa: BLE001
         return {}
-    codes = {k: str(v) for k, v in (raw or {}).items()
-             if _KR_CODE.match(str(v or ""))}
+    if not master:
+        return {}
     out: dict[str, str] = {}
     for n in orig:
-        c = codes.get(n) or codes.get(n.strip())
-        if c and n not in out:
-            out[n] = c
+        if n in out:
+            continue
+        k = n.strip()
+        for cand in (k, _NAME_ALIASES.get(k, k)):
+            c = master.get(cand.replace(" ", "")) or master.get(_ws(cand))
+            if c and _KR_CODE.match(str(c)):
+                out[n] = str(c)
+                break
     return out
+
+
+def _ws(s: str) -> str:
+    """공백 **전부** 제거 — 마스터 키는 `.replace(" ", "")` 라 캡션에 `\xa0`
+    같은 비-ASCII 공백이 끼면 그 키와 안 맞는다(독립 리뷰 2026-09-22 실측)."""
+    return re.sub(r"\s+", "", s)
