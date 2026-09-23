@@ -59498,7 +59498,9 @@ class TestNoOutboundHttpInTests20260911:
         """두 패치는 **이름 목록**이라 새 전송 계층을 못 잡는다(#24 — 하필
         #24 를 고치는 fix 안에서 같은 병을 냈다). `bot/` 엔 httpx 20곳 ·
         urllib.request 8곳이 이미 있고 `Session.send`·aiohttp·raw socket 은
-        위 패치가 애초에 못 본다. 소켓에서 막으면 어느 라이브러리든 걸린다."""
+        위 패치가 애초에 못 본다. 소켓에서 막으면 **이 프로세스 안에서는**
+        어느 라이브러리든 걸린다 — 자식 프로세스는 다음 테스트가 맡는다
+        (2026-09-22 실측으로 이 주장이 반쪽임이 드러났다, #286)."""
         import socket
         import urllib.request
         _cf = self._conftest()
@@ -59519,6 +59521,66 @@ class TestNoOutboundHttpInTests20260911:
             c.connect(("127.0.0.1", srv.getsockname()[1]))   # 예외가 나면 안 된다
         finally:
             c.close(); srv.close()
+
+    def test_child_processes_are_blocked_too(self):
+        """위 소켓 패치는 **이 프로세스만** 덮는다 — 자식은 그대로 나간다.
+
+        2026-09-22 독립 리뷰 실측: `trade/tests/test_jp_master_probe.py` 가
+        `subprocess.run([py, "-c", …yfinance…])` 로 자식을 띄워 `make test` 한
+        번에 Yahoo ~6 · JPX 9 요청이 나갔고 위 그물은 한 글자도 못 봤다.
+        `conftest._install_child_backstop` 이 `PYTHONPATH` 맨 앞에 가드를 담은
+        `sitecustomize` 를 넣어 막는다(호출부 열거 없음 #24·#119).
+
+        ⚠️ 리터럴 IP 로 친다 — 이름을 쓰면 DNS 가 connect 앞에서 먼저 실패해
+        (실측) 가드까지 가지도 않고, 그러면 이 테스트는 샌드박스 DNS 를 재는
+        것이다(#91b). 192.0.2.0/24 = RFC 5737 TEST-NET-1.
+        """
+        import subprocess
+        import sys
+        _cf = self._conftest()
+        assert _cf._CHILD_GUARD_DIR, "자식 가드 디렉터리가 없다"
+        code = ("import socket\n"
+                "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                "s.settimeout(3)\n"
+                "try:\n"
+                "    s.connect(('192.0.2.1', 80)); print('REACHED')\n"
+                "except OSError as e:\n"
+                "    print('ERR', str(e)[:160])\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=60)
+        assert "conftest-child" in r.stdout, (r.stdout, r.stderr)
+
+    def test_child_guard_keeps_loopback_and_the_original_sitecustomize(self):
+        """가드가 너무 세면 멀쩡한 것을 죽인다 — 반대 증거를 같이 둔다(#25).
+
+        루프백을 막으면 자기 서버를 띄우는 테스트가 죽고, 기존
+        `sitecustomize` 를 **가리면** 그 환경이 하던 설정이 조용히 사라진다.
+        """
+        import subprocess
+        import sys
+        code = ("import socket, sys\n"
+                "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                "s.settimeout(2)\n"
+                "try:\n"
+                "    s.connect(('127.0.0.1', 1)); print('LOOPBACK-CONNECTED')\n"
+                "except ConnectionRefusedError:\n"
+                "    print('LOOPBACK-OK')\n"
+                "except OSError as e:\n"
+                "    print('LOOPBACK-BLOCKED', str(e)[:120])\n"
+                "import sitecustomize as _sc\n"
+                "print('OTHERS', len(getattr(_sc, 'OTHERS', [])))\n"
+                "print('ORIG', getattr(_sc, 'ORIGINAL', None))\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=60)
+        assert "LOOPBACK-BLOCKED" not in r.stdout, (r.stdout, r.stderr)
+        # ⚠️ `'sitecustomize' in sys.modules` 로 재면 **우리 것**이 들어와도
+        # 참이라 체이닝을 지워도 통과한다(2026-09-22 뮤테이션 실측 — 생존).
+        # 가린 것과 이어 실행한 것을 **값으로** 가른다(#91b).
+        others = int(r.stdout.split("OTHERS", 1)[1].split()[0])
+        orig = r.stdout.split("ORIG", 1)[1].strip().splitlines()[0]
+        if others:
+            assert orig and orig != "None", (
+                f"기존 sitecustomize {others}개를 가렸다: {r.stdout}")
 
     def test_session_scope_is_measured_not_just_claimed(self):
         """`monkeypatch.undo()` 는 스코프와 무관하게 복원하므로 **아무것도 재지

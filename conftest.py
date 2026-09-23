@@ -118,7 +118,9 @@ def _install_socket_backstop() -> bool:
     들어오면 조용히 샌다. 2026-09-11 독립 리뷰 실측: `bot/` 에 httpx 20곳 ·
     `urllib.request` 8곳이 이미 있고(오늘은 httpx 미설치라 안 타지만 VM 엔
     langchain 경유로 깔릴 수 있다), `Session.send`·`aiohttp`·raw socket 은
-    애초에 위 패치가 못 본다. 소켓에서 막으면 **어느 라이브러리든** 걸린다.
+    애초에 위 패치가 못 본다. 소켓에서 막으면 **이 프로세스 안에서는** 어느
+    라이브러리든 걸린다 — **자식 프로세스는 못 본다**(2026-09-22 실측).
+    그 축은 `_install_child_backstop` 이 맡는다.
 
     루프백은 통과시킨다 — `tests/test_dashboard_gzip.py` 가 자기 서버를 띄워
     127.0.0.1 로 친다(실측: 전 세션에서 비-루프백 유출 0건 · 루프백만 있었다).
@@ -146,8 +148,69 @@ def _install_socket_backstop() -> bool:
     return True
 
 
+def _install_child_backstop() -> str:
+    """자식 프로세스 축 — **위 소켓 패치는 이 프로세스만 덮는다**.
+
+    2026-09-22 독립 리뷰 실측: `trade/tests/test_jp_master_probe.py` 가
+    `subprocess.run([py, "-c", …yfinance…])` 로 자식을 띄워 `make test` 한
+    번에 Yahoo ~6 · JPX 9 요청이 나갔는데 위 그물은 한 글자도 못 봤다.
+    바로 위 독스트링이 "소켓에서 막으면 **어느 라이브러리든** 걸린다" 고
+    적고 있었으므로 그 주장부터 거짓이었다(#286).
+
+    자식이 파이썬이면 `sitecustomize` 가 자동 import 되므로, 같은 가드를 담은
+    디렉터리를 **`PYTHONPATH` 맨 앞**에 둔다 — 호출부를 열거하지 않으므로
+    새 테스트가 자식을 띄워도 자동으로 걸린다(#24·#119 규율이 아니라 구조).
+    기존 `sitecustomize` 는 **가리지 않고 이어서 실행**한다.
+
+    ⚠️ **못 보는 축**(#274): 파이썬이 아닌 자식(curl·git), `-I`/`-E`/`-S` 로
+    띄운 파이썬, 그리고 `env=` 를 **직접 조립해** 넘기는 호출(그 dict 에
+    `PYTHONPATH` 가 없으면 자식이 가드를 못 읽는다)은 이 그물 밖이다.
+    """
+    import atexit
+    import os
+    import pathlib
+    import shutil
+    import tempfile
+
+    body = (
+        "# pytest 자식 프로세스용 소켓 가드 (루트 conftest 가 심는다)\n"
+        "import os as _o, sys as _sy\n"
+        # 체이닝을 **관측 가능**하게 둔다 — `'sitecustomize' in sys.modules` 로
+        # 재면 **우리 것**이 들어와도 참이라 아무것도 안 잰다(#91b 실측).
+        "ORIGINAL = ''\n"
+        "OTHERS = []\n"
+        "_mine = _o.path.dirname(_o.path.abspath(__file__))\n"
+        "for _p in list(_sy.path):\n"
+        "    _c = _o.path.join(_p or '.', 'sitecustomize.py')\n"
+        "    if _o.path.abspath(_p or '.') != _mine and _o.path.isfile(_c):\n"
+        "        OTHERS.append(_c)\n"
+        "for _c in OTHERS[:1]:\n"
+        "    exec(compile(open(_c).read(), _c, 'exec'), {'__file__': _c})\n"
+        "    ORIGINAL = _c\n"
+        "import socket as _s\n"
+        "_real = _s.socket.connect\n"
+        "def _guard(self, address, *a, **k):\n"
+        "    h = address[0] if isinstance(address, tuple) and address else address\n"
+        "    h = str(h or '')\n"
+        "    if not (h in ('localhost', '', '::1') or h.startswith('127.')\n"
+        "            or h.startswith('::ffff:127.')):\n"
+        "        raise OSError('[conftest-child] 테스트의 **자식 프로세스**가 "
+        "바깥 원천을 쳤습니다: ' + h + ' — 그 자식을 스텁하세요"
+        "(conftest.py `_install_child_backstop`)')\n"
+        "    return _real(self, address, *a, **k)\n"
+        "_s.socket.connect = _guard\n"
+    )
+    d = tempfile.mkdtemp(prefix="noah-test-childguard-")
+    (pathlib.Path(d) / "sitecustomize.py").write_text(body, encoding="utf-8")
+    atexit.register(shutil.rmtree, d, True)
+    cur = os.environ.get("PYTHONPATH") or ""
+    os.environ["PYTHONPATH"] = d + (os.pathsep + cur if cur else "")
+    return d
+
+
 _INSTALLED = _install_outbound_block()
 _SOCKET_BLOCKED = _install_socket_backstop()
+_CHILD_GUARD_DIR = _install_child_backstop()
 
 
 # ── 운영 디스크 캐시 차단 ────────────────────────────────────────────────────
