@@ -1820,13 +1820,13 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 지문(`banner`)은 v2 에선 **이 파일 하나**를 쟀다 — v3 에서 ⑦ 의 판정이 제품
 모듈로 가며 범위를 같이 넓혔다(아래 JPX 마스터 절 ⑪).
 
-## JPX 상장 마스터 — 혼합 보드의 도쿄 상장사 딥링크 (`trade/tests/test_jpx_master.py` 35건 · `test_stock_link.py` +9 · `test_jp_master_probe.py` +9)
+## JPX 상장 마스터 — 혼합 보드의 도쿄 상장사 딥링크 (`trade/tests/test_jpx_master.py` 37건 · `test_stock_link.py` +9 · `test_jp_master_probe.py` +9)
 
 `jp_master_probe` v2 VM 실측(2026-09-23)으로 원천을 골랐다: JPX 영문
 「その他統計資料」 `data_e.xlsx`(`Local Code` · `Name (English)` · `Effective Date`).
 ④ yfinance 도 12/12 이름을 줬지만 종목마다 1콜이고 트레이드 venv 엔 없다(②).
-`build_jpx_codes --if-stale` 가 dashboard-refresh **맨 끝**에서 주 1회
-`~/.trade/jpx_codes.json` 을 만들고, 혼합 보드(cns·cni·tws·mys)는
+`build_jpx_codes --if-stale` 가 **제 유닛**(`trade-bot-jpx-codes`, 6시간 점검)에서
+주 1회 `~/.trade/jpx_codes.json` 을 만들고, 혼합 보드(cns·cni·tws·mys)는
 `stock_link.jp_names` → `jp_confirms` 로 **코드와 이름이 둘 다** 맞을 때만
 `<코드>.T` 링크를 건다(4자리는 대만 코드와 모양이 같다, #34).
 
@@ -1839,9 +1839,9 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 | ⑤ 파일 고르기 | 변경분(`jyoujyou(updated)_e.xlsx`)을 전 목록으로 집지 않는다(#45) | `FetchTests::test_the_updates_file_is_not_mistaken_for_the_full_list` |
 | ⑥ 폴백 고지 | 페이지에서 못 찾으면 실측 주소로 가되 **그렇다고 말한다**(#42a) | `::test_missing_link_falls_back_to_the_measured_url_and_says_so` |
 | ⑦ 시간 예산 | 소켓 타임아웃은 끊긴 시간만 잰다 — 흘러오는 몸통을 **총 30초**에서 끊는다 · 크기 상한 · HTTP 오류는 상태로(#116) | `HttpBudgetTests::*` |
-| ⑧ 빌더 안전 | 하한(#280) · 실패 뒤 6시간 쉼 후 재시도(#303·#178) · **쓸 수 없는** 신선 파일은 재빌드(#25) · 어떤 예외든 rc 0 + 경고(#116·#12) | `BuilderTests::*` |
-| ⑨ 배선 | 유닛 **맨 끝** · `-` 접두 · 트레이드 venv · **표준 라이브러리만** import(전수, #24) | `DeployWiringTests::*` |
-| ⑩ 확인 규칙 | 법인형태를 떼고 **같거나** 지주사 꼬리만 더 붙음 — `Tokyo`≠`Tokyo Electron`, 캡션이 더 김, 글자 단위, `holdings` 떼기 금지 | `QueryRuleTests::test_jp_confirms_prefix_rule` · `::test_name_tokens_keep_group_and_holdings` |
+| ⑧ 빌더 안전 | 하한(#280) · 실패 뒤 6시간 쉼 후 재시도(#303·#178) · **시도 전** '시도 중' 기록(강제 종료도 쉬게) · 쓰기 실패는 실제 사유로 덮는다 · **쓸 수 없는** 신선 파일은 재빌드(#25) · 어떤 예외든 rc 0 + 경고(#116·#12) | `BuilderTests::*` |
+| ⑨ 배선 | **제 유닛·타이머**(refresh 와 시간 예산을 안 나눈다, #116) · 설치 직후 첫 실행(`OnActiveSec`) · 트레이드 venv · **표준 라이브러리만** import(전수, #24) | `DeployWiringTests::*` |
+| ⑩ 확인 규칙 | 법인형태를 떼고 **같거나** 실측한 `holdings` 꼬리만 더 붙음 — `Tokyo`≠`Tokyo Electron`, `SoftBank Corp.`≠`SoftBank Group`, 캡션이 더 김, 글자 단위, 재지 않은 약어 | `QueryRuleTests::test_jp_confirms_prefix_rule` · `::test_name_tokens_keep_group_and_holdings` |
 | ⑪ 키·가시성 | 키는 정규화한 코드(`'6976 '` 행) · 목록을 못 불러 평문이 되면 **경고 한 번** — KRX 형제도(#12·#38) | `::test_jp_names_keys_are_normalized_codes` · `::test_a_failing_identity_list_is_logged_not_silent` · `::test_a_failing_krx_list_is_logged_too` |
 | ⑫ 네 보드 E2E | cns·cni·tws·mys — 확인/이름 불일치/코드 불일치/목록 없음, 그리고 페이지당 1회 | `BoardRenderTests::test_mixed_market_board_links_a_tokyo_listing_when_the_jpx_list_confirms` · `::test_the_jpx_list_is_read_once_per_page` |
 | ⑬ TWSE 월매출 제외 | 발행사가 전부 대만 상장이라 도쿄 확인은 **틀린 링크만** 낼 수 있다 — 목록을 열지도 않는다(데이터 소스 사유) | `::test_the_twse_revenue_board_never_asks_the_jpx_list` |

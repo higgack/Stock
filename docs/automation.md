@@ -54,12 +54,13 @@
 | `trade-bot-customs-probe.timer` | 10분 | `trade.scripts.scan_customs --if-changed` | 관세청 변경 감지 스캔 |
 | `trade-bot-prov-fetch.timer` | 월 1-3/11-13/21-23일 30분 | `trade.scripts.fetch_provisional` | 잠정치 수집(발표 몰린 기간 집중) |
 | `trade-bot-daily-digest.timer` | 매일 00:03 KST | `trade.scripts.daily_digest` | 일일 다이제스트 |
+| `trade-bot-jpx-codes.timer` | 6시간 점검(설치 3분 뒤 첫 실행) | `trade.scripts.build_jpx_codes --if-stale` | JPX 상장 코드→영문명 마스터(`~/.trade/jpx_codes.json`) — 혼합 보드 도쿄 딥링크의 신원 확인. 실제 다운로드는 주 1회·실패(또는 끝나지 못한 시도) 뒤 6시간 쉼·요청마다 총 30초 상한. dashboard-refresh 와 **분리**(시간 예산을 나눠 쓰지 않는다, #116) |
 | `trade-bot-dart-revenue.timer` | 매월 18일 05:00 KST | `trade.dart_revenue --refresh` | DART 매출 데이터 갱신 |
 | `trade-bot-dart-reparse.timer` | 매일 04:30 KST | `trade.dart_revenue --reparse-stale --budget 1000` | 실패분 재파싱(예산 캡) |
 | `trade-bot-catalog-guard.timer` | 매월 18일 09:00 KST | `trade.scripts.catalog_guard` | HS↔회사 매칭 카탈로그 정합성 가드 |
 | `trade-bot-curation.timer` | 매월 1/11/15/21일 18:00 KST | `trade.scripts.curation_candidates` | 큐레이션 후보 생성(운영자 확인 대기) |
 | `trade-bot-badonion-sync.timer` | 6시간 | `trade/scripts/backfill_badonion.py` | 배도니언 소스 백필 동기화 |
-| `trade-bot-dashboard-refresh.timer` | 5분 | `ingest_inbox`→`purge_ignored`→`fetch_provisional --if-stale`→`build_krx_codes --if-stale`→`fetch_quotes`→`trade.dashboard`→`resolve_check --if-due`→`build_jpx_codes --if-stale`(맨 끝·`-` 접두 — 주 1회·실패 뒤 6시간 쉼·요청마다 총 30초 상한, 느려도 적재·렌더 예산을 안 먹는다) | **inbox.jsonl → DB → 화면**. 나쁜양파/BeOn 데이터가 대시보드에 오르는 유일한 경로 |
+| `trade-bot-dashboard-refresh.timer` | 5분 | `ingest_inbox`→`purge_ignored`→`fetch_provisional --if-stale`→`build_krx_codes --if-stale`→`fetch_quotes`→`trade.dashboard`→`resolve_check --if-due` | **inbox.jsonl → DB → 화면**. 나쁜양파/BeOn 데이터가 대시보드에 오르는 유일한 경로 |
 | `trade-bot-unstored-check.timer` | 매일 00:00 KST | `trade.scripts.unstored_check` | 캡션이 store 에 안 들어간 건 감지 → 텔레그램(성공 시 무음) |
 | `trade-bot-health.timer` | 1시간 | `trade.scripts.health_check` | 휴면·사이클 갭 감지 |
 | `trade-bot-customs-fetch.timer` | 4×/일(UTC 00:30·04:30·08:30·16:30) | `fetch_customs`→`customs_alert`→`scan_customs`→`industry_report --store`→`refresh_signals`→`fetch_provisional`→`trade.dashboard` | 관세청 확정치 수집·급변 스캔·산업 집계 |

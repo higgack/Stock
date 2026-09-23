@@ -190,8 +190,11 @@ class QueryRuleTests(unittest.TestCase):
                          "지주사 꼬리만(독립 리뷰 2026-09-23)")
         self.assertFalse(c("Asia", "0002", {"0002": "Asia Pile Holdings Corporation"}),
                          "남는 꼬리에 지주사 표기 밖의 낱말(pile)이 있다")
-        self.assertTrue(c("SoftBank", "0003", {"0003": "SoftBank Group Corp."}),
-                        "지주사 꼬리(group)만 남으면 생략을 허용한다")
+        self.assertFalse(c("SoftBank Corp.", "0003", {"0003": "SoftBank Group Corp."}),
+                         "`group` 은 생략 꼬리가 아니다 — SoftBank Corp.(9434) 와 "
+                         "SoftBank Group(9984)은 다른 회사다(2차 독립 리뷰)")
+        self.assertFalse(c("Kioxia", "285A", {"285A": "Kioxia HD"}),
+                         "재지 않은 약어(hd)는 생략 꼬리가 아니다(#165)")
         self.assertTrue(c("Kyokuyo", " 1301 ", m), "코드의 앞뒤 공백")
         self.assertFalse(c("Kiox", "285A", m), "글자가 아니라 **토큰** 단위다")
         self.assertFalse(c("Kioxia", "285B", m), "목록에 없는 코드")

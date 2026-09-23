@@ -157,11 +157,13 @@ def kr_confirms(name: str, code: str, master: dict | None) -> bool:
 # (SoftBank Group ≠ SoftBank Corp.). 떼면 다른 회사가 같은 이름이 된다.
 _LEGAL_TAIL = frozenset({"co", "ltd", "limited", "corp", "corporation", "inc",
                          "incorporated", "company", "kk", "plc"})
-# 캡션이 **생략해도 되는** 꼬리 — 지주사 표기뿐이다(`Kioxia` ↔ `Kioxia Holdings
-# Corporation`, ④ 실측). 그 밖의 낱말이 남으면 다른 회사일 수 있다: `Tokyo` 는
-# `Tokyo Electron` 이 아니다(독립 리뷰 2026-09-23 — 한 낱말 캡션이 같은 낱말로
-# 시작하는 아무 회사에나 맞던 규칙을 좁혔다).
-_OMITTABLE_TAIL = frozenset({"holdings", "hd", "hldgs", "group"})
+# 캡션이 **생략해도 되는** 꼬리 — 실측한 `holdings` 하나뿐이다(`Kioxia` ↔
+# `Kioxia Holdings Corporation`, ④). 그 밖의 낱말이 남으면 다른 회사일 수 있다:
+# `Tokyo` 는 `Tokyo Electron` 이 아니다(독립 리뷰 2026-09-23 — 한 낱말 캡션이 같은
+# 낱말로 시작하는 아무 회사에나 맞던 규칙을 좁혔다). ⚠️ `group` 은 **넣지 않는다**
+# — 바로 위 이유 그대로 `SoftBank Corp.`(9434) 캡션이 `SoftBank Group Corp.`
+# (9984)에 맞아 버린다(2차 리뷰). 재지 않은 약어(`hd` 등)도 넣지 않는다(#165).
+_OMITTABLE_TAIL = frozenset({"holdings"})
 
 
 def _name_tokens(name: str) -> list[str]:

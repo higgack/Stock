@@ -419,6 +419,35 @@ class BuilderTests(unittest.TestCase):
         self.assertTrue(jm.PATH.exists())
         self.assertFalse(jm.fail_path().exists(), "성공하면 실패 기록을 지운다")
 
+    def test_an_interrupted_attempt_still_rests(self):
+        """유닛 타임아웃·강제 종료는 파이썬 예외가 아니라 실패 기록을 남길 틈이
+        없다 — **시도 전에** 적어 두지 않으면 쉬는 시간이 안 걸려 매 틱 다시
+        두드린다(2차 독립 리뷰 2026-09-23). SystemExit 로 중단을 흉내 낸다."""
+        with self.assertRaises(SystemExit):
+            bj.run(if_stale=True, get=self._get(exc=SystemExit(1)), now=10_000.0)
+        rec = json.loads(jm.fail_path().read_text(encoding="utf-8"))
+        self.assertIn("시도 중", rec["reason"])
+        n = self.calls
+        bj.run(if_stale=True, get=self._get(self.big), now=10_300.0)
+        self.assertEqual(self.calls, n, "끝나지 못한 시도 뒤에도 쉬어야 한다")
+
+    def test_a_failed_write_replaces_the_in_progress_reason(self):
+        """쓰기가 실패했는데 '타임아웃 의심' 이 남으면 운영자를 엉뚱한 데로
+        보낸다(#82·#292) — 실제 사유로 덮는다. 마스터 쓰기만 실패시킨다."""
+        real = bj._atomic_write_json
+
+        def fake(path, obj):
+            if path == jm.PATH:
+                raise OSError("disk full")
+            return real(path, obj)
+        with mock.patch.object(bj, "_atomic_write_json", fake):
+            with self.assertLogs("build-jpx-codes", level="WARNING"):
+                bj.run(get=self._get(self.big), now=10_000.0)
+        reason = json.loads(jm.fail_path().read_text(encoding="utf-8"))["reason"]
+        self.assertIn("마스터 쓰기 실패", reason)
+        self.assertIn("disk full", reason)
+        self.assertNotIn("시도 중", reason)
+
     def test_a_manual_run_ignores_the_rest(self):
         with self.assertLogs("build-jpx-codes", level="WARNING"):
             bj.run(get=self._get(exc=OSError("x")), now=10_000.0)
@@ -494,17 +523,24 @@ class DeployWiringTests(unittest.TestCase):
         return [ln.split("=", 1)[1] for ln in txt.splitlines()
                 if ln.startswith("ExecStart=")]
 
-    def test_the_builder_runs_last_in_the_refresh_unit(self):
-        """**맨 끝** — 느린 원천이 적재·렌더의 시간 예산(TimeoutStartSec 공유)을
-        먹지 않게(독립 리뷰 2026-09-23 · #116). 새 마스터는 다음 틱의 렌더가 쓴다.
-        `-` 접두 = 실패가 유닛을 실패로 만들지 않는다."""
-        ex = self._execs()
-        i = next(i for i, e in enumerate(ex) if "build_jpx_codes" in e)
-        self.assertEqual(i, len(ex) - 1, ex)
-        self.assertIn("--if-stale", ex[i])
-        self.assertTrue(ex[i].startswith("-"))
-        self.assertIn("/stock-trade/.venv/bin/python", ex[i],
+    def test_the_builder_has_its_own_unit_not_the_refresh_one(self):
+        """dashboard-refresh 안에 두면 한 TimeoutStartSec 를 적재·렌더와 나눠 써,
+        느린 원천이 유일한 inbox→DB→화면 경로를 한 틱 막거나 유닛째 죽는다
+        (2차 독립 리뷰 2026-09-23 · #116). 제 유닛에서 제 예산으로 돈다."""
+        self.assertFalse(any("build_jpx_codes" in e for e in self._execs()),
+                         "refresh 유닛에 다시 들어갔다")
+        svc = (_REPO / "deploy/trade-bot-jpx-codes.service").read_text()
+        ex = [ln.split("=", 1)[1] for ln in svc.splitlines()
+              if ln.startswith("ExecStart=")]
+        self.assertEqual(len(ex), 1, ex)
+        self.assertIn("-m trade.scripts.build_jpx_codes --if-stale", ex[0])
+        self.assertIn("/stock-trade/.venv/bin/python", ex[0],
                       "유닛이 도는 그 트레이드 venv")
+        self.assertRegex(svc, r"(?m)^TimeoutStartSec=\d+")
+        timer = (_REPO / "deploy/trade-bot-jpx-codes.timer").read_text()
+        self.assertRegex(timer, r"(?m)^Unit=trade-bot-jpx-codes\.service$")
+        self.assertRegex(timer, r"(?m)^OnActiveSec=",
+                         "설치 직후 첫 빌드 — 없으면 VM 이 재부팅할 때까지 마스터가 없다")
 
     def test_only_the_standard_library_and_trade(self):
         """트레이드 venv 엔 pandas·openpyxl·yfinance 가 없다(② 실측) — 새

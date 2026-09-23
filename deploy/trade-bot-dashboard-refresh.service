@@ -8,7 +8,7 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-# Eight passes in one timer tick:
+# Seven passes in one timer tick:
 #   1. ingest_inbox — new inbox.jsonl rows → store.db (skips on filter match)
 #   2. purge_ignored — retroactively delete store.db rows that now match the
 #      ignored filter (handles cases where the filter was extended after a
@@ -27,12 +27,6 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #   7. resolve_check --if-due — 시세가 안 붙는(이름→코드 미해석) 신규 관련종목을
 #      하루 1회만 점검해 운영자 DM(첫 실행 baseline-silent, 신규만, cap). 매 틱
 #      호출돼도 날짜 마커로 하루 한 번만 실제 수행. 상장사 자동부착의 '나머지' 가시성.
-#   8. build_jpx_codes --if-stale — JPX 상장 코드→영문명 로컬 마스터(주 1회,
-#      실패 뒤 6시간 쉼, 요청마다 총 30초 상한). 혼합시장 보드의 도쿄 상장사
-#      딥링크가 **신원 확인**에 쓴다. **맨 끝**에 두는 이유: 이 장식용 단계가
-#      느려도 적재·렌더의 시간 예산(TimeoutStartSec)을 먹지 않게(#116) — 새
-#      마스터는 다음 틱(5분)의 렌더가 쓴다. `-` 접두 = 실패가 유닛을 실패로
-#      만들지 않는다.
 # All passes are idempotent so a missed/duplicated run costs nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.ingest_inbox
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.purge_ignored
@@ -41,7 +35,6 @@ ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.build_krx_
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_quotes
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.resolve_check --if-due
-ExecStart=-/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.build_jpx_codes --if-stale
 # 워머가 시간 예산까지 쓸 수 있게 기본(90s)보다 넉넉히.
 TimeoutStartSec=240
 StandardOutput=journal

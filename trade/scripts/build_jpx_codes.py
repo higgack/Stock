@@ -1,18 +1,21 @@
 """JPX 상장종목 코드→영문명 로컬 마스터 빌더(`~/.trade/jpx_codes.json`).
 
 혼합시장 보드의 도쿄 상장사 딥링크가 **신원 확인**에 쓴다(`trade.stock_link.
-jp_confirms`). 형제 `build_krx_codes` 와 같은 자리(dashboard-refresh 한 패스)에서
-돈다 — 규약도 같다: `--if-stale` 면 마스터가 없거나 오래됐을 때만 받고, 성공
-(하한 이상)일 때만 원자적으로 덮어쓴다. 실패하면 **기존 마스터를 유지**한다.
+jp_confirms`). 형제 `build_krx_codes` 와 규약이 같다: `--if-stale` 면 마스터가
+없거나 오래됐을 때만 받고, 성공(하한 이상)일 때만 원자적으로 덮어쓴다. 실패하면
+**기존 마스터를 유지**한다. 단 **자리는 다르다** — 제 유닛(`trade-bot-jpx-codes`
+6시간 점검)에서 돈다. dashboard-refresh 안에 두면 한 시간 예산을 적재·렌더와
+나눠 써, 느린 원천이 화면 갱신을 막을 수 있었다(독립 리뷰 2026-09-23 · #116).
 
 ⚠️ 실패는 **짧게 쉬고** 다시 묻는다(#303·#384): 5분 타이머가 원천 장애 동안
 매 틱 두드리지 않도록 마지막 실패 뒤 6시간은 건너뛴다. 실패 사유는 곁파일
 (`jpx_codes.fail.json`)에 남아 다음 사람이 갈래를 읽는다(#82). 손으로 돌리면
 (= `--if-stale` 없이) 쉬는 시간을 무시하고 바로 받는다.
-⚠️ 어떤 예외든 **종료코드 0** 이다 — 장식용 신원 데이터 하나가 적재·렌더 유닛을
-실패로 만들면 안 된다(#116). 대신 경고 로그에 사유를 남긴다(#12 silent-fail
-금지). 유닛에선 **맨 끝**에 `-` 접두로 돈다 — 느린 원천이 앞 단계의 시간 예산을
-먹지 않게, 그리고 요청마다 총 시간 상한(`jpx_master._DEADLINE_S`)이 있다.
+⚠️ 어떤 예외든 **종료코드 0** 이고 경고 로그에 사유를 남긴다(#116·#12). 요청마다
+총 시간 상한(`jpx_master._DEADLINE_S`)이 있다.
+⚠️ **시도 전에** '시도 중' 을 실패 곁파일에 적는다 — 유닛 타임아웃·강제 종료는
+파이썬 예외가 아니라서 실패 기록을 남길 기회가 없다. 그 기록이 없으면 쉬는 시간이
+안 걸려 매 틱 원천을 다시 두드린다(독립 리뷰 2026-09-23). 성공하면 지운다.
 
 Run by hand (트레이드 체크아웃 — 유닛과 같은 인터프리터):
     cd ~/stock-trade && .venv/bin/python -m trade.scripts.build_jpx_codes
@@ -20,6 +23,7 @@ Run by hand (트레이드 체크아웃 — 유닛과 같은 인터프리터):
 이상 없을 때의 마지막 줄:
     JPX master built: <N> codes (JPX 기준 YYYY-MM-DD, via 목록 페이지 링크 · 버림 <M> · 중복 <K>) → …/jpx_codes.json
 (`--if-stale` 로 신선하면 `JPX master fresh — skip` 한 줄.)
+유닛: `trade-bot-jpx-codes.{service,timer}` — `journalctl -u trade-bot-jpx-codes`.
 """
 from __future__ import annotations
 
@@ -89,6 +93,8 @@ def run(*, if_stale: bool = False, get=None, now: float | None = None) -> int:
             log.info("JPX master: 마지막 시도가 실패해 %.1f시간 뒤 다시 시도 "
                      "(사유: %s)", left / 3600, rec.get("reason"))
             return 0
+    # 끝나지 못한 시도도 쉬는 시간을 걸게 **먼저** 적는다(위 독스트링).
+    _mark_failure(now, "시도 중 — 끝나지 않았다(타임아웃·강제 종료 의심)")
     try:
         master, stats = jm.fetch(get=get)
     except Exception as e:                            # noqa: BLE001
@@ -109,6 +115,7 @@ def run(*, if_stale: bool = False, get=None, now: float | None = None) -> int:
     try:
         _atomic_write_json(jm.PATH, env)
     except OSError as e:
+        _mark_failure(now, f"마스터 쓰기 실패: {e}")     # '시도 중' 을 덮는다(#82)
         log.warning("JPX master write failed: %s", e)
         return 0
     try:
