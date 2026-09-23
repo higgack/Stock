@@ -59,7 +59,7 @@
 | `trade-bot-catalog-guard.timer` | 매월 18일 09:00 KST | `trade.scripts.catalog_guard` | HS↔회사 매칭 카탈로그 정합성 가드 |
 | `trade-bot-curation.timer` | 매월 1/11/15/21일 18:00 KST | `trade.scripts.curation_candidates` | 큐레이션 후보 생성(운영자 확인 대기) |
 | `trade-bot-badonion-sync.timer` | 6시간 | `trade/scripts/backfill_badonion.py` | 배도니언 소스 백필 동기화 |
-| `trade-bot-dashboard-refresh.timer` | 5분 | `ingest_inbox`→`purge_ignored`→`fetch_provisional --if-stale`→`build_krx_codes --if-stale`→`fetch_quotes`→`trade.dashboard`→`resolve_check --if-due` | **inbox.jsonl → DB → 화면**. 나쁜양파/BeOn 데이터가 대시보드에 오르는 유일한 경로 |
+| `trade-bot-dashboard-refresh.timer` | 5분 | `ingest_inbox`→`purge_ignored`→`fetch_provisional --if-stale`→`build_krx_codes --if-stale`→`build_jpx_codes --if-stale`(주 1회·실패 뒤 6시간 쉼·실패해도 뒤 단계 진행)→`fetch_quotes`→`trade.dashboard`→`resolve_check --if-due` | **inbox.jsonl → DB → 화면**. 나쁜양파/BeOn 데이터가 대시보드에 오르는 유일한 경로 |
 | `trade-bot-unstored-check.timer` | 매일 00:00 KST | `trade.scripts.unstored_check` | 캡션이 store 에 안 들어간 건 감지 → 텔레그램(성공 시 무음) |
 | `trade-bot-health.timer` | 1시간 | `trade.scripts.health_check` | 휴면·사이클 갭 감지 |
 | `trade-bot-customs-fetch.timer` | 4×/일(UTC 00:30·04:30·08:30·16:30) | `fetch_customs`→`customs_alert`→`scan_customs`→`industry_report --store`→`refresh_signals`→`fetch_provisional`→`trade.dashboard` | 관세청 확정치 수집·급변 스캔·산업 집계 |

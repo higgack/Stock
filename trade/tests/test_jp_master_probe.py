@@ -190,11 +190,13 @@ class _Resp:
         self.headers = {"content-type": ctype}
 
 
-class EntrypointTests(unittest.TestCase):
-    """`main` 을 실제로 태운다 — 헬퍼만 재면 배선을 떼는 변형이 통과한다(#20).
+class _EntryBase(unittest.TestCase):
+    """`main` 을 실제로 태우는 클래스들의 **경계**(테스트 메서드 없음).
 
     ⚠️ **경계는 클래스 차원에서** 막는다. 개별 테스트에 맡기면 새 테스트가
     하나 추가될 때 조용히 바깥을 친다(#24 열거형 방어는 새 항목을 못 잡는다).
+    테스트를 가진 클래스를 상속하면 그 테스트가 **두 번** 돈다 — 그래서
+    경계만 여기 두고 두 클래스가 나눠 받는다.
     """
 
     def setUp(self):
@@ -215,6 +217,13 @@ class EntrypointTests(unittest.TestCase):
             p = mock.patch.object(jp, name, repl)
             p.start()
             self.addCleanup(p.stop)
+        # ⑦ 이 읽는 JPX 마스터 — 테스트마다 빈 임시 경로에서 시작한다(운영
+        # `~/.trade` 를 읽으면 ⑦ 단언이 운영자 상태에 따라 뒤집힌다, #30·#399).
+        from trade import jpx_master as jm
+        self.jm = jm
+        p = mock.patch.object(jm, "PATH", self.dir / "jpx_codes.json")
+        p.start()
+        self.addCleanup(p.stop)
 
     def _no_http(self, url):                                   # noqa: D401
         self.http.append(url)
@@ -231,6 +240,10 @@ class EntrypointTests(unittest.TestCase):
         with redirect_stdout(buf):
             rc = jp.main([])
         return rc, buf.getvalue()
+
+
+class EntrypointTests(_EntryBase):
+    """`main` 을 실제로 태운다 — 헬퍼만 재면 배선을 떼는 변형이 통과한다(#20)."""
 
     def test_the_network_boundary_is_stubbed_for_this_class(self):
         """이 클래스가 실제로 바깥을 막고 있나 — 반대 증거로 확인한다(#25)."""
@@ -372,6 +385,102 @@ class EntrypointTests(unittest.TestCase):
                 jp.main([])
         self.assertEqual(len(calls), len(set(calls)) + 1,
                          f"인터프리터를 중복으로 물었다: {calls}")
+
+
+class StepSevenTests(_EntryBase):
+    """⑦ — 로컬 JPX 마스터로 혼합 보드의 도쿄 코드를 **제품 규칙 그대로** 태운다.
+
+    `_EntryBase` 의 경계(네트워크·자식 인터프리터·마스터 경로)를 그대로
+    물려받는다 — 새 테스트가 경계를 빠뜨릴 길을 없앤다(#24)."""
+
+    def _master(self, codes, **meta):
+        import json as _json
+        env = {"codes": codes, "effective": "2026-08-31",
+               "via": "목록 페이지 링크", "built_at": "2026-09-23T00:00:00+00:00"}
+        env.update(meta)
+        self.jm.PATH.write_text(_json.dumps(env), encoding="utf-8")
+
+    def _seven(self, out: str) -> str:
+        return out.split("⑦", 1)[-1].split("■ 쟀다", 1)[0]
+
+    def test_without_a_master_it_says_so_and_how_to_build_it(self):
+        _, out = self._run()
+        seven = self._seven(out)
+        self.assertIn("⏭ 마스터 없음", seven)
+        self.assertIn("trade.scripts.build_jpx_codes", seven)
+
+    def test_an_unreadable_master_does_not_claim_the_builder_never_ran(self):
+        """파일이 있는데 못 읽었으면 빌더는 **돈 것**이다 — '아직 안 돌았다' 고
+        적으면 운영자가 타이머 설치를 확인하러 간다(#82·#292 틀린 사유)."""
+        self.jm.PATH.write_bytes(b"\xff not json")
+        seven = self._seven(self._run()[1])
+        self.assertIn("못 읽음", seven)
+        self.assertNotIn("아직 안 돌았다", seven)
+        self.assertIn("trade.scripts.build_jpx_codes", seven)
+
+    def test_a_recorded_build_failure_is_quoted(self):
+        self.jm.fail_path().write_text('{"at": 1, "reason": "파일 HTTP 403"}',
+                                       encoding="utf-8")
+        seven = self._seven(self._run()[1])
+        self.assertIn("마지막 빌드 실패", seven)
+        self.assertIn("파일 HTTP 403", seven)
+
+    def test_mixed_board_rows_go_through_the_product_rule(self):
+        """JP 선언 보드 행은 빼고(그 보드는 선언으로 링크된다), 나머지를
+        `lookup_query` 로 태워 링크·불일치·부재를 갈래로 적는다(#82)."""
+        self._master({"6976": "TAIYO YUDEN CO.,LTD.", "6723": "SOMEONE ELSE"})
+        seven = self._seven(self._run()[1])
+        self.assertRegex(seven, r"\[cns\] 6976 'Taiyo Yuden' → JPX "
+                                r"'TAIYO YUDEN CO\.,LTD\.' ✅ \.\./lookup/6976\.T")
+        self.assertRegex(seven, r"\[mys\] 6723 .*❌ 이름이 안 맞아 평문")
+        self.assertNotIn("[jps]", seven, "선언 보드는 대상이 아니다")
+        self.assertIn("→ 도쿄 링크 1 / 대상 2행", seven)
+        self.assertIn("JPX 기준 2026-08-31", seven)
+
+    def test_a_code_missing_from_the_list_is_named(self):
+        self._master({"6976": "TAIYO YUDEN CO.,LTD."})
+        seven = self._seven(self._run()[1])
+        self.assertRegex(seven, r"\[mys\] 6723 .*JPX 목록에 없는 코드 — 평문")
+
+    def test_the_verdict_is_the_product_s_not_a_copy(self):
+        """판정을 프로브가 다시 짜면 화면과 갈라진다(#35·#169) — 제품 함수를
+        갈아끼우면 ⑦ 의 결과가 **따라서** 바뀌어야 한다."""
+        from trade import stock_link as sl
+        self._master({"6976": "TAIYO YUDEN CO.,LTD."})
+        with mock.patch.object(sl, "jp_confirms", return_value=False):
+            seven = self._seven(self._run()[1])
+        self.assertNotIn("✅", seven)
+        self.assertIn("→ 도쿄 링크 0 / 대상 2행", seven)
+
+    def test_a_readable_master_counts_as_one_measured_step(self):
+        import re as _re
+
+        def steps(out):
+            return int(_re.search(r"쟀다: (\d+)단계", out).group(1))
+        without = steps(self._run()[1])
+        self._master({"6976": "TAIYO YUDEN CO.,LTD."})
+        self.assertEqual(steps(self._run()[1]), without + 1)
+
+
+class FingerprintScopeTests(unittest.TestCase):
+    def test_the_fingerprint_moves_when_a_judging_module_changes(self):
+        """⑦ 의 판정은 `stock_link`·`jpx_master` 가 내린다 — 그 둘을 안 덮으면
+        낡은 체크아웃과 새것이 같은 지문을 찍는다(#364·#365). 레포 파일에 쓰지
+        않고(mtime 부작용, #365) 임시 사본으로 잰다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            files = []
+            for i, f in enumerate(jp._FINGERPRINT_FILES):
+                c = Path(tmp) / f"f{i}.py"
+                c.write_bytes(f.read_bytes())
+                files.append(c)
+            with mock.patch.object(jp, "_FINGERPRINT_FILES", tuple(files)):
+                before = jp.banner()
+                files[1].write_bytes(files[1].read_bytes() + b"# x\n")
+                after = jp.banner()
+        self.assertNotEqual(before, after)
+        names = {f.name for f in jp._FINGERPRINT_FILES}
+        self.assertEqual(names, {"jp_master_probe.py", "stock_link.py",
+                                 "jpx_master.py"})
 
 
 class ModuleReportTests(unittest.TestCase):

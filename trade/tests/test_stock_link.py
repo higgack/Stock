@@ -156,6 +156,53 @@ class QueryRuleTests(unittest.TestCase):
         self.assertEqual(sl.lookup_query("123", "모르는이름", local="JP"), "")
         self.assertEqual(sl.lookup_query("6857", "모르는이름", local="JP"), "6857.T")
 
+    def test_tokyo_code_off_the_japan_board_needs_the_jpx_list(self):
+        """혼합 보드의 도쿄 코드 — JPX 목록이 **이 코드를 이 이름으로** 적을 때만
+        `.T`(2026-09-23). 목록 값의 모양은 JPX 실측 행(`KYOKUYO CO.,LTD.`)을 따른
+        재구성이다(코드↔회사 신원은 ④ yfinance 실측, #393)."""
+        m = {"6976": "TAIYO YUDEN CO.,LTD."}
+        self.assertEqual(sl.lookup_query("6976", "Taiyo Yuden", jp_master=m),
+                         "6976.T")
+        self.assertEqual(sl.lookup_query("6976", "Taiyo Yuden"), "",
+                         "목록 없이는 종전처럼 평문")
+        self.assertEqual(sl.lookup_query("6976", "Formosa Widget", jp_master=m), "",
+                         "4자리는 대만 코드와 모양이 같다 — 이름이 안 맞으면 평문(#34)")
+        self.assertEqual(sl.lookup_query("403870", "HPSP", jp_master=m), "",
+                         "JPX 목록은 6자리를 확인하지 않는다")
+
+    def test_jp_confirms_prefix_rule(self):
+        """캡션은 이름을 줄여 쓴다 — 캡션 토큰이 JPX 영문명 토큰의 **앞부분**이면
+        같은 회사. 반대 방향(캡션이 더 김)은 다른 회사다."""
+        c = sl.jp_confirms
+        m = {"285A": "Kioxia Holdings Corporation",       # ④ yfinance 실측 longName
+             "8035": "Tokyo Electron Limited",              # ④ 실측
+             "1301": "KYOKUYO CO.,LTD."}                    # ⑥ JPX 실측 행
+        self.assertTrue(c("Kioxia", "285A", m))
+        self.assertTrue(c("Kioxia Holdings Corporation", "285A", m))
+        self.assertTrue(c("Kyokuyo", "1301", m), "대소문자·법인형태 무시")
+        self.assertTrue(c("Kyokuyo Co., Ltd.", "1301", m), "양쪽 법인형태를 뗀다")
+        self.assertTrue(c("ＫＹＯＫＵＹＯ", "1301", m), "전각도 같은 이름(NFKC)")
+        self.assertTrue(c("Kioxia", "285a", m), "코드 대소문자")
+        self.assertFalse(c("Tokyo Electron Device", "8035", m),
+                         "캡션이 더 길면 다른 회사다")
+        self.assertFalse(c("Kiox", "285A", m), "글자가 아니라 **토큰** 단위다")
+        self.assertFalse(c("Kioxia", "285B", m), "목록에 없는 코드")
+        self.assertFalse(c("", "285A", m))
+        self.assertFalse(c("Kioxia", "285A", None))
+        self.assertFalse(c("Co., Ltd.", "1301", m), "법인형태만 남으면 빈 이름이다")
+
+    def test_name_tokens_keep_group_and_holdings(self):
+        """`holdings`·`group` 은 법인형태가 아니라 이름이다 — 떼면 SoftBank
+        Group 과 SoftBank Corp. 가 같은 이름이 된다(합성 목록)."""
+        self.assertEqual(sl._name_tokens("SoftBank Group Corp."),
+                         ["softbank", "group"])
+        self.assertFalse(sl.jp_confirms("SoftBank Group", "0001",
+                                        {"0001": "SoftBank Corp."}))
+        self.assertEqual(sl._name_tokens("The Synthetic Works, Ltd."),
+                         ["synthetic", "works"], "앞 `the` 도 뗀다")
+        self.assertEqual(sl._name_tokens("Shin-Etsu Chemical Co., Ltd."),
+                         sl._name_tokens("SHIN-ETSU CHEMICAL CO.,LTD."))
+
     def test_unresolvable_gets_no_query(self):
         self.assertEqual(sl.lookup_query("", ""), "")
         self.assertEqual(sl.lookup_query("", "이름만있는회사"), "")
@@ -260,6 +307,19 @@ class BoardRenderTests(unittest.TestCase):
         pp.resolve_codes = lambda names, **kw: {}   # 사다리도 막는다(2차 그물)
         self.addCleanup(lambda: setattr(pp, "resolve_codes", realr))
         self.addCleanup(lambda: setattr(pp, "_load_krx_master", realm))
+        # JPX 목록(2026-09-23)도 같은 이유로 경계에서 막는다 — 운영자가 빌더를
+        # 한 번 돌리면 `~/.trade/jpx_codes.json` 이 도쿄 코드 단언을 뒤집는다.
+        # 루트 conftest 리다이렉트가 2차 그물이다. 필요하면 `self.jp` 를 채운다.
+        import trade.jpx_master as jm
+        self.jp: dict = {}
+        self.jp_loads = 0
+        realj = jm.load
+
+        def _jp_load():
+            self.jp_loads += 1
+            return dict(self.jp)
+        jm.load = _jp_load
+        self.addCleanup(lambda: setattr(jm, "load", realj))
 
     def test_the_resolver_is_boundary_isolated_in_this_class(self):
         """위 `setUp` 이 실제로 걸렸나 — 이게 없으면 이 클래스의 보드
@@ -270,6 +330,10 @@ class BoardRenderTests(unittest.TestCase):
         self.assertEqual(pp._load_krx_master(), {"__probe__": "123456"})
         self.assertEqual(pp.resolve_codes(["__probe__"]), {},
                          "시세 사다리도 막혀 있어야 한다 — 신원으로 새면 안 된다")
+        import trade.jpx_master as jm
+        self.jp = {"9999": "__probe__"}
+        self.assertEqual(jm.load(), {"9999": "__probe__"},
+                         "JPX 목록도 경계에서 막혀 있어야 한다")
 
     def _render(self, mod, opener, caption, *, arg=None):
         with tempfile.TemporaryDirectory() as tmp:
@@ -389,19 +453,92 @@ class BoardRenderTests(unittest.TestCase):
             self.assertEqual(_links(html), [], f"{mod.__name__}: 확인 없이 링크")
             self.assertIn("삼성SDI", html, "링크를 안 걸어도 이름은 보인다")
 
-    def test_a_tokyo_code_outside_the_japan_board_stays_plain(self):
-        """일본판 대조 수단이 이 레포에 없다 — 없는 근거를 지어내지 않는다(#165).
+    def test_a_tokyo_code_outside_the_japan_board_stays_plain_without_the_jpx_list(self):
+        """JPX 목록이 확인하지 않으면 평문 — KRX 목록이 우겨도 마찬가지.
 
-        `Taiyo Yuden (6976)` 은 **중국 수출** 보드에 온다(2026-09-22 실측).
-        KRX 목록이 그 이름을 그 코드로 푼다고 우겨도 6976 은 6자리가 아니라
-        확인 축(규칙 3)에 닿지 않는다 = 그 축이 KR 전용임을 못박는다."""
+        ⚠️ 2026-09-23 에 다시 썼다(#222). 옛 판은 "일본판 대조 수단이 이 레포에
+        없다" 를 계약으로 못박았는데 `build_jpx_codes` 가 그 수단이 됐다. 남는
+        보장 둘: (a) KRX 축(6자리 전용)은 4자리에 닿지 않는다 (b) JPX 확인이
+        없으면(마스터 부재) 종전처럼 평문이다.
+
+        `Taiyo Yuden (6976)` 은 **중국 수출** 보드에 온다(2026-09-22 실측)."""
         from trade import cn_stock_exports as cns
         cap = ("Taiyo Yuden (6976)\n중국 수출\n26년 8월 Update\n\n"
                "수출액 YoY: +40.5%")
         self.codes = {"Taiyo Yuden": "6976"}
+        self.jp = {}
         html = self._render(cns, "open_cn_stock_db", cap)
         self.assertEqual(_links(html), [])
         self.assertIn("Taiyo Yuden", html)
+
+    def test_mixed_market_board_links_a_tokyo_listing_when_the_jpx_list_confirms(self):
+        """혼합 보드의 도쿄 상장사 — JPX 목록이 **코드와 이름을 둘 다** 확인할
+        때만 `.T` 링크(2026-09-23, `jp_master_probe` ③ 실측: 중국 보드의
+        `Taiyo Yuden (6976)` · 말레이시아 보드의 `Renesas Electronics
+        Corporation (6723)` 이 JP 보드에 없었다).
+
+        ⚠️ **다섯 보드 전수**다 — 배선을 한 곳만 떼는 변형이 나머지를 통과한다
+        (#291). 목록 값의 대소문자·법인형태 표기는 JPX 실측 행(`KYOKUYO
+        CO.,LTD.`)의 모양을 따른 재구성이다(#393)."""
+        from trade import (cn_stock_exports as cns, cn_stock_imports as cni,
+                           tw_stock_exports as tws, my_stock_exports as mys,
+                           tw_monthly_revenue as twr)
+        boards = (
+            (cns, "open_cn_stock_db", "Taiyo Yuden",
+             "Taiyo Yuden (6976)\n중국 수출\n26년 8월 Update\n\n수출액 YoY: +40.5%"),
+            (cni, "open_cn_stock_import_db", "Taiyo Yuden",
+             "Taiyo Yuden (6976)\n중국 수입\n26년 8월 Update\n\n수입액 YoY: +9.5%"),
+            (tws, "open_tw_stock_db", "Taiyo Yuden",
+             "Taiyo Yuden (6976)\n대만 수출\n26년 8월 Update\n\n수출액 YoY: +1.0%"),
+            (mys, "open_my_stock_db", "Taiyo Yuden",
+             "Taiyo Yuden (6976)\n말레이시아 수출\n26년 8월 Update\n\n"
+             "수출액 YoY: +2.0%"),
+            (twr, "open_tw_revenue_db", "Taiyo Yuden",
+             "Taiyo Yuden (6976) 월매출\n26년 8월\n\nREV 약 1,000억 TWD\n"
+             "MoM +1.0% · YoY +1.0%\n\nhttps://badonion.co.kr/twse-revenue"),
+        )
+        for mod, opener, label, cap in boards:
+            self.jp = {"6976": "TAIYO YUDEN CO.,LTD."}
+            self.assertIn(("../lookup/6976.T", label),
+                          _links(self._render(mod, opener, cap)), mod.__name__)
+            # 코드는 맞는데 이름이 다르다 = 4자리 충돌(대만 코드 등) — 평문
+            self.jp = {"6976": "SOMEONE ELSE CO.,LTD."}
+            self.assertEqual(_links(self._render(mod, opener, cap)), [],
+                             f"{mod.__name__}: 이름 불일치인데 링크가 붙었다")
+            # 이름은 목록에 있는데 **다른 코드** 아래다 — 평문
+            self.jp = {"6977": "TAIYO YUDEN CO.,LTD."}
+            self.assertEqual(_links(self._render(mod, opener, cap)), [],
+                             f"{mod.__name__}: 코드 불일치인데 링크가 붙었다")
+            self.jp = {}
+            html = self._render(mod, opener, cap)
+            self.assertEqual(_links(html), [], f"{mod.__name__}: 목록 없이 링크")
+            self.assertIn(label, html)
+
+    def test_the_jpx_list_is_read_once_per_page(self):
+        """카드마다 읽으면 행 수만큼 다시 연다(#113) — 그리고 도쿄 코드 모양이
+        없는 페이지는 목록을 아예 안 연다(#61)."""
+        from trade import my_stock_exports as mys
+        self.jp = {"6723": "Renesas Electronics Corporation"}
+        with tempfile.TemporaryDirectory() as tmp:
+            c = mys.open_my_stock_db(Path(tmp) / "t.db")
+            for cap in ("Renesas Electronics Corporation (6723)\n말레이시아 수출\n"
+                        "26년 8월 Update\n\n수출액 YoY: +2.0%",
+                        "Taiyo Yuden (6976)\n말레이시아 수출\n26년 8월 Update\n\n"
+                        "수출액 YoY: +1.0%",
+                        "Penguin Solutions (PENG)\n말레이시아 수출\n26년 8월 "
+                        "Update\n\n수출액 YoY: +1.0%"):
+                mys.ingest(c, cap)
+            html = mys.render_html(c)
+        self.assertEqual(self.jp_loads, 1, f"페이지당 1회 — {self.jp_loads}회")
+        got = dict(_links(html))
+        self.assertEqual(got.get("../lookup/6723.T"),
+                         "Renesas Electronics Corporation")
+        self.assertNotIn("../lookup/6976.T", got, "목록에 없는 코드는 평문")
+        self.jp_loads = 0
+        html = self._render(mys, "open_my_stock_db",
+                            "Penguin Solutions (PENG)\n말레이시아 수출\n26년 8월 "
+                            "Update\n\n수출액 YoY: +1.0%")
+        self.assertEqual(self.jp_loads, 0, "도쿄 코드 모양이 없으면 목록을 안 연다")
 
     def test_mixed_board_asks_the_exchange_only_about_bare_six_digit_rows(self):
         """US 심볼 행까지 거래소에 물으면 헛돈다(#61) — 그리고 페이지당 1회(#113).

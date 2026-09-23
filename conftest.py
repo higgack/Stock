@@ -267,6 +267,11 @@ def _redirect_disk_caches() -> list:
         # 읽고 없는 버그를 쫓는다. 발췌를 싣게 된 이번 변경이 그 오염을
         # '파서를 고칠 유일한 근거' 로 승격시켜 더 나빠졌다(#30·#312·#344).
         ("bot.dart_backlog", "_MISS_LOG", "backlog_misses.jsonl"),
+        # JPX 상장 마스터 — 보드 렌더가 `~/.trade/jpx_codes.json` 을 읽어 도쿄
+        # 코드의 링크 여부를 정한다. 운영자가 빌더를 한 번 돌리면 그 파일이
+        # 링크 단언을 뒤집는다(#399 Blocking 과 같은 모양 — 규율로 네 번 졌다,
+        # #30·#312·#344·#384). 빌더의 실패 곁파일도 이 경로에서 파생된다.
+        ("trade.jpx_master", "PATH", "jpx_codes.json"),
     )
     done = []
     for mod, attr, leaf in targets:
