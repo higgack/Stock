@@ -13,10 +13,10 @@
   · yfinance 도 12/12 이름을 줬지만 종목마다 1콜이고 트레이드 venv 엔 없다
     (② 실측). 거래소 목록이 신원의 정본이다(#86·#400).
 
-⚠️ **스프레드시트 라이브러리를 쓰지 않는다.** 트레이드 venv 엔 pandas·openpyxl 이
-없다(requirements 에 없고 ② 가 설치본을 쟀다). xlsx 는 zip 안의 XML 이라 표준
-라이브러리로 읽는다 — 의존성을 늘리면 그 venv 를 따로 고쳐야 하고, 안 고치면
-이 모듈이 조용히 죽는다(#151·#42a).
+⚠️ **표준 라이브러리만 쓴다.** 트레이드 venv 엔 pandas·openpyxl 이 없다
+(requirements 에 없고 ② 가 설치본을 쟀다). xlsx 는 zip 안의 XML 이고 HTTP 는
+형제 `price_provider` 처럼 `urllib` 이다 — 의존성을 늘리면 그 venv 를 따로 고쳐야
+하고, 안 고치면 이 모듈이 조용히 죽는다(#151·#42a). 회귀가 import 를 전수로 잰다.
 
 ⚠️ JPX 는 **월 1회** 목록을 갱신한다(`Effective Date` 실측 20260831). 그 사이
 상장한 종목은 목록에 없어 평문으로 남는다 — 틀린 링크가 아니라 없는 링크다(#144).
@@ -27,6 +27,9 @@ import io
 import json
 import logging
 import re
+import time
+import urllib.error
+import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -49,9 +52,14 @@ LIST_PAGE = ("https://www.jpx.co.jp/english/markets/statistics-equities/misc/"
 KNOWN_FILE = ("https://www.jpx.co.jp/english/markets/statistics-equities/misc/"
               "tvdivq0000001vg2-att/data_e.xlsx")
 _FILE_HREF = re.compile(r'href=["\']([^"\']*/data_e\.xlsx)["\']', re.I)
-# 프로브가 200 을 받은 그 헤더(재지 않은 UA 로 바꾸지 않는다, #145).
+# 프로브가 200 을 받은 UA 모양(`Mozilla/5.0 (compatible; …)`)을 따른다(#145).
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; NOAH-trade/1.0)"}
-_TIMEOUT = 20
+# ⚠️ 소켓 타임아웃은 **바이트가 끊긴 시간**만 잰다 — 몸통이 조금씩 흘러오면
+# 영원히 안 끝난다. 이 단계는 5분 타이머 유닛 안에서 돌므로 요청마다 **총
+# 상한**을 두고 크기에도 상한을 둔다(독립 리뷰 2026-09-23 · #116 예산).
+_TIMEOUT = 15
+_DEADLINE_S = 30
+_MAX_BYTES = 20 * 2 ** 20      # 실측 파일은 22만 바이트대(⑥) — 넉넉한 벽
 
 # 실측 헤더(⑥ 표본) — 위치가 아니라 **이름으로** 열을 찾는다(#46).
 _COL_CODE = "Local Code"
@@ -87,27 +95,38 @@ def _col_index(ref: str) -> int:
     return n - 1
 
 
-def _shared_strings(z: zipfile.ZipFile) -> list[str]:
-    """공유 문자열 표.
+def _rich_text(el) -> str:
+    """문자열 요소(`<si>` 또는 인라인 `<is>`)의 본문.
 
-    ⚠️ 일본 Excel 파일은 `<si>` 안에 **후리가나**(`<rPh><t>…</t></rPh>`)를 싣는다.
-    `si` 아래 `<t>` 를 전부 이으면 회사명 뒤에 읽기가 붙어 이름이 조용히 틀린다 —
-    본문(`<t>` 직속 또는 `<r>` 안)만 잇는다."""
+    ⚠️ 일본 Excel 파일은 문자열 안에 **후리가나**(`<rPh><t>…</t></rPh>`)를 싣는다.
+    아래 `<t>` 를 전부 이으면 회사명 뒤에 읽기가 붙어 이름이 조용히 틀린다 —
+    본문(`<t>` 직속 또는 `<r>` 런 안)만 잇는다. 공유 문자열과 인라인 문자열이
+    **같은 함수**를 쓴다(한쪽만 런을 읽으면 셀 모양에 따라 이름이 빈다, #38)."""
+    parts: list[str] = []
+    for child in el:
+        if child.tag == _NS + "t":
+            parts.append(child.text or "")
+        elif child.tag == _NS + "r":
+            t = child.find(_NS + "t")
+            parts.append((t.text or "") if t is not None else "")
+    return "".join(parts)
+
+
+def _xml(z: zipfile.ZipFile, name: str):
+    """zip 안 XML 을 읽는다 — 깨졌으면 원문 파서 예외가 아니라 FetchError 로
+    **어느 부분이** 깨졌는지 말한다(#82)."""
     try:
-        raw = z.read("xl/sharedStrings.xml")
-    except KeyError:
+        return ET.fromstring(z.read(name))
+    except ET.ParseError as e:
+        raise FetchError(f"{name} XML 파싱 실패({e})") from e
+
+
+def _shared_strings(z: zipfile.ZipFile) -> list[str]:
+    """공유 문자열 표(없으면 [])."""
+    if "xl/sharedStrings.xml" not in z.namelist():
         return []
-    out: list[str] = []
-    for si in ET.fromstring(raw).findall(_NS + "si"):
-        parts: list[str] = []
-        for child in si:
-            if child.tag == _NS + "t":
-                parts.append(child.text or "")
-            elif child.tag == _NS + "r":
-                t = child.find(_NS + "t")
-                parts.append((t.text or "") if t is not None else "")
-        out.append("".join(parts))
-    return out
+    return [_rich_text(si)
+            for si in _xml(z, "xl/sharedStrings.xml").findall(_NS + "si")]
 
 
 def _first_sheet(z: zipfile.ZipFile) -> str:
@@ -138,10 +157,9 @@ def xlsx_rows(data: bytes) -> list[list[str]]:
     with z:
         shared = _shared_strings(z)
         path = _first_sheet(z)
-        try:
-            sheet = ET.fromstring(z.read(path))
-        except KeyError as e:
-            raise FetchError(f"시트 {path} 가 없다 — 목록 {z.namelist()[:8]}") from e
+        if path not in z.namelist():
+            raise FetchError(f"시트 {path} 가 없다 — 목록 {z.namelist()[:8]}")
+        sheet = _xml(z, path)
     rows: list[list[str]] = []
     for row in sheet.iter(_NS + "row"):
         cells: dict[int, str] = {}
@@ -158,8 +176,8 @@ def xlsx_rows(data: bytes) -> list[list[str]]:
                 except (ValueError, IndexError):
                     val = ""
             elif kind == "inlineStr":
-                t = c.find(f"{_NS}is/{_NS}t")
-                val = (t.text or "") if t is not None else ""
+                is_ = c.find(_NS + "is")
+                val = _rich_text(is_) if is_ is not None else ""
             else:
                 val = (v.text or "") if v is not None else ""
             cells[col] = val
@@ -227,11 +245,31 @@ def parse_listing(data: bytes) -> tuple[dict[str, str], dict]:
 # ── 원천 ──────────────────────────────────────────────────────────────────
 
 
-def _get(url: str) -> tuple[int, bytes]:
-    """(status, body). `requests` 는 트레이드 venv 에 있다(② 실측 2.34.2)."""
-    import requests
-    r = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
-    return r.status_code, r.content
+def _get(url: str, *, deadline: float = _DEADLINE_S,
+         max_bytes: int = _MAX_BYTES, opener=None) -> tuple[int, bytes]:
+    """(status, body). HTTP 오류 상태는 (코드, b"") 로 돌려준다 — 호출부가 갈래를
+    이름으로 말한다(#82). **총 시간·크기 상한**을 넘으면 FetchError."""
+    opener = opener or urllib.request.urlopen
+    t0 = time.monotonic()
+    try:
+        with opener(urllib.request.Request(url, headers=_HEADERS),
+                    timeout=_TIMEOUT) as r:
+            chunks: list[bytes] = []
+            got = 0
+            while True:
+                if time.monotonic() - t0 > deadline:
+                    raise FetchError(f"총 {deadline:g}초 상한 초과 — {got}바이트에서 "
+                                     f"끊었다({url})")
+                b = r.read(65536)
+                if not b:
+                    break
+                got += len(b)
+                if got > max_bytes:
+                    raise FetchError(f"{max_bytes}바이트 상한 초과({url})")
+                chunks.append(b)
+            return getattr(r, "status", 200), b"".join(chunks)
+    except urllib.error.HTTPError as e:
+        return e.code, b""
 
 
 def find_file_url(html: str, base: str = LIST_PAGE) -> str:

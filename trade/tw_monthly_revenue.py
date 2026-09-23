@@ -310,15 +310,13 @@ def _hist_table(hist: list[dict]) -> str:
 
 
 def _card_html(r: dict, hist: list[dict], media_prefix: str,
-               kr_master: dict | None = None, *,
-               jp_master: dict | None = None) -> str:
+               kr_master: dict | None = None) -> str:
     # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 질의를 못 만들면
     # 평문 — 규칙·URL 은 `trade.stock_link` 한 곳에 있다(#38).
     raw_name = r.get("stock_name") or r.get("ticker") or ""
     raw_tk = r.get("ticker") or ""
     name = _sl.linked_name(raw_name, _sl.lookup_href(raw_tk, raw_name,
-                                                     kr_master=kr_master,
-                                                     jp_master=jp_master))
+                                                     kr_master=kr_master))
     tk = _html.escape(raw_tk)
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd"><span class="kr-item">{name}</span>'
@@ -368,12 +366,12 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     # 않는다(§UNIVERSAL — 한 시장이 드러낸 결함도 fix 는 전 코드패스에).
     _kr = _sl.kr_codes(r.get("stock_name") or "" for r in rows
                        if re.fullmatch(r"\d{6}", r.get("ticker") or ""))
-    # 도쿄 상장사도 같은 방식이다(2026-09-23) — 도쿄 코드 모양 행만 JPX 목록에
-    # 물어(페이지당 1회, 외부 호출 0) 코드의 영문명과 캡션 이름이 맞을 때만
-    # `.T` 링크다. 4자리는 대만 코드와 모양이 같아 확인 없이는 평문이다(#34).
-    _jp = _sl.jp_names(r.get("ticker") or "" for r in rows)
-    cards = [_card_html(r, history(conn, r["ticker"]), media_url_prefix, _kr,
-                        jp_master=_jp)
+    # ⚠️ JPX(도쿄) 목록은 **묻지 않는다** — 이 보드는 TWSE 월매출이라 발행사가
+    # 전부 대만 상장이다(데이터 소스 사유). 4자리 대만 코드는 도쿄 코드와 모양이
+    # 같아서, 여기서 도쿄 확인을 걸면 맞는 링크는 나올 수 없고 **틀린 링크만**
+    # 나올 수 있다(독립 리뷰 2026-09-23 · #34). 혼합 보드(cn_stock_flow·mys)와 다른
+    # 이유가 이것이다 — 그쪽은 교역 상대국 보드라 도쿄 상장사가 실제로 실린다.
+    cards = [_card_html(r, history(conn, r["ticker"]), media_url_prefix, _kr)
              for r in rows]
     return (head + "<div class='wrap'>" + nav + f"<h1>{TITLE}</h1>"
             f"<div class='sub'>{_SUB}</div><div class='grid'>" + "".join(cards) + "</div>"

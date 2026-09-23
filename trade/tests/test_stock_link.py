@@ -185,11 +185,70 @@ class QueryRuleTests(unittest.TestCase):
         self.assertTrue(c("Kioxia", "285a", m), "코드 대소문자")
         self.assertFalse(c("Tokyo Electron Device", "8035", m),
                          "캡션이 더 길면 다른 회사다")
+        self.assertFalse(c("Tokyo", "8035", m),
+                         "한 낱말이 앞부분과 같다고 같은 회사가 아니다 — 생략은 "
+                         "지주사 꼬리만(독립 리뷰 2026-09-23)")
+        self.assertFalse(c("Asia", "0002", {"0002": "Asia Pile Holdings Corporation"}),
+                         "남는 꼬리에 지주사 표기 밖의 낱말(pile)이 있다")
+        self.assertTrue(c("SoftBank", "0003", {"0003": "SoftBank Group Corp."}),
+                        "지주사 꼬리(group)만 남으면 생략을 허용한다")
+        self.assertTrue(c("Kyokuyo", " 1301 ", m), "코드의 앞뒤 공백")
         self.assertFalse(c("Kiox", "285A", m), "글자가 아니라 **토큰** 단위다")
         self.assertFalse(c("Kioxia", "285B", m), "목록에 없는 코드")
         self.assertFalse(c("", "285A", m))
         self.assertFalse(c("Kioxia", "285A", None))
         self.assertFalse(c("Co., Ltd.", "1301", m), "법인형태만 남으면 빈 이름이다")
+
+    def test_jp_names_keys_are_normalized_codes(self):
+        """키를 호출부 원문으로 돌려주면 `'6976 '` 행이 `jp_confirms` 의
+        정규화 조회와 어긋나 조용히 평문이 된다(독립 리뷰 2026-09-23)."""
+        import trade.jpx_master as jm
+        real = jm.load
+        try:
+            jm.load = lambda: {"6976": "TAIYO YUDEN CO.,LTD.", "285A": "Kioxia"}
+            got = sl.jp_names(["6976 ", "285a", "PENG", "006400", ""])
+            self.assertEqual(got, {"6976": "TAIYO YUDEN CO.,LTD.",
+                                   "285A": "Kioxia"})
+            self.assertEqual(sl.lookup_query("6976 ", "Taiyo Yuden",
+                                             jp_master=got), "6976.T")
+        finally:
+            jm.load = real
+
+    def test_a_failing_identity_list_is_logged_not_silent(self):
+        """목록을 못 불러 전 링크가 평문이 되면 **왜** 인지 남긴다(#12·#82) —
+        렌더가 5분마다 돌므로 같은 사유는 한 번만."""
+        import trade.jpx_master as jm
+        real = jm.load
+        sl._WARNED.clear()
+        try:
+            def boom():
+                raise RuntimeError("broken import")
+            jm.load = boom
+            with self.assertLogs(sl.log, level="WARNING") as cm:
+                self.assertEqual(sl.jp_names(["6976"]), {})
+                self.assertEqual(sl.jp_names(["6723"]), {})
+            self.assertEqual(len(cm.output), 1, cm.output)
+            self.assertIn("broken import", cm.output[0])
+        finally:
+            jm.load = real
+            sl._WARNED.clear()
+
+    def test_a_failing_krx_list_is_logged_too(self):
+        """형제 `kr_codes` 도 같은 자리에서 조용히 {} 였다 — 같은 헬퍼로 말한다
+        (#38 한 곳을 고치면 형제도). 뮤테이션 N15 가 이 축이 무가드임을 보였다."""
+        import trade.price_provider as pp
+        real = pp._load_krx_master
+        sl._WARNED.clear()
+        try:
+            def boom():
+                raise OSError("krx master unreadable")
+            pp._load_krx_master = boom
+            with self.assertLogs(sl.log, level="WARNING") as cm:
+                self.assertEqual(sl.kr_codes(["삼성SDI"]), {})
+            self.assertIn("KRX 상장 목록", cm.output[0])
+        finally:
+            pp._load_krx_master = real
+            sl._WARNED.clear()
 
     def test_name_tokens_keep_group_and_holdings(self):
         """`holdings`·`group` 은 법인형태가 아니라 이름이다 — 떼면 SoftBank
@@ -477,12 +536,11 @@ class BoardRenderTests(unittest.TestCase):
         `Taiyo Yuden (6976)` · 말레이시아 보드의 `Renesas Electronics
         Corporation (6723)` 이 JP 보드에 없었다).
 
-        ⚠️ **다섯 보드 전수**다 — 배선을 한 곳만 떼는 변형이 나머지를 통과한다
-        (#291). 목록 값의 대소문자·법인형태 표기는 JPX 실측 행(`KYOKUYO
+        ⚠️ **네 혼합 보드 전수**다 — 배선을 한 곳만 떼는 변형이 나머지를 통과한다
+        (#291). TWSE 월매출 보드는 **일부러 뺐다**(아래 테스트). 목록 값의 대소문자·법인형태 표기는 JPX 실측 행(`KYOKUYO
         CO.,LTD.`)의 모양을 따른 재구성이다(#393)."""
         from trade import (cn_stock_exports as cns, cn_stock_imports as cni,
-                           tw_stock_exports as tws, my_stock_exports as mys,
-                           tw_monthly_revenue as twr)
+                           tw_stock_exports as tws, my_stock_exports as mys)
         boards = (
             (cns, "open_cn_stock_db", "Taiyo Yuden",
              "Taiyo Yuden (6976)\n중국 수출\n26년 8월 Update\n\n수출액 YoY: +40.5%"),
@@ -493,9 +551,6 @@ class BoardRenderTests(unittest.TestCase):
             (mys, "open_my_stock_db", "Taiyo Yuden",
              "Taiyo Yuden (6976)\n말레이시아 수출\n26년 8월 Update\n\n"
              "수출액 YoY: +2.0%"),
-            (twr, "open_tw_revenue_db", "Taiyo Yuden",
-             "Taiyo Yuden (6976) 월매출\n26년 8월\n\nREV 약 1,000억 TWD\n"
-             "MoM +1.0% · YoY +1.0%\n\nhttps://badonion.co.kr/twse-revenue"),
         )
         for mod, opener, label, cap in boards:
             self.jp = {"6976": "TAIYO YUDEN CO.,LTD."}
@@ -513,6 +568,20 @@ class BoardRenderTests(unittest.TestCase):
             html = self._render(mod, opener, cap)
             self.assertEqual(_links(html), [], f"{mod.__name__}: 목록 없이 링크")
             self.assertIn(label, html)
+
+    def test_the_twse_revenue_board_never_asks_the_jpx_list(self):
+        """TWSE 월매출 = 발행사가 전부 대만 상장(데이터 소스 사유) — 도쿄 확인을
+        걸면 맞는 링크는 나올 수 없고 틀린 링크만 나올 수 있다(독립 리뷰
+        2026-09-23 · #34). 목록이 **확인해 주는** 상태에서도 평문이고, 목록을
+        열지조차 않는다."""
+        from trade import tw_monthly_revenue as twr
+        self.jp = {"6976": "TAIYO YUDEN CO.,LTD."}
+        html = self._render(twr, "open_tw_revenue_db",
+                            "Taiyo Yuden (6976) 월매출\n26년 8월\n\nREV 약 1,000억 "
+                            "TWD\nMoM +1.0% · YoY +1.0%\n\n"
+                            "https://badonion.co.kr/twse-revenue")
+        self.assertNotIn("../lookup/6976.T", dict(_links(html)))
+        self.assertEqual(self.jp_loads, 0)
 
     def test_the_jpx_list_is_read_once_per_page(self):
         """카드마다 읽으면 행 수만큼 다시 연다(#113) — 그리고 도쿄 코드 모양이

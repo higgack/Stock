@@ -9,9 +9,10 @@ jp_confirms`). 형제 `build_krx_codes` 와 같은 자리(dashboard-refresh 한 
 매 틱 두드리지 않도록 마지막 실패 뒤 6시간은 건너뛴다. 실패 사유는 곁파일
 (`jpx_codes.fail.json`)에 남아 다음 사람이 갈래를 읽는다(#82). 손으로 돌리면
 (= `--if-stale` 없이) 쉬는 시간을 무시하고 바로 받는다.
-⚠️ 어떤 예외든 **종료코드 0** 이다 — 장식용 신원 데이터 하나가 같은 유닛의
-적재·렌더(뒤따르는 ExecStart)를 멈추면 안 된다(#116). 대신 경고 로그에
-사유를 남긴다(#12 silent-fail 금지).
+⚠️ 어떤 예외든 **종료코드 0** 이다 — 장식용 신원 데이터 하나가 적재·렌더 유닛을
+실패로 만들면 안 된다(#116). 대신 경고 로그에 사유를 남긴다(#12 silent-fail
+금지). 유닛에선 **맨 끝**에 `-` 접두로 돈다 — 느린 원천이 앞 단계의 시간 예산을
+먹지 않게, 그리고 요청마다 총 시간 상한(`jpx_master._DEADLINE_S`)이 있다.
 
 Run by hand (트레이드 체크아웃 — 유닛과 같은 인터프리터):
     cd ~/stock-trade && .venv/bin/python -m trade.scripts.build_jpx_codes
@@ -30,6 +31,7 @@ import time
 from datetime import datetime, timezone
 
 from trade import jpx_master as jm
+from trade.price_provider import _atomic_write_json    # 형제와 같은 원자 쓰기(#38)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -45,11 +47,17 @@ FAIL_COOLDOWN_S = 6 * 3600
 
 
 def _is_stale(now: float) -> bool:
+    """없거나, 오래됐거나, **로더가 못 쓰는** 파일이면 True.
+
+    ⚠️ mtime 만 보면 깨진 파일·옛 형식이 '신선' 으로 읽혀 최대 7일 동안 전
+    링크가 평문인 채 다시 만들지 않는다(독립 리뷰 2026-09-23) — 신선도는
+    '쓸 수 있는 목록이 있나' 까지 물어야 한다(#25)."""
     max_age = float(os.environ.get("TRADE_JPX_MASTER_MAX_AGE_DAYS") or "7")
     try:
-        return now - jm.PATH.stat().st_mtime > max_age * 86400
+        age = now - jm.PATH.stat().st_mtime
     except OSError:
         return True                                   # 없음 → 빌드
+    return age > max_age * 86400 or not jm.load()
 
 
 def _last_failure(now: float) -> dict | None:
@@ -64,16 +72,9 @@ def _last_failure(now: float) -> dict | None:
 
 def _mark_failure(now: float, reason: str) -> None:
     try:
-        _write_atomic(jm.fail_path(), {"at": now, "reason": reason[:500]})
+        _atomic_write_json(jm.fail_path(), {"at": now, "reason": reason[:500]})
     except OSError as e:
         log.warning("fail marker not written: %s", e)
-
-
-def _write_atomic(path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)                                 # 부분쓰기 노출 방지
 
 
 def run(*, if_stale: bool = False, get=None, now: float | None = None) -> int:
@@ -106,7 +107,7 @@ def run(*, if_stale: bool = False, get=None, now: float | None = None) -> int:
            "url": stats.get("url") or "", "via": stats.get("via") or "",
            "built_at": datetime.fromtimestamp(now, timezone.utc).isoformat()}
     try:
-        _write_atomic(jm.PATH, env)
+        _atomic_write_json(jm.PATH, env)
     except OSError as e:
         log.warning("JPX master write failed: %s", e)
         return 0

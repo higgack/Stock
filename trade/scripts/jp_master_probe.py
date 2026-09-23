@@ -382,8 +382,10 @@ def step_seven(cands, jp_boards) -> int:
           f"{meta.get('built_at') or '미상'} · via {meta.get('via') or '미상'}")
     rows = [(k, t, n) for k, t, n in cands if k not in jp_boards]
     if not rows:
-        print("  (JP 선언 보드 밖의 도쿄 코드 모양 행 0건 — 대조할 것 없음)")
-        return 1
+        # 대조 0건은 통과가 아니다(#54) — ③ 이 읽기에 실패해 빈 것일 수도 있다.
+        print("  ⏭ JP 선언 보드 밖의 도쿄 코드 모양 행 0건 — 대조할 것이 없어 "
+              "판정 불가(#54)")
+        return 0
     names = sl.jp_names(t for _, t, _ in rows)            # 렌더와 같은 호출
     linked = 0
     for key, tk, nm in rows:

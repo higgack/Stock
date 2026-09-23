@@ -182,6 +182,38 @@ class ParserTests(unittest.TestCase):
         self.assertIn("Local Code", str(cm.exception))
         self.assertIn("Code", str(cm.exception).split("첫 행", 1)[-1])
 
+    def test_broken_sheet_xml_is_a_named_fetch_error(self):
+        """깨진 XML 이 원문 파서 예외로 새면 빌더 사유가 갈래를 잃는다(#82)."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("xl/worksheets/sheet1.xml", "<worksheet><sheetData><row>")
+        with self.assertRaises(jm.FetchError) as cm:
+            jm.parse_listing(buf.getvalue())
+        self.assertIn("sheet1.xml XML 파싱 실패", str(cm.exception))
+
+    def test_inline_strings_written_as_runs_are_read(self):
+        """인라인 문자열도 런으로 올 수 있다 — 공유 문자열만 런을 읽으면 셀
+        모양에 따라 이름이 빈다(같은 함수를 쓴다, #38). 후리가나도 뺀다."""
+        ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+
+        def cell(ref, text=None, runs=None, num=None):
+            if num is not None:
+                return f'<c r="{ref}"><v>{num}</v></c>'
+            body = (f"<t>{text}</t>" if runs is None else
+                    "".join(f"<r><t>{r}</t></r>" for r in runs))
+            return (f'<c r="{ref}" t="inlineStr"><is>{body}'
+                    f'<rPh sb="0" eb="1"><t>ヨミ</t></rPh></is></c>')
+        rows = ("<row r=\"1\">" + cell("A1", "Local Code")
+                + cell("B1", "Name (English)") + "</row>"
+                + "<row r=\"2\">" + cell("A2", num=6976)
+                + cell("B2", runs=["TAIYO ", "YUDEN CO.,LTD."]) + "</row>")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("xl/worksheets/sheet1.xml",
+                       f"<worksheet {ns}><sheetData>{rows}</sheetData></worksheet>")
+        self.assertEqual(jm.parse_listing(buf.getvalue())[0],
+                         {"6976": "TAIYO YUDEN CO.,LTD."})
+
     def test_not_a_zip_says_so(self):
         with self.assertRaises(jm.FetchError) as cm:
             jm.parse_listing(b"\xd0\xcf\x11\xe0legacy-xls")
@@ -358,9 +390,20 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("하한", json.loads(jm.fail_path().read_text())["reason"])
 
     def test_if_stale_skips_a_fresh_master_without_calling_out(self):
-        jm.PATH.write_text('{"codes": {}}', encoding="utf-8")
+        # '신선' = 최근 **이고** 로더가 쓸 수 있다 — 빈 목록은 신선하지 않다
+        # (아래 `test_a_fresh_but_unusable_master_is_rebuilt`).
+        jm.PATH.write_text('{"codes": {"6976": "TAIYO YUDEN CO.,LTD."}}',
+                           encoding="utf-8")
         bj.run(if_stale=True, get=self._get(self.big), now=time.time())
         self.assertEqual(self.calls, 0)
+
+    def test_a_fresh_but_unusable_master_is_rebuilt(self):
+        """mtime 만 보면 깨진 파일·옛 형식이 '신선' 이라 최대 7일 평문이다
+        (독립 리뷰 2026-09-23) — 로더가 못 쓰면 다시 만든다(#25)."""
+        jm.PATH.write_text('{"6976": "flat — codes 없음"}', encoding="utf-8")
+        bj.run(if_stale=True, get=self._get(self.big), now=time.time())
+        self.assertGreater(self.calls, 0)
+        self.assertIn("6976", jm.load())
 
     def test_after_a_failure_if_stale_rests_then_retries(self):
         t0 = 10_000.0
@@ -392,26 +435,97 @@ class BuilderTests(unittest.TestCase):
         self.assertTrue(any("boom" in m for m in cm.output))
 
 
+class HttpBudgetTests(unittest.TestCase):
+    """`_get` — 소켓 타임아웃은 **끊긴 시간**만 잰다. 몸통이 조금씩 흘러오면
+    총 상한이 끊어야 한다(독립 리뷰 2026-09-23)."""
+
+    class _Slow:
+        status = 200
+
+        def __init__(self, clock, step, chunk=b"x" * 10, n=100):
+            self.clock, self.step, self.chunk, self.left = clock, step, chunk, n
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n):
+            self.clock[0] += self.step
+            if self.left <= 0:
+                return b""
+            self.left -= 1
+            return self.chunk
+
+    def _run(self, **kw):
+        clock = [0.0]
+        with mock.patch.object(jm.time, "monotonic", lambda: clock[0]):
+            return jm._get("https://x.test/f", opener=lambda req, timeout:
+                           self._Slow(clock, **kw), deadline=30)
+
+    def test_a_trickling_body_is_cut_at_the_total_deadline(self):
+        with self.assertRaises(jm.FetchError) as cm:
+            self._run(step=1.0)
+        self.assertIn("총 30초 상한 초과", str(cm.exception))
+
+    def test_a_fast_body_is_returned_whole(self):
+        st, body = self._run(step=0.01, n=5)
+        self.assertEqual((st, body), (200, b"x" * 50))
+
+    def test_size_cap(self):
+        with mock.patch.object(jm, "_MAX_BYTES", 25):
+            with self.assertRaises(jm.FetchError) as cm:
+                jm._get("https://x.test/f", opener=lambda req, timeout:
+                        self._Slow([0.0], 0.0, n=5), max_bytes=25)
+        self.assertIn("25바이트 상한", str(cm.exception))
+
+    def test_http_error_is_a_status_not_an_exception(self):
+        import urllib.error
+
+        def boom(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 403, "no", {}, None)
+        self.assertEqual(jm._get("https://x.test/f", opener=boom), (403, b""))
+
+
 class DeployWiringTests(unittest.TestCase):
     def _execs(self):
         txt = (_REPO / "deploy/trade-bot-dashboard-refresh.service").read_text()
         return [ln.split("=", 1)[1] for ln in txt.splitlines()
                 if ln.startswith("ExecStart=")]
 
-    def test_the_builder_runs_in_the_refresh_unit_before_render(self):
+    def test_the_builder_runs_last_in_the_refresh_unit(self):
+        """**맨 끝** — 느린 원천이 적재·렌더의 시간 예산(TimeoutStartSec 공유)을
+        먹지 않게(독립 리뷰 2026-09-23 · #116). 새 마스터는 다음 틱의 렌더가 쓴다.
+        `-` 접두 = 실패가 유닛을 실패로 만들지 않는다."""
         ex = self._execs()
         i = next(i for i, e in enumerate(ex) if "build_jpx_codes" in e)
+        self.assertEqual(i, len(ex) - 1, ex)
         self.assertIn("--if-stale", ex[i])
-        self.assertTrue(ex[i].startswith("-"),
-                        "실패가 뒤 ExecStart(적재·렌더)를 막지 않게 `-` 접두(#116)")
-        render = next(i for i, e in enumerate(ex) if e.endswith("trade.dashboard"))
-        self.assertLess(i, render, "렌더가 새 마스터를 쓰려면 먼저 돌아야 한다")
+        self.assertTrue(ex[i].startswith("-"))
         self.assertIn("/stock-trade/.venv/bin/python", ex[i],
-                      "② 실측: requests 가 있는 트레이드 venv")
+                      "유닛이 도는 그 트레이드 venv")
 
-    def test_requests_is_declared_not_borrowed(self):
-        req = (_REPO / "trade/requirements.txt").read_text()
-        self.assertRegex(req, r"(?m)^requests>=")
+    def test_only_the_standard_library_and_trade(self):
+        """트레이드 venv 엔 pandas·openpyxl·yfinance 가 없다(② 실측) — 새
+        의존성은 그 venv 를 따로 고쳐야 하고, 안 고치면 조용히 죽는다
+        (#151·#42a). import 를 **전수로** 잰다(이름 열거 금지, #24)."""
+        import ast
+        import sys
+        for f in ("trade/jpx_master.py", "trade/scripts/build_jpx_codes.py"):
+            tree = ast.parse((_REPO / f).read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    mods = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    mods = [node.module]
+                else:
+                    continue
+                for m in mods:
+                    top = m.split(".")[0]
+                    self.assertTrue(top in sys.stdlib_module_names
+                                    or top in ("trade", "__future__"),
+                                    f"{f}: {m}")
 
 
 if __name__ == "__main__":

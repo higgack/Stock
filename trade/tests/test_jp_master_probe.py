@@ -452,6 +452,23 @@ class StepSevenTests(_EntryBase):
         self.assertNotIn("✅", seven)
         self.assertIn("→ 도쿄 링크 0 / 대상 2행", seven)
 
+    def test_nothing_to_compare_is_not_counted_as_measured(self):
+        """마스터는 읽혔어도 대조한 행이 0 이면 잰 게 아니다(#54, 독립 리뷰
+        2026-09-23) — ③ 이 읽기 실패로 빈 것일 수도 있다."""
+        import re as _re
+        self._master({"6976": "TAIYO YUDEN CO.,LTD."})
+        only_jp = ([("jps", "6976", "Taiyo Yuden")], [])
+        with mock.patch.object(jp, "board_jp_candidates", return_value=only_jp):
+            out = self._run()[1]
+        seven = self._seven(out)
+        self.assertIn("0건 — 대조할 것이 없어 판정 불가", seven)
+        self.jm.PATH.unlink()
+        with mock.patch.object(jp, "board_jp_candidates", return_value=only_jp):
+            without = self._run()[1]
+        steps = [int(_re.search(r"쟀다: (\d+)단계", o).group(1))
+                 for o in (out, without)]
+        self.assertEqual(steps[0], steps[1], "대조 0건을 한 단계로 셌다")
+
     def test_a_readable_master_counts_as_one_measured_step(self):
         import re as _re
 

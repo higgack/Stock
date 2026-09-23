@@ -27,8 +27,23 @@ NOAH 서버 한 자격으로 서빙된다(§Stance) — 그 경로를 정본으�
 from __future__ import annotations
 
 import html as _html
+import logging
 import re
 import urllib.parse as _up
+
+log = logging.getLogger(__name__)
+_WARNED: set = set()
+
+
+def _warn_once(what: str, exc: BaseException) -> None:
+    """신원 목록을 못 불러 전 링크가 평문이 될 때 — **조용히** 평문이 되면
+    '없는 링크' 와 '못 읽은 목록' 이 같은 화면이다(#12·#82). 렌더가 5분마다
+    돌므로 같은 사유는 프로세스당 한 번만 적는다."""
+    key = f"{what}:{type(exc).__name__}"
+    if key not in _WARNED:
+        _WARNED.add(key)
+        log.warning("%s 를 못 불러 링크가 평문이 된다: %s: %s",
+                    what, type(exc).__name__, exc)
 
 # 카드 제목 링크 CSS — 쓰는 페이지의 번들에 **반드시 같이** 넣는다(#201·#273:
 # 클래스만 쓰고 정의를 빠뜨리면 조용히 스타일이 빠진다). 색은 본문 그대로 두고
@@ -142,6 +157,11 @@ def kr_confirms(name: str, code: str, master: dict | None) -> bool:
 # (SoftBank Group ≠ SoftBank Corp.). 떼면 다른 회사가 같은 이름이 된다.
 _LEGAL_TAIL = frozenset({"co", "ltd", "limited", "corp", "corporation", "inc",
                          "incorporated", "company", "kk", "plc"})
+# 캡션이 **생략해도 되는** 꼬리 — 지주사 표기뿐이다(`Kioxia` ↔ `Kioxia Holdings
+# Corporation`, ④ 실측). 그 밖의 낱말이 남으면 다른 회사일 수 있다: `Tokyo` 는
+# `Tokyo Electron` 이 아니다(독립 리뷰 2026-09-23 — 한 낱말 캡션이 같은 낱말로
+# 시작하는 아무 회사에나 맞던 규칙을 좁혔다).
+_OMITTABLE_TAIL = frozenset({"holdings", "hd", "hldgs", "group"})
 
 
 def _name_tokens(name: str) -> list[str]:
@@ -159,25 +179,28 @@ def _name_tokens(name: str) -> list[str]:
 
 def jp_confirms(name: str, code: str, master: dict | None) -> bool:
     """JPX 상장 목록이 **이 코드를 이 이름의 회사로** 적고 있나(`kr_confirms` 의
-    일본판). 코드로 목록의 영문명을 찾고, 캡션 이름의 토큰이 그 영문명 토큰의
-    **앞부분과 같을** 때만 True.
+    일본판). 코드로 목록의 영문명을 찾고, 법인형태를 뗀 토큰이 **같거나** 목록
+    쪽에 지주사 꼬리(`_OMITTABLE_TAIL`)만 더 붙어 있을 때 True.
 
-    ⚠️ 왜 '앞부분'인가 — 캡션은 이름을 줄여 쓴다(`Kioxia` ↔ JPX `Kioxia Holdings
-    Corporation`, ④ 실측). 거꾸로 캡션이 **더 길면** 다른 회사다(`Tokyo Electron
-    Device` 는 8035 가 아니다) — 그래서 한 방향만 인정한다.
+    ⚠️ 캡션은 이름을 줄여 쓴다(`Kioxia` ↔ `Kioxia Holdings Corporation`, ④ 실측)
+    — 그래서 지주사 꼬리는 생략을 허용한다. 그 밖의 낱말이 남으면 거부한다:
+    `Tokyo` 는 `Tokyo Electron` 이 아니고, 캡션이 **더 긴** `Tokyo Electron
+    Device` 도 8035 가 아니다.
     ⚠️ 코드만 보면 안 된다. 4자리는 대만 코드와 모양이 같아 `TSMC (2330)` 이
     도쿄 2330 의 남의 회사로 간다 — 이름이 그걸 가른다(#25·#34).
-    ⚠️ 못 보는 축(#274): 다른 거래소 회사가 **같은 숫자**를 쓰고 그 영문명이
-    도쿄 회사 이름의 앞부분과 토큰 단위로 같으면 통과한다. 관측된 적은 없지만
-    재지 않았으므로 없다고 하지 않는다(#165).
+    ⚠️ 못 보는 축(#274): 다른 거래소 회사가 **같은 숫자**를 쓰고 법인형태를 뗀
+    영문명까지 도쿄 회사와 같으면 통과한다. 관측된 적은 없지만 재지 않았으므로
+    없다고 하지 않는다(#165).
     """
     if not (name and code and master):
         return False
-    listed = master.get(code) or master.get(code.strip().upper())
+    listed = master.get(code.strip().upper()) or master.get(code)
     if not listed:
         return False
     cap, lst = _name_tokens(name), _name_tokens(listed)
-    return bool(cap) and lst[:len(cap)] == cap
+    if not cap or lst[:len(cap)] != cap:
+        return False
+    return set(lst[len(cap):]) <= _OMITTABLE_TAIL
 
 
 def _alias_hit(name: str) -> bool:
@@ -258,7 +281,8 @@ def kr_codes(names) -> dict[str, str]:
     try:
         from trade.price_provider import _NAME_ALIASES, _load_krx_master
         master = _load_krx_master()
-    except Exception:                                     # noqa: BLE001
+    except Exception as exc:                              # noqa: BLE001
+        _warn_once("KRX 상장 목록", exc)
         return {}
     if not master:
         return {}
@@ -282,21 +306,20 @@ def jp_names(codes) -> dict[str, str]:
 
     원천은 `build_jpx_codes` 가 만든 로컬 마스터다 — 렌더는 **외부 호출 0**
     이고(#116), 마스터가 없으면 {} 라 전 칩이 종전처럼 평문이다.
-    ⚠️ 돌려주는 키는 **호출부가 준 그 문자열**이다(`kr_codes` 와 같은 계약)."""
-    want = [str(c) for c in codes if c and _JP_CODE.fullmatch(str(c).strip())]
+    ⚠️ 키는 **정규화한 코드**(앞뒤 공백 제거·대문자)다 — `kr_codes`(이름 키)와
+    달리 `jp_confirms` 가 정규화해 찾으므로, 원문 키로 돌려주면 `'6976 '` 같은
+    행이 조용히 못 찾는다(독립 리뷰 2026-09-23)."""
+    want = {str(c).strip().upper() for c in codes
+            if c and _JP_CODE.fullmatch(str(c).strip())}
     if not want:
         return {}
     try:
         from trade.jpx_master import load
         master = load()
-    except Exception:                                     # noqa: BLE001
+    except Exception as exc:                              # noqa: BLE001
+        _warn_once("JPX 상장 목록", exc)
         return {}
-    out: dict[str, str] = {}
-    for c in want:
-        nm = master.get(c.strip().upper())
-        if nm:
-            out[c] = nm
-    return out
+    return {c: master[c] for c in want if master.get(c)}
 
 
 def _ws(s: str) -> str:
