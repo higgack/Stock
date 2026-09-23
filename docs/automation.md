@@ -54,6 +54,7 @@
 | `trade-bot-customs-probe.timer` | 10분 | `trade.scripts.scan_customs --if-changed` | 관세청 변경 감지 스캔 |
 | `trade-bot-prov-fetch.timer` | 월 1-3/11-13/21-23일 30분 | `trade.scripts.fetch_provisional` | 잠정치 수집(발표 몰린 기간 집중) |
 | `trade-bot-daily-digest.timer` | 매일 00:03 KST | `trade.scripts.daily_digest` | 일일 다이제스트 |
+| `trade-bot-jpx-codes.timer` | 6시간 점검(설치 3분 뒤 첫 실행) | `trade.scripts.build_jpx_codes --if-stale` | JPX 상장 코드→영문명 마스터(`~/.trade/jpx_codes.json`) — 혼합 보드 도쿄 딥링크의 신원 확인. 실제 다운로드는 주 1회·실패(또는 끝나지 못한 시도) 뒤 6시간 쉼·요청마다 총 30초 상한. dashboard-refresh 와 **분리**(시간 예산을 나눠 쓰지 않는다, #116) |
 | `trade-bot-dart-revenue.timer` | 매월 18일 05:00 KST | `trade.dart_revenue --refresh` | DART 매출 데이터 갱신 |
 | `trade-bot-dart-reparse.timer` | 매일 04:30 KST | `trade.dart_revenue --reparse-stale --budget 1000` | 실패분 재파싱(예산 캡) |
 | `trade-bot-catalog-guard.timer` | 매월 18일 09:00 KST | `trade.scripts.catalog_guard` | HS↔회사 매칭 카탈로그 정합성 가드 |

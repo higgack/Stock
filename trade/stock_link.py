@@ -27,8 +27,23 @@ NOAH 서버 한 자격으로 서빙된다(§Stance) — 그 경로를 정본으�
 from __future__ import annotations
 
 import html as _html
+import logging
 import re
 import urllib.parse as _up
+
+log = logging.getLogger(__name__)
+_WARNED: set = set()
+
+
+def _warn_once(what: str, exc: BaseException) -> None:
+    """신원 목록을 못 불러 전 링크가 평문이 될 때 — **조용히** 평문이 되면
+    '없는 링크' 와 '못 읽은 목록' 이 같은 화면이다(#12·#82). 렌더가 5분마다
+    돌므로 같은 사유는 프로세스당 한 번만 적는다."""
+    key = f"{what}:{type(exc).__name__}"
+    if key not in _WARNED:
+        _WARNED.add(key)
+        log.warning("%s 를 못 불러 링크가 평문이 된다: %s: %s",
+                    what, type(exc).__name__, exc)
 
 # 카드 제목 링크 CSS — 쓰는 페이지의 번들에 **반드시 같이** 넣는다(#201·#273:
 # 클래스만 쓰고 정의를 빠뜨리면 조용히 스타일이 빠진다). 색은 본문 그대로 두고
@@ -56,7 +71,8 @@ _SUFFIXED = (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".BJ", ".HK")
 
 
 def lookup_query(ticker: str = "", name: str = "", *,
-                 local: str = "", kr_master: dict | None = None) -> str:
+                 local: str = "", kr_master: dict | None = None,
+                 jp_master: dict | None = None) -> str:
     r"""`/lookup/<q>` 에 넣을 질의. 만들 수 없으면 ""(= 링크 없음).
 
     순서에 근거가 있다(전부 실측 픽스처 기준 — 지어낸 규칙이 아니다):
@@ -87,16 +103,19 @@ def lookup_query(ticker: str = "", name: str = "", *,
     4. **영문 별칭이 이름을 풀면 이름을 질의로.** `Advantest → 6857.T` 처럼
        NOAH 가 **같은 표**(`bot.market.resolve_english_alias`)로 푸는 것만
        인정한다 — 우리가 시장을 추측하는 게 아니라 이미 측정된 매핑이다.
-    5. **`local="JP"` 보드의 도쿄 코드 모양**이면 `.T`(6857·285A 실측).
-       ⚠️ 3(b)에 해당하는 **일본판 대조 수단은 이 레포에 없다** — 그래서 JP
-       보드가 아닌 곳의 도쿄 코드(`Taiyo Yuden (6976)` on 중국 보드)는 그대로
-       평문이다. 별칭표에 이름을 하나씩 더하는 건 종목별 패치라 안 한다
-       (§UNIVERSAL). 없는 근거를 지어내지 않는다(#165).
+    5. **도쿄 코드 모양**(6857·285A 실측)이면 `.T` — 단 도쿄로 **확인됐을 때만**.
+       (a) 보드가 `local="JP"` 로 선언했거나,
+       (b) `jp_master`(JPX 상장 목록 {코드: 영문명}, `build_jpx_codes`)가 이
+       **코드를 이 이름의 회사로** 적고 있을 때(`jp_confirms`). 3(b)의 일본판이다
+       (2026-09-23 — `jp_master_probe` VM 실측으로 원천을 고른 뒤).
+       ⚠️ 4자리 숫자는 **대만(TWSE) 코드와 모양이 같다**(`TSMC (2330)`). 확인
+       없이 `.T` 를 붙이면 대만 보드의 카드가 도쿄의 **남의 회사**로 간다 — 그래서
+       코드만이 아니라 이름까지 맞아야 한다(#25·#34).
     6. 그 밖 → "" (평문).
 
-    `local` 은 **보드가 선언하는 축**이고 `kr_master` 는 **거래소 목록이 답하는
-    축**이다 — 둘 다 없으면 맨 숫자는 질의를 못 만든다(#34 한 규칙이 두 시장을
-    대표하면 한쪽은 반드시 거짓말).
+    `local` 은 **보드가 선언하는 축**이고 `kr_master`·`jp_master` 는 **거래소
+    목록이 답하는 축**이다 — 둘 다 없으면 맨 숫자는 질의를 못 만든다(#34 한
+    규칙이 두 시장을 대표하면 한쪽은 반드시 거짓말).
     """
     mkt = (local or "").strip().upper()
     t = (ticker or "").strip()
@@ -111,7 +130,8 @@ def lookup_query(ticker: str = "", name: str = "", *,
             return t
     if nm and _alias_hit(nm):
         return nm
-    if mkt == "JP" and t and _JP_CODE.match(t):
+    if t and _JP_CODE.match(t) and (mkt == "JP"
+                                    or jp_confirms(nm, t, jp_master)):
         return t.upper() + ".T"
     return ""
 
@@ -129,6 +149,60 @@ def kr_confirms(name: str, code: str, master: dict | None) -> bool:
         return False
     c = master.get(name) or master.get(name.strip())
     return bool(c) and str(c) == code
+
+
+# 회사명 끝의 법인 형태 — JPX 영문명은 `KYOKUYO CO.,LTD.` · `Hokuryo Co.,Ltd.`
+# 처럼 표기가 섞여 온다(⑥ 실측). 캡션은 보통 이걸 뗀다(`Taiyo Yuden`).
+# ⚠️ `holdings`·`group` 은 **넣지 않는다** — 법인 형태가 아니라 이름이다
+# (SoftBank Group ≠ SoftBank Corp.). 떼면 다른 회사가 같은 이름이 된다.
+_LEGAL_TAIL = frozenset({"co", "ltd", "limited", "corp", "corporation", "inc",
+                         "incorporated", "company", "kk", "plc"})
+# 캡션이 **생략해도 되는** 꼬리 — 실측한 `holdings` 하나뿐이다(`Kioxia` ↔
+# `Kioxia Holdings Corporation`, ④). 그 밖의 낱말이 남으면 다른 회사일 수 있다:
+# `Tokyo` 는 `Tokyo Electron` 이 아니다(독립 리뷰 2026-09-23 — 한 낱말 캡션이 같은
+# 낱말로 시작하는 아무 회사에나 맞던 규칙을 좁혔다). ⚠️ `group` 은 **넣지 않는다**
+# — 바로 위 이유 그대로 `SoftBank Corp.`(9434) 캡션이 `SoftBank Group Corp.`
+# (9984)에 맞아 버린다(2차 리뷰). 재지 않은 약어(`hd` 등)도 넣지 않는다(#165).
+_OMITTABLE_TAIL = frozenset({"holdings"})
+
+
+def _name_tokens(name: str) -> list[str]:
+    """비교용 토큰 — NFKC(전각→반각)·소문자·영숫자 외 전부 구분자, 앞 `the` 와
+    끝의 법인 형태를 뗀다. `Shin-Etsu` 와 `SHIN-ETSU` 가 같은 토큰이 된다."""
+    import unicodedata
+    toks = re.sub(r"[^0-9a-z]+", " ",
+                  unicodedata.normalize("NFKC", name or "").casefold()).split()
+    if toks and toks[0] == "the":
+        toks = toks[1:]
+    while toks and toks[-1] in _LEGAL_TAIL:
+        toks.pop()
+    return toks
+
+
+def jp_confirms(name: str, code: str, master: dict | None) -> bool:
+    """JPX 상장 목록이 **이 코드를 이 이름의 회사로** 적고 있나(`kr_confirms` 의
+    일본판). 코드로 목록의 영문명을 찾고, 법인형태를 뗀 토큰이 **같거나** 목록
+    쪽에 지주사 꼬리(`_OMITTABLE_TAIL`)만 더 붙어 있을 때 True.
+
+    ⚠️ 캡션은 이름을 줄여 쓴다(`Kioxia` ↔ `Kioxia Holdings Corporation`, ④ 실측)
+    — 그래서 지주사 꼬리는 생략을 허용한다. 그 밖의 낱말이 남으면 거부한다:
+    `Tokyo` 는 `Tokyo Electron` 이 아니고, 캡션이 **더 긴** `Tokyo Electron
+    Device` 도 8035 가 아니다.
+    ⚠️ 코드만 보면 안 된다. 4자리는 대만 코드와 모양이 같아 `TSMC (2330)` 이
+    도쿄 2330 의 남의 회사로 간다 — 이름이 그걸 가른다(#25·#34).
+    ⚠️ 못 보는 축(#274): 다른 거래소 회사가 **같은 숫자**를 쓰고 법인형태를 뗀
+    영문명까지 도쿄 회사와 같으면 통과한다. 관측된 적은 없지만 재지 않았으므로
+    없다고 하지 않는다(#165).
+    """
+    if not (name and code and master):
+        return False
+    listed = master.get(code.strip().upper()) or master.get(code)
+    if not listed:
+        return False
+    cap, lst = _name_tokens(name), _name_tokens(listed)
+    if not cap or lst[:len(cap)] != cap:
+        return False
+    return set(lst[len(cap):]) <= _OMITTABLE_TAIL
 
 
 def _alias_hit(name: str) -> bool:
@@ -149,12 +223,15 @@ def _alias_hit(name: str) -> bool:
 
 def lookup_href(ticker: str = "", name: str = "", *,
                 local: str = "", query: str = "",
-                kr_master: dict | None = None) -> str:
+                kr_master: dict | None = None,
+                jp_master: dict | None = None) -> str:
     """`../lookup/<질의>` (만들 수 없으면 ""). `query` 를 주면 그걸 그대로 쓴다
     (이름→코드 리졸버를 이미 가진 호출부용). `local` = 그 보드의 맨 숫자 코드가
-    어느 시장 것인지, `kr_master` = KRX 상장 이름→코드 목록(`lookup_query` 참조)."""
+    어느 시장 것인지, `kr_master` = KRX 상장 이름→코드 목록, `jp_master` = JPX
+    상장 코드→영문명 목록(`lookup_query` 참조)."""
     q = (query or "").strip() or lookup_query(ticker, name, local=local,
-                                              kr_master=kr_master)
+                                              kr_master=kr_master,
+                                              jp_master=jp_master)
     if not q or not _TICKER_OK.match(q):
         return ""
     return LOOKUP_PREFIX + _up.quote(q, safe="")
@@ -206,7 +283,8 @@ def kr_codes(names) -> dict[str, str]:
     try:
         from trade.price_provider import _NAME_ALIASES, _load_krx_master
         master = _load_krx_master()
-    except Exception:                                     # noqa: BLE001
+    except Exception as exc:                              # noqa: BLE001
+        _warn_once("KRX 상장 목록", exc)
         return {}
     if not master:
         return {}
@@ -221,6 +299,29 @@ def kr_codes(names) -> dict[str, str]:
                 out[n] = str(c)
                 break
     return out
+
+
+def jp_names(codes) -> dict[str, str]:
+    """{코드: JPX 영문명} — **신원 확인 전용**(`jp_confirms` 가 쓴다).
+    **한 페이지에 한 번** 부른다(#113). 도쿄 코드 모양만 묻는다(US 심볼·6자리
+    행까지 물으면 헛돈다, #61).
+
+    원천은 `build_jpx_codes` 가 만든 로컬 마스터다 — 렌더는 **외부 호출 0**
+    이고(#116), 마스터가 없으면 {} 라 전 칩이 종전처럼 평문이다.
+    ⚠️ 키는 **정규화한 코드**(앞뒤 공백 제거·대문자)다 — `kr_codes`(이름 키)와
+    달리 `jp_confirms` 가 정규화해 찾으므로, 원문 키로 돌려주면 `'6976 '` 같은
+    행이 조용히 못 찾는다(독립 리뷰 2026-09-23)."""
+    want = {str(c).strip().upper() for c in codes
+            if c and _JP_CODE.fullmatch(str(c).strip())}
+    if not want:
+        return {}
+    try:
+        from trade.jpx_master import load
+        master = load()
+    except Exception as exc:                              # noqa: BLE001
+        _warn_once("JPX 상장 목록", exc)
+        return {}
+    return {c: master[c] for c in want if master.get(c)}
 
 
 def _ws(s: str) -> str:

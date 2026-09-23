@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the JPX listed-company master (weekly via --if-stale, checked every 6h)
+
+[Timer]
+# 설치 직후 첫 빌드(OnActiveSec — 설치기가 새 타이머를 enable --now 한다),
+# 재부팅 뒤 한 번, 그리고 6시간마다 점검. 실제 다운로드는 빌더의 --if-stale 이
+# 정한다(주 1회 · 실패 뒤 6시간 쉼) — 대부분의 점검은 원천을 안 친다.
+OnActiveSec=3min
+OnBootSec=10min
+OnUnitActiveSec=6h
+Unit=trade-bot-jpx-codes.service
+
+[Install]
+WantedBy=timers.target

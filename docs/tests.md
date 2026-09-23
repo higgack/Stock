@@ -1817,5 +1817,40 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 ⚠️ **못 보는 축**(#274): 파이썬이 아닌 자식(curl·git), `-I`/`-E`/`-S` 로 띄운
 파이썬, 그리고 `env=` 를 직접 조립해 넘기는 호출은 `PYTHONPATH`·`site` 를 안
 읽어 ⑩ 의 그물 밖이다. 그리고 프로브의
-지문(`banner`)은 **이 파일 하나**를 잰다 — 판정을 다른 모듈로 빼면 범위를 같이
-넓혀야 한다.
+지문(`banner`)은 v2 에선 **이 파일 하나**를 쟀다 — v3 에서 ⑦ 의 판정이 제품
+모듈로 가며 범위를 같이 넓혔다(아래 JPX 마스터 절 ⑪).
+
+## JPX 상장 마스터 — 혼합 보드의 도쿄 상장사 딥링크 (`trade/tests/test_jpx_master.py` 37건 · `test_stock_link.py` +9 · `test_jp_master_probe.py` +9)
+
+`jp_master_probe` v2 VM 실측(2026-09-23)으로 원천을 골랐다: JPX 영문
+「その他統計資料」 `data_e.xlsx`(`Local Code` · `Name (English)` · `Effective Date`).
+④ yfinance 도 12/12 이름을 줬지만 종목마다 1콜이고 트레이드 venv 엔 없다(②).
+`build_jpx_codes --if-stale` 가 **제 유닛**(`trade-bot-jpx-codes`, 6시간 점검)에서
+주 1회 `~/.trade/jpx_codes.json` 을 만들고, 혼합 보드(cns·cni·tws·mys)는
+`stock_link.jp_names` → `jp_confirms` 로 **코드와 이름이 둘 다** 맞을 때만
+`<코드>.T` 링크를 건다(4자리는 대만 코드와 모양이 같다, #34).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① Excel 모양 | 공유 문자열 · rels 가 가리키는 **비기본 시트**(옆에 미끼 `sheet1.xml`) | `ParserTests::test_the_sheet_is_the_one_the_workbook_points_at` |
+| ② 후리가나 | 일본 Excel 의 `<rPh>` 읽기가 이름에 안 붙는다 — 공유·인라인 **둘 다** | `::test_furigana_runs_do_not_leak_into_the_name` · `::test_inline_strings_written_as_runs_are_read` |
+| ③ 셀 모양 | 리치 텍스트 런 · openpyxl 의 inlineStr · 깨진 XML 은 이름 붙은 `FetchError`(#82) | `::test_rich_text_runs_are_joined` · `::test_inline_strings_as_openpyxl_writes_them` · `::test_broken_sheet_xml_is_a_named_fetch_error` |
+| ④ 기준일 | **가장 늦은** `Effective Date` — 전 행 같은 날 픽스처로는 안 잡혔다(M8 생존, #91c) | `::test_effective_date_is_the_latest_row_not_the_first` |
+| ⑤ 파일 고르기 | 변경분(`jyoujyou(updated)_e.xlsx`)을 전 목록으로 집지 않는다(#45) | `FetchTests::test_the_updates_file_is_not_mistaken_for_the_full_list` |
+| ⑥ 폴백 고지 | 페이지에서 못 찾으면 실측 주소로 가되 **그렇다고 말한다**(#42a) | `::test_missing_link_falls_back_to_the_measured_url_and_says_so` |
+| ⑦ 시간 예산 | 소켓 타임아웃은 끊긴 시간만 잰다 — 흘러오는 몸통을 **총 30초**에서 끊는다 · 크기 상한 · HTTP 오류는 상태로(#116) | `HttpBudgetTests::*` |
+| ⑧ 빌더 안전 | 하한(#280) · 실패 뒤 6시간 쉼 후 재시도(#303·#178) · **시도 전** '시도 중' 기록(강제 종료도 쉬게) · 쓰기 실패는 실제 사유로 덮는다 · **쓸 수 없는** 신선 파일은 재빌드(#25) · 어떤 예외든 rc 0 + 경고(#116·#12) | `BuilderTests::*` |
+| ⑨ 배선 | **제 유닛·타이머**(refresh 와 시간 예산을 안 나눈다, #116) · 설치 직후 첫 실행(`OnActiveSec`) · 트레이드 venv · **표준 라이브러리만** import(전수, #24) | `DeployWiringTests::*` |
+| ⑩ 확인 규칙 | 법인형태를 떼고 **같거나** 실측한 `holdings` 꼬리만 더 붙음 — `Tokyo`≠`Tokyo Electron`, `SoftBank Corp.`≠`SoftBank Group`, 캡션이 더 김, 글자 단위, 재지 않은 약어 | `QueryRuleTests::test_jp_confirms_prefix_rule` · `::test_name_tokens_keep_group_and_holdings` |
+| ⑪ 키·가시성 | 키는 정규화한 코드(`'6976 '` 행) · 목록을 못 불러 평문이 되면 **경고 한 번** — KRX 형제도(#12·#38) | `::test_jp_names_keys_are_normalized_codes` · `::test_a_failing_identity_list_is_logged_not_silent` · `::test_a_failing_krx_list_is_logged_too` |
+| ⑫ 네 보드 E2E | cns·cni·tws·mys — 확인/이름 불일치/코드 불일치/목록 없음, 그리고 페이지당 1회 | `BoardRenderTests::test_mixed_market_board_links_a_tokyo_listing_when_the_jpx_list_confirms` · `::test_the_jpx_list_is_read_once_per_page` |
+| ⑬ TWSE 월매출 제외 | 발행사가 전부 대만 상장이라 도쿄 확인은 **틀린 링크만** 낼 수 있다 — 목록을 열지도 않는다(데이터 소스 사유) | `::test_the_twse_revenue_board_never_asks_the_jpx_list` |
+| ⑭ 프로브 ⑦ | 마스터로 **제품 규칙 그대로**(#35) · 대조 0건은 잰 것이 아니다(#54) · 못 읽은 파일을 '안 돌았다' 로 말하지 않는다 · 지문이 판정 모듈까지 덮는다(#364) | `StepSevenTests::*` · `FingerprintScopeTests::*` |
+
+⚠️ **픽스처는 재구성이다**(#155·#334): Excel 모양 xlsx 는 OOXML 명세로 만든
+것이고, 목록 값의 대소문자·법인형태(`TAIYO YUDEN CO.,LTD.`)는 JPX 실측 행
+(`KYOKUYO CO.,LTD.`)의 모양을 따랐다. 실물 첫 대조는 VM 빌드 로그(`버림 N`)와
+프로브 ⑦ 이 한다.
+⚠️ **못 보는 축**(#274): 다른 거래소 회사가 **같은 4자리**를 쓰고 법인형태를 뗀
+영문명까지 도쿄 회사와 같으면 통과한다(관측 없음, 재지 않음). JPX 는 월 1회
+갱신이라 그 사이 신규 상장은 평문이다(틀린 링크가 아니라 없는 링크).

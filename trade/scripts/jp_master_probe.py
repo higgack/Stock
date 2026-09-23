@@ -4,7 +4,9 @@
 나라는 **교역 상대국**이지 상장 시장이 아니므로(#400) 4자리 코드 하나로는
 도쿄(6976 = Taiyo Yuden)인지 대만(2330 = TSMC)인지 갈리지 않는다. 그래서
 `stock_link` 은 확인 수단이 없으면 평문으로 둔다(#25·#171). 한국은
-`build_krx_codes` 가 만든 로컬 마스터가 그 확인을 하는데 일본은 그게 없다.
+`build_krx_codes` 가 만든 로컬 마스터가 그 확인을 한다. 일본은 이 프로브 v2 의
+VM 실측(2026-09-23)으로 원천을 골라 `build_jpx_codes`(JPX 영문 `data_e.xlsx`)가
+그 마스터가 됐고, v3 의 ⑦ 이 **그 마스터로 제품 규칙을 태운 결과**를 잰다.
 
 이 프로브는 **아무것도 배선하지 않는다.** 이름을 추측해 엔드포인트를 박으면
 죽은 경로를 배포하므로(#151·#345), 후보를 **실호출해** 상태와 모양을 찍고
@@ -33,8 +35,11 @@ Run:
 인터프리터마다 한 줄, ③ 보드에서 찾은 도쿄 코드 모양 **전수**(자르지
 않는다 — #156), ③-b 그 코드를 JP 선언 보드가 아는가, ④ yfinance 이름을
 캡션 이름과 **나란히**, ⑤ JPX 후보 페이지마다 상태 + 파일 링크, ⑥ 그중
-파일들의 헤더 + 데이터 2행. 어느 단계든 못 쟀으면 ❌/⏭ 로 적고, 하나도
-못 쟀으면 ✅ 가 아니라 rc=1 이다(#54).
+파일들의 헤더 + 데이터 2행, ⑦ 로컬 JPX 마스터(`build_jpx_codes` 가 만든 것)로
+혼합 보드의 도쿄 코드를 **제품 규칙 그대로**(`lookup_query`) 태운 결과 — 링크가
+붙는 행은 `✅ ../lookup/<코드>.T`, 안 붙는 행은 그 사유(목록에 없음 / 이름이
+안 맞음). 어느 단계든 못 쟀으면 ❌/⏭ 로 적고, 하나도 못 쟀으면 ✅ 가 아니라
+rc=1 이다(#54).
 """
 
 from __future__ import annotations
@@ -51,9 +56,13 @@ from pathlib import Path
 
 from trade.stock_link import _JP_CODE          # 제품이 링크하는 그 모양(#35·#38)
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 _REPO = Path(__file__).resolve().parents[2]
+# 이 출력을 만드는 코드(⑦ 은 제품 판정을 부른다 — `banner` 참조).
+_FINGERPRINT_FILES = (Path(__file__).resolve(),
+                      _REPO / "trade" / "stock_link.py",
+                      _REPO / "trade" / "jpx_master.py")
 
 # 후보 — **후보일 뿐**이다. 200 + 파일 링크가 나와야 증거가 된다(#151·#345).
 # 마지막 항목은 대조군(#143): 이 레포가 운영에서 실제로 치는 페이지라,
@@ -74,12 +83,18 @@ _SAMPLE_PER_PAGE = 2            # 한 페이지가 日/英 둘을 걸면 둘 다
 def banner() -> str:
     """이 출력을 **어느 코드가 만들었는지** 한 줄로(#21·#364).
 
-    ⚠️ **못 보는 축**(#274): 지문은 이 파일 하나를 잰다. 판정을 다른 모듈로
-    빼면 배너가 안 덮는 코드가 생긴다 — 그때 범위를 같이 넓힐 것.
+    v3 부터 ⑦ 의 판정은 **제품 모듈**(`stock_link.jp_confirms` ·
+    `jpx_master.load_envelope`)이 내리므로 지문이 그 둘을 같이 덮는다(이 함수가
+    v2 에 적어 둔 "판정을 다른 모듈로 빼면 범위를 같이 넓힐 것" 그대로).
+    ⚠️ **못 보는 축**(#274): 그 둘이 부르는 더 아래 모듈(`price_provider`)은
+    안 덮는다 — ⑦ 이 읽는 것은 경로 상수 하나뿐이다.
     """
     import hashlib
+    h = hashlib.sha1()
     try:
-        sig = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:10]
+        for f in _FINGERPRINT_FILES:
+            h.update(f.read_bytes())
+        sig = h.hexdigest()[:10]
     except Exception as exc:                                   # noqa: BLE001
         sig = f"지문불가({type(exc).__name__})"
     return (f"■ 일본 마스터 프로브 v{_PROBE_VER} · 코드 지문 {sig} · "
@@ -334,6 +349,62 @@ def _sample_rows(path: Path) -> list[str]:
                 "   (pandas/xlrd/openpyxl 가용성은 ① 을 볼 것)"]
 
 
+def step_seven(cands, jp_boards) -> int:
+    """⑦ 로컬 JPX 마스터로 혼합 보드의 도쿄 코드를 **제품 규칙 그대로** 태운다.
+
+    판정을 여기서 다시 짜지 않는다 — 렌더가 부르는 `jp_names` → `lookup_query`
+    를 똑같이 부른다(#35 감사는 화면이 쓰는 그 경로 · #169). 잰 것이 있으면 1.
+    읽기만 한다: 마스터·실패 곁파일을 열 뿐 쓰지 않는다(#264).
+    """
+    from trade import jpx_master as jm
+    from trade import stock_link as sl
+
+    print("\n⑦ 마스터 대조 — 혼합 보드의 도쿄 코드가 제품 규칙으로 링크되나")
+    master, meta = jm.load_envelope()
+    if not master:
+        why = meta.get("error") or "비어 있음"
+        print(f"  ⏭ 마스터 {why} ({jm.PATH}) — 판정 불가(#54)")
+        try:
+            rec = json.loads(jm.fail_path().read_text(encoding="utf-8"))
+            print(f"    마지막 빌드 실패: {rec.get('reason')!r}")
+        except OSError:
+            # 파일이 **있는데** 못 읽은 것과 아예 없는 것은 처방이 다르다(#82) —
+            # 있으면 빌더는 돈 것이고, 다시 돌리면 덮어쓴다.
+            if why == "없음":
+                print("    빌드 실패 기록도 없다 — 빌더가 아직 안 돌았다.")
+            print("    만들려면: cd ~/stock-trade && .venv/bin/python -m "
+                  "trade.scripts.build_jpx_codes")
+        except Exception as exc:                               # noqa: BLE001
+            print(f"    실패 기록을 못 읽음({type(exc).__name__})")
+        return 0
+    print(f"  마스터 {jm.PATH} · {len(master)}코드 · JPX 기준 "
+          f"{meta.get('effective') or '미상'} · 만든 시각 "
+          f"{meta.get('built_at') or '미상'} · via {meta.get('via') or '미상'}")
+    rows = [(k, t, n) for k, t, n in cands if k not in jp_boards]
+    if not rows:
+        # 대조 0건은 통과가 아니다(#54) — ③ 이 읽기에 실패해 빈 것일 수도 있다.
+        print("  ⏭ JP 선언 보드 밖의 도쿄 코드 모양 행 0건 — 대조할 것이 없어 "
+              "판정 불가(#54)")
+        return 0
+    names = sl.jp_names(t for _, t, _ in rows)            # 렌더와 같은 호출
+    linked = 0
+    for key, tk, nm in rows:
+        q = sl.lookup_query(tk, nm, jp_master=names)
+        listed = master.get(tk.strip().upper())
+        if q.endswith(".T"):
+            linked += 1
+            print(f"  [{key}] {tk} {nm!r} → JPX {listed!r} ✅ ../lookup/{q}")
+        elif q:
+            print(f"  [{key}] {tk} {nm!r} → 도쿄 대조 전에 다른 규칙이 "
+                  f"질의를 만들었다: {q}")
+        elif listed:
+            print(f"  [{key}] {tk} {nm!r} → JPX {listed!r} ❌ 이름이 안 맞아 평문")
+        else:
+            print(f"  [{key}] {tk} {nm!r} → JPX 목록에 없는 코드 — 평문")
+    print(f"  → 도쿄 링크 {linked} / 대상 {len(rows)}행")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     print(banner())
@@ -500,6 +571,9 @@ def main(argv: list[str] | None = None) -> int:
                 for line in _sample_rows(f):
                     print(f"      {line}")
             measured += 1
+
+    # ⑦ 마스터 대조(제품 규칙) --------------------------------------------
+    measured += step_seven(cands, jp_boards)
 
     print(f"\n■ 쟀다: {measured}단계. "
           "못 잰 것은 위에 ❌/⏭/❓ 로 적혀 있다 — 그 자리는 판정 불가다(#54·#274).")
