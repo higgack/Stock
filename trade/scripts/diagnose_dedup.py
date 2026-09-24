@@ -83,7 +83,8 @@ async def run(days: int, grep: str | None, sample_count: int) -> int:
         list(sorted(existing))[:5],
     )
 
-    client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    from trade.tg_entities import guarded_client
+    client = guarded_client(TelegramClient, SESSION_PATH, API_ID, API_HASH)
     await client.start()
     try:
         from trade.tg_entities import resolve_peer   # ResolveUsername 절약(#258)

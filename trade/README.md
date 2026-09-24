@@ -154,6 +154,10 @@ each forward as if it were live.
 cd ~/stock-trade
 python -m venv .backfill-venv
 .backfill-venv/bin/pip install -r trade/scripts/requirements.txt
+#    ⚠️ telethon 은 그 파일에 **고정**돼 있다(실수 #404). 트레이드 텔레그램
+#    스크립트는 이 venv 로만 돌릴 것 — 다른 venv 의 더 새 telethon 이 세션 파일을
+#    한 번 열면 새 형식으로 올라가 이 venv 가 못 연다(가드가 막고 알린다).
+#    고정판을 올렸으면 여기 다시 깔 것 — 자동 배포는 pip 를 돌리지 않는다.
 
 # 3. Dry-run first to see how many messages are in range
 .backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01 --dry-run

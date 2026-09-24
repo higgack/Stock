@@ -46,7 +46,9 @@ Lifecycle alerts (best-effort, never raise):
   ⚠️ <b>나쁜양파 리스너 forward 실패</b>
   ❌ <b>나쁜양파 리스너 종료</b>: 세션 미인증 — operator must rerun --auth
 
-Exits with status 78 (EX_CONFIG) when the session is missing, paired
+Exits with status 78 (EX_CONFIG) when the session is missing — or when its
+file format doesn't match this interpreter's telethon (실수 #404,
+`trade.tg_entities.guarded_client`: ❌ 세션 형식 불일치 + 깔 판) — paired
 with `RestartPreventExitStatus=78` in the unit so systemd doesn't
 hot-loop on a config error.
 """
@@ -66,6 +68,8 @@ from telethon.errors import (
     FloodWaitError,
     SessionPasswordNeededError,
 )
+
+from trade.tg_entities import SessionFormatError  # noqa: E402
 
 from trade import badonion_sources as _srcs
 
@@ -183,7 +187,8 @@ async def _forward_worker(client, source, dest, queue: asyncio.Queue) -> None:
 
 
 async def _run_listener() -> int:
-    client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    from trade.tg_entities import guarded_client
+    client = guarded_client(TelegramClient, SESSION_PATH, API_ID, API_HASH)
     await client.connect()
     if not await client.is_user_authorized():
         log.error("session not authorized — run with --auth interactively")
@@ -270,7 +275,8 @@ async def _run_listener() -> int:
 
 async def _run_auth() -> int:
     """Interactive one-time authentication. Writes .badonion-listener-session."""
-    client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    from trade.tg_entities import guarded_client
+    client = guarded_client(TelegramClient, SESSION_PATH, API_ID, API_HASH)
     await client.start()
     me = await client.get_me()
     log.info("session authorized as @%s (id=%s)", me.username, me.id)
@@ -309,6 +315,16 @@ def main() -> None:
         import time as _time
         _time.sleep(min(int(getattr(e, "seconds", 0) or 0) + 5, 3600))
         sys.exit(1)
+    except SessionFormatError as e:
+        # 세션 파일 형식이 이 telethon 과 안 맞는다 — 재시작으로는 안 풀리는
+        # 설정 오류라 EX_CONFIG 로 끝내 재시작 루프를 막고(유닛의
+        # RestartPreventExitStatus=78), 처방을 알린다(실수 #404).
+        log.error("session format: %s", e)
+        _notify(
+            "❌ <b>나쁜양파 리스너 — 세션 형식 불일치</b>\n"
+            + html.escape(str(e))
+        )
+        sys.exit(EX_CONFIG)
     except (AuthKeyError, SessionPasswordNeededError) as e:
         log.error("auth error: %s", e)
         _notify(
