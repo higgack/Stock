@@ -62,13 +62,14 @@ Default window (실수 #403): 3일. 단 관련성 필터(= 레지스트리 파�
 **일부** 실패했거나 **도중에 중단된** 회수는 기록 대신 **재시도 표식**을 남기고,
 다음 자동 동기화가 그 표식을 보고 최근 40일을 다시 훑는다 — 지문이 이미 기록돼
 있어도(명시 회수가 일부 실패한 경우). 표식은 지문별 실행 수를 세어 3회째 실행에도
-실패나 중단이 남으면 기록하고 멈춘다 — 그때 못 보낸 원본 msg id 와 사람이 돌릴
-명령을 경고·알림으로 말한다. 세는 실행은 포워드를 끝낸 것과 **진전 없이** 연속
-실패로 끊긴 것뿐이다: 긴 FloodWait 중단은 기다리면 풀리고, 진전 있는 중단은 남은
-유닛 수로 유계라 세지 않는다(표식만 남긴다 — 4차 리뷰 M2). 아무것도 포워드하지
-않은 시작 실패·상한 중단은 이 판정에 오지 않고, 프로세스가 죽은 실행도 못 온다 —
-세지 않는 중단과 같게 되고, 포워드된 유닛은 inbox 로 들어가 다음 틱 후보에서
-빠진다. 중단·완료 알림은 이 판정을 붙여 한 번 간다. 자동 회수는
+실패나 중단이 남으면 기록하고 멈춘다 — 그때 실패한·시도 못 한 원본 msg id 와
+사람이 돌릴 명령을 경고·알림으로 말한다. 자동 회수는 연속 실패로 끊지 않고
+끝까지 시도하며(5차 리뷰 — 끊으면 실패 덩어리 뒤의 유닛이 한 번도 시도되지 않은
+채 포기됐다), 도중 중단은 긴 FloodWait 만 빼고 센다(기다리면 풀린다 — 표식만
+남긴다, 4차 리뷰 M2). 아무것도 포워드하지 않은 시작 실패·상한 중단은 이 판정에
+오지 않고, 프로세스가 죽은 실행도 못 와 셈도 표식도 남기지 않는다 — 포워드된
+유닛은 inbox 로 들어가 다음 틱 후보에서 빠진다. 중단·완료 알림은 이 판정을 붙여
+한 번 간다. 자동 회수는
 한 번에 100유닛까지만 포워드한다(넘으면 파서가 너무 넓게 잡았을 수 있어 멈추고
 알린다). `--since`·`--lookback-days`·`--to` 를 명시하면 그 창을 쓰고(둘 다
 주면 `--since` 가 이긴다), 그 창이 지금까지 40일을 덮을 때만 성공 뒤 기록한다.
@@ -250,26 +251,39 @@ _UNFINISHED_SHOWN = 20
 
 
 def _unfinished(failed: list, left: list) -> dict:
-    """포워드 못 한 유닛(실패 + 중단으로 시도 못 한 것)의 원본 msg id 와 가장
-    이른 날짜(UTC) — 회수를 포기할 때 알림이 id 와 수동 명령을 댄다(4차 리뷰
-    M2: 옛 판은 '위 permanent forward failure 줄' 을 가리켰는데 FloodWait
-    중단엔 그 줄이 없었다)."""
+    """포워드 못 한 유닛의 원본 msg id — **실패한 것**과 **중단으로 시도 못 한
+    것**을 가른다 — 과 둘을 통틀은 가장 이른 날짜(UTC). 회수를 포기할 때
+    알림이 id 와 수동 명령을 댄다(4차 리뷰 M2: 옛 판은 '위 permanent forward
+    failure 줄' 을 가리켰는데 FloodWait 중단엔 그 줄이 없었다). 둘을 한 목록에
+    섞으면 한 번도 시도 안 한 유닛을 실패한 것처럼 읽는다(5차 리뷰 C)."""
     msgs = [m for u in list(failed) + list(left) for m in u]
     since = min((m.date for m in msgs), default=None)
-    return {"unfinished_ids": [m.id for m in msgs],
+    return {"failed_ids": [m.id for u in failed for m in u],
+            "unattempted_ids": [m.id for u in left for m in u],
             "unfinished_since": since.strftime("%Y-%m-%d") if since else ""}
+
+
+def _id_list(ids: list) -> str:
+    """`N건: a, b, …` — 앞 `_UNFINISHED_SHOWN` 개만, 넘으면 나머지 수(#45)."""
+    shown = ", ".join(str(i) for i in ids[:_UNFINISHED_SHOWN])
+    more = (f" 외 {len(ids) - _UNFINISHED_SHOWN}건"
+            if len(ids) > _UNFINISHED_SHOWN else "")
+    return f"{len(ids)}건: {shown}{more}"
 
 
 def _unfinished_text(stats: dict) -> str:
     """`_unfinished` → 사람이 읽는 한 줄(없으면 ""). 명령은 운영 유닛의
     ExecStart 인터프리터·cwd 그대로다(#371·#404 — 기억으로 적지 않는다)."""
-    ids = list(stats.get("unfinished_ids") or [])
-    if not ids:
+    failed = list(stats.get("failed_ids") or [])
+    left = list(stats.get("unattempted_ids") or [])
+    if not failed and not left:
         return ""
-    shown = ", ".join(str(i) for i in ids[:_UNFINISHED_SHOWN])
-    more = (f" 외 {len(ids) - _UNFINISHED_SHOWN}건"
-            if len(ids) > _UNFINISHED_SHOWN else "")
-    text = f"포워드 못 한 원본 msg id {len(ids)}건: {shown}{more}"
+    parts = []
+    if failed:
+        parts.append("포워드 실패한 원본 msg id " + _id_list(failed))
+    if left:
+        parts.append("중단으로 시도 못 한 원본 msg id " + _id_list(left))
+    text = " · ".join(parts)
     since = str(stats.get("unfinished_since") or "")
     if since:
         text += (" — 사람이 다시 돌리려면: cd ~/stock-trade && "
@@ -631,14 +645,15 @@ async def run(
                 # 기록하지 않으므로 이 알림은 다시 온다 — '한 번이면 멈춘다' 고
                 # 적으면 거짓이다(2차 리뷰). 이 상한 중단 자체는 재시도 횟수에
                 # 세지 않는다 — 사람에게 묻는 장치라, 세면 3틱 뒤 사람 대신
-                # 기록해 버린다. 도중 중단(연속 실패·긴 FloodWait)은 센다(3차 리뷰).
+                # 기록해 버린다. 도중 중단은 긴 FloodWait 만 빼고 센다(4·5차 리뷰).
                 _note += (
                     f"\n자동 회수({_srcs.RECOVERY_LOOKBACK_DAYS}일) 중이다 — "
                     f"<code>--lookback-days {_srcs.RECOVERY_LOOKBACK_DAYS} "
                     f"--max-candidates {len(candidates)+100}</code> 로 돌리면 "
                     f"성공 뒤 기록돼 이 알림이 멈춘다(포워드가 일부 실패하거나 "
-                    f"도중에 중단되면 기록하지 않아 다시 온다 — 그런 실행이 "
-                    f"{_srcs.RECOVERY_MAX_ATTEMPTS}회째가 되면 기록된다)."
+                    f"도중에 중단되면 기록하지 않아 다시 온다 — 긴 FloodWait "
+                    f"중단을 뺀 그런 실행이 {_srcs.RECOVERY_MAX_ATTEMPTS}회째가 "
+                    f"되면 기록된다)."
                 )
             _notify(_note)
             return 2
@@ -780,7 +795,14 @@ async def run(
                     skipped_units += 1
                     consecutive_failures += 1
                     failed_units.append(unit)
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    # ⚠️ 자동 회수(`recovery`)는 여기서 끊지 않는다(5차 리뷰
+                    # B·C). 유닛 상한(RECOVERY_MAX_UNITS) 안이라 아래 가드가
+                    # 막으려는 '수천 건을 조용히 갈아 넘기기' 가 없고, 끊으면
+                    # 실패 덩어리 뒤의 유닛은 한 번도 시도되지 않은 채 재시도
+                    # 셈만 올라 포기됐다. 체계적 장애(쓰기 권한 등)는 '전체
+                    # 실패' 완료 알림과 재시도 상한이 잡는다.
+                    if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+                            and not recovery):
                         # A per-message error (deleted/service message) is
                         # isolated and rare; a run of these back-to-back is
                         # a signal of something systemic (dest write access
@@ -802,12 +824,11 @@ async def run(
                 await asyncio.sleep(_current_pause(forwarded_msgs))
         except BackfillAborted as exc:
             log.error("aborted: %s", exc)
-            # 중단도 회수 시도다 — 호출부가 **세는지** 정한다(진전 없이 연속
-            # 실패로 끊긴 것만 센다 — FloodWait·진전 있는 중단은 안 센다, 4차
-            # 리뷰 M2). 안 세면 남은 유닛이 전부 이전에 실패한 메시지일 때 매
-            # 틱이 여기서 끊겨 40일 재스캔이 끝없이 반복된다(3차 리뷰, #171).
-            # FloodWait 은 그 유닛(i번째)을 시도하다 끊겼고, 연속 실패는 i번째가
-            # 실패로 이미 세어졌다 — 남은 유닛의 시작이 다르다.
+            # 중단도 회수 시도다 — 호출부가 **세는지** 정한다(긴 FloodWait 만
+            # 안 센다, 4·5차 리뷰). 자동 회수는 연속 실패로 끊지 않으므로 여기
+            # 오는 자동 회수는 FloodWait 뿐이다. FloodWait 은 그 유닛(i번째)을
+            # 시도하다 끊겼고, 연속 실패는 i번째가 실패로 이미 세어졌다 — 남은
+            # 유닛의 시작이 다르다.
             left = units[i - 1:] if exc.kind == "flood" else units[i:]
             if stats is not None:
                 stats.update(forwarded=forwarded_msgs,
@@ -824,12 +845,6 @@ async def run(
             # (4차 리뷰 L6). 사람이 명시한 창은 그 명령을 다시 돌리면 된다.
             if not (defer and recovery):
                 _note += "\n같은 명령으로 재실행하면 이어서 진행 (idempotent)."
-            if recovery and exc.kind != "flood":
-                _note += (
-                    "\n자동 회수 중이다 — 재시도라면 남은 유닛이 전부 이전에 "
-                    "실패한 메시지(삭제 등)라 연달아 실패했을 수 있어 "
-                    "'systemic' 은 단정이 아니다."
-                )
             if defer:
                 stats["note"] = _note
             else:
@@ -859,7 +874,11 @@ async def run(
             if fwd_fallback_count:
                 _note += f"\n⚠️ 출처 불명 {fwd_fallback_count}건 포함"
             if skipped_units:
-                _note += f"\n⚠️ 영구실패로 스킵된 unit {skipped_units}건(삭제/포워드불가 등)"
+                # '영구' 를 단정하지 않는다 — 자동 회수는 이 알림 뒤에 '다시 훑는다
+                # (N/3)' 판정을 붙여 한 통으로 보낸다(L6). '영구실패' 옆에 재시도를
+                # 적으면 한 알림이 두 말을 한다(#165 · 2차 리뷰가 로그에서 뺀 단정).
+                _note += (f"\n⚠️ 포워드 실패로 스킵된 unit {skipped_units}건"
+                          "(삭제·포워드 불가 등일 수 있다)")
             if defer:
                 stats["note"] = _note
             else:
@@ -873,7 +892,14 @@ async def run(
             )
         return 0
     finally:
-        await client.disconnect()
+        # 끊기가 던져도 run() 은 제 rc 로 끝나야 한다 — 새면 판정 뒤로 미룬
+        # 알림(stats["note"])이 통째로 사라진다(5차 리뷰 E; 옛 판은 끊기 전에
+        # 알렸다).
+        try:
+            await client.disconnect()
+        except Exception as exc:                       # noqa: BLE001
+            log.warning("disconnect 실패(%s: %s) — 무시한다",
+                        type(exc).__name__, exc)
 
 
 def _parse_date(s: str) -> datetime:
@@ -1021,13 +1047,11 @@ def main() -> None:
     # 되고(#264·#283), 실패한 회수를 기록하면 다 된 줄 알고 다시 안 훑는다.
     # 포워드가 일부 실패했으면 기록하지 않고 재시도한다 — 일시 장애도 같은
     # 경로로 오기 때문이다(상한은 레지스트리가 정한다, 독립 리뷰 M1).
-    # 포워드 도중 **중단된** 회수는 진전 없이 연속 실패로 끊겼을 때만 센다 —
-    # 안 세면 남은 유닛이 전부 이전에 실패한 메시지일 때 매 틱이 중단돼 횟수가
-    # 영영 안 오른다(3차 리뷰). 긴 FloodWait·진전 있는 중단은 세지 않는다(4차
-    # 리뷰 M2 — 세면 제한 창 하나에 세 번 재실행해 캡션 하나 시도하지 않고
-    # 포기한다). 시작 실패(rc 1, stats 비어 있음)는 아무것도 시도하지 않았으니
-    # 부르지 않는다. 도중에 죽은 실행(systemd 타임아웃 kill)은 여기 못 와 세지
-    # 않는 중단과 같게 된다.
+    # 포워드 도중 **중단된** 회수는 긴 FloodWait 만 빼고 센다(4·5차 리뷰 —
+    # FloodWait 을 세면 제한 창 하나에 세 번 재실행해 캡션 하나 시도하지 않고
+    # 포기한다). 자동 회수는 연속 실패로 끊지 않는다(run() 주석). 시작 실패(rc
+    # 1, stats 비어 있음)는 아무것도 시도하지 않았으니 부르지 않는다. 도중에 죽은
+    # 실행(systemd 타임아웃 kill)은 여기 못 와 셈도 표식도 남기지 않는다.
     aborted = str(stats.get("aborted") or "")
     # run() 이 판정 뒤로 미룬 알림(중단·완료) — 판정을 붙여 한 번 보낸다(L6).
     note = str(stats.get("note") or "")
@@ -1037,29 +1061,35 @@ def main() -> None:
             done, why = _srcs.finish_recovery(
                 state_path, plan["fp"], failed_units=failed, aborted=aborted,
                 abort_kind=str(stats.get("abort_kind") or ""),
-                forwarded=int(stats.get("forwarded") or 0),
                 left=_unfinished_text(stats))
             # 포기는 조용히 넘기지 않는다 — 포워드 못 한 캡션을 더는 자동으로
             # 훑지 않는다는 뜻이다(4차 리뷰 M2: 옛 판은 이걸 info 로 찍었다).
+            # 포기는 실패·중단이 있을 때만이고 그때 run() 은 늘 알림을 미뤄
+            # 뒀다(완료 알림은 실패가 있으면 간다) — 알림 없는 포기는 없다.
             gave_up = done and bool(failed or aborted)
             (log.info if done and not gave_up else log.warning)("%s", why)
-            if note or gave_up:
-                note = ((note or "⚠️ <b>나쁜양파 자동 회수 — 재시도 상한</b>")
-                        + "\n" + html.escape(why))
+            if note:
+                note += "\n" + html.escape(why)
         except Exception as exc:                         # noqa: BLE001
             # 포워드는 이미 끝났거나 중단됐다 — 기록 실패 하나로
             # 트레이스백으로 끝내지 않는다. OSError 만 잡으면 깨진 상태
             # 파일의 ValueError 가 새 매 틱 같은 자리에서 죽었다(2차 리뷰 P6).
             # 대가는 다음 틱이 회수 창을 한 번 더 쓰는 것뿐이고, 조용히
             # 넘기지는 않는다(#12).
-            log.warning("관련성 필터 지문 기록 실패(%s: %s) — 다음 동기화가 "
-                        "회수 창을 한 번 더 쓴다", type(exc).__name__, exc)
+            # 다음 창은 **남아 있는 기록**이 정한다 — 기록 전이면 회수 창을 다시
+            # 쓰지만, 지문이 이미 기록돼 있고 표식이 없으면 기본 창이다. '한 번
+            # 더 쓴다' 로 단정하면 두 번째 갈래에서 거짓이다(5차 리뷰 F).
+            after = (f"다음 동기화 창은 남은 기록대로 — 지문 기록 전이면 "
+                     f"{_srcs.RECOVERY_LOOKBACK_DAYS}일을 다시, 이미 기록된 지문이면 "
+                     f"기본 {_srcs.DEFAULT_LOOKBACK_DAYS}일")
+            log.warning("관련성 필터 지문 기록 실패(%s: %s) — %s",
+                        type(exc).__name__, exc, after)
             # 미룬 알림은 판정 없이 가게 된다 — 판정을 못 붙인 이유를 그 자리에
             # 적는다(#43: 빠진 줄은 '아직 모른다' 가 아니라 '실패했다' 다).
             if note:
                 note += ("\n⚠️ 회수 판정을 기록하지 못했다("
-                         + html.escape(type(exc).__name__)
-                         + ") — 다음 동기화가 회수 창을 한 번 더 쓴다")
+                         + html.escape(type(exc).__name__) + ") — "
+                         + html.escape(after))
     if note:
         _notify(note)
     sys.exit(rc)

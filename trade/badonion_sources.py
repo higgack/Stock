@@ -506,10 +506,20 @@ def _retry_count(rec: dict | None, fp: str) -> int | None:
     retry = (rec or {}).get("retry")
     if not fp or not isinstance(retry, dict) or retry.get("fp") != fp:
         return None
+    raw = retry.get("count")
+    return int(raw) if _count_readable(raw) else 0
+
+
+def _count_readable(raw) -> bool:
+    """재시도 횟수로 **읽히는** 값인가 — `int()` 가 되고 음수가 아니고 bool 이
+    아니다. `_retry_count` 와 사유 문구가 이 한 판정을 같이 쓴다 — 따로 적으면
+    '읽어서 0' 인 값을 '못 읽었다' 고 말한다(5차 리뷰 — `"0"`·`False` 가 그랬다)."""
+    if isinstance(raw, bool):
+        return False
     try:
-        return max(int(retry.get("count")), 0)
+        return int(raw) >= 0
     except (TypeError, ValueError, OverflowError):   # "x" · null · Infinity
-        return 0
+        return False
 
 
 def _covers_recovery(since, lookback_days, to, now: datetime) -> bool:
@@ -593,11 +603,10 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
         how = ("직전 회수가 포워드 도중 중단돼" if flag is True
                else "직전 회수의 포워드 실패가 남아" if flag is False
                else "직전 회수의 포워드 실패나 중단이 남아")
-        raw = retry.get("count")
         cnt = (f"재시도 {n}회째" if n
-               # 센 횟수가 정확히 0 = 앞선 중단이 전부 세지 않는 갈래였다(M2)
+               # 읽힌 0 = 앞선 중단이 전부 세지 않는 갈래였다(4차 리뷰 M2)
                else "재시도(앞선 중단은 횟수에 세지 않았다)"
-               if type(raw) is int and raw == 0
+               if _count_readable(retry.get("count"))
                else "재시도(표식은 있는데 횟수를 못 읽었다)")
         what = f"관련성 필터 코드 지문 {fp} — {how} {cnt}"
     elif old:
@@ -618,11 +627,10 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
 #    '실패' 경로로 오므로, 기록하면 다음 틱이 3일로 돌아가 그 캡션을 영영 잃는다.
 #    다만 **정말 지워진** 메시지는 매번 실패하므로 같은 지문의 3회째 실행에도
 #    실패가 남으면 더 재시도하지 않고 기록한다(수렴 지점, #171 — 무한히 40일을
-#    훑으며 6시간마다 알리지 않게). 포워드 **도중 중단된** 실행은 진전 없이
-#    연속 실패로 끊겼을 때만 센다 — 안 세면 남은 유닛이 전부 이전 실패분일 때
-#    매 틱이 중단돼 이 수렴 지점에 영영 못 닿는다(3차 리뷰). 긴 FloodWait 과
-#    진전 있는 중단은 세지 않는다(`recovery_attempt_counts`, 4차 리뷰 M2).
-#    프로세스가 죽은 실행은 못 센다 — 세지 않는 중단과 같게 된다. 횟수는
+#    훑으며 6시간마다 알리지 않게). 자동 회수는 연속 실패로 끊지 않고 끝까지
+#    시도하므로(5차 리뷰) 실패가 남은 실행은 늘 '끝낸 실행' 으로 센다. 포워드
+#    **도중 중단된** 실행은 긴 FloodWait 만 빼고 센다(`recovery_attempt_counts`).
+#    프로세스가 죽은 실행은 판정에 못 와 셈도 표식도 남기지 않는다. 횟수는
 #    유닛별이 아니라 실행별이라 '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰).
 RECOVERY_MAX_ATTEMPTS = 3
 # ② 자동 회수가 한 번에 포워드할 유닛 상한 — 평소 회수는 파서 배포 전에
@@ -655,36 +663,31 @@ def record_sync(state_path: Path, fp: str, *,
     return True
 
 
-def recovery_attempt_counts(*, aborted: str, abort_kind: str,
-                            forwarded: int) -> tuple[bool, str]:
-    """이 회수 실행을 재시도 횟수에 세나 → (센다, 세지 않는 사유). 4차 리뷰 M2.
+def recovery_attempt_counts(*, aborted: str, abort_kind: str) -> tuple[bool, str]:
+    """이 회수 실행을 재시도 횟수에 세나 → (센다, 세지 않는 사유). 4·5차 리뷰.
 
     - 포워드를 **끝낸** 실행(`aborted` 없음)은 센다 — 실패가 남았어도 한 바퀴를
-      다 돈 것이다(rc 0).
+      다 돈 것이다(rc 0). 자동 회수는 연속 실패로 끊지 않고 끝까지 시도하므로
+      (`backfill_badonion.run`) 자동 회수의 실패는 늘 이 갈래로 온다.
     - 긴 FloodWait 으로 중단된 실행(`abort_kind == "flood"`)은 세지 않는다 —
-      기다리면 풀리는 제한이다. 세면 제한 창 하나에서 알림이 시키는 대로
-      세 번 재실행하는 것만으로 캡션 하나 시도하지 않고 회수를 포기한다(리뷰 R2).
-    - 포워드를 **진전**시킨 중단(`forwarded > 0`)은 세지 않는다 — 진전한 만큼
-      남은 유닛이 줄어 결국 끝난다(수렴). 세면 제한에 걸리며 조금씩 나아가던
-      회수가 남은 유닛을 한 번도 시도하지 않은 채 포기된다(리뷰 R8).
-    - 진전 없이 연속 실패로 끊긴 실행은 센다 — 남은 유닛이 전부 이전 실패분일
-      때 매 틱이 여기서 끊기므로, 안 세면 수렴 지점에 영영 못 닿는다(3차 리뷰).
-    세지 않는 중단이 끝없이 반복되지는 않는다: FloodWait 은 풀리고, 진전은 남은
-    유닛 수로 유계다(#171)."""
+      기다리면 풀리는 제한이다. 세면 제한 창 하나에서 알림이 시키는 대로 세 번
+      재실행하는 것만으로 캡션 하나 시도하지 않고 회수를 포기한다(4차 리뷰 R2).
+      '풀린다' 는 재지 않은 가정이다 — 제한이 매 틱 이어지면 6시간마다 중단
+      알림이 온다(조용하지는 않다).
+    - 그 밖의 중단(사람이 연 창의 연속 실패)은 센다. 4차 반영분은 '포워드를
+      진전시킨 중단' 도 세지 않았는데, 포워드된 사본이 inbox 에 안 닿으면(출처
+      불명 포워드 · 트레이드 봇 장애) 같은 유닛을 매 틱 다시 보내며 영영 안
+      셌다(5차 리뷰 B) — 진전은 한 실행 안의 포워드 수로는 못 잰다."""
     if not aborted:
         return True, ""
     if abort_kind == "flood":
         return False, ("텔레그램 요청 제한(FloodWait) 중단 — 기다리면 풀리므로 "
                        "재시도 횟수에 세지 않는다")
-    if forwarded > 0:
-        return False, (f"메시지 {forwarded}건을 포워드한 뒤의 중단 — 진전한 만큼 "
-                       "남은 유닛이 줄어 결국 끝나므로 재시도 횟수에 세지 않는다")
     return True, ""
 
 
 def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
-                    aborted: str = "", abort_kind: str = "",
-                    forwarded: int = 0, left: str = "",
+                    aborted: str = "", abort_kind: str = "", left: str = "",
                     now: datetime | None = None) -> tuple[bool, str]:
     """회수 실행이 포워드를 **끝냈거나 도중에 중단된** 뒤 → (기록했나, 사유).
 
@@ -694,15 +697,16 @@ def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
     `RECOVERY_MAX_ATTEMPTS` 회째 실행에도 실패나 중단이 남으면 더 재시도하지 않고
     기록한다(수렴, #171).
 
-    ⚠️ 중단은 **진전 없이 연속 실패로 끊겼을 때만** 센다(3차 리뷰 → 4차 리뷰
-    M2, `recovery_attempt_counts`): 남은 유닛이 전부 이전에 실패한 메시지면 매
-    틱이 연속 실패 상한에서 중단돼, 그걸 안 세면 횟수가 영영 안 올라 6시간마다
-    40일을 다시 훑는다. 긴 FloodWait 과 진전 있는 중단은 세지 않되 **표식은
+    ⚠️ 중단은 **긴 FloodWait 만 빼고** 센다(3차 리뷰 → 4·5차 리뷰,
+    `recovery_attempt_counts`). 자동 회수는 연속 실패로 끊지 않으므로 중단은
+    FloodWait 이거나 사람이 연 창의 연속 실패다. 세지 않는 중단도 **표식은
     남긴다**(횟수는 그대로) — 지문이 이미 기록된 뒤의 명시 회수도 다음 자동
     동기화가 이어 받게. 시작 실패·후보/회수 상한 중단은 아무것도 포워드하지
     않아 호출부가 부르지 않는다. 프로세스가 죽은 실행(타임아웃 kill)은 여기
-    오지 못해 못 센다 — 세지 않는 중단과 같게 되고, 포워드된 유닛은 inbox 로
-    들어가 다음 틱 후보에서 빠진다(멱등).
+    오지 못해 셈도 표식도 남기지 않는다 — 기록 전의 자동 회수면 다음 틱이 다시
+    넓게 훑지만, 지문이 이미 기록된 뒤의 명시 회수가 죽으면 다음 자동 동기화는
+    기본 창으로 돌아간다. 포워드된 유닛은 inbox 로 들어가 다음 틱 후보에서
+    빠진다(멱등).
 
     ⚠️ 횟수는 **유닛별이 아니라 이 지문의 회수 실행별**로 센다 — 3회째에 처음
     실패한 유닛도 거기서 멈춘다. 그래서 '영구 실패' 라고 단정하지 않는다
@@ -721,8 +725,8 @@ def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
             if aborted else f"포워드 실패 {failed_units}건")
     rec, _why = _read_state(state_path)
     rec = rec or {}
-    counts, why_not = recovery_attempt_counts(
-        aborted=aborted, abort_kind=abort_kind, forwarded=forwarded)
+    counts, why_not = recovery_attempt_counts(aborted=aborted,
+                                              abort_kind=abort_kind)
     n = (_retry_count(rec, fp) or 0) + (1 if counts else 0)
     if counts and n >= RECOVERY_MAX_ATTEMPTS:
         record_sync(state_path, fp, now=now)

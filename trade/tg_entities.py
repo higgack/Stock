@@ -117,6 +117,23 @@ def in_prod_venv() -> bool:
     return f"/{PROD_VENV}/" in sys.executable.replace("\\", "/")
 
 
+def _same_release(a, b) -> bool:
+    """두 판이 같은 릴리스인가 — `1.45` 와 `1.45.0` 은 같다. 문자열로 비교하면
+    핀을 `telethon==1.45` 로 적는 순간(핀 파서가 받는 모양이다) 고정판을 깐 운영
+    venv 가 '고정판이 아니다' 로 막히고, 처방(`pip install telethon==1.45`)은 이미
+    깔린 판을 다시 까는 헛걸음이 된다(5차 리뷰 D). 숫자만으로 된 판은 뒤쪽 0 을
+    걷고 비교하고, 그 밖(rc·post 등)은 문자열 그대로 비교한다(모르면 다르다)."""
+    def norm(v):
+        parts = str(v).split(".")
+        if not all(x.isdigit() for x in parts):
+            return str(v)
+        nums = [int(x) for x in parts]
+        while len(nums) > 1 and nums[-1] == 0:
+            nums.pop()
+        return tuple(nums)
+    return norm(a) == norm(b)
+
+
 def session_format_problem(session, *, live: bool = True) -> str | None:
     """세션을 열기 **전에** 형식을 잰다 → 막아야 하면 처방을 담은 문장, 아니면 None.
 
@@ -134,14 +151,24 @@ def session_format_problem(session, *, live: bool = True) -> str | None:
     - 재지 못하면(세션 파일을 못 읽음 · telethon 을 못 잼 · 운영 venv 인데 핀을
       못 읽음) 막지 않고 **경고 로그로 말한다** — 못 잰 것으로 막으면 첫 인증부터
       막힌다(#54 는 '말하라' 이지 '멈추라' 가 아니다, 4차 리뷰 L3). 파일이 아예
-      없으면(첫 인증) 보호할 것이 없어 조용히 통과한다.
+      없으면(첫 인증) 보호할 것이 없어 조용히 통과한다. ⚠️ 단 **운영 venv 가
+      아닌** 인터프리터가 **못 잰 운영 세션**을 열려 하면 막는다 — 핫 저널이 남은
+      파일은 읽기 전용으로 못 재는데, telethon 이 열면 저널을 되돌린 뒤 제 형식으로
+      올린다(5차 리뷰 A 재현: 비운영 venv 가 v7 을 v8 로 올렸다). 운영 venv 는
+      계속 통과한다(운영을 멈추지 않는다).
     - 복사본(`live=False` — dry-run·진단)은 올라가도 무해하다."""
     name = Path(str(session)).name
     f, why = _session_db_probe(session)
     if f is None:
-        if why:
-            log.warning("세션 %s 형식을 못 쟀다(%s) — 형식 가드를 건너뛴다",
-                        name, why)
+        if not why:
+            return None                                # 파일 없음 — 첫 인증
+        if live and not in_prod_venv():
+            return (f"세션 {name} 형식을 못 쟀다({why}) — 이 인터프리터"
+                    f"({sys.executable})는 운영 venv({PROD_VENV})가 아니라, 운영 세션을 "
+                    "열면 telethon 이 새 형식으로 올릴 수 있어 막는다(실수 #404). 운영과 "
+                    f"같은 venv 로 돌릴 것: cd ~/stock-trade && {PROD_VENV}/bin/python …")
+        log.warning("세션 %s 형식을 못 쟀다(%s) — 형식 가드를 건너뛴다",
+                    name, why)
         return None
     ver, lib = telethon_db_version()
     if lib is None:
@@ -151,9 +178,9 @@ def session_format_problem(session, *, live: bool = True) -> str | None:
     pin = pinned_telethon()
     prod = in_prod_venv()
     if f > lib:
-        if prod and pin and pin != ver:
+        if prod and pin and not _same_release(pin, ver):
             fix = f"{sys.executable} -m pip install telethon=={pin}"
-        elif not prod and pin and pin != ver:
+        elif not prod and pin and not _same_release(pin, ver):
             # 운영 venv 가 아니면 **이** 인터프리터에 깔라고 하지 않는다 — 다른
             # 프로젝트의 venv(NOAH `.venv`)의 telethon 을 바꾸게 된다. 운영 유닛이
             # 도는 venv 를 가리킨다(실수 #404 — 틀린 venv 가 이 사고의 시작이다).
@@ -183,7 +210,7 @@ def session_format_problem(session, *, live: bool = True) -> str | None:
                         "telethon %s 이 고정판인지 모른다 — 세션 %s 을 DB v%d → v%d 로 "
                         "올리는 것을 막지 않는다", ver, name, f, lib)
             return None
-        if ver != pin:
+        if not _same_release(ver, pin):
             return (f"운영 venv 의 telethon {ver}(DB v{lib})이 고정판({pin})이 아니다 — "
                     f"이대로 열면 운영 세션 {name}(DB v{f})이 고정판이 아닌 판의 형식으로 "
                     f"올라간다. 고정판을 깔 것: {sys.executable} -m pip install "

@@ -745,7 +745,7 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
             self.assertIn(f"재시도 {n}회째", plan["reason"])
         done, why = srcs.finish_recovery(
             self.state, "newnewnew0", failed_units=2,
-            left="포워드 못 한 원본 msg id 2건: 7, 8")
+            left="포워드 실패한 원본 msg id 2건: 7, 8")
         self.assertTrue(done)
         # 횟수는 유닛별이 아니라 실행별이다 — 3회째에 처음 실패한 유닛도 여기서
         # 멈추므로 '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰).
@@ -754,7 +754,7 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         # 포기할 때는 호출부가 준 '포워드 못 한 것'(id·수동 명령)을 그대로 싣는다
         # — 옛 판은 'permanent forward failure' 줄을 가리켰는데 FloodWait 중단엔
         # 그 줄이 없었다(4차 리뷰 M2 · #292 틀린 라벨).
-        self.assertIn("포워드 못 한 원본 msg id 2건: 7, 8", why)
+        self.assertIn("포워드 실패한 원본 msg id 2건: 7, 8", why)
         self.assertNotIn("permanent forward failure", why)
         self.assertNotIn("영구 실패", why)
         rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
@@ -765,12 +765,12 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         (4차 리뷰 M2). 옛 판이 가리킨 'permanent forward failure' · 'giving up
         on msgs' 줄은 FloodWait 중단엔 아예 없었다 — 없는 줄을 가리키는 안내는
         지어낸 안내다(#371 · #55). 실제 id·명령이 도는지는 백필 E2E 가 잰다
-        (`test_giving_up_after_no_progress_aborts_names_the_abort_and_what_was_left`)."""
+        (`test_giving_up_after_aborts_names_the_abort_and_what_was_left`)."""
         self.state.write_text(json.dumps(
             {"retry": {"fp": "samesame00",
                        "count": srcs.RECOVERY_MAX_ATTEMPTS - 1}}),
             encoding="utf-8")
-        left = "포워드 못 한 원본 msg id 1건: 501 — 사람이 다시 돌리려면: …"
+        left = "포워드 실패한 원본 msg id 1건: 501 — 사람이 다시 돌리려면: …"
         done, why = srcs.finish_recovery(self.state, "samesame00",
                                          failed_units=1, left=left)
         self.assertTrue(done)
@@ -786,9 +786,11 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         self.assertNotIn(left, why)
 
     def test_an_aborted_run_is_counted_and_named_by_its_reason(self):
-        """진전 없이 연속 실패로 끊긴 회수는 재시도 횟수에 센다(3차 리뷰) — 안
-        세면 남은 유닛이 전부 이전 실패분일 때 매 틱이 중단돼 영영 수렴하지
-        않는다. 사유는 '포워드 실패 N건' 이 아니라 **중단 사유**다(#292)."""
+        """연속 실패로 끊긴 회수는 재시도 횟수에 센다(3차 리뷰) — 안 세면 남은
+        유닛이 전부 이전 실패분일 때 매 실행이 중단돼 영영 수렴하지 않는다.
+        자동 회수는 이제 연속 실패로 끊지 않으므로(5차 리뷰) 이 갈래는 사람이
+        연 창의 중단이다. 사유는 '포워드 실패 N건' 이 아니라 **중단 사유**다
+        (#292)."""
         reason = ("5 consecutive forward failures — likely systemic "
                   "(session/permission/network)")
         done, why = srcs.finish_recovery(self.state, "samesame00",
@@ -807,26 +809,24 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         self.assertIn("재시도 상한", why)
 
     def test_which_runs_count_toward_the_retry_limit(self):
-        """4차 리뷰 M2 — 세는 갈래와 안 세는 갈래(`recovery_attempt_counts`).
-        긴 FloodWait 을 세면 제한 창 하나에 알림이 시키는 대로 세 번 재실행해
-        캡션 하나 시도하지 않고 포기했고(R2), 진전 있는 중단을 세면 조금씩
-        나아가던 회수가 남은 유닛을 시도도 못 한 채 포기됐다(R8)."""
+        """세는 갈래와 안 세는 갈래(`recovery_attempt_counts`). 긴 FloodWait 을
+        세면 제한 창 하나에 알림이 시키는 대로 세 번 재실행해 캡션 하나 시도하지
+        않고 포기했다(4차 리뷰 R2). 4차 반영분은 '진전 있는 중단' 도 세지
+        않았는데, 포워드된 사본이 inbox 에 안 닿으면 같은 유닛을 매 틱 다시
+        보내며 영영 안 셌다(5차 리뷰 B) — 그 인자는 지웠고, FloodWait 이 아닌
+        중단은 진전과 무관하게 센다."""
         count = srcs.recovery_attempt_counts
-        self.assertEqual((True, ""), count(aborted="", abort_kind="",
-                                           forwarded=0))      # 끝낸 실행
-        self.assertEqual((True, ""), count(aborted="", abort_kind="",
-                                           forwarded=7))      # 끝냈으면 진전 무관
-        self.assertEqual((True, ""), count(aborted="x", abort_kind="failures",
-                                           forwarded=0))      # 진전 없는 연속 실패
-        ok, why = count(aborted="x", abort_kind="flood", forwarded=0)
+        self.assertEqual((True, ""), count(aborted="", abort_kind=""))  # 끝낸 실행
+        self.assertEqual((True, ""), count(aborted="x", abort_kind="failures"))
+        self.assertEqual((True, ""), count(aborted="x", abort_kind=""))  # 갈래 미상
+        ok, why = count(aborted="x", abort_kind="flood")
         self.assertFalse(ok)
         self.assertIn("FloodWait", why)
-        ok, why = count(aborted="x", abort_kind="flood", forwarded=3)
-        self.assertFalse(ok)
-        self.assertIn("FloodWait", why)                  # 더 행동 가능한 사유가 먼저
-        ok, why = count(aborted="x", abort_kind="failures", forwarded=3)
-        self.assertFalse(ok)
-        self.assertIn("메시지 3건을 포워드한 뒤", why)
+        # 끝낸 실행은 abort_kind 가 무엇이든 센다 — 판정은 '중단됐나' 가 먼저다.
+        self.assertEqual((True, ""), count(aborted="", abort_kind="flood"))
+        # 진전 인자는 없다 — 되살리면 5차 리뷰 B 의 무한 재시도가 돌아온다.
+        with self.assertRaises(TypeError):
+            count(aborted="x", abort_kind="failures", forwarded=3)
 
     def test_an_uncounted_abort_keeps_the_retry_but_not_the_count(self):
         """세지 않는 중단도 **표식은 남긴다**(횟수는 그대로) — 지문이 이미 기록된
@@ -851,17 +851,22 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         self.assertTrue(plan["recovery"])
         self.assertIn("포워드 도중 중단돼", plan["reason"])
         self.assertIn("앞선 중단은 횟수에 세지 않았다", plan["reason"])
-        # 진전 있는 중단도 횟수를 안 올린다 — 그 뒤 센 실행은 이어서 센다.
-        srcs.finish_recovery(self.state, "samesame00", failed_units=1,
-                             aborted="x", abort_kind="failures", forwarded=4)
-        self.assertEqual(0, json.loads(self.state.read_text(
-            encoding="utf-8"))["retry"]["count"])
+        # FloodWait 이 아닌 중단은 센다(5차 리뷰 B — 포워드 수와 무관하다).
+        # 세지 않은 앞의 중단 위에서 이어 센다.
+        done, why = srcs.finish_recovery(self.state, "samesame00",
+                                         failed_units=1, aborted="x",
+                                         abort_kind="failures")
+        self.assertFalse(done)
+        self.assertIn(f"(1/{srcs.RECOVERY_MAX_ATTEMPTS})", why)
+        self.assertNotIn("세지 않는다", why)
+        rec = json.loads(self.state.read_text(encoding="utf-8"))["retry"]
+        self.assertEqual((1, True), (rec["count"], rec["aborted"]))
         done, why = srcs.finish_recovery(self.state, "samesame00",
                                          failed_units=1)
         self.assertFalse(done)
-        self.assertIn(f"(1/{srcs.RECOVERY_MAX_ATTEMPTS})", why)
+        self.assertIn(f"(2/{srcs.RECOVERY_MAX_ATTEMPTS})", why)
         rec = json.loads(self.state.read_text(encoding="utf-8"))["retry"]
-        self.assertEqual((1, False), (rec["count"], rec["aborted"]))
+        self.assertEqual((2, False), (rec["count"], rec["aborted"]))
         # 세지 않는 실행은 **어떤 횟수에서도** 포기하지 않는다 — 저장된 횟수가
         # 이미 상한 이상이어도(상한을 낮춘 배포 · 손으로 고친 파일) 그렇다.
         self.state.write_text(json.dumps(
@@ -880,7 +885,11 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
                  ({"count": 2}, "포워드 실패나 중단이 남아 재시도 2회째"),
                  ({"count": 0, "aborted": True}, "앞선 중단은 횟수에 세지 않았다"),
                  ({"count": False}, "횟수를 못 읽었다"),
-                 ({"count": "0"}, "횟수를 못 읽었다"))
+                 # `_retry_count` 가 0 으로 **읽는** 값은 사유도 '읽었다' 고 말한다
+                 # — 옛 판은 `type(raw) is int` 로 따로 판정해 `"0"` 을 '못
+                 # 읽었다' 고 했다(5차 리뷰 — 두 판정이 갈렸다, #38).
+                 ({"count": "0"}, "앞선 중단은 횟수에 세지 않았다"),
+                 ({"count": True}, "횟수를 못 읽었다"))
         for retry, want in cases:
             with self.subTest(retry=retry):
                 self.state.write_text(json.dumps(

@@ -210,7 +210,17 @@ def test_a_session_newer_than_this_telethon_names_the_fix(tmp_path, monkeypatch)
     for exe in (other, prod):
         monkeypatch.setattr(tg.sys, "executable", exe)
         msg = tg.session_format_problem(p)
-        assert "고정판" in msg and "pip install telethon==1.36.0" not in msg
+        assert "pip install telethon==1.36.0" not in msg
+        # '핀을 못 읽었다' 가 아니라 '핀을 올려라' 다 — 둘 다 '고정판' 을 말하므로
+        # 그 낱말로는 갈래를 못 가른다(5차 리뷰 T14 생존).
+        assert "그 파일을 쓴 판 이상으로 올려" in msg and "못 읽었다" not in msg
+    # 핀을 '1.36' 처럼 짧게 적어도 같은 판이다 — 이미 깔린 판을 다시 깔라고 하지
+    # 않는다(5차 리뷰 D — 문자열 비교는 '1.36' ≠ '1.36.0' 이었다).
+    _pin(monkeypatch, "1.36")
+    for exe in (other, prod):                      # 두 갈래 다 같은 비교를 쓴다
+        monkeypatch.setattr(tg.sys, "executable", exe)
+        msg = tg.session_format_problem(p)
+        assert "pip install telethon==1.36" not in msg and "올려" in msg, exe
     # 핀을 못 읽었으면 'telethon None' 을 고정판처럼 적지 않는다(4차 리뷰 L2).
     _pin(monkeypatch, None)
     msg = tg.session_format_problem(p)
@@ -618,3 +628,115 @@ def test_the_beon_backfill_logs_a_prescribed_failure_without_a_traceback(
                                    100)) == 1
         assert [r for r in caplog.records if r.exc_info] == [], dry
         assert "세션 형식 처방(테스트)" in caplog.text
+
+
+# ── 5차 리뷰 A·D·T05·T10·T11 ─────────────────────────────────────────────────
+def _hot_journal(p: Path) -> Path:
+    """커밋 없이 죽은 트랜잭션을 남긴다 — 읽기 전용으로는 못 잰다."""
+    import subprocess
+    import textwrap
+    code = textwrap.dedent(f"""
+        import os, sqlite3
+        con = sqlite3.connect({str(p)!r}, isolation_level=None)
+        con.execute("pragma cache_size=1")
+        con.execute("begin exclusive")
+        con.execute("create table big (x blob)")
+        for i in range(200):
+            con.execute("insert into big values (randomblob(4000))")
+        os._exit(0)
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True)
+    journal = Path(str(p) + "-journal")
+    assert journal.exists()
+    return journal
+
+
+def test_an_unmeasurable_live_session_is_closed_to_foreign_interpreters(
+        tmp_path, monkeypatch, caplog):
+    """5차 리뷰 A: 핫 저널이 남은 운영 세션은 읽기 전용으로 못 잰다 — 옛 판은
+    '못 잼 → 경고하고 통과' 라, 운영 venv 가 아닌 인터프리터가 열면 telethon 이
+    저널을 되돌린 뒤 새 형식으로 올렸다. 비운영 + 운영 세션 + 못 잼 = 막는다.
+    운영 venv 와 복사본은 계속 통과한다(운영을 멈추지 않는다, 반대 증거)."""
+    caplog.set_level("WARNING", logger="trade.tg_entities")
+    junk = tmp_path / "junk.session"
+    junk.write_bytes(b"not a sqlite file")
+    _pin(monkeypatch, "1.45.0")
+    _lib(monkeypatch, "1.45.0", 8)
+    _exe(monkeypatch, _OTHER_EXE)
+    msg = tg.session_format_problem(junk, live=True)
+    assert msg and "못 쟀다" in msg and f"{tg.PROD_VENV}/bin/python" in msg
+    assert tg.session_format_problem(junk, live=False) is None      # 복사본
+    _exe(monkeypatch, _PROD_EXE)
+    assert tg.session_format_problem(junk, live=True) is None       # 운영 venv
+    assert "junk.session" in caplog.records[-1].getMessage()        # 말은 한다
+    _exe(monkeypatch, _OTHER_EXE)
+    assert tg.session_format_problem(tmp_path / "new", live=True) is None  # 첫 인증
+
+
+def test_a_hot_journal_does_not_let_a_foreign_venv_upgrade_the_session_for_real(
+        tmp_path, monkeypatch):
+    """A 를 **실물 telethon** 으로(리뷰어 재현 그대로): 고정판과 같은 판의 비운영
+    venv 가 핫 저널이 남은 v7 운영 세션을 열면 옛 판은 v8 로 올렸다."""
+    telethon = pytest.importorskip("telethon")
+    sq = pytest.importorskip("telethon.sessions.sqlite")
+    if sq.CURRENT_VERSION <= 7:
+        pytest.skip("설치판이 v7 을 쓴다 — 올라갈 형식이 없다")
+    p = _session(tmp_path, 7)
+    con = sqlite3.connect(p)
+    con.execute("insert into sessions values (2, '149.154.167.51', 443, x'00', null)")
+    con.commit()
+    con.close()
+    journal = _hot_journal(p)
+    before = p.read_bytes()
+    _pin(monkeypatch, str(telethon.__version__))
+    _exe(monkeypatch, _OTHER_EXE)
+    with pytest.raises(tg.SessionFormatError, match="못 쟀다"):
+        tg.guarded_client(telethon.TelegramClient, str(p)[:-len(".session")], 1, "x")
+    assert p.read_bytes() == before and journal.exists()   # 손대지 않았다
+
+
+def test_a_foreign_version_table_is_not_a_version(tmp_path):
+    """T05: `.session` 이름의 **다른** SQLite 는 version 칸이 정수가 아닐 수 있다 —
+    던지지 않고 못 잰 사유를 말한다(telethon 파일은 INTEGER PRIMARY KEY 라 못
+    생기는 값이지만, 가드가 여는 파일이 telethon 것이라는 보장은 없다)."""
+    p = tmp_path / "foreign.session"
+    con = sqlite3.connect(p)
+    con.execute("create table version (version text)")
+    con.execute("insert into version values ('abc')")
+    con.commit()
+    con.close()
+    v, why = tg._session_db_probe(p)
+    assert v is None and "abc" in why
+
+
+def test_the_production_venv_is_recognised_by_its_path_segment(monkeypatch):
+    """T10·T11: 운영 venv 판별은 경로의 **디렉터리 이름 전체**다 —
+    `.backfill-venv-old` 같은 이웃 디렉터리는 운영이 아니고, 역슬래시 경로도
+    같은 규칙으로 읽는다."""
+    for exe, prod in ((_PROD_EXE, True), (_OTHER_EXE, False),
+                      (f"/x/{tg.PROD_VENV}-old/bin/python", False),
+                      (f"/x/old{tg.PROD_VENV}/bin/python", False),
+                      (f"C:\\stock-trade\\{tg.PROD_VENV}\\Scripts\\python.exe", True)):
+        _exe(monkeypatch, exe)
+        assert tg.in_prod_venv() is prod, exe
+
+
+def test_releases_compare_by_number_not_by_spelling():
+    """5차 리뷰 D — 핀 파서는 `1.45` 도 받는다(`test_the_pin_is_read_…`)."""
+    same = tg._same_release
+    assert same("1.45", "1.45.0") and same("1.45.0", "1.45") and same("2", "2.0.0")
+    assert not same("1.45.0", "1.45.1") and not same("1.45", "1.4.5")
+    assert not same("1.45.0rc1", "1.45.0")            # 모르는 모양은 다르다
+    assert same("1.45.0rc1", "1.45.0rc1")
+
+
+def test_a_short_pin_lets_the_production_venv_upgrade(tmp_path, monkeypatch):
+    """D 의 배선 — 운영 venv 에 고정판(`1.45`)이 깔렸으면(`1.45.0`) 올리기를
+    허용한다. 옛 판은 문자열이 달라 막고, 이미 깔린 판을 다시 깔라고 했다."""
+    p = _session(tmp_path, 7)
+    _lib(monkeypatch, "1.45.0", 8)
+    _pin(monkeypatch, "1.45")
+    _exe(monkeypatch, _PROD_EXE)
+    assert tg.session_format_problem(p, live=True) is None
+    _lib(monkeypatch, "1.44.0", 8)                    # 반대 증거: 진짜 다른 판
+    assert "pip install telethon==1.45" in tg.session_format_problem(p, live=True)
