@@ -59,7 +59,7 @@
 | `trade-bot-dart-reparse.timer` | 매일 04:30 KST | `trade.dart_revenue --reparse-stale --budget 1000` | 실패분 재파싱(예산 캡) |
 | `trade-bot-catalog-guard.timer` | 매월 18일 09:00 KST | `trade.scripts.catalog_guard` | HS↔회사 매칭 카탈로그 정합성 가드 |
 | `trade-bot-curation.timer` | 매월 1/11/15/21일 18:00 KST | `trade.scripts.curation_candidates` | 큐레이션 후보 생성(운영자 확인 대기) |
-| `trade-bot-badonion-sync.timer` | 6시간 | `trade/scripts/backfill_badonion.py` | 배도니언 소스 백필 동기화 — 기본 최근 3일. 관련성 필터(= 레지스트리 파서) 코드 지문이 마지막 성공 기록과 다르면 **40일 1회**(파서가 생기기 전에 리스너가 버린 캡션 회수, #403) · 기록 `~/.trade/badonion_sync_state.json` · 포워드가 일부 실패하면 기록 안 하고 재시도(같은 지문 3회째엔 기록) · 자동 회수는 100유닛 상한 · 포워드할 유닛은 머리·소스 이름을 로그로 찍는다 · 캡션 하나의 행방은 `--dry-run --find TEXT` |
+| `trade-bot-badonion-sync.timer` | 6시간 | `trade/scripts/backfill_badonion.py` | 배도니언 소스 백필 동기화 — 기본 최근 3일. 관련성 필터(= 레지스트리 파서) 코드 지문이 마지막 성공 기록과 다르면 **40일 1회**(파서가 생기기 전에 리스너가 버린 캡션 회수, #403) · 기록 `~/.trade/badonion_sync_state.json` · 포워드가 일부 실패하면 기록 대신 재시도 표식을 남기고 다음 자동 동기화가 최근 40일을 다시 훑는다(지문이 이미 기록돼 있어도 · 같은 지문 3회째 실행엔 기록) · 자동 회수는 100유닛 상한 · 포워드할 유닛은 머리·소스 이름을 로그로 찍는다 · 캡션 하나가 **어디로** 갔는지는 `--dry-run --since YYYY-MM-DD --find TEXT`(원문·마크다운, 대소문자 무시 — `--since` 없으면 기본 창(평소 3일)만 본다), **왜** 버려졌는지는 그 출력이 찍는 `diagnose_badonion --grep` · dry-run 류는 세션 복사본으로 접속해 타이머와 잠금 경합하지 않고, 후보 상한에서도 멈추지 않으며, 시작 실패도 폰에 알리지 않는다(타이머 장애로 읽힌다) |
 | `trade-bot-dashboard-refresh.timer` | 5분 | `ingest_inbox`→`purge_ignored`→`fetch_provisional --if-stale`→`build_krx_codes --if-stale`→`fetch_quotes`→`trade.dashboard`→`resolve_check --if-due` | **inbox.jsonl → DB → 화면**. 나쁜양파/BeOn 데이터가 대시보드에 오르는 유일한 경로 |
 | `trade-bot-unstored-check.timer` | 매일 00:00 KST | `trade.scripts.unstored_check` | 캡션이 store 에 안 들어간 건 감지 → 텔레그램(성공 시 무음) |
 | `trade-bot-health.timer` | 1시간 | `trade.scripts.health_check` | 휴면·사이클 갭 감지 |
@@ -94,7 +94,7 @@
 | `trade-bot-beon-listener.service` | `trade.scripts.listen_beon` | BeOn_BeClear(대만·중국·일본 수출통계) 실시간 forward | 위와 동일 패턴 |
 | `trade-bot-beon-sync.timer`(2h) | `trade.scripts.backfill_beon` | 리스너 다운타임 안전망(--lookback-days 2 기본) | 없음(idempotent 재스캔) |
 | `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward | 세션 미인증(exit 78) |
-| `trade-bot-badonion-sync.timer`(6h) | `trade/scripts/backfill_badonion.py` | 위 안전망 + 파서 배포 뒤 40일 회수(#403) | 없음(성공해야 기록 — 실패·일부 포워드 실패면 다음 틱이 다시 넓게 훑고, 3회째엔 기록) |
+| `trade-bot-badonion-sync.timer`(6h) | `trade/scripts/backfill_badonion.py` | 위 안전망 + 파서 배포 뒤 40일 회수(#403) | 없음(성공해야 기록 — 실행 실패(rc≠0)면 다음 틱이 다시 넓게 훑는다 · 포워드 일부 실패는 재시도 표식으로 다시 훑고 같은 지문 3회째 실행엔 기록 — rc≠0 실행은 그 횟수에 안 센다) |
 
 ## 자동화가 **아닌** 것 — 회귀가 방아쇠인 도구 (2026-09-12)
 

@@ -6,6 +6,7 @@
 만 나열했다. 드리프트를 구조적으로 불가능하게 만든 뒤 그 계약을 고정한다.
 """
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -717,17 +718,128 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
                                              failed_units=2)
             self.assertFalse(done, n)
             self.assertIn(f"{n}/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+            # 무엇을 다시 훑는지 정확히 — 자동 재시도는 최근 회수 창만 본다.
+            # 더 넓은 명시 창의 그 밖 실패까지 '다시 시도한다' 고 하면 거짓이다.
+            self.assertIn(f"최근 {srcs.RECOVERY_LOOKBACK_DAYS}일", why)
             rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
             self.assertEqual("oldoldold0", rec["relevance_fp"])   # 옛 지문 보존
             self.assertEqual({"fp": "newnewnew0", "count": n},
                              {k: rec["retry"][k] for k in ("fp", "count")})
             plan = srcs.sync_plan(self.state, fp="newnewnew0")
             self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+            # 사유가 **실제 횟수**를 말한다(2차 리뷰 S17 — 늘 1회째라고 해도
+            # 창 판정은 맞아 이 줄만 거짓말한다).
+            self.assertIn(f"재시도 {n}회째", plan["reason"])
         done, why = srcs.finish_recovery(self.state, "newnewnew0", failed_units=2)
         self.assertTrue(done)
-        self.assertIn("영구 실패", why)
+        # 횟수는 유닛별이 아니라 실행별이다 — 3회째에 처음 실패한 유닛도 여기서
+        # 멈추므로 '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰). 몇 회째
+        # 실행이었는지와 msg id 를 어디서 보는지만 말한다.
+        self.assertIn("재시도 상한", why)
+        self.assertIn(f"회수 {srcs.RECOVERY_MAX_ATTEMPTS}회째", why)
+        # 실패한 msg id 를 찾을 **두** 줄을 다 가리킨다 — 포워드 실패는 즉시
+        # 실패(`permanent forward failure`)와 FloodWait 5회 소진(`giving up on
+        # msgs`)으로 끝난다(`backfill_badonion._forward_unit`). 한쪽만 적으면
+        # 다른 갈래의 id 를 못 찾는다.
+        self.assertIn("permanent forward failure", why)
+        self.assertIn("giving up on msgs", why)
+        self.assertNotIn("영구 실패", why)
         rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual({"relevance_fp", "recorded_at"}, set(rec))  # 표식 정리
+
+    def test_the_give_up_message_points_at_log_lines_that_exist(self):
+        """상한 문구가 가리키는 로그 줄이 백필에 **실제로** 있어야 한다 — 로그
+        문구를 바꾸면 안내가 없는 줄을 가리킨다(#371 지어낸 안내 · #55). 백필은
+        telethon 없이 import 할 수 없어 AST 의 문자열 상수로 본다."""
+        import ast
+        import re
+        self.state.write_text(json.dumps(
+            {"retry": {"fp": "samesame00",
+                       "count": srcs.RECOVERY_MAX_ATTEMPTS - 1}}),
+            encoding="utf-8")
+        done, why = srcs.finish_recovery(self.state, "samesame00",
+                                         failed_units=1)
+        self.assertTrue(done)
+        pointers = re.findall(r"'([^']+)'", why)
+        self.assertGreaterEqual(len(pointers), 2, why)
+        tree = ast.parse(Path("trade/scripts/backfill_badonion.py").read_text(
+            encoding="utf-8"))
+        consts = [n.value for n in ast.walk(tree)
+                  if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        for ptr in pointers:
+            self.assertTrue(any(c.startswith(ptr) for c in consts),
+                            f"백필에 '{ptr}' 로 시작하는 로그 줄이 없다")
+
+    def test_a_retry_marker_reopens_the_window_even_when_the_fp_is_recorded(self):
+        """명시 회수(`--lookback-days 40`)가 **이미 기록된 지문**으로 일부
+        실패하면 재시도 표식만 남는다. 옛 판은 기록된 지문을 먼저 보고 표식을
+        안 읽어 다음 자동 동기화가 3일로 돌아갔다 — "다음 동기화가 다시
+        시도한다" 는 로그가 거짓이었고, 3일보다 오래된 실패는 영영 안
+        돌아왔다(2차 리뷰 P2)."""
+        srcs.record_sync(self.state, "samesame00")
+        done, _ = srcs.finish_recovery(self.state, "samesame00", failed_units=1)
+        self.assertFalse(done)
+        plan = srcs.sync_plan(self.state, fp="samesame00")
+        self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        self.assertTrue(plan["record"])
+        self.assertTrue(plan["recovery"])      # 자동으로 넓힌 창이다
+        self.assertIn("재시도 1회째", plan["reason"])
+        self.assertIn("포워드 실패가 남아", plan["reason"])
+        # 반대 증거(#25) — **다른** 지문의 표식은 이 지문의 재시도가 아니다.
+        # 그걸로 창을 열면 옛 배포의 실패가 새 기록을 영원히 흔든다.
+        self.state.write_text(json.dumps(
+            {"relevance_fp": "samesame00",
+             "retry": {"fp": "otherother", "count": 2}}), encoding="utf-8")
+        plan = srcs.sync_plan(self.state, fp="samesame00")
+        self.assertEqual(srcs.DEFAULT_LOOKBACK_DAYS, plan["days"])
+        self.assertFalse(plan["record"])
+
+    def test_a_stale_marker_of_another_fingerprint_is_named(self):
+        """기록 없이 옛 지문의 표식만 남았을 때 '기록 형식이 다르다' 고 하면
+        파일이 깨진 줄 알고 지우러 간다(#82 — 갈래는 이름으로)."""
+        self.state.write_text(json.dumps(
+            {"retry": {"fp": "otherother", "count": 1}}), encoding="utf-8")
+        plan = srcs.sync_plan(self.state, fp="newnewnew0")
+        self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        self.assertIn("다른 지문의 재시도 표식만 남았다", plan["reason"])
+        self.assertNotIn("재시도 1회째", plan["reason"])
+
+    def test_a_broken_retry_count_neither_crashes_nor_drops_the_retry(self):
+        """상태 파일은 사람이 고칠 수도 깨질 수도 있다. 옛 판은 `int("x")` 가
+        `finish_recovery` 에서 새 **포워드를 끝낸** 동기화가 트레이스백으로
+        끝났다(2차 리뷰 P6). 그렇다고 횟수를 못 읽었다는 이유로 '재시도가
+        남았다' 는 사실까지 버리면 그 회수가 조용히 사라진다(#54)."""
+        for count in ('"x"', "null", "Infinity", "-2", "[]", '{"a": 1}'):
+            with self.subTest(count=count):
+                self.state.write_text(
+                    '{"relevance_fp": "samesame00", "retry": {"fp": '
+                    f'"samesame00", "count": {count}}}}}', encoding="utf-8")
+                plan = srcs.sync_plan(self.state, fp="samesame00")
+                self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+                self.assertIn("횟수를 못 읽었다", plan["reason"])
+                done, why = srcs.finish_recovery(self.state, "samesame00",
+                                                 failed_units=1)
+                self.assertFalse(done)
+                self.assertIn(f"1/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+                rec = json.loads(self.state.read_text(encoding="utf-8"))
+                self.assertEqual(1, rec["retry"]["count"])   # 새로 센다
+                self.assertEqual("samesame00", rec["relevance_fp"])
+
+    def test_a_failed_replace_leaves_the_old_state_intact(self):
+        """원자 쓰기를 **잰다**(2차 리뷰 S11 — 옛 이름의 테스트는 .tmp 가 안
+        남는지만 봐, 제자리 쓰기로 바꿔도 통과했다). 교체가 실패하면 옛 기록이
+        한 바이트도 안 바뀌어야 한다 — 쓰다 만 파일은 '기록 못 읽음' 이 되어
+        40일 회수를 한 번 더 부른다(#379)."""
+        from unittest import mock
+        srcs.record_sync(self.state, "oldoldold0")
+        before = self.state.read_bytes()
+        with mock.patch.object(Path, "replace",
+                               side_effect=OSError("교체 실패(테스트)")):
+            with self.assertRaises(OSError):
+                srcs.record_sync(self.state, "newnewnew0")
+            with self.assertRaises(OSError):
+                srcs.finish_recovery(self.state, "newnewnew0", failed_units=1)
+        self.assertEqual(before, self.state.read_bytes())
 
     def test_retries_count_per_fingerprint_and_a_clean_run_records_at_once(self):
         srcs.finish_recovery(self.state, "aaaaaaaaa1", failed_units=1)

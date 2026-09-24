@@ -305,9 +305,10 @@ def unit_labels(unit) -> str:
 
     ⚠️ 왜(2026-09-24, 실수 #403): 09-22 dry-run 은 드랍된 유닛과 이미 받은
     유닛만 찍고, **파서는 받는데 아직 inbox 에 없는 유닛**(= 파서가 생기기
-    전에 리스너가 버린 캡션)은 소스별 계수로만 셌다. kri 가 빈 이유가 바로
-    그 갈래였는데 출력에 한 줄도 없어 '원천 미게시' 로 오판했다. 줄 하나가
-    어느 소스인지까지 말해야 그 줄만 보고 판정된다(#356).
+    전에 리스너가 버린 캡션)은 소스별 계수로만 셌다. kri 가 빈 이유로 유력한
+    갈래였는데(단정하지 않는다 — 그 빈 출력은 창 밖·명령 오류와도 모순되지
+    않았다) 출력에 한 줄도 없어 '원천 미게시' 로 오판했다. 줄 하나가 어느
+    소스인지까지 말해야 그 줄만 보고 판정된다(#356).
     """
     keys = _unit_keys(unit)
     return ", ".join(s.label for s in SOURCES if s.key in keys) or "(없음)"
@@ -493,18 +494,22 @@ def _read_state(state_path: Path) -> tuple[dict | None, str]:
     return (rec, "") if isinstance(rec, dict) else (None, "기록 형식이 다르다")
 
 
-def _recorded_fp(state_path: Path) -> tuple[str | None, str]:
-    """(기록된 지문 | None, 없을 때의 사유)."""
-    rec, why = _read_state(state_path)
-    if rec is None:
-        return None, why
-    fp = rec.get("relevance_fp")
-    if isinstance(fp, str) and fp:
-        return fp, ""
-    retry = rec.get("retry")
-    if isinstance(retry, dict) and retry.get("count"):
-        return None, f"기록 없음(회수 재시도 {retry.get('count')}회째)"
-    return None, "기록 형식이 다르다"
+def _retry_count(rec: dict | None, fp: str) -> int | None:
+    """기록에 남은 **이 지문**의 재시도 표식 → 그 횟수(= 포워드가 일부 실패한
+    회수 실행 수). 표식이 없거나 다른 지문이면 None. 표식은 있는데 횟수를 못
+    읽으면 0 — 횟수가 깨졌다고 '재시도가 남았다' 는 사실까지 버리면 그 회수가
+    조용히 사라진다(#54·#82 — 없음과 못 읽음은 다른 갈래다).
+
+    ⚠️ 상태 파일은 사람이 고칠 수도 깨질 수도 있다 — `int("x")` 가 새면 이미
+    포워드를 끝낸 동기화가 트레이스백으로 끝나고, 다음 틱도 같은 자리에서
+    죽어 수렴하지 않는다(#331 독자는 어떤 바이트가 와도 안 던진다, 2차 리뷰 P6)."""
+    retry = (rec or {}).get("retry")
+    if not fp or not isinstance(retry, dict) or retry.get("fp") != fp:
+        return None
+    try:
+        return max(int(retry.get("count")), 0)
+    except (TypeError, ValueError, OverflowError):   # "x" · null · Infinity
+        return 0
 
 
 def _covers_recovery(since, lookback_days, to, now: datetime) -> bool:
@@ -528,7 +533,7 @@ def _covers_recovery(since, lookback_days, to, now: datetime) -> bool:
 
 def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
               fp: str | None = None, now: datetime | None = None) -> dict:
-    """이번 동기화의 창 → `{"days", "record", "fp", "reason"}`.
+    """이번 동기화의 창 → `{"days", "record", "fp", "recovery", "reason"}`.
 
     - `--since`·`--lookback-days`·`--to` 를 **명시**하면 그 창을 쓴다. 기록은
       그 창이 지금까지 회수 창을 **덮을 때만** 한다 — 좁은 창을 회수로 치면
@@ -537,6 +542,11 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
       중단이 영원히 반복된다(수렴 지점이 없다, #171). `days` 는 `--since` 면 None.
     - 아니면 필터 지문을 기록과 대조한다: 같으면 기본 창, 다르거나 기록이
       없으면 회수 창 — `record=True` 는 "성공하면 이 지문을 기록하라" 다.
+      **이 지문의 재시도 표식**(포워드가 일부 실패한 회수)이 남았으면 지문이
+      기록과 같아도 회수 창이다 — 안 그러면 명시 회수가 일부 실패한 뒤
+      "다음 동기화가 다시 시도한다" 는 로그가 거짓이 된다(2차 리뷰 P2).
+    - `recovery=True` 는 **자동**으로 넓힌 창만이다(포워드 상한·알림 문구가
+      달라진다). 사람이 명시한 창은 그 사람의 결정이라 늘 False 다.
     - 지문을 못 재면 기본 창이고 **판정 불가라고 말한다**(#54): 못 잰 것으로
       넓히면 매번 40일이 되고, 조용히 좁히면 회수가 사라진다.
     """
@@ -565,15 +575,27 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
                 "recovery": False,
                 "reason": "관련성 필터 지문을 못 쟀다 — 회수 필요 여부 판정 "
                           "불가, 기본 창"}
-    old, why = _recorded_fp(state_path)
-    if old == fp:
+    rec, why = _read_state(state_path)
+    old = (rec or {}).get("relevance_fp")
+    old = old if isinstance(old, str) and old else None
+    n = _retry_count(rec, fp)
+    if old == fp and n is None:
         return {"days": DEFAULT_LOOKBACK_DAYS, "record": False, "fp": fp,
                 "recovery": False,
                 "reason": f"관련성 필터 지문 {fp} 그대로 — 기본 창"}
     # ⚠️ '파서가 바뀌었다' 고 적지 않는다 — 지문은 렌더 모듈까지 덮으므로 바뀐
     # 게 파서인지 모르고, 기록이 없을 때는 바뀌었는지조차 모른다(#165).
-    what = (f"관련성 필터 코드 지문 {old} → {fp}(필터가 쓰는 모듈이 바뀌었다)"
-            if old else f"관련성 필터 코드 지문 {fp} — {why}")
+    if n is not None:
+        what = (f"관련성 필터 코드 지문 {fp} — 직전 회수의 포워드 실패가 남아 "
+                + (f"재시도 {n}회째" if n else
+                   "재시도(표식은 있는데 횟수를 못 읽었다)"))
+    elif old:
+        what = f"관련성 필터 코드 지문 {old} → {fp}(필터가 쓰는 모듈이 바뀌었다)"
+    else:
+        if rec is not None:
+            why = ("기록 없음(다른 지문의 재시도 표식만 남았다)"
+                   if isinstance(rec.get("retry"), dict) else "기록 형식이 다르다")
+        what = f"관련성 필터 코드 지문 {fp} — {why}"
     return {"days": RECOVERY_LOOKBACK_DAYS, "record": True, "fp": fp,
             "recovery": True,
             "reason": (f"{what}: 그 전에 버려졌을 캡션을 회수하려 최근 "
@@ -583,8 +605,10 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
 # 자동 회수의 안전장치 둘(독립 리뷰 2026-09-24).
 # ① 포워드가 일부 실패한 회수는 기록하지 않는다 — 일시 장애(연결·5xx)도 같은
 #    '실패' 경로로 오므로, 기록하면 다음 틱이 3일로 돌아가 그 캡션을 영영 잃는다.
-#    다만 **정말 지워진** 메시지는 매번 실패하므로 3회째에는 영구 실패로 보고
-#    기록한다(수렴 지점, #171 — 무한히 40일을 훑으며 6시간마다 알리지 않게).
+#    다만 **정말 지워진** 메시지는 매번 실패하므로 같은 지문의 3회째 실행에도
+#    실패가 남으면 더 재시도하지 않고 기록한다(수렴 지점, #171 — 무한히 40일을
+#    훑으며 6시간마다 알리지 않게). 횟수는 유닛별이 아니라 실행별이라 '영구
+#    실패' 로 단정하지 않는다(#165, 2차 리뷰).
 RECOVERY_MAX_ATTEMPTS = 3
 # ② 자동 회수가 한 번에 포워드할 유닛 상한 — 평소 회수는 파서 배포 전에
 #    버려진 캡션 몇 건이다(월간 소스 한 달치가 수십 장: kr_stock 21·jp_stock 13
@@ -620,9 +644,14 @@ def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
                     now: datetime | None = None) -> tuple[bool, str]:
     """성공한(rc 0) 회수 실행 뒤 → (기록했나, 사람이 읽는 사유).
 
-    포워드가 전부 됐으면 기록한다. 일부 실패면 기록하지 않고 **재시도 횟수만**
-    남긴다(옛 지문은 그대로 둬야 다음 틱이 다시 넓게 훑는다). 같은 지문으로
-    `RECOVERY_MAX_ATTEMPTS` 회째에도 실패가 남으면 영구 실패로 보고 기록한다."""
+    포워드가 전부 됐으면 기록한다. 일부 실패면 기록하지 않고 **재시도 표식**만
+    남긴다(옛 지문은 그대로 둔다 — 다음 자동 동기화는 그 표식을 보고 회수 창을
+    다시 쓴다, `sync_plan`). 같은 지문으로 `RECOVERY_MAX_ATTEMPTS` 회째 실행에도
+    실패가 남으면 더 재시도하지 않고 기록한다(수렴, #171).
+
+    ⚠️ 횟수는 **유닛별이 아니라 이 지문의 회수 실행별**로 센다 — 3회째에 처음
+    실패한 유닛도 거기서 멈춘다. 그래서 '영구 실패' 라고 단정하지 않고 몇 회째
+    실행이었는지와 어디서 msg id 를 보는지만 말한다(#165, 2차 리뷰)."""
     if not fp:
         return False, "관련성 필터 지문을 못 재 기록하지 않는다"
     if failed_units <= 0:
@@ -631,18 +660,23 @@ def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
                       f"{DEFAULT_LOOKBACK_DAYS}일")
     rec, _why = _read_state(state_path)
     rec = rec or {}
-    retry = rec.get("retry") if isinstance(rec.get("retry"), dict) else {}
-    n = (int(retry.get("count") or 0) if retry.get("fp") == fp else 0) + 1
+    n = (_retry_count(rec, fp) or 0) + 1
     if n >= RECOVERY_MAX_ATTEMPTS:
         record_sync(state_path, fp, now=now)
-        return True, (f"포워드 실패 {failed_units}건이 회수 {n}회째에도 남았다 — "
-                      f"영구 실패(삭제·포워드 불가)로 보고 지문 {fp} 기록")
+        return True, (f"회수 {n}회째 실행에도 포워드 실패 {failed_units}건 — "
+                      f"재시도 상한({RECOVERY_MAX_ATTEMPTS}회)이라 지문 {fp} 를 "
+                      "기록하고 더 재시도하지 않는다(실패한 msg id 는 위 "
+                      "'permanent forward failure' · 'giving up on msgs' 줄 — "
+                      "포워드 실패는 그 두 줄로 끝난다)")
     now = now or datetime.now(timezone.utc)
     keep = {k: v for k, v in rec.items() if k != "retry"}
     _write_state(state_path, {**keep, "retry": {"fp": fp, "count": n,
                                                 "at": now.isoformat()}})
-    return False, (f"포워드 실패 {failed_units}건 — 지문을 기록하지 않아 다음 "
-                   f"동기화가 회수를 다시 시도한다({n}/{RECOVERY_MAX_ATTEMPTS})")
+    # ⚠️ 무엇을 다시 훑는지 **정확히** 적는다 — 자동 재시도는 최근 회수 창만
+    # 본다. 더 넓은 명시 창의 그 밖 실패까지 '다시 시도한다' 고 적으면 거짓이다.
+    return False, (f"포워드 실패 {failed_units}건 — 재시도 표식을 남겨 다음 자동 "
+                   f"동기화가 최근 {RECOVERY_LOOKBACK_DAYS}일을 다시 훑는다"
+                   f"({n}/{RECOVERY_MAX_ATTEMPTS})")
 
 
 def labels() -> str:

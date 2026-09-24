@@ -1855,13 +1855,16 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 영문명까지 도쿄 회사와 같으면 통과한다(관측 없음, 재지 않음). JPX 는 월 1회
 갱신이라 그 사이 신규 상장은 평문이다(틀린 링크가 아니라 없는 링크).
 
-## #403 — 파서가 생기기 전에 버려진 캡션의 자동 회수 (`trade/tests/test_badonion_sources.py` +21 · `trade/tests/test_backfill_badonion_sync.py` 17건)
+## #403 — 파서가 생기기 전에 버려진 캡션의 자동 회수 (`trade/tests/test_badonion_sources.py` +26 · `trade/tests/test_backfill_badonion_sync.py` 38건)
 
 사용자가 2026-09-16 채널에서 본 한국 수입 회사별 캡션(텔레칩스)이 09-24 까지
 보드에 없었다. 관련성 필터 = 파서라 파서 배포 전 캡션은 리스너가 버리고, 6시간
 동기화는 최근 3일만 본다. 나는 09-22 에 그걸 '원천 미게시' 로 오판했다 — dry-run
 이 **파서는 받는데 아직 inbox 에 없는 유닛**을 계수로만 셌기 때문이다. 원인 갈래
-(포워드된 적 없음 / 파서가 실물을 거부)는 배포 뒤 `--find 텔레칩스` 가 가른다.
+(포워드된 적 없음 / 파서가 실물을 거부 / 창·게시일)는 배포 뒤
+`--dry-run --since 2026-08-20 --find 텔레칩스` 가 **어디로** 갔는지 말하고, irrelevant
+면 그 출력이 찍는 `diagnose_badonion --since … --grep …` 이 **왜** 버려졌는지 찍는다
+(2차 리뷰 — `--find` 하나로 원인이 갈린다는 첫 판 서술은 과대 주장이었다).
 
 | 축 | 무엇을 재나 | 테스트 |
 |---|---|---|
@@ -1871,10 +1874,10 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 | ④ 지문 범위 | **전이 폐포**(어댑터 → 엔진 → 두 단계 아래, #365) · 무관 모듈은 안 흔든다 · 상대 import · `import a.b` 문 · 패키지 `__init__.py` 코드 · 뿌리 누락·문법 오류면 "" (#364) · 뿌리는 레지스트리에서 파생(#24) | `::test_the_fingerprint_follows_imports_transitively` · `::test_relative_imports_are_followed` · `::test_plain_import_statements_are_followed` · `::test_package_init_code_is_covered` · `::test_a_missing_or_broken_module_means_no_fingerprint` · `::test_roots_are_derived_from_the_registry` |
 | ⑤ 설명만 고친 배포 | 주석·독스트링 변경은 지문을 안 바꾼다 — 코드 변경은 바꾼다(#266) | `::test_the_fingerprint_ignores_comments_and_docstrings` |
 | ⑥ 포워드할 유닛 줄 | 어느 소스가 받는지 레지스트리 순서로 · 앨범의 캡션 없는 멤버 · 무관 캡션은 `(없음)` | `::test_unit_labels_names_every_source_in_registry_order` |
-| ⑦ 일부 실패한 회수 | 포워드가 실패한 회수는 기록 안 함(일시 장애도 같은 경로, 리뷰 M1) · 옛 지문 보존 → 다음 틱이 다시 40일 · 같은 지문 3회째엔 영구 실패로 기록(수렴, #171) · 지문이 바뀌면 횟수 새로 · 상태 쓰기는 원자·다른 모듈 안 빌림(리뷰 L3) | `::test_a_partly_failed_recovery_is_retried_a_bounded_number_of_times` · `::test_retries_count_per_fingerprint_and_a_clean_run_records_at_once` · `::test_the_state_write_is_atomic_and_needs_no_other_module` |
+| ⑦ 일부 실패한 회수 | 포워드가 실패한 회수는 기록 안 함(일시 장애도 같은 경로, 리뷰 M1) · 옛 지문 보존 → 다음 틱이 다시 40일 · 사유가 **실제 횟수**를 말한다(2차 S17) · 같은 지문 3회째 실행에도 남으면 기록 — 실행별로 세므로 '영구 실패' 로 단정하지 않고 '재시도 상한' 이라 말하며, msg id 를 찾을 로그 줄 **둘**(즉시 실패·FloodWait 소진)을 가리키고 그 줄이 백필에 실제로 있는지 잰다(#371) · 지문이 바뀌면 횟수 새로 · **지문이 이미 기록돼 있어도** 이 지문의 재시도 표식이 있으면 40일을 다시 연다 — 다른 지문의 표식으론 안 연다(2차 P2) · 옛 지문의 표식만 남으면 그 갈래를 이름으로(#82) · 횟수가 깨져도(`"x"`·null·Infinity·음수·배열) 안 던지고 **재시도 사실은 버리지 않는다**(2차 P6) · 교체가 실패하면 옛 기록이 한 바이트도 안 바뀐다 — 원자성을 **잰다**(2차 S11; 옛 테스트는 .tmp 잔존만 봤다) · 다른 모듈 안 빌림(리뷰 L3) | `::test_a_partly_failed_recovery_is_retried_a_bounded_number_of_times` · `::test_retries_count_per_fingerprint_and_a_clean_run_records_at_once` · `::test_a_retry_marker_reopens_the_window_even_when_the_fp_is_recorded` · `::test_a_stale_marker_of_another_fingerprint_is_named` · `::test_a_broken_retry_count_neither_crashes_nor_drops_the_retry` · `::test_a_failed_replace_leaves_the_old_state_intact` · `::test_the_state_write_is_atomic_and_needs_no_other_module` · `::test_the_give_up_message_points_at_log_lines_that_exist` |
 | ⑧ 자동 회수 상한 | 자동 회수만 100유닛에서 멈추고 알린다 — 명시 창은 상한 밖(리뷰 L5) | `::test_only_the_automatic_recovery_is_marked_as_one` |
-| ⑨ `main()` E2E | 가짜 telethon(monkeypatch)·사설 모듈로 **실제 `main()`** 을 태운다: 첫 실행 40일 회수 + 기록(+ 기록했다는 로그) → 둘째 실행 3일(20일 전 캡션에 안 닿음) · dry-run·`--show-irrelevant` 단독은 **기록·포워드 없음**(#264) · 시작 실패·후보 상한(rc 2)은 기록 안 함 + 알림이 멈추는 법을 적음 · 일부 포워드 실패 → 재시도 2회 뒤 3회째 기록 · 좁은 명시 창(`--since`·`--to`·둘 다)·`--lookback-days 0` 은 기록 안 함 · `--since ""` 는 기본 창(리뷰 L1) · 40일을 덮는 명시 창은 기록 · 자동 회수 상한과 명시 창 · 기록 쓰기 실패는 경고 + rc 0 · 지문이 바뀌면 다시 회수 | `trade/tests/test_backfill_badonion_sync.py::*` |
-| ⑩ `--find` | 캡션 **전문**에서 찾아 to-forward·irrelevant·already-in-inbox·ignored 네 갈래를 한 번에 · 없으면 창과 훑은 수를 말한다(#54) · 읽기 전용 | `test_backfill_badonion_sync.py::test_find_names_where_each_caption_went` |
+| ⑨ `main()` E2E | 가짜 telethon(monkeypatch)·사설 모듈로 **실제 `main()`** 을 태운다: 첫 실행 40일 회수 + 기록(+ 기록했다는 로그) → 둘째 실행 3일(20일 전 캡션에 안 닿음) · dry-run·`--show-irrelevant` 단독은 **기록·포워드 없음**(#264) · 시작 실패·후보 상한(rc 2)은 기록 안 함 + 알림이 멈추는 법을 적음 · 일부 포워드 실패 → 재시도 2회 뒤 3회째 기록 · 좁은 명시 창(`--since`·`--to`·둘 다)·`--lookback-days 0` 은 기록 안 함 · `--since ""` 는 기본 창(리뷰 L1) · 40일을 덮는 명시 창은 기록 · 자동 회수 상한과 명시 창(알림의 명시 실행 안내가 회수 창 일수인지, 2차 B32) · 기록 쓰기 실패는 경고 + rc 0 — OSError 밖의 예외도(2차 P6) · 지문이 바뀌면 다시 회수 · **2차 리뷰**: 빈 `--find`(`""`·공백)는 접속 전에 거부(P1 — 옛 판은 실제 동기화) · 지문이 기록된 뒤 명시 회수가 일부 실패하면 다음 자동 실행이 40일을 다시 훑는다(P2) · dry-run 은 후보 상한·회수 상한에서 멈추지도 알리지도 않고, 시작 실패도 폰에 알리지 않는다(P11·B5b — 타이머 장애로 읽힌다, #82) · dry-run 로그는 '기록한다' 를 약속하지 않는다(P12) · 상한은 '넘으면'(B4) · 사람이 명시한 창의 중단 알림엔 '자동 회수' 안내가 없다(B6) · `--to ""` 는 기본 창(B18) · 회수 상한 알림의 라벨은 HTML 이스케이프(B23, 실수 #7) · dry-run 류는 라이브 세션의 **복사본**으로 접속하고 끝나면 지운다 — 원본이 없거나 복사가 실패하면 라이브 경로 + 경고(가짜 클라이언트가 세션 파일을 실제로 건드려 반대 증거까지 잰다, #25) | `trade/tests/test_backfill_badonion_sync.py::*` |
+| ⑩ `--find` | 캡션 **전문**에서 찾아 to-forward·irrelevant·already-in-inbox·ignored 네 갈래를 한 번에 — 갈래마다 **어느 글**이 실렸는지까지(2차 B8·B9) · 한 유닛은 한 갈래에 한 번(B16) · 찾았으면 '없다' 줄이 없다(B30) · 없으면 창과 **훑은 수**(후보 수가 아니다)를 정확히(B15 — 무시 목록 글·`--to` 뒤 글로 픽스처를 세게, #91c) · 머리 160자 너머도(B10) · 원문 `raw_text` 와 `text` 둘 다 대소문자 무시(형제 `diagnose_badonion._matches` 와 같은 규약) · 앨범 모든 멤버(B27) · 어느 갈래에서 찾았든 '없다' 고 안 한다(B29) · irrelevant 면 형제 진단 명령을 찍되 **첫 irrelevant 유닛의 날짜**부터(그 도구는 `--since` 부터 1000개만 훑는다), 셸 인용, 플래그는 형제 argparse 에 실제로 있는 것만(AST, #371) · 읽기 전용 | `test_backfill_badonion_sync.py::test_find_names_where_each_caption_went` · `::test_find_reads_past_the_head_and_both_texts_case_insensitively` · `::test_find_searches_every_album_member` · `::test_a_hit_in_any_branch_is_not_reported_as_missing` · `::test_a_miss_names_the_exact_window_and_how_many_it_read` · `::test_find_points_at_the_sibling_that_says_why_a_caption_was_dropped` |
 
 ⚠️ **못 보는 축**(#274): 지문은 **디스크의 코드**를 잰다 — 실제로 캡션을 받는지(파서
 의미)는 안 잰다. 그래서 필터가 쓰는 모듈 **어디든**(렌더·시세 조회 포함) 바뀐 배포도
@@ -1883,4 +1886,7 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 반대로 파서가 **같은 코드로 다른 캡션을 받게 되는 경우**(외부 데이터 변화)는 지문이
 안 바뀌어 회수가 안 걸린다 — 그때는 `--since` 로 사람이 연다. E2E 의 kri 캡션은
 스크린샷 재구성이다(#155). 포워드 실패의 일시/영구는 갈라 재지 않는다 — 횟수로
-묶는다(예외 이름 열거는 새 오류를 못 잡는다, #24).
+묶는다(예외 이름 열거는 새 오류를 못 잡는다, #24). 세션 복사본 테스트의 가짜
+클라이언트는 세션 파일을 **덧쓰는 흉내**만 낸다 — 진짜 SQLite 잠금 경합은 재지
+않는다. 형제 `diagnose_badonion` 은 telethon 없이 import 할 수 없어 안내 명령의
+플래그 **존재**만 AST 로 잰다(그 명령이 원하는 줄을 찍는지는 못 본다).
