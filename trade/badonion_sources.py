@@ -482,25 +482,42 @@ def relevance_fingerprint(*, roots=None, base_dir: Path | None = None) -> str:
         return ""
 
 
-def _recorded_fp(state_path: Path) -> tuple[str | None, str]:
-    """(기록된 지문 | None, 없을 때의 사유). 갈래를 이름으로 말한다(#82)."""
+def _read_state(state_path: Path) -> tuple[dict | None, str]:
+    """(상태 dict | None, 못 읽은 사유). 갈래를 이름으로 말한다(#82)."""
     try:
         rec = json.loads(Path(state_path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None, "기록 없음(첫 실행)"
     except Exception as exc:                           # noqa: BLE001
         return None, f"기록 못 읽음({type(exc).__name__})"
-    fp = rec.get("relevance_fp") if isinstance(rec, dict) else None
-    return (fp, "") if isinstance(fp, str) and fp else (None, "기록 형식이 다르다")
+    return (rec, "") if isinstance(rec, dict) else (None, "기록 형식이 다르다")
+
+
+def _recorded_fp(state_path: Path) -> tuple[str | None, str]:
+    """(기록된 지문 | None, 없을 때의 사유)."""
+    rec, why = _read_state(state_path)
+    if rec is None:
+        return None, why
+    fp = rec.get("relevance_fp")
+    if isinstance(fp, str) and fp:
+        return fp, ""
+    retry = rec.get("retry")
+    if isinstance(retry, dict) and retry.get("count"):
+        return None, f"기록 없음(회수 재시도 {retry.get('count')}회째)"
+    return None, "기록 형식이 다르다"
 
 
 def _covers_recovery(since, lookback_days, to, now: datetime) -> bool:
     """명시 창이 **지금까지** 회수 창(40일)을 덮나. `--to` 가 있으면 지금까지가
-    아니므로 덮지 않는다. `--since` 를 못 읽으면 덮지 않는다(백필이 어차피 거부)."""
+    아니므로 덮지 않는다. `--since` 를 못 읽으면 덮지 않는다(백필이 어차피 거부).
+
+    ⚠️ `--since` 가 있으면 **그것만** 본다 — 백필은 둘을 같이 받으면 `--since`
+    로 훑는다. `--lookback-days` 를 먼저 보면 `--since <4일 전> --lookback-days
+    45` 가 4일만 훑고도 '덮었다' 로 기록해 회수가 영영 사라진다(독립 리뷰 M2)."""
     if to is not None:
         return False
-    if lookback_days is not None:
-        return lookback_days >= RECOVERY_LOOKBACK_DAYS
+    if since is None:
+        return lookback_days is not None and lookback_days >= RECOVERY_LOOKBACK_DAYS
     try:
         start = datetime.strptime(str(since), "%Y-%m-%d").replace(
             tzinfo=timezone.utc)
@@ -527,47 +544,105 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
                                      ("--lookback-days", lookback_days),
                                      ("--to", to)) if v is not None]
     if explicit:
-        days = (lookback_days if lookback_days is not None
-                else None if since is not None else DEFAULT_LOOKBACK_DAYS)
+        # 백필과 같은 우선순위 — `--since` 가 있으면 창은 그것이다(M2).
+        days = (None if since is not None
+                else lookback_days if lookback_days is not None
+                else DEFAULT_LOOKBACK_DAYS)
         what = "·".join(explicit)
         if not _covers_recovery(since, lookback_days, to,
                                 now or datetime.now(timezone.utc)):
-            return {"days": days, "record": False, "fp": "",
+            return {"days": days, "record": False, "fp": "", "recovery": False,
                     "reason": f"{what} 명시 — 회수 창({RECOVERY_LOOKBACK_DAYS}일)"
                               "을 덮지 않아 필터 지문 기록은 건드리지 않는다"}
         fp = relevance_fingerprint() if fp is None else fp
-        return {"days": days, "record": bool(fp), "fp": fp,
+        return {"days": days, "record": bool(fp), "fp": fp, "recovery": False,
                 "reason": f"{what} 명시 — 회수 창({RECOVERY_LOOKBACK_DAYS}일)을 "
                           "덮으므로 성공하면 필터 지문을 기록한다"
                           + ("" if fp else "(지문을 못 재 기록 불가)")}
     fp = relevance_fingerprint() if fp is None else fp
     if not fp:
         return {"days": DEFAULT_LOOKBACK_DAYS, "record": False, "fp": "",
+                "recovery": False,
                 "reason": "관련성 필터 지문을 못 쟀다 — 회수 필요 여부 판정 "
                           "불가, 기본 창"}
     old, why = _recorded_fp(state_path)
     if old == fp:
         return {"days": DEFAULT_LOOKBACK_DAYS, "record": False, "fp": fp,
+                "recovery": False,
                 "reason": f"관련성 필터 지문 {fp} 그대로 — 기본 창"}
     # ⚠️ '파서가 바뀌었다' 고 적지 않는다 — 지문은 렌더 모듈까지 덮으므로 바뀐
     # 게 파서인지 모르고, 기록이 없을 때는 바뀌었는지조차 모른다(#165).
     what = (f"관련성 필터 코드 지문 {old} → {fp}(필터가 쓰는 모듈이 바뀌었다)"
             if old else f"관련성 필터 코드 지문 {fp} — {why}")
     return {"days": RECOVERY_LOOKBACK_DAYS, "record": True, "fp": fp,
+            "recovery": True,
             "reason": (f"{what}: 그 전에 버려졌을 캡션을 회수하려 최근 "
                        f"{RECOVERY_LOOKBACK_DAYS}일을 한 번 훑는다")}
 
 
+# 자동 회수의 안전장치 둘(독립 리뷰 2026-09-24).
+# ① 포워드가 일부 실패한 회수는 기록하지 않는다 — 일시 장애(연결·5xx)도 같은
+#    '실패' 경로로 오므로, 기록하면 다음 틱이 3일로 돌아가 그 캡션을 영영 잃는다.
+#    다만 **정말 지워진** 메시지는 매번 실패하므로 3회째에는 영구 실패로 보고
+#    기록한다(수렴 지점, #171 — 무한히 40일을 훑으며 6시간마다 알리지 않게).
+RECOVERY_MAX_ATTEMPTS = 3
+# ② 자동 회수가 한 번에 포워드할 유닛 상한 — 평소 회수는 파서 배포 전에
+#    버려진 캡션 몇 건이다(월간 소스 한 달치가 수십 장: kr_stock 21·jp_stock 13
+#    실측). 이보다 많으면 새 파서가 너무 넓게 잡았을 가능성이 커서, 40일치를
+#    비공개 채널에 한 번에 쏟지 않고 멈춰 사람에게 묻는다(명시 창은 이 상한 밖).
+RECOVERY_MAX_UNITS = 100
+
+
+def _write_state(state_path: Path, obj: dict) -> None:
+    """tmp + replace 원자 쓰기. 형제 `price_provider._atomic_write_json` 과 같은
+    방식이지만 import 하지 않는다 — 지문 폐포는 함수 본문의 import 도 따라가고,
+    그 모듈의 ImportError 가 `except OSError` 밖으로 새면 성공한 동기화가
+    트레이스백으로 끝난다(독립 리뷰 L3)."""
+    path = Path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
 def record_sync(state_path: Path, fp: str, *,
                 now: datetime | None = None) -> bool:
-    """성공한 회수 뒤 지문을 기록한다. 못 잰 지문(`""`)은 기록하지 않는다."""
+    """성공한 회수 뒤 지문을 기록한다(재시도 표식은 지운다). 못 잰 지문(`""`)은
+    기록하지 않는다."""
     if not fp:
         return False
-    from trade.price_provider import _atomic_write_json  # 형제와 같은 원자 쓰기(#38)
     now = now or datetime.now(timezone.utc)
-    _atomic_write_json(Path(state_path), {"relevance_fp": fp,
-                                          "recorded_at": now.isoformat()})
+    _write_state(state_path, {"relevance_fp": fp, "recorded_at": now.isoformat()})
     return True
+
+
+def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
+                    now: datetime | None = None) -> tuple[bool, str]:
+    """성공한(rc 0) 회수 실행 뒤 → (기록했나, 사람이 읽는 사유).
+
+    포워드가 전부 됐으면 기록한다. 일부 실패면 기록하지 않고 **재시도 횟수만**
+    남긴다(옛 지문은 그대로 둬야 다음 틱이 다시 넓게 훑는다). 같은 지문으로
+    `RECOVERY_MAX_ATTEMPTS` 회째에도 실패가 남으면 영구 실패로 보고 기록한다."""
+    if not fp:
+        return False, "관련성 필터 지문을 못 재 기록하지 않는다"
+    if failed_units <= 0:
+        record_sync(state_path, fp, now=now)
+        return True, (f"관련성 필터 지문 {fp} 기록 — 다음 동기화부터 기본 "
+                      f"{DEFAULT_LOOKBACK_DAYS}일")
+    rec, _why = _read_state(state_path)
+    rec = rec or {}
+    retry = rec.get("retry") if isinstance(rec.get("retry"), dict) else {}
+    n = (int(retry.get("count") or 0) if retry.get("fp") == fp else 0) + 1
+    if n >= RECOVERY_MAX_ATTEMPTS:
+        record_sync(state_path, fp, now=now)
+        return True, (f"포워드 실패 {failed_units}건이 회수 {n}회째에도 남았다 — "
+                      f"영구 실패(삭제·포워드 불가)로 보고 지문 {fp} 기록")
+    now = now or datetime.now(timezone.utc)
+    keep = {k: v for k, v in rec.items() if k != "retry"}
+    _write_state(state_path, {**keep, "retry": {"fp": fp, "count": n,
+                                                "at": now.isoformat()}})
+    return False, (f"포워드 실패 {failed_units}건 — 지문을 기록하지 않아 다음 "
+                   f"동기화가 회수를 다시 시도한다({n}/{RECOVERY_MAX_ATTEMPTS})")
 
 
 def labels() -> str:

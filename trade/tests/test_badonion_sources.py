@@ -672,12 +672,93 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         self.assertEqual(srcs.DEFAULT_LOOKBACK_DAYS, again["days"])
         self.assertFalse(again["record"])
 
-    def test_default_and_recovery_windows_are_the_measured_contract(self):
+    def test_default_and_recovery_windows_are_the_chosen_contract(self):
         # 리터럴로 못박는다 — 상수로 상수를 검증하면 동어반복이다(#66).
-        # 3일 = 리스너 다운타임 안전망(타이머 6시간보다 넓다) · 40일 = 월간
-        # 발행의 가장 최근 한 회가 반드시 든다(31일 + 여유).
+        # ⚠️ 측정값이 아니라 **고른 값**이다(리뷰 L6): 3일 = 옛 기본 창(리스너
+        # 다운타임 안전망, 타이머 6시간보다 넓다) · 40일 = 월간 발행의 가장
+        # 최근 한 회가 들도록 31일 + 여유 · 재시도 3회 · 자동 회수 상한 100유닛.
         self.assertEqual(3, srcs.DEFAULT_LOOKBACK_DAYS)
         self.assertEqual(40, srcs.RECOVERY_LOOKBACK_DAYS)
+        self.assertEqual(3, srcs.RECOVERY_MAX_ATTEMPTS)
+        self.assertEqual(100, srcs.RECOVERY_MAX_UNITS)
+
+    def test_since_wins_over_lookback_like_the_backfill_does(self):
+        """백필은 둘 다 받으면 `--since` 로 훑는다 — 판정이 `--lookback-days`
+        를 먼저 보면 4일만 훑고도 '덮었다' 로 기록해 회수가 영영 사라진다
+        (독립 리뷰 M2)."""
+        narrow = srcs.sync_plan(self.state, fp="g" * 10, now=self._NOW,
+                                since="2026-09-20", lookback_days=45)
+        self.assertIsNone(narrow["days"])           # 창은 --since 다
+        self.assertFalse(narrow["record"])
+        wide = srcs.sync_plan(self.state, fp="g" * 10, now=self._NOW,
+                              since="2026-08-01", lookback_days=5)
+        self.assertIsNone(wide["days"])
+        self.assertTrue(wide["record"])
+
+    def test_only_the_automatic_recovery_is_marked_as_one(self):
+        """포워드 상한·알림 문구는 **자동** 회수에만 — 사람이 명시한 창은 그 사람의
+        결정이다(리뷰 L5)."""
+        self.assertTrue(srcs.sync_plan(self.state, fp="h" * 10)["recovery"])
+        for kw in ({"lookback_days": 45}, {"lookback_days": 3},
+                   {"since": "2026-08-01"}):
+            self.assertFalse(srcs.sync_plan(self.state, fp="h" * 10,
+                                            now=self._NOW, **kw)["recovery"], kw)
+        srcs.record_sync(self.state, "h" * 10)
+        self.assertFalse(srcs.sync_plan(self.state, fp="h" * 10)["recovery"])
+        self.assertFalse(srcs.sync_plan(self.state, fp="")["recovery"])
+
+    def test_a_partly_failed_recovery_is_retried_a_bounded_number_of_times(self):
+        """일부 실패한 회수는 기록하지 않는다(일시 장애도 같은 경로로 온다) —
+        그러나 정말 지워진 메시지는 매번 실패하므로 3회째엔 기록한다(#171).
+        옛 지문은 그대로 둬야 다음 틱이 다시 넓게 훑는다(리뷰 M1)."""
+        self.state.write_text('{"relevance_fp": "oldoldold0"}', encoding="utf-8")
+        for n in range(1, srcs.RECOVERY_MAX_ATTEMPTS):
+            done, why = srcs.finish_recovery(self.state, "newnewnew0",
+                                             failed_units=2)
+            self.assertFalse(done, n)
+            self.assertIn(f"{n}/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+            rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
+            self.assertEqual("oldoldold0", rec["relevance_fp"])   # 옛 지문 보존
+            self.assertEqual({"fp": "newnewnew0", "count": n},
+                             {k: rec["retry"][k] for k in ("fp", "count")})
+            plan = srcs.sync_plan(self.state, fp="newnewnew0")
+            self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        done, why = srcs.finish_recovery(self.state, "newnewnew0", failed_units=2)
+        self.assertTrue(done)
+        self.assertIn("영구 실패", why)
+        rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual({"relevance_fp", "recorded_at"}, set(rec))  # 표식 정리
+
+    def test_retries_count_per_fingerprint_and_a_clean_run_records_at_once(self):
+        srcs.finish_recovery(self.state, "aaaaaaaaa1", failed_units=1)
+        srcs.finish_recovery(self.state, "aaaaaaaaa1", failed_units=1)
+        # 지문이 또 바뀌면(다른 배포) 횟수는 새로 센다 — 옛 실패를 끌어오지 않는다.
+        done, why = srcs.finish_recovery(self.state, "bbbbbbbbb2",
+                                         failed_units=1)
+        self.assertFalse(done)
+        self.assertIn(f"1/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+        # 기록이 아직 없으면 사유가 재시도 중이라고 말한다(#82).
+        self.assertIn("재시도 1회째",
+                      srcs.sync_plan(self.state, fp="bbbbbbbbb2")["reason"])
+        done, _ = srcs.finish_recovery(self.state, "bbbbbbbbb2", failed_units=0)
+        self.assertTrue(done)
+        self.assertFalse(srcs.finish_recovery(self.state, "", failed_units=0)[0])
+
+    def test_the_state_write_is_atomic_and_needs_no_other_module(self):
+        """price_provider 를 빌려 쓰면 그 모듈의 ImportError 가 `except OSError`
+        밖으로 새 성공한 동기화가 트레이스백으로 끝난다(리뷰 L3)."""
+        from unittest import mock
+        from trade import price_provider as pp
+
+        def _boom(*a, **k):
+            raise RuntimeError("빌려 쓰면 안 된다")
+
+        with mock.patch.object(pp, "_atomic_write_json", _boom):
+            self.assertTrue(srcs.record_sync(self.state, "cccccccccc"))
+        self.assertEqual("cccccccccc",
+                         srcs.sync_plan(self.state, fp="cccccccccc")["fp"])
+        self.assertEqual([self.state.name],
+                         sorted(p.name for p in self.dir.iterdir()))  # .tmp 없음
 
     def test_an_unreadable_record_is_named_and_not_trusted(self):
         for body, why in (("{broken", "JSONDecodeError"),
@@ -808,6 +889,27 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         fp1 = self._fp(base)
         (base / "engine.py").write_text("def parse(t):\n    return 2\n",
                                         encoding="utf-8")
+        self.assertNotEqual(fp1, self._fp(base))
+
+    def test_plain_import_statements_are_followed(self):
+        """`import fakepkg.util` 형태 — 지금 trade 엔 없지만 생기면 샌다(리뷰 S11)."""
+        base = self._pkg(
+            adapter="import fakepkg.util\n\ndef parse(t):\n"
+                    "    return fakepkg.util.MARK in t\n",
+            util="MARK = '수입'\n")
+        fp1 = self._fp(base)
+        (base / "util.py").write_text("MARK = '수출'\n", encoding="utf-8")
+        self.assertNotEqual(fp1, self._fp(base))
+
+    def test_package_init_code_is_covered(self):
+        """`from fakepkg import MARK` 의 MARK 가 패키지 `__init__.py` 에 산다 —
+        오늘 `trade/__init__.py` 는 비어 있어 이 경로가 안 걸렸다(리뷰 S15)."""
+        base = self._pkg(
+            adapter="from fakepkg import MARK\n\ndef parse(t):\n"
+                    "    return MARK in t\n")
+        (base / "__init__.py").write_text("MARK = '수입'\n", encoding="utf-8")
+        fp1 = self._fp(base)
+        (base / "__init__.py").write_text("MARK = '수출'\n", encoding="utf-8")
         self.assertNotEqual(fp1, self._fp(base))
 
     def test_a_missing_or_broken_module_means_no_fingerprint(self):

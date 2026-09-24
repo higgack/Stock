@@ -58,12 +58,17 @@ Run manually (cd ~/stock-trade — the session file is cwd-relative):
 Default window (실수 #403): 3일. 단 관련성 필터(= 레지스트리 파서들) 코드의
 지문이 마지막으로 **성공한 회수**가 남긴 기록과 다르면(또는 기록이 없으면)
 40일을 **한 번** 훑어, 파서가 생기기 전에 리스너가 버린 캡션을 회수한다.
-성공해야 기록하므로 실패하면 다음 틱이 다시 넓게 훑는다. `--since`·
-`--lookback-days`·`--to` 를 명시하면 그 창을 쓰고, 그 창이 지금까지 40일을
-덮을 때만 성공 뒤 기록한다(좁은 창을 회수로 치지 않는다).
-판정 로직은 `badonion_sources.sync_plan`(telethon 없이 테스트된다, #176).
-포워드할 유닛(파서는 받는데 아직 inbox 에 없음)은 dry-run 이든 아니든 머리를
-찍는다 — 이상 없을 때의 평소 동기화는 그 줄이 0줄이다.
+성공해야 기록하므로 실패하면 다음 틱이 다시 넓게 훑는다 — 포워드가 **일부**
+실패한 회수도 기록하지 않고 재시도하며, 같은 지문으로 3회째에도 남는 실패는
+영구 실패(삭제 등)로 보고 기록한다. 자동 회수는 한 번에 100유닛까지만
+포워드한다(넘으면 파서가 너무 넓게 잡았을 수 있어 멈추고 알린다).
+`--since`·`--lookback-days`·`--to` 를 명시하면 그 창을 쓰고(둘 다 주면
+`--since` 가 이긴다), 그 창이 지금까지 40일을 덮을 때만 성공 뒤 기록한다.
+판정 로직은 `badonion_sources.sync_plan`·`finish_recovery`(telethon 없이
+테스트된다, #176). 포워드할 유닛(파서는 받는데 아직 inbox 에 없음)은 dry-run
+이든 아니든 머리를 찍는다 — 이상 없을 때의 평소 동기화는 그 줄이 0줄이다.
+캡션 하나가 어디로 갔는지는 `--dry-run --since YYYY-MM-DD --find TEXT` 가
+갈래로 말한다.
 
 Run by systemd (trade-bot-badonion-sync.timer):
   Invoked without --since; uses the default window above — 3 days (realtime
@@ -361,7 +366,13 @@ async def run(
     max_candidates: int,
     *,
     show_irrelevant: bool = False,
+    find: str | None = None,
+    recovery: bool = False,
+    stats: dict | None = None,
 ) -> int:
+    """`recovery` = 필터 지문이 바뀌어 **자동으로** 넓힌 창(#403) — 포워드 상한과
+    알림 문구가 달라진다. `stats` 를 주면 포워드 결과를 채운다(호출부가 기록
+    여부를 정한다 — 일부 실패한 회수는 기록하지 않는다)."""
     existing = _load_existing_keys()
     log.info("already ingested: %d forward keys", len(existing))
 
@@ -403,6 +414,7 @@ async def run(
         fwd_fallback_count = 0
         iterated = 0
         existing_msgs: list[Message] = []
+        ignored_msgs: list[Message] = []
         async for msg in client.iter_messages(
             source, offset_date=since, reverse=True
         ):
@@ -421,7 +433,7 @@ async def run(
                 )
             if key in existing:
                 skipped_existing += 1
-                if show_irrelevant:
+                if show_irrelevant or find:
                     existing_msgs.append(msg)
                 continue
             caption = msg.text or ""
@@ -434,6 +446,8 @@ async def run(
                     "skip ignored msg=%d caption=%r",
                     msg.id, caption[:60],
                 )
+                if find:
+                    ignored_msgs.append(msg)
                 continue
             candidates.append(msg)
 
@@ -454,12 +468,22 @@ async def run(
                 "candidates %d > max_candidates %d — aborting to prevent flood",
                 len(candidates), max_candidates,
             )
-            _notify(
+            _note = (
                 f"⚠️ <b>나쁜양파 동기화 중단 (안전장치)</b>\n"
                 f"후보 {len(candidates)}개가 cap {max_candidates}개 초과.\n"
                 f"의도된 wide 백필이면 명시 실행:\n"
                 f"<code>--since YYYY-MM-DD --max-candidates {len(candidates)+100}</code>"
             )
+            if recovery:
+                # 이 중단은 6시간마다 반복된다 — 무엇을 돌려야 멈추는지 적는다
+                # (명시 창이 회수 창을 덮어야 기록된다, 독립 리뷰 L2·#171).
+                _note += (
+                    f"\n자동 회수({_srcs.RECOVERY_LOOKBACK_DAYS}일) 중이다 — "
+                    f"<code>--lookback-days {_srcs.RECOVERY_LOOKBACK_DAYS} "
+                    f"--max-candidates {len(candidates)+100}</code> 로 한 번 "
+                    f"돌리면 성공 뒤 기록돼 이 알림이 멈춘다."
+                )
+            _notify(_note)
             return 2
 
         units_all = _group_by_album(candidates)
@@ -517,9 +541,49 @@ async def run(
             for u in _group_by_album(existing_msgs):
                 when, head = _unit_head(u)
                 log.info("already-in-inbox unit %s: %s", when, head)
+        if find:
+            # 캡션 하나가 **어디로 갔는지** 갈래로 말한다(#403). 09-22 에 grep
+            # 을 손으로 조립했다가 어순이 반대라 결정적인 줄을 걸렀다 — 반복되는
+            # 확인은 제품에 심는다(#252). 머리 160자가 아니라 **전문**에서 찾는다.
+            kept = {id(u) for u in units}
+            groups = (("to-forward", units),
+                      ("irrelevant", [u for u in units_all if id(u) not in kept]),
+                      ("already-in-inbox", _group_by_album(existing_msgs)),
+                      ("ignored", _group_by_album(ignored_msgs)))
+            hits = 0
+            for kind, group in groups:
+                for u in group:
+                    if any(find in (m.text or "") for m in u):
+                        hits += 1
+                        when, head = _unit_head(u)
+                        log.info("find %s unit %s [%s]: %s", kind, when,
+                                 _srcs.unit_labels(u), head)
+            if not hits:
+                # 대조 0건도 말한다(#54) — 창과 훑은 수를 같이 적어야 '창 밖'
+                # 인지 '원천에 없음' 인지 사람이 가른다.
+                log.info("find: %r 를 담은 글이 이 창(%s → %s, 메시지 %d개)에 없다",
+                         find, since.date().isoformat(), until_label, iterated)
+        # 자동 회수의 포워드 상한(#403 L5) — 새 파서가 너무 넓게 잡으면 40일치
+        # 무관 글이 비공개 채널에 한 번에 쏟아진다. 사람에게 묻고 멈춘다.
+        over_cap = recovery and len(units) > _srcs.RECOVERY_MAX_UNITS
+        if over_cap:
+            log.error("recovery cap: 포워드할 유닛 %d개 > 상한 %d — 포워드하지 "
+                      "않는다", len(units), _srcs.RECOVERY_MAX_UNITS)
         if dry_run:
             log.info("dry-run: not forwarding")
             return 0
+        if over_cap:
+            _notify(
+                f"⚠️ <b>나쁜양파 자동 회수 중단 (안전장치)</b>\n"
+                f"포워드할 유닛 {len(units)}개가 상한 "
+                f"{_srcs.RECOVERY_MAX_UNITS}개 초과 — 새 파서가 너무 넓게 잡았을 "
+                f"수 있다.\n"
+                + html.escape(" / ".join(_srcs.relevance_breakdown(units)))
+                + f"\n정상이면 <code>--lookback-days "
+                  f"{_srcs.RECOVERY_LOOKBACK_DAYS}</code> 명시 실행(성공 뒤 "
+                  f"기록돼 이 알림이 멈춘다)."
+            )
+            return 2
 
         forwarded_msgs = 0
         skipped_units = 0
@@ -572,6 +636,8 @@ async def run(
             total_msgs,
             skipped_units,
         )
+        if stats is not None:
+            stats.update(forwarded=forwarded_msgs, skipped_units=skipped_units)
         if forwarded_msgs > 0 or skipped_units > 0:
             # skipped_units>0 도 notify 게이트 포함(2026-07-11 리뷰) — 전부 실패해도
             # forwarded_msgs=0 이라 조용히 "변경없음" 취급되던 걸 fix. 실패가
@@ -655,6 +721,17 @@ def main() -> None:
               "창 안의 글이 어디로 갔는지 보는 용도. 셋째 갈래(포워드할 유닛)는 "
               "이 플래그 없이도 늘 찍힌다(#403). --dry-run 을 강제한다(포워드 0)"),
     )
+    ap.add_argument(
+        "--find",
+        metavar="TEXT",
+        default=None,
+        help=("캡션 **전문**에 TEXT 가 든 글이 창 안에서 어디로 갔는지 갈래로 "
+              "찍는다: to-forward(파서가 받는데 아직 안 받아 옴 — 실제 실행이 "
+              "회수) · irrelevant(어느 파서도 안 받음) · already-in-inbox(이미 "
+              "받음 — 안 보이면 ingest 쪽) · ignored(무시 목록) · 없으면 그렇다고. "
+              "--dry-run 을 강제한다(#403 — 손으로 조립한 grep 이 결정적인 줄을 "
+              "걸렀다)"),
+    )
     args = ap.parse_args()
     max_candidates = (
         args.max_candidates
@@ -665,10 +742,17 @@ def main() -> None:
     # 창은 레지스트리가 정한다 — 필터 지문이 바뀌었으면 한 번 넓게(#403).
     # 판정을 여기 두면 telethon 없는 환경에서 회귀가 통째로 스킵된다(#176).
     state_path = INBOX_DIR / _srcs.SYNC_STATE_NAME
-    plan = _srcs.sync_plan(state_path, since=args.since,
-                           lookback_days=args.lookback_days, to=args.to)
-    if args.since:
-        since_date = _parse_date(args.since)
+    # 빈 문자열은 '안 줌' 이다 — 옛 판은 `if args.since:` 로 기본 창에 떨어졌고,
+    # 명시로 읽으면 창이 None 이 돼 TypeError 로 죽는다(독립 리뷰 L1).
+    since_arg = args.since or None
+    to_arg = args.to or None
+    plan = _srcs.sync_plan(state_path, since=since_arg,
+                           lookback_days=args.lookback_days, to=to_arg)
+    if since_arg:
+        since_date = _parse_date(since_arg)
+        # 사유는 두 갈래 모두 찍는다 — 명시 실행이 기록하는지(= 6시간마다 반복되던
+        # 회수가 멈추는지) 운영자가 알아야 한다(독립 리뷰 L2).
+        log.info("--since %s — %s", since_arg, plan["reason"])
     else:
         since_date = datetime.now(timezone.utc) - timedelta(
             days=plan["days"]
@@ -682,25 +766,32 @@ def main() -> None:
 
     # 진단 플래그는 운영 상태를 바꾸면 안 된다(#264·#283) — 드랍 목록을 보려던
     # 실행이 포워드까지 하면 '읽기 전용' 이 거짓이 된다(독립 리뷰 2026-09-10 #1).
-    dry_run = bool(args.dry_run or args.show_irrelevant)
-    if args.show_irrelevant and not args.dry_run:
-        log.info("--show-irrelevant: dry-run 강제(포워드하지 않음)")
+    dry_run = bool(args.dry_run or args.show_irrelevant or args.find)
+    if (args.show_irrelevant or args.find) and not args.dry_run:
+        log.info("--show-irrelevant/--find: dry-run 강제(포워드하지 않음)")
+    stats: dict = {}
     rc = asyncio.run(
         run(
             since_date,
-            _parse_date(args.to) if args.to else None,
+            _parse_date(to_arg) if to_arg else None,
             dry_run,
             max_candidates,
             show_irrelevant=args.show_irrelevant,
+            find=args.find,
+            recovery=bool(plan.get("recovery")),
+            stats=stats,
         )
     )
     # 기록은 **성공한 실제 실행**만 한다 — dry-run 은 운영 상태를 바꾸면 안
     # 되고(#264·#283), 실패한 회수를 기록하면 다 된 줄 알고 다시 안 훑는다.
+    # 포워드가 일부 실패했으면 기록하지 않고 재시도한다 — 일시 장애도 같은
+    # 경로로 오기 때문이다(상한은 레지스트리가 정한다, 독립 리뷰 M1).
     if plan["record"] and rc == 0 and not dry_run:
         try:
-            if _srcs.record_sync(state_path, plan["fp"]):
-                log.info("관련성 필터 지문 %s 기록 — 다음 동기화부터 기본 %d일",
-                         plan["fp"], _srcs.DEFAULT_LOOKBACK_DAYS)
+            done, why = _srcs.finish_recovery(
+                state_path, plan["fp"],
+                failed_units=int(stats.get("skipped_units") or 0))
+            (log.info if done else log.warning)("%s", why)
         except OSError as exc:
             # 동기화 자체는 성공했다 — 기록 실패로 실패처럼 끝내지 않는다.
             # 대가는 다음 틱이 40일을 한 번 더 훑는 것뿐이다(조용히 넘기지는
