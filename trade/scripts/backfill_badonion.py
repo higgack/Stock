@@ -50,14 +50,25 @@ Setup (one-time): reuses the existing .backfill-venv + the same
 TRADE_TELETHON_API_ID/TRADE_TELETHON_API_HASH already in .env (no new
 Telegram app credentials needed — same account, second session file).
 
-Run manually:
+Run manually (cd ~/stock-trade — the session file is cwd-relative):
   .backfill-venv/bin/python trade/scripts/backfill_badonion.py --since 2026-05-01
-  .backfill-venv/bin/python trade/scripts/backfill_badonion.py  # default: 3-day lookback
+  .backfill-venv/bin/python trade/scripts/backfill_badonion.py  # default window: see below
   # optional: --to 2026-05-16, --dry-run, --lookback-days N
 
+Default window (실수 #403): 3일. 단 관련성 필터(= 레지스트리 파서들) 코드의
+지문이 마지막으로 **성공한 회수**가 남긴 기록과 다르면(또는 기록이 없으면)
+40일을 **한 번** 훑어, 파서가 생기기 전에 리스너가 버린 캡션을 회수한다.
+성공해야 기록하므로 실패하면 다음 틱이 다시 넓게 훑는다. `--since`·
+`--lookback-days`·`--to` 를 명시하면 그 창을 쓰고, 그 창이 지금까지 40일을
+덮을 때만 성공 뒤 기록한다(좁은 창을 회수로 치지 않는다).
+판정 로직은 `badonion_sources.sync_plan`(telethon 없이 테스트된다, #176).
+포워드할 유닛(파서는 받는데 아직 inbox 에 없음)은 dry-run 이든 아니든 머리를
+찍는다 — 이상 없을 때의 평소 동기화는 그 줄이 0줄이다.
+
 Run by systemd (trade-bot-badonion-sync.timer):
-  Invoked without --since; defaults to 3-day lookback (realtime listener
-  is the primary path, this is the downtime safety net).
+  Invoked without --since; uses the default window above — 3 days (realtime
+  listener is the primary path, this is the downtime safety net), or 40 days
+  once after the relevance-filter code changed.
 """
 
 import argparse
@@ -480,6 +491,14 @@ async def run(
         # 0건인 소스도 **이름을 대서** 말한다(#54 대조 0건은 침묵이 아니다).
         for line in _srcs.relevance_breakdown(units):
             log.info("%s", line)
+        # 이 실행이 포워드할 유닛(= 파서는 받는데 아직 inbox 에 없음)은 dry-run
+        # 이든 아니든 **머리를 찍는다**. 09-22 dry-run 은 이 갈래를 위 계수로만
+        # 세어, 사용자가 이미 본 kri 캡션을 '원천 미게시' 로 오판하게 했다(#403).
+        # 리스너가 실시간으로 받으므로 평소 동기화에선 0줄이다.
+        for u in units:
+            when, head = _unit_head(u)
+            log.info("to-forward unit %s [%s]: %s", when,
+                     _srcs.unit_labels(u), head)
 
         if skipped_irrelevant and not show_irrelevant:
             # 새 형식은 늘 '드랍된 쪽'에 숨는다(2026-09-10 TSMC 월매출 — 여섯
@@ -597,13 +616,16 @@ def main() -> None:
     ap.add_argument(
         "--lookback-days",
         type=int,
-        default=3,
+        default=None,
         metavar="N",
         help=(
-            "Days to look back when --since is omitted (default: 3). "
-            "Listener handles realtime; this is the safety net for short "
-            "downtime windows. For wider historical catch-ups use "
-            "explicit --since."
+            "Days to look back when --since is omitted. Default: 3 "
+            "(listener handles realtime; this is the safety net for short "
+            "downtime windows) — or 40 once after the relevance-filter code "
+            "changed, to recover captions dropped before their parser "
+            "existed (실수 #403). An explicit N is used as given and "
+            "records only if it covers those 40 days. For wider historical "
+            "catch-ups use --since."
         ),
     )
     ap.add_argument(
@@ -630,7 +652,8 @@ def main() -> None:
         action="store_true",
         help=("관련성 필터가 드랍한 유닛과 이미 inbox 에 있는 유닛의 캡션 머리"
               "(160자)를 나란히 찍는다 — 새 카드 형식이 파서 없이 버려지고 있는지, "
-              "창 안의 글이 어디로 갔는지 보는 용도. --dry-run 을 강제한다(포워드 0)"),
+              "창 안의 글이 어디로 갔는지 보는 용도. 셋째 갈래(포워드할 유닛)는 "
+              "이 플래그 없이도 늘 찍힌다(#403). --dry-run 을 강제한다(포워드 0)"),
     )
     args = ap.parse_args()
     max_candidates = (
@@ -639,16 +662,22 @@ def main() -> None:
         else MAX_CANDIDATES_DEFAULT
     )
 
+    # 창은 레지스트리가 정한다 — 필터 지문이 바뀌었으면 한 번 넓게(#403).
+    # 판정을 여기 두면 telethon 없는 환경에서 회귀가 통째로 스킵된다(#176).
+    state_path = INBOX_DIR / _srcs.SYNC_STATE_NAME
+    plan = _srcs.sync_plan(state_path, since=args.since,
+                           lookback_days=args.lookback_days, to=args.to)
     if args.since:
         since_date = _parse_date(args.since)
     else:
         since_date = datetime.now(timezone.utc) - timedelta(
-            days=args.lookback_days
+            days=plan["days"]
         )
         log.info(
-            "--since not given; using %d-day lookback → %s",
-            args.lookback_days,
+            "--since not given; using %d-day lookback → %s — %s",
+            plan["days"],
             since_date.date().isoformat(),
+            plan["reason"],
         )
 
     # 진단 플래그는 운영 상태를 바꾸면 안 된다(#264·#283) — 드랍 목록을 보려던
@@ -665,6 +694,19 @@ def main() -> None:
             show_irrelevant=args.show_irrelevant,
         )
     )
+    # 기록은 **성공한 실제 실행**만 한다 — dry-run 은 운영 상태를 바꾸면 안
+    # 되고(#264·#283), 실패한 회수를 기록하면 다 된 줄 알고 다시 안 훑는다.
+    if plan["record"] and rc == 0 and not dry_run:
+        try:
+            if _srcs.record_sync(state_path, plan["fp"]):
+                log.info("관련성 필터 지문 %s 기록 — 다음 동기화부터 기본 %d일",
+                         plan["fp"], _srcs.DEFAULT_LOOKBACK_DAYS)
+        except OSError as exc:
+            # 동기화 자체는 성공했다 — 기록 실패로 실패처럼 끝내지 않는다.
+            # 대가는 다음 틱이 40일을 한 번 더 훑는 것뿐이다(조용히 넘기지는
+            # 않는다, #12).
+            log.warning("관련성 필터 지문 기록 실패(%s: %s) — 다음 동기화가 "
+                        "회수 창을 한 번 더 쓴다", type(exc).__name__, exc)
     sys.exit(rc)
 
 

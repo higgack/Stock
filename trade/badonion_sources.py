@@ -23,7 +23,10 @@ fallback 이라 앞선 파서가 먼저 캡션을 가져간다. 순서를 바꾸
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from trade import cn_exports as _cn
@@ -289,6 +292,27 @@ def matching_keys(text: str) -> tuple[str, ...]:
     return tuple(s.key for s in SOURCES if s.parse(text) is not None)
 
 
+def _unit_keys(unit) -> set:
+    """유닛(= 앨범이면 멤버 묶음) 하나를 받는 소스 키 전부 — 멤버 합집합."""
+    keys: set = set()
+    for m in unit:
+        keys |= set(matching_keys(getattr(m, "text", "") or ""))
+    return keys
+
+
+def unit_labels(unit) -> str:
+    """유닛을 받는 소스 이름(레지스트리 순서) — 백필의 **포워드할 유닛** 줄용.
+
+    ⚠️ 왜(2026-09-24, 실수 #403): 09-22 dry-run 은 드랍된 유닛과 이미 받은
+    유닛만 찍고, **파서는 받는데 아직 inbox 에 없는 유닛**(= 파서가 생기기
+    전에 리스너가 버린 캡션)은 소스별 계수로만 셌다. kri 가 빈 이유가 바로
+    그 갈래였는데 출력에 한 줄도 없어 '원천 미게시' 로 오판했다. 줄 하나가
+    어느 소스인지까지 말해야 그 줄만 보고 판정된다(#356).
+    """
+    keys = _unit_keys(unit)
+    return ", ".join(s.label for s in SOURCES if s.key in keys) or "(없음)"
+
+
 def relevance_breakdown(units) -> list[str]:
     """유닛(= `.text` 를 가진 메시지들의 묶음)을 **소스별로** 센 사람용 줄.
 
@@ -306,10 +330,7 @@ def relevance_breakdown(units) -> list[str]:
     n_units = 0
     for u in units:
         n_units += 1
-        keys: set = set()
-        for m in u:
-            keys |= set(matching_keys(getattr(m, "text", "") or ""))
-        for k in keys:
+        for k in _unit_keys(u):
             brk[k] += 1
     by = {s.key: s.label for s in SOURCES}
     got = [f"{by.get(k, k)} {n}"
@@ -327,6 +348,226 @@ def relevance_breakdown(units) -> list[str]:
                    " — 채널에 그 글이 없었거나, 새 형식을 파서가 못 받은 것"
                    "(가르려면 --show-irrelevant 원문을 볼 것)")
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 동기화 창 — 관련성 필터(= 파서 집합)가 바뀐 배포 뒤엔 한 번 넓게 훑는다
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ 왜(2026-09-24, 실수 #403): 관련성 필터가 곧 파서라, 파서가 생기기 **전**에
+# 올라온 캡션은 리스너가 버린다. 되찾는 길은 백필뿐인데 6시간 동기화는 최근
+# 3일만 본다 — 캡션과 파서 배포 사이가 3일을 넘으면 **영영** 못 줍는다.
+# kri(한국 수입 회사별)는 사용자가 2026-09-16 에 채널에서 텔레칩스 캡션을 봤는데
+# (`kr_stock_imports` 독스트링) 09-24 까지 보드가 비어 있었다. #261·#330 이
+# "파서 배포는 백필 수동 회수까지가 한 세트" 라고 적어 두고 **사람 손**에
+# 맡겼고, 그 수동 단계가 #370·#371 에서 두 번(telethon 미설치 · 지어낸 플래그)
+# 실패했다 → 규율이 아니라 구조로(#119·#267): 필터 코드 지문이 기록과 다르면
+# 다음 동기화가 **한 번** 넓은 창을 쓰고, 성공하면 지문을 기록한다.
+DEFAULT_LOOKBACK_DAYS = 3
+# 나쁜양파 보드는 전부 **월간** 발행이다 — 31일 + 여유면 파서가 바뀌기 직전에
+# 나온 각 소스의 가장 최근 발행 한 회가 창 안에 든다. 더 깊은 이력은 사람이
+# `--since` 로 연다(무한히 넓히면 후보 상한 TRADE_MAX_CANDIDATES 에 먼저 닿는다).
+RECOVERY_LOOKBACK_DAYS = 40
+SYNC_STATE_NAME = "badonion_sync_state.json"
+
+_TRADE_DIR = Path(__file__).resolve().parent
+
+
+def _module_file(name: str, base_dir: Path) -> Path | None:
+    """`trade.x.y` → 파일(`trade/x/y.py` 또는 패키지 `__init__.py`). 모듈이
+    아니면 None — `from trade.stock_link import _JP_CODE` 의 `_JP_CODE` 는 이름이다.
+
+    ⚠️ `importlib.util.find_spec` 을 안 쓰는 이유: 점 이름은 **부모를 import**
+    해 버린다. 백필은 requests 가 없는 `.backfill-venv` 에서 돌므로(프로브 ②
+    실측) 지문을 재다가 부작용·ImportError 를 부르면 안 된다 — 경로로만 푼다."""
+    parts = name.split(".")
+    if not parts or parts[0] != base_dir.name:
+        return None
+    stem = base_dir.parent.joinpath(*parts)
+    for cand in (stem.with_suffix(".py"), stem / "__init__.py"):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _strip_docstrings(tree) -> None:
+    """독스트링을 비운다 — 설명만 고친 배포가 40일 회수를 부르지 않게(#266).
+    주석은 애초에 AST 에 없다."""
+    import ast
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef,
+                             ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", None)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body[0].value.value = ""
+
+
+def filter_roots() -> tuple[str, ...]:
+    """관련성 필터의 뿌리 모듈 — 이 레지스트리 + 각 소스 파서가 사는 모듈.
+
+    레지스트리에서 **파생**한다(이름 열거 금지, #24) — 소스를 한 줄 더하면
+    그 파서 모듈이 저절로 지문에 들어간다."""
+    import inspect
+    out = {__name__}
+    for s in SOURCES:
+        mod = inspect.getmodule(s.parse)
+        if mod is not None:
+            out.add(mod.__name__)
+    return tuple(sorted(out))
+
+
+def filter_closure(roots, base_dir: Path | None = None) -> dict[str, Path]:
+    """뿌리에서 패키지 안 import 를 따라간 **전이 폐포**(모듈명 → 파일).
+
+    ⚠️ 한 단계로는 부족하다 — kri 의 파서 함수는 어댑터(`kr_stock_imports`)에
+    있지만 문법은 엔진(`kr_company_flow`)에 산다. 엔진만 고친 배포를 못 보면
+    이 장치가 막으려던 유실이 그대로 재발한다(#365 한 단계만 훑다 63개를
+    놓쳤다). 렌더 모듈까지 딸려 오지만(넓게 잡는 쪽을 택했다) 더 덮은 비용은
+    40일 스캔 한 번이고, 덜 덮은 비용은 영영 비는 보드다."""
+    import ast
+    base_dir = base_dir or _TRADE_DIR
+    pkg0 = base_dir.name
+    seen: dict[str, Path | None] = {}
+    todo = list(roots)
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        f = _module_file(name, base_dir)
+        seen[name] = f
+        if f is None:
+            continue
+        for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if isinstance(n, ast.ImportFrom):
+                if n.level:            # 상대 import — 지금은 없지만 생기면 샌다
+                    pkg = name if f.name == "__init__.py" else name.rpartition(".")[0]
+                    for _ in range(n.level - 1):
+                        pkg = pkg.rpartition(".")[0]
+                    mod = f"{pkg}.{n.module}" if n.module else pkg
+                elif (n.module or "").split(".")[0] == pkg0:
+                    mod = n.module
+                else:
+                    continue
+                todo.append(mod)
+                # `from trade import kr_company_flow` 는 모듈이 `trade` 라
+                # 서브모듈을 이름에서 후보로 만든다(#365 와 같은 함정).
+                todo += [f"{mod}.{a.name}" for a in n.names]
+            elif isinstance(n, ast.Import):
+                todo += [a.name for a in n.names
+                         if a.name.split(".")[0] == pkg0]
+    return {k: v for k, v in seen.items() if v is not None}
+
+
+def relevance_fingerprint(*, roots=None, base_dir: Path | None = None) -> str:
+    """관련성 필터를 만든 **코드의 지문**(sha1 앞 10자). 못 재면 "".
+
+    ⚠️ 뿌리 모듈 하나라도 못 찾거나 못 읽으면 **지문을 주장하지 않는다** —
+    덜 덮은 지문을 전부 덮은 것처럼 내면 과대 주장이다(#364·#365·#54)."""
+    import ast
+    import hashlib
+    roots = tuple(roots) if roots is not None else filter_roots()
+    try:
+        files = filter_closure(roots, base_dir)
+        if not roots or any(r not in files for r in roots):
+            return ""
+        h = hashlib.sha1()
+        for name in sorted(files):     # 순서를 고정해야 지문이 안정적이다
+            tree = ast.parse(files[name].read_text(encoding="utf-8"))
+            _strip_docstrings(tree)
+            h.update(name.encode())
+            h.update(ast.dump(tree).encode())
+        return h.hexdigest()[:10]
+    except Exception:                                  # noqa: BLE001
+        return ""
+
+
+def _recorded_fp(state_path: Path) -> tuple[str | None, str]:
+    """(기록된 지문 | None, 없을 때의 사유). 갈래를 이름으로 말한다(#82)."""
+    try:
+        rec = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "기록 없음(첫 실행)"
+    except Exception as exc:                           # noqa: BLE001
+        return None, f"기록 못 읽음({type(exc).__name__})"
+    fp = rec.get("relevance_fp") if isinstance(rec, dict) else None
+    return (fp, "") if isinstance(fp, str) and fp else (None, "기록 형식이 다르다")
+
+
+def _covers_recovery(since, lookback_days, to, now: datetime) -> bool:
+    """명시 창이 **지금까지** 회수 창(40일)을 덮나. `--to` 가 있으면 지금까지가
+    아니므로 덮지 않는다. `--since` 를 못 읽으면 덮지 않는다(백필이 어차피 거부)."""
+    if to is not None:
+        return False
+    if lookback_days is not None:
+        return lookback_days >= RECOVERY_LOOKBACK_DAYS
+    try:
+        start = datetime.strptime(str(since), "%Y-%m-%d").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return (now - start).days >= RECOVERY_LOOKBACK_DAYS
+
+
+def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
+              fp: str | None = None, now: datetime | None = None) -> dict:
+    """이번 동기화의 창 → `{"days", "record", "fp", "reason"}`.
+
+    - `--since`·`--lookback-days`·`--to` 를 **명시**하면 그 창을 쓴다. 기록은
+      그 창이 지금까지 회수 창을 **덮을 때만** 한다 — 좁은 창을 회수로 치면
+      다 된 줄 알고 다시 안 훑고, 넓은 창까지 무시하면 자동 회수가 후보
+      상한에 걸려 중단될 때 알림이 시키는 대로 넓게 돌려도 6시간마다 같은
+      중단이 영원히 반복된다(수렴 지점이 없다, #171). `days` 는 `--since` 면 None.
+    - 아니면 필터 지문을 기록과 대조한다: 같으면 기본 창, 다르거나 기록이
+      없으면 회수 창 — `record=True` 는 "성공하면 이 지문을 기록하라" 다.
+    - 지문을 못 재면 기본 창이고 **판정 불가라고 말한다**(#54): 못 잰 것으로
+      넓히면 매번 40일이 되고, 조용히 좁히면 회수가 사라진다.
+    """
+    explicit = [flag for flag, v in (("--since", since),
+                                     ("--lookback-days", lookback_days),
+                                     ("--to", to)) if v is not None]
+    if explicit:
+        days = (lookback_days if lookback_days is not None
+                else None if since is not None else DEFAULT_LOOKBACK_DAYS)
+        what = "·".join(explicit)
+        if not _covers_recovery(since, lookback_days, to,
+                                now or datetime.now(timezone.utc)):
+            return {"days": days, "record": False, "fp": "",
+                    "reason": f"{what} 명시 — 회수 창({RECOVERY_LOOKBACK_DAYS}일)"
+                              "을 덮지 않아 필터 지문 기록은 건드리지 않는다"}
+        fp = relevance_fingerprint() if fp is None else fp
+        return {"days": days, "record": bool(fp), "fp": fp,
+                "reason": f"{what} 명시 — 회수 창({RECOVERY_LOOKBACK_DAYS}일)을 "
+                          "덮으므로 성공하면 필터 지문을 기록한다"
+                          + ("" if fp else "(지문을 못 재 기록 불가)")}
+    fp = relevance_fingerprint() if fp is None else fp
+    if not fp:
+        return {"days": DEFAULT_LOOKBACK_DAYS, "record": False, "fp": "",
+                "reason": "관련성 필터 지문을 못 쟀다 — 회수 필요 여부 판정 "
+                          "불가, 기본 창"}
+    old, why = _recorded_fp(state_path)
+    if old == fp:
+        return {"days": DEFAULT_LOOKBACK_DAYS, "record": False, "fp": fp,
+                "reason": f"관련성 필터 지문 {fp} 그대로 — 기본 창"}
+    # ⚠️ '파서가 바뀌었다' 고 적지 않는다 — 지문은 렌더 모듈까지 덮으므로 바뀐
+    # 게 파서인지 모르고, 기록이 없을 때는 바뀌었는지조차 모른다(#165).
+    what = (f"관련성 필터 코드 지문 {old} → {fp}(필터가 쓰는 모듈이 바뀌었다)"
+            if old else f"관련성 필터 코드 지문 {fp} — {why}")
+    return {"days": RECOVERY_LOOKBACK_DAYS, "record": True, "fp": fp,
+            "reason": (f"{what}: 그 전에 버려졌을 캡션을 회수하려 최근 "
+                       f"{RECOVERY_LOOKBACK_DAYS}일을 한 번 훑는다")}
+
+
+def record_sync(state_path: Path, fp: str, *,
+                now: datetime | None = None) -> bool:
+    """성공한 회수 뒤 지문을 기록한다. 못 잰 지문(`""`)은 기록하지 않는다."""
+    if not fp:
+        return False
+    from trade.price_provider import _atomic_write_json  # 형제와 같은 원자 쓰기(#38)
+    now = now or datetime.now(timezone.utc)
+    _atomic_write_json(Path(state_path), {"relevance_fp": fp,
+                                          "recorded_at": now.isoformat()})
+    return True
 
 
 def labels() -> str:

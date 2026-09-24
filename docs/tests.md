@@ -1854,3 +1854,26 @@ client`·`naver_research_client` 의 `reason` 은 `compose_reason` 을 안 쓰�
 ⚠️ **못 보는 축**(#274): 다른 거래소 회사가 **같은 4자리**를 쓰고 법인형태를 뗀
 영문명까지 도쿄 회사와 같으면 통과한다(관측 없음, 재지 않음). JPX 는 월 1회
 갱신이라 그 사이 신규 상장은 평문이다(틀린 링크가 아니라 없는 링크).
+
+## #403 — 파서가 생기기 전에 버려진 캡션의 자동 회수 (`trade/tests/test_badonion_sources.py` +14 · `trade/tests/test_backfill_badonion_sync.py` 7건)
+
+사용자가 2026-09-16 채널에서 본 한국 수입 회사별 캡션(텔레칩스)이 09-24 까지
+보드에 없었다. 관련성 필터 = 파서라 파서 배포 전 캡션은 리스너가 버리고, 6시간
+동기화는 최근 3일만 본다. 나는 09-22 에 그걸 '원천 미게시' 로 오판했다 — dry-run
+이 **파서는 받는데 아직 inbox 에 없는 유닛**을 계수로만 셌기 때문이다.
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 창 판정 | 기록 없음·지문 변경 → 40일(`record=True`) · 같은 지문 → 3일 · 회수 한 번 뒤 기본 창으로 수렴(#171) · 3/40 은 **리터럴**로(#66) | `TestSyncRecoveryWindow20260924::test_first_run_without_a_record_scans_the_recovery_window` · `::test_recovery_happens_once_then_settles_to_the_default` · `::test_default_and_recovery_windows_are_the_measured_contract` |
+| ② 사유 | 기록이 없으면 '바뀌었다' 를 주장하지 않는다(#165) · 못 읽은 기록은 갈래를 이름으로(#82) · 지문을 못 재면 판정 불가라고 말하고 기록하지 않는다(#54) | `::test_an_unreadable_record_is_named_and_not_trusted` · `::test_an_unknown_fingerprint_is_said_and_never_recorded` |
+| ③ 명시 창 | `--since`·`--lookback-days`(0 포함)·`--to` 는 그 창 그대로 · 지금까지 40일을 **덮을 때만** 성공 뒤 기록(좁은 창을 회수로 치지 않고, 넓은 창은 인정해 자동 회수가 상한에 걸려도 수렴한다, #171) · 안 덮는 창엔 지문도 안 잰다 · 시계는 주입(#249) | `::test_an_explicit_narrow_window_neither_recovers_nor_records` · `::test_an_explicit_window_that_covers_the_recovery_window_records` · `::test_the_plan_computes_the_real_fingerprint_when_not_given` |
+| ④ 지문 범위 | **전이 폐포**(어댑터 → 엔진 → 두 단계 아래, #365) · 무관 모듈은 안 흔든다 · 상대 import · 뿌리 누락·문법 오류면 "" (#364) · 뿌리는 레지스트리에서 파생(#24) | `::test_the_fingerprint_follows_imports_transitively` · `::test_relative_imports_are_followed` · `::test_a_missing_or_broken_module_means_no_fingerprint` · `::test_roots_are_derived_from_the_registry` |
+| ⑤ 설명만 고친 배포 | 주석·독스트링 변경은 지문을 안 바꾼다 — 코드 변경은 바꾼다(#266) | `::test_the_fingerprint_ignores_comments_and_docstrings` |
+| ⑥ 포워드할 유닛 줄 | 어느 소스가 받는지 레지스트리 순서로 · 앨범의 캡션 없는 멤버 · 무관 캡션은 `(없음)` | `::test_unit_labels_names_every_source_in_registry_order` |
+| ⑦ `main()` E2E | 가짜 telethon(monkeypatch)·사설 모듈로 **실제 `main()`** 을 태운다: 첫 실행 40일 회수 + 기록 → 둘째 실행 3일(20일 전 캡션에 안 닿음, 포워드 줄 0) · dry-run 은 포워드할 유닛을 찍고 **기록·포워드 없음**(#264) · 실패는 기록 안 함 · 기록 **쓰기** 실패는 경고 + rc 0(성공한 동기화를 실패로 안 끝낸다, #12) · 좁은 명시 창은 기록 안 함 · 40일을 덮는 명시 창은 기록(수렴) · 지문이 바뀌면 다시 회수 | `trade/tests/test_backfill_badonion_sync.py::*` |
+
+⚠️ **못 보는 축**(#274): 지문은 **디스크의 코드**를 잰다 — 실제로 캡션을 받는지(파서
+의미)는 안 잰다. 그래서 렌더만 바뀐 배포도 40일 스캔을 한 번 부른다(값싸다: 채널
+히스토리 몇 쪽, 포워드는 새로 걸리는 것만). 반대로 파서가 **같은 코드로 다른 캡션을
+받게 되는 경우**(외부 데이터 변화)는 지문이 안 바뀌어 회수가 안 걸린다 — 그때는
+`--since` 로 사람이 연다. E2E 의 kri 캡션은 스크린샷 재구성이다(#155).
