@@ -46,7 +46,9 @@ Lifecycle alerts (best-effort, never raise):
   ⚠️ <b>나쁜양파 리스너 forward 실패</b>
   ❌ <b>나쁜양파 리스너 종료</b>: 세션 미인증 — operator must rerun --auth
 
-Exits with status 78 (EX_CONFIG) when the session is missing, paired
+Exits with status 78 (EX_CONFIG) when the session is missing — or when its
+file format doesn't match this interpreter's telethon (실수 #404,
+`trade.tg_entities.guarded_client`: ❌ 세션 형식 불일치 + 깔 판) — paired
 with `RestartPreventExitStatus=78` in the unit so systemd doesn't
 hot-loop on a config error.
 """

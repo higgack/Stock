@@ -322,6 +322,20 @@ def test_the_failure_note_carries_the_prescription():
             == "로그인 처방")
 
 
+def test_the_failure_text_says_a_prescription_once():
+    """4차 리뷰 L4: 처방을 담아 던진 예외는 원문이 곧 사유다 — 옛 알림은 같은
+    처방을 두 번(앞의 것은 200자에서 잘라) 실었다. 처방은 200자를 넘는다."""
+    long = "처방 문장 " * 60
+    for exc in (tg.SessionFormatError(long), tg.SessionNotAuthorizedError(long)):
+        assert tg.prescribed_failure(exc)
+        assert tg.startup_failure_text(exc) == f"{type(exc).__name__}: {long}"
+    other = RuntimeError("x" * 300)                  # 예상 못 한 예외(반대 증거)
+    assert not tg.prescribed_failure(other)
+    text = tg.startup_failure_text(other)
+    assert text == ("RuntimeError: " + "x" * 200 + "\n"
+                    + tg.startup_failure_note(other))
+
+
 class _StartSpy:
     def __init__(self, authorized: bool):
         self.authorized, self.calls = authorized, []
@@ -583,6 +597,24 @@ def test_the_beon_backfill_pages_on_a_session_it_cannot_open(monkeypatch, tmp_pa
     assert asyncio.run(mod.run(mod._parse_date(since), None, False, 100)) == 1
     assert _FakeClient.built == []
     assert notes and "시작 실패" in notes[-1] and "세션 형식 처방(테스트)" in notes[-1]
+    # 처방은 한 번만(4차 리뷰 L4 — 형제 백필과 같은 헬퍼 #38).
+    assert notes[-1].count("세션 형식 처방(테스트)") == 1
     notes.clear()
     assert asyncio.run(mod.run(mod._parse_date(since), None, True, 100)) == 1
     assert notes == []                                  # 사람이 돌린 진단
+
+
+def test_the_beon_backfill_logs_a_prescribed_failure_without_a_traceback(
+        monkeypatch, tmp_path, caplog):
+    """4차 리뷰 L5 — 처방을 담아 던진 예외는 그 문장이 곧 진단이다. 트레이스백에
+    묻히면 무엇을 깔아야 하는지 안 보인다(형제 backfill_badonion 과 같은 규약)."""
+    mod, _notes = _load(monkeypatch, tmp_path, "backfill_beon")
+    monkeypatch.setattr(tg, "session_format_problem",
+                        lambda s, live=True: "세션 형식 처방(테스트)")
+    caplog.set_level("INFO")
+    for dry in (False, True):
+        caplog.clear()
+        assert asyncio.run(mod.run(mod._parse_date("2026-09-20"), None, dry,
+                                   100)) == 1
+        assert [r for r in caplog.records if r.exc_info] == [], dry
+        assert "세션 형식 처방(테스트)" in caplog.text

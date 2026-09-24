@@ -32,10 +32,13 @@ Lifecycle alerts (best-effort, never raise):
   ⚠️ <b>BeOn 리스너 forward 실패</b>     — Telegram refused after retries
   ❌ <b>BeOn 리스너 종료</b>: 세션 미인증 — operator must rerun --auth
 
-Exits with status 78 (EX_CONFIG) when the session is missing, paired
+Exits with status 78 (EX_CONFIG) when the session is missing — or when its
+file format doesn't match this interpreter's telethon (실수 #404,
+`trade.tg_entities.guarded_client`: ❌ 세션 형식 불일치 + 깔 판) — paired
 with `RestartPreventExitStatus=78` in the unit so systemd doesn't
-hot-loop on a config error — operator gets one ❌ notify, runs --auth,
-then `sudo systemctl restart trade-bot-beon-listener`.
+hot-loop on a config error — operator gets one ❌ notify, runs --auth
+(or installs the pinned telethon the notify names), then
+`sudo systemctl restart trade-bot-beon-listener`.
 """
 
 import argparse

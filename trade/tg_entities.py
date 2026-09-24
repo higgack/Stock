@@ -237,12 +237,33 @@ async def resolve_peer(client, ref):
         return await client.get_entity(ref)
 
 
+# 우리가 처방까지 담아 던지는 예외(`guarded_client`·`start_client`) — 원문이
+# 곧 사유다. 이름으로 가른다(형제 갈래들과 같은 방식).
+_PRESCRIBED = ("SessionFormatError", "SessionNotAuthorizedError")
+
+
+def prescribed_failure(exc) -> bool:
+    """`exc` 가 우리가 처방을 담아 던진 예외인가 — 그 문장이 곧 진단이라
+    트레이스백은 소음이고(4차 리뷰 L5), 알림엔 원문을 **한 번만** 싣는다(L4)."""
+    return type(exc).__name__ in _PRESCRIBED
+
+
+def startup_failure_text(exc) -> str:
+    """시작 실패 알림 본문(평문 — escape 는 호출부): 예외 이름·원문 + 사유 갈래.
+    처방을 담아 던진 예외는 원문이 곧 사유라 한 번만 싣는다 — 옛 판은 같은
+    처방을 두 번, 앞의 것은 200자에서 잘라 실었다(4차 리뷰 L4)."""
+    note = startup_failure_note(exc)
+    if prescribed_failure(exc):
+        return f"{type(exc).__name__}: {note}"
+    return f"{type(exc).__name__}: {str(exc)[:200]}\n{note}"
+
+
 def startup_failure_note(exc) -> str:
     """세션/접근 실패 알림에 붙일 **사유 갈래**(#82). 갈래별 처방이 다르다 —
     FloodWait 에 '재인증 확인'이라고 적으면 운영자가 헛걸음한다."""
     name = type(exc).__name__
     secs = getattr(exc, "seconds", None)
-    if name in ("SessionFormatError", "SessionNotAuthorizedError"):
+    if prescribed_failure(exc):
         return str(exc)            # 처방까지 담은 문장(guarded_client·start_client)
     if name == "FloodWaitError":
         tail = ""

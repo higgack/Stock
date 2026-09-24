@@ -330,12 +330,16 @@ def test_a_partly_failed_recovery_retries_then_gives_up_boundedly(
     caplog.set_level("INFO")
     for attempt in range(1, srcs.RECOVERY_MAX_ATTEMPTS):
         caplog.clear()
+        sent = len(backfill._test_notes)
         assert _run(backfill, monkeypatch) == 0
         assert f"using {srcs.RECOVERY_LOOKBACK_DAYS}-day lookback" in caplog.text
         st = _state(backfill)
         assert "relevance_fp" not in st, f"{attempt}회째 실패인데 기록했다"
         assert st["retry"]["count"] == attempt
         assert "포워드 실패 1건" in caplog.text
+        # 알림은 실행당 **한 번**, 판정을 붙여서 간다(4차 리뷰 L6).
+        assert len(backfill._test_notes) == sent + 1
+        assert f"({attempt}/{srcs.RECOVERY_MAX_ATTEMPTS})" in backfill._test_notes[-1]
     caplog.clear()
     assert _run(backfill, monkeypatch) == 0
     st = _state(backfill)
@@ -343,6 +347,14 @@ def test_a_partly_failed_recovery_retries_then_gives_up_boundedly(
     assert "retry" not in st
     # 실행별로 세므로 '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰).
     assert "재시도 상한" in caplog.text and "영구 실패" not in caplog.text
+    # 포기는 조용하지 않다(4차 리뷰 M2): 경고로 찍고, 무엇을 못 보냈는지와
+    # 사람이 돌릴 명령을 알린다 — 옛 판은 info 한 줄이었다.
+    give_up = next(r for r in caplog.records if "재시도 상한" in r.getMessage())
+    assert give_up.levelname == "WARNING"
+    since = _Client.messages[0].date.strftime("%Y-%m-%d")
+    for text in (give_up.getMessage(), backfill._test_notes[-1]):
+        assert "포워드 못 한 원본 msg id 1건: 501" in text
+        assert f"--since {since}" in text
 
 
 def test_an_explicit_window_is_used_as_given_and_not_recorded(
@@ -444,6 +456,10 @@ def test_a_record_write_failure_warns_but_keeps_the_sync_successful(
     assert _Client.instances[-1].forwarded == [[501]]
     assert "지문 기록 실패" in caplog.text
     assert type(exc).__name__ in caplog.text
+    # 판정 뒤로 미룬 알림(L6)은 그래도 간다 — 판정을 못 붙인 이유를 달고(#43).
+    note = backfill._test_notes[-1]
+    assert "동기화 완료" in note
+    assert f"회수 판정을 기록하지 못했다({type(exc).__name__})" in note
 
 
 def test_a_changed_filter_fingerprint_triggers_one_more_recovery(
@@ -884,7 +900,13 @@ def test_an_aborted_retry_still_counts_toward_the_limit(
     # 중단 알림은 자동 회수의 재시도일 수 있다고 말한다 — 'systemic' 만 적으면
     # 남은 유닛이 전부 이전에 실패한 메시지인 이 경우에 거짓이다(#82).
     aborted = [n for n in backfill._test_notes if "백필 중단" in n]
-    assert aborted and "재시도 횟수에 센다" in aborted[-1]
+    assert aborted and all("단정이 아니다" in n for n in aborted)
+    # 그리고 **판정 뒤에** 간다(4차 리뷰 L6) — 옛 판은 판정 전에 '이 중단도
+    # 재시도 횟수에 센다' 를 약속했고, 그 약속이 판정과 어긋날 수 있었다.
+    assert all("재시도 횟수에 센다" not in n for n in aborted)
+    assert all("같은 명령으로 재실행" not in n for n in aborted)   # 자동 회수다
+    assert "재시도 상한" in aborted[-1]
+    assert all(str(i) in aborted[-1] for i in bad)       # 못 보낸 것을 이름으로
 
 
 def test_a_dry_run_never_logs_in_on_the_copy(backfill, monkeypatch, caplog):
@@ -1107,14 +1129,140 @@ def test_a_floodwait_abort_is_not_recorded_as_a_finished_recovery(
     """긴 FloodWait 은 **실패 0건**으로 중단한다 — 중단 사유를 기록 단계에
     넘기지 않으면 '실패 0건 = 다 됐다' 로 읽혀 지문이 기록되고, 포워드 못 한
     캡션이 다시는 안 훑인다(3차 리뷰 Medium 의 반대편). 중단 사유가 로그에
-    그대로 남는다(#292 — '포워드 실패 N건' 이 아니다)."""
+    그대로 남는다(#292 — '포워드 실패 N건' 이 아니다). 그리고 **횟수에 세지
+    않는다** — 기다리면 풀리는 제한이다(4차 리뷰 M2)."""
     _seed()
     _Client.flood_ids = {501}
     caplog.set_level("INFO")
     assert _run(backfill, monkeypatch) == 1
     st = _state(backfill)
-    assert "relevance_fp" not in st and st["retry"]["count"] == 1
+    assert "relevance_fp" not in st
+    assert (st["retry"]["count"], st["retry"]["aborted"]) == (0, True)
     assert "포워드 도중 중단" in caplog.text and "FloodWait" in caplog.text
+    note = backfill._test_notes[-1]
+    assert "백필 중단" in note and "세지 않는다" in note
+    # 'systemic' 해명은 연속 실패 중단의 것이다 — FloodWait 에 붙이면 없는
+    # 의심을 말한다(#292).
+    assert "단정이 아니다" not in note
+
+
+def test_floodwait_aborts_do_not_use_up_the_recovery(
+        backfill, monkeypatch, caplog):
+    """4차 리뷰 R2 재현: 제한 창 하나에서 알림이 시키는 대로 세 번 다시
+    돌리면, 옛 판은 캡션 하나 시도하지 않고(첫 유닛에서 매번 FloodWait) 지문을
+    기록해 회수를 포기했다. 제한이 풀리면 이어서 전부 보낸다."""
+    ids = (501, 502, 503)
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(20 - (i - 501)))
+        for i in ids]
+    _Client.flood_ids = {501}
+    caplog.set_level("INFO")
+    for _ in range(srcs.RECOVERY_MAX_ATTEMPTS + 1):
+        assert _run(backfill, monkeypatch) == 1
+        assert _Client.instances[-1].forwarded == []
+        assert "relevance_fp" not in _state(backfill)
+    assert "재시도 상한" not in caplog.text
+    _Client.flood_ids = set()
+    caplog.clear()
+    assert _run(backfill, monkeypatch) == 0
+    assert "앞선 중단은 횟수에 세지 않았다" in caplog.text
+    assert _Client.instances[-1].forwarded == [[i] for i in ids]
+    st = _state(backfill)
+    assert st["relevance_fp"] == srcs.relevance_fingerprint() and "retry" not in st
+
+
+def test_a_recovery_that_keeps_progressing_is_not_given_up(
+        backfill, monkeypatch, caplog):
+    """4차 리뷰 R8 재현: 텔레그램이 실행마다 몇 건만 보내 주고 긴 FloodWait 을
+    요구하면, 옛 판은 진전한 중단까지 세어 3틱 만에 포기했다 — 남은 유닛은 한
+    번도 시도되지 않았다. 진전은 남은 수로 유계라 세지 않아도 끝난다(#171)."""
+    ids = list(range(501, 511))
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(20 - (i - 501) * 0.1))
+        for i in ids]
+
+    async def _three_then_flood(self, dest, ids_, from_peer=None):
+        if len(self.forwarded) >= 3:
+            err = sys.modules["telethon.errors"].FloodWaitError()
+            err.seconds = 3600
+            raise err
+        self.forwarded.append(list(ids_))
+
+    monkeypatch.setattr(_Client, "forward_messages", _three_then_flood)
+    caplog.set_level("INFO")
+    done: list = []
+    for _tick in range(len(ids)):
+        _run(backfill, monkeypatch)
+        done += [i for u in _Client.instances[-1].forwarded for i in u]
+        # 포워드된 글은 트레이드 봇이 inbox 로 받는다 — 다음 틱 후보에서 빠진다.
+        backfill._test_inbox.write_text("".join(
+            json.dumps({"forward_origin_chat_id": -100111,
+                        "forward_origin_message_id": i}) + "\n" for i in done),
+            encoding="utf-8")
+        if "relevance_fp" in _state(backfill):
+            break
+    assert sorted(done) == ids, "회수를 포기해 시도도 못 한 유닛이 남았다"
+    assert "재시도 상한" not in caplog.text
+    assert "retry" not in _state(backfill)
+
+
+def test_giving_up_after_no_progress_aborts_names_the_abort_and_what_was_left(
+        backfill, monkeypatch, caplog):
+    """진전 없이 연속 실패로 끊긴 회수는 센다 — 3회째에 포기하되, 그 줄이
+    **중단**이라고 말하고(실패 N건이 아니다, #292) 못 보낸 id 와 사람이 돌릴
+    명령을 싣는다(4차 리뷰 S04·M2). 그 명령은 실제로 돌고 그 캡션들에 닿는다
+    (#371 — 플래그 이름만 맞춰서는 안 된다)."""
+    ids = list(range(501, 507))                   # 연속 실패 상한(5) + 1
+    # 날짜를 **서로 다른 날**로 벌린다 — 한날이면 명령의 --since 가 가장 이른
+    # 날인지 늦은 날인지 구별되지 않는다(#91c).
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(25 - (i - 501) * 2))
+        for i in ids]
+    _Client.fail_forward_ids = set(ids)
+    caplog.set_level("INFO")
+    for _ in range(srcs.RECOVERY_MAX_ATTEMPTS):
+        assert _run(backfill, monkeypatch) == 1
+    assert _state(backfill)["relevance_fp"] == srcs.relevance_fingerprint()
+    rec = next(r for r in caplog.records if "재시도 상한" in r.getMessage())
+    line = rec.getMessage()
+    assert rec.levelname == "WARNING"
+    assert "포워드 도중 중단" in line
+    assert f"포워드 못 한 원본 msg id {len(ids)}건: " + ", ".join(
+        map(str, ids)) in line
+    assert "재시도 상한" in backfill._test_notes[-1]
+    argv = line.split("사람이 다시 돌리려면: ", 1)[1].split()
+    assert argv[:3] == ["cd", "~/stock-trade", "&&"]
+    unit = (_SCRIPT.parents[2] / "deploy"
+            / "trade-bot-badonion-sync.service").read_text(encoding="utf-8")
+    exec_start = next(l for l in unit.splitlines() if l.startswith("ExecStart="))
+    interp, script = exec_start.split("=", 1)[1].split()[:2]
+    assert interp.endswith("/" + argv[3]) and argv[4] == script
+    caplog.clear()
+    assert _run(backfill, monkeypatch, "--dry-run", *argv[5:]) == 0
+    heads = [l for l in caplog.text.splitlines() if "to-forward unit" in l]
+    assert all(any(f"회사{i} " in h for h in heads) for i in ids), heads
+
+
+def test_an_uncounted_abort_of_a_covering_run_is_picked_up_by_the_next_tick(
+        backfill, monkeypatch, caplog):
+    """지문이 이미 기록된 뒤 사람이 돌린 회수(`--lookback-days 40`)가 FloodWait
+    에 끊기면 — 세지는 않되 표식은 남겨, 다음 **자동** 동기화가 넓은 창으로
+    이어 받는다. 표식이 없으면 3일로 돌아가 20일 전 캡션을 영영 잃는다
+    (2차 리뷰 P2 와 같은 구멍, 4차 리뷰 M2)."""
+    _seed()
+    srcs.record_sync(backfill._test_state, srcs.relevance_fingerprint())
+    _Client.flood_ids = {501}
+    assert _run(backfill, monkeypatch, "--lookback-days",
+                str(srcs.RECOVERY_LOOKBACK_DAYS)) == 1
+    note = backfill._test_notes[-1]
+    assert "같은 명령으로 재실행하면 이어서 진행" in note   # 사람이 연 창이다
+    assert "세지 않는다" in note
+    _Client.flood_ids = set()
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch) == 0
+    assert f"using {srcs.RECOVERY_LOOKBACK_DAYS}-day lookback" in caplog.text
+    assert _Client.instances[-1].forwarded == [[501]]
+    assert "retry" not in _state(backfill)
 
 
 def test_an_explicit_run_abort_note_does_not_claim_a_recovery(
@@ -1161,3 +1309,100 @@ def test_the_sibling_diagnose_tool_guards_the_live_path_as_live(
     assert _diagnose(diag, monkeypatch, "--grep", "텔레칩스") == 0     # 복사본
     assert seen[-1][0] != backfill.SESSION_PATH and seen[-1][1] is False
 
+
+# ── 4차 리뷰 L4·L5·D02 ────────────────────────────────────────────────────────
+def test_a_prescribed_startup_failure_says_the_prescription_once(
+        backfill, monkeypatch, caplog):
+    """L4: 처방을 담아 던진 예외는 그 문장이 곧 사유다 — 옛 판은 같은 처방을
+    두 번(앞의 것은 200자에서 잘라) 실었다. 트레이스백은 빼되 저널엔 **한 줄
+    남긴다** — 알림만 가면 저널에서 그 실행이 왜 끝났는지 안 보인다(#12)."""
+    _seed()
+    monkeypatch.setattr(_tg, "session_format_problem",
+                        lambda session, live=True: "세션 형식 처방(테스트)")
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch) == 1
+    note = backfill._test_notes[-1]
+    assert note.count("세션 형식 처방(테스트)") == 1
+    assert "SessionFormatError" in note and "시작 실패" in note
+    assert [r for r in caplog.records if r.exc_info] == []
+    assert any(r.levelname == "ERROR" and "세션 형식 처방(테스트)" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_prescribed_startup_failure_logs_no_traceback(
+        backfill, monkeypatch, caplog):
+    """L5(리뷰 R3): 인증이 풀린 복사본의 dry-run 은 처방 한 줄로 끝난다 —
+    트레이스백에 묻히면 VM 에서 무엇을 해야 하는지 안 보인다. 예상 못 한
+    예외는 여전히 트레이스백을 남긴다(반대 증거, #25)."""
+    Path(f"{backfill.SESSION_PATH}.session").write_bytes(b"LIVE")
+    _seed()
+    _Client.authorized = False
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run") == 1
+    assert [r for r in caplog.records if r.exc_info] == []
+    rec = next(r for r in caplog.records if "시작 실패" in r.getMessage())
+    assert "인증되지 않았다" in rec.getMessage()
+    caplog.clear()
+    # 반대 증거: 원본이 없으면 라이브 경로로 `start()` 하고, 거기서 난 예상 못
+    # 한 예외(RuntimeError — 원인 미상)는 트레이스백을 남긴다.
+    Path(f"{backfill.SESSION_PATH}.session").unlink()
+    _Client.authorized = True
+    _Client.fail_start = True
+    assert _run(backfill, monkeypatch, "--dry-run") == 1
+    assert any(r.exc_info for r in caplog.records)
+
+
+def test_the_sibling_diagnose_logs_in_on_the_live_path(backfill, monkeypatch):
+    """D02: 원본이 없으면 형제 진단도 라이브 경로로 **로그인한다**(처음
+    로그인은 원본에 남아야 한다) — 복사본 규약을 거기까지 넓히면 첫 로그인이
+    영영 안 된다(#403 3차 리뷰, 형제 백필과 같은 규약 #38)."""
+    diag = _load_diagnose(backfill, monkeypatch)
+    _Client.messages = [_Msg(501, _KRI, _ago(2))]
+    assert _diagnose(diag, monkeypatch, "--grep", "텔레칩스") == 0
+    c = _Client.instances[-1]
+    assert c.session == backfill.SESSION_PATH and c.started
+
+
+def test_run_reports_exactly_what_it_did_not_forward(backfill, monkeypatch):
+    """`run()` → `main()` 의 계약(stats): 못 보낸 유닛 = 실패한 것 + 중단으로
+    시도 못 한 것. FloodWait 은 **그 유닛을 시도하다** 끊겼으므로 그 유닛부터,
+    연속 실패는 i번째가 이미 실패로 세어졌으므로 그 다음부터다 — 한쪽 규칙을
+    다른 쪽에 쓰면 한 유닛이 빠지거나 두 번 든다."""
+    import asyncio
+    ids = (501, 502, 503)
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(20 - (i - 501)))
+        for i in ids]
+    _Client.flood_ids = {502}
+    st: dict = {}
+    assert asyncio.run(backfill.run(_ago(40), None, False, 1000,
+                                    recovery=True, stats=st)) == 1
+    assert (st["abort_kind"], st["forwarded"]) == ("flood", 1)
+    assert st["unfinished_ids"] == [502, 503]
+    assert st["unfinished_since"] == _Client.messages[1].date.strftime("%Y-%m-%d")
+    many = list(range(601, 601 + backfill.MAX_CONSECUTIVE_FAILURES + 2))
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(10 - (i - 601) * 0.1))
+        for i in many]
+    _Client.flood_ids = set()
+    _Client.fail_forward_ids = set(many)
+    st = {}
+    assert asyncio.run(backfill.run(_ago(40), None, False, 1000,
+                                    recovery=True, stats=st)) == 1
+    assert st["abort_kind"] == "failures"
+    assert st["unfinished_ids"] == many             # 실패 5 + 시도 못 한 2
+    # 알림을 미루라고 하지 않았으면 run() 이 직접 보낸다(형제 호출·테스트).
+    assert backfill._test_notes and "백필 중단" in backfill._test_notes[-1]
+    assert "note" not in st
+
+
+def test_the_unfinished_list_is_capped_and_says_so(backfill):
+    """못 보낸 것이 많으면 앞 20개만 적고 **나머지 수를 말한다**(#45) — 알림
+    한 통이 id 로 도배되지 않게. 없으면 아무것도 싣지 않는다."""
+    ids = list(range(1, 26))
+    text = backfill._unfinished_text({"unfinished_ids": ids,
+                                      "unfinished_since": "2026-09-01"})
+    assert text.startswith("포워드 못 한 원본 msg id 25건: 1, 2, ")
+    assert ", 20 외 5건" in text and ", 21" not in text
+    assert text.endswith("--since 2026-09-01")
+    assert backfill._unfinished_text({}) == ""

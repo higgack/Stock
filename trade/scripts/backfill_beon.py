@@ -444,20 +444,22 @@ async def run(
         # records via the Bot API for forward_origin_chat_id.
         source_chat_id = _tutils.get_peer_id(source)
     except Exception as exc:
-        from trade.tg_entities import startup_failure_note
-        log.exception("session/access failure during startup")
+        from trade.tg_entities import (prescribed_failure, startup_failure_note,
+                                       startup_failure_text)
+        # 처방을 담아 던진 예외는 그 문장이 곧 진단이다 — 트레이스백은 예상 못
+        # 한 예외에만(4차 리뷰 L5 · 형제 backfill_badonion 과 같은 규약 #38).
+        if not prescribed_failure(exc):
+            log.exception("session/access failure during startup")
         if dry_run:
             # 사람이 터미널에서 돌린 진단이다 — 폰의 '시작 실패' 는 2시간 타이머의
             # 장애로 읽힌다(#82 · 형제 backfill_badonion 과 같은 규약 #38).
             log.error("dry-run 시작 실패 — 진단 실행이라 알리지 않는다: %s",
                       startup_failure_note(exc))
         else:
-            _notify(
-                "⚠️ <b>BeOn 동기화 — 시작 실패</b>\n"
-                f"{html.escape(type(exc).__name__)}: "
-                f"{html.escape(str(exc)[:200])}\n"
-                + html.escape(startup_failure_note(exc))
-            )
+            if prescribed_failure(exc):
+                log.error("session/access failure during startup: %s", exc)
+            _notify("⚠️ <b>BeOn 동기화 — 시작 실패</b>\n"
+                    + html.escape(startup_failure_text(exc)))
         if client is not None:
             try:
                 await client.disconnect()
