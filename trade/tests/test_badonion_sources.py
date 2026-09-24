@@ -6,8 +6,10 @@
 만 나열했다. 드리프트를 구조적으로 불가능하게 만든 뒤 그 계약을 고정한다.
 """
 
+import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from trade import badonion_sources as srcs
@@ -627,6 +629,443 @@ class TestRelevanceBreakdown20260917(unittest.TestCase):
                  and isinstance(n.func, ast.Attribute)
                  and n.func.attr == "relevance_breakdown"]
         self.assertTrue(calls, "백필이 소스별 계수를 안 부른다")
+
+
+class TestSyncRecoveryWindow20260924(unittest.TestCase):
+    """파서가 생기기 전에 버려진 캡션을 동기화가 **스스로** 회수한다(실수 #403).
+
+    2026-09-16 사용자가 채널에서 본 한국 수입 회사별 캡션(텔레칩스)이 09-24
+    까지 보드에 없었다. 관련성 필터 = 파서라 파서 배포 전 캡션은 리스너가
+    버리고, 6시간 동기화는 3일만 보므로 영영 못 줍는다. "파서 배포는 백필
+    수동 회수까지가 한 세트"(#261·#330)를 사람 손에 맡겨 두 번 실패했다
+    (#370·#371) → 필터 코드 지문이 바뀌면 다음 동기화가 한 번 넓게 훑는다.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.state = self.dir / srcs.SYNC_STATE_NAME
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    # ── 창 판정 ──────────────────────────────────────────────────────────
+    def test_first_run_without_a_record_scans_the_recovery_window(self):
+        plan = srcs.sync_plan(self.state, fp="aaaaaaaaaa")
+        self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        self.assertTrue(plan["record"])
+        self.assertIn("기록 없음", plan["reason"])
+        # 기록이 없을 땐 바뀌었는지조차 모른다 — '바뀌었다' 를 주장하지
+        # 않는다(#165). 대신 무엇을 하는지는 말한다.
+        self.assertNotIn("바뀌었다", plan["reason"])
+        self.assertIn(f"{srcs.RECOVERY_LOOKBACK_DAYS}일", plan["reason"])
+
+    def test_recovery_happens_once_then_settles_to_the_default(self):
+        """수렴 — 회수가 성공해 기록되면 다음부터는 기본 창이다(#171)."""
+        self.state.write_text('{"relevance_fp": "oldoldold0"}', encoding="utf-8")
+        plan = srcs.sync_plan(self.state, fp="newnewnew0")
+        self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        self.assertTrue(plan["record"])
+        self.assertIn("oldoldold0 → newnewnew0", plan["reason"])
+        self.assertIn("필터가 쓰는 모듈이 바뀌었다", plan["reason"])
+        self.assertTrue(srcs.record_sync(self.state, plan["fp"]))
+        again = srcs.sync_plan(self.state, fp="newnewnew0")
+        self.assertEqual(srcs.DEFAULT_LOOKBACK_DAYS, again["days"])
+        self.assertFalse(again["record"])
+
+    def test_default_and_recovery_windows_are_the_chosen_contract(self):
+        # 리터럴로 못박는다 — 상수로 상수를 검증하면 동어반복이다(#66).
+        # ⚠️ 측정값이 아니라 **고른 값**이다(리뷰 L6): 3일 = 옛 기본 창(리스너
+        # 다운타임 안전망, 타이머 6시간보다 넓다) · 40일 = 월간 발행의 가장
+        # 최근 한 회가 들도록 31일 + 여유 · 재시도 3회 · 자동 회수 상한 100유닛.
+        self.assertEqual(3, srcs.DEFAULT_LOOKBACK_DAYS)
+        self.assertEqual(40, srcs.RECOVERY_LOOKBACK_DAYS)
+        self.assertEqual(3, srcs.RECOVERY_MAX_ATTEMPTS)
+        self.assertEqual(100, srcs.RECOVERY_MAX_UNITS)
+
+    def test_since_wins_over_lookback_like_the_backfill_does(self):
+        """백필은 둘 다 받으면 `--since` 로 훑는다 — 판정이 `--lookback-days`
+        를 먼저 보면 4일만 훑고도 '덮었다' 로 기록해 회수가 영영 사라진다
+        (독립 리뷰 M2)."""
+        narrow = srcs.sync_plan(self.state, fp="g" * 10, now=self._NOW,
+                                since="2026-09-20", lookback_days=45)
+        self.assertIsNone(narrow["days"])           # 창은 --since 다
+        self.assertFalse(narrow["record"])
+        wide = srcs.sync_plan(self.state, fp="g" * 10, now=self._NOW,
+                              since="2026-08-01", lookback_days=5)
+        self.assertIsNone(wide["days"])
+        self.assertTrue(wide["record"])
+
+    def test_only_the_automatic_recovery_is_marked_as_one(self):
+        """포워드 상한·알림 문구는 **자동** 회수에만 — 사람이 명시한 창은 그 사람의
+        결정이다(리뷰 L5)."""
+        self.assertTrue(srcs.sync_plan(self.state, fp="h" * 10)["recovery"])
+        for kw in ({"lookback_days": 45}, {"lookback_days": 3},
+                   {"since": "2026-08-01"}):
+            self.assertFalse(srcs.sync_plan(self.state, fp="h" * 10,
+                                            now=self._NOW, **kw)["recovery"], kw)
+        srcs.record_sync(self.state, "h" * 10)
+        self.assertFalse(srcs.sync_plan(self.state, fp="h" * 10)["recovery"])
+        self.assertFalse(srcs.sync_plan(self.state, fp="")["recovery"])
+
+    def test_a_partly_failed_recovery_is_retried_a_bounded_number_of_times(self):
+        """일부 실패한 회수는 기록하지 않는다(일시 장애도 같은 경로로 온다) —
+        그러나 정말 지워진 메시지는 매번 실패하므로 3회째엔 기록한다(#171).
+        옛 지문은 그대로 둬야 다음 틱이 다시 넓게 훑는다(리뷰 M1)."""
+        self.state.write_text('{"relevance_fp": "oldoldold0"}', encoding="utf-8")
+        for n in range(1, srcs.RECOVERY_MAX_ATTEMPTS):
+            done, why = srcs.finish_recovery(self.state, "newnewnew0",
+                                             failed_units=2)
+            self.assertFalse(done, n)
+            self.assertIn(f"{n}/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+            # 무엇을 다시 훑는지 정확히 — 자동 재시도는 최근 회수 창만 본다.
+            # 더 넓은 명시 창의 그 밖 실패까지 '다시 시도한다' 고 하면 거짓이다.
+            self.assertIn(f"최근 {srcs.RECOVERY_LOOKBACK_DAYS}일", why)
+            rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
+            self.assertEqual("oldoldold0", rec["relevance_fp"])   # 옛 지문 보존
+            self.assertEqual({"fp": "newnewnew0", "count": n},
+                             {k: rec["retry"][k] for k in ("fp", "count")})
+            plan = srcs.sync_plan(self.state, fp="newnewnew0")
+            self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+            # 사유가 **실제 횟수**를 말한다(2차 리뷰 S17 — 늘 1회째라고 해도
+            # 창 판정은 맞아 이 줄만 거짓말한다).
+            self.assertIn(f"재시도 {n}회째", plan["reason"])
+        done, why = srcs.finish_recovery(self.state, "newnewnew0", failed_units=2)
+        self.assertTrue(done)
+        # 횟수는 유닛별이 아니라 실행별이다 — 3회째에 처음 실패한 유닛도 여기서
+        # 멈추므로 '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰). 몇 회째
+        # 실행이었는지와 msg id 를 어디서 보는지만 말한다.
+        self.assertIn("재시도 상한", why)
+        self.assertIn(f"회수 {srcs.RECOVERY_MAX_ATTEMPTS}회째", why)
+        # 실패한 msg id 를 찾을 **두** 줄을 다 가리킨다 — 포워드 실패는 즉시
+        # 실패(`permanent forward failure`)와 FloodWait 5회 소진(`giving up on
+        # msgs`)으로 끝난다(`backfill_badonion._forward_unit`). 한쪽만 적으면
+        # 다른 갈래의 id 를 못 찾는다.
+        self.assertIn("permanent forward failure", why)
+        self.assertIn("giving up on msgs", why)
+        self.assertNotIn("영구 실패", why)
+        rec = __import__("json").loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual({"relevance_fp", "recorded_at"}, set(rec))  # 표식 정리
+
+    def test_the_give_up_message_points_at_log_lines_that_exist(self):
+        """상한 문구가 가리키는 로그 줄이 백필에 **실제로** 있어야 한다 — 로그
+        문구를 바꾸면 안내가 없는 줄을 가리킨다(#371 지어낸 안내 · #55). 백필은
+        telethon 없이 import 할 수 없어 AST 의 문자열 상수로 본다."""
+        import ast
+        import re
+        self.state.write_text(json.dumps(
+            {"retry": {"fp": "samesame00",
+                       "count": srcs.RECOVERY_MAX_ATTEMPTS - 1}}),
+            encoding="utf-8")
+        done, why = srcs.finish_recovery(self.state, "samesame00",
+                                         failed_units=1)
+        self.assertTrue(done)
+        pointers = re.findall(r"'([^']+)'", why)
+        self.assertGreaterEqual(len(pointers), 2, why)
+        tree = ast.parse(Path("trade/scripts/backfill_badonion.py").read_text(
+            encoding="utf-8"))
+        consts = [n.value for n in ast.walk(tree)
+                  if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        for ptr in pointers:
+            self.assertTrue(any(c.startswith(ptr) for c in consts),
+                            f"백필에 '{ptr}' 로 시작하는 로그 줄이 없다")
+
+    def test_a_retry_marker_reopens_the_window_even_when_the_fp_is_recorded(self):
+        """명시 회수(`--lookback-days 40`)가 **이미 기록된 지문**으로 일부
+        실패하면 재시도 표식만 남는다. 옛 판은 기록된 지문을 먼저 보고 표식을
+        안 읽어 다음 자동 동기화가 3일로 돌아갔다 — "다음 동기화가 다시
+        시도한다" 는 로그가 거짓이었고, 3일보다 오래된 실패는 영영 안
+        돌아왔다(2차 리뷰 P2)."""
+        srcs.record_sync(self.state, "samesame00")
+        done, _ = srcs.finish_recovery(self.state, "samesame00", failed_units=1)
+        self.assertFalse(done)
+        plan = srcs.sync_plan(self.state, fp="samesame00")
+        self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        self.assertTrue(plan["record"])
+        self.assertTrue(plan["recovery"])      # 자동으로 넓힌 창이다
+        self.assertIn("재시도 1회째", plan["reason"])
+        self.assertIn("포워드 실패가 남아", plan["reason"])
+        # 반대 증거(#25) — **다른** 지문의 표식은 이 지문의 재시도가 아니다.
+        # 그걸로 창을 열면 옛 배포의 실패가 새 기록을 영원히 흔든다.
+        self.state.write_text(json.dumps(
+            {"relevance_fp": "samesame00",
+             "retry": {"fp": "otherother", "count": 2}}), encoding="utf-8")
+        plan = srcs.sync_plan(self.state, fp="samesame00")
+        self.assertEqual(srcs.DEFAULT_LOOKBACK_DAYS, plan["days"])
+        self.assertFalse(plan["record"])
+
+    def test_a_stale_marker_of_another_fingerprint_is_named(self):
+        """기록 없이 옛 지문의 표식만 남았을 때 '기록 형식이 다르다' 고 하면
+        파일이 깨진 줄 알고 지우러 간다(#82 — 갈래는 이름으로)."""
+        self.state.write_text(json.dumps(
+            {"retry": {"fp": "otherother", "count": 1}}), encoding="utf-8")
+        plan = srcs.sync_plan(self.state, fp="newnewnew0")
+        self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+        self.assertIn("다른 지문의 재시도 표식만 남았다", plan["reason"])
+        self.assertNotIn("재시도 1회째", plan["reason"])
+
+    def test_a_broken_retry_count_neither_crashes_nor_drops_the_retry(self):
+        """상태 파일은 사람이 고칠 수도 깨질 수도 있다. 옛 판은 `int("x")` 가
+        `finish_recovery` 에서 새 **포워드를 끝낸** 동기화가 트레이스백으로
+        끝났다(2차 리뷰 P6). 그렇다고 횟수를 못 읽었다는 이유로 '재시도가
+        남았다' 는 사실까지 버리면 그 회수가 조용히 사라진다(#54)."""
+        for count in ('"x"', "null", "Infinity", "-2", "[]", '{"a": 1}'):
+            with self.subTest(count=count):
+                self.state.write_text(
+                    '{"relevance_fp": "samesame00", "retry": {"fp": '
+                    f'"samesame00", "count": {count}}}}}', encoding="utf-8")
+                plan = srcs.sync_plan(self.state, fp="samesame00")
+                self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"])
+                self.assertIn("횟수를 못 읽었다", plan["reason"])
+                done, why = srcs.finish_recovery(self.state, "samesame00",
+                                                 failed_units=1)
+                self.assertFalse(done)
+                self.assertIn(f"1/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+                rec = json.loads(self.state.read_text(encoding="utf-8"))
+                self.assertEqual(1, rec["retry"]["count"])   # 새로 센다
+                self.assertEqual("samesame00", rec["relevance_fp"])
+
+    def test_a_failed_replace_leaves_the_old_state_intact(self):
+        """원자 쓰기를 **잰다**(2차 리뷰 S11 — 옛 이름의 테스트는 .tmp 가 안
+        남는지만 봐, 제자리 쓰기로 바꿔도 통과했다). 교체가 실패하면 옛 기록이
+        한 바이트도 안 바뀌어야 한다 — 쓰다 만 파일은 '기록 못 읽음' 이 되어
+        40일 회수를 한 번 더 부른다(#379)."""
+        from unittest import mock
+        srcs.record_sync(self.state, "oldoldold0")
+        before = self.state.read_bytes()
+        with mock.patch.object(Path, "replace",
+                               side_effect=OSError("교체 실패(테스트)")):
+            with self.assertRaises(OSError):
+                srcs.record_sync(self.state, "newnewnew0")
+            with self.assertRaises(OSError):
+                srcs.finish_recovery(self.state, "newnewnew0", failed_units=1)
+        self.assertEqual(before, self.state.read_bytes())
+
+    def test_retries_count_per_fingerprint_and_a_clean_run_records_at_once(self):
+        srcs.finish_recovery(self.state, "aaaaaaaaa1", failed_units=1)
+        srcs.finish_recovery(self.state, "aaaaaaaaa1", failed_units=1)
+        # 지문이 또 바뀌면(다른 배포) 횟수는 새로 센다 — 옛 실패를 끌어오지 않는다.
+        done, why = srcs.finish_recovery(self.state, "bbbbbbbbb2",
+                                         failed_units=1)
+        self.assertFalse(done)
+        self.assertIn(f"1/{srcs.RECOVERY_MAX_ATTEMPTS}", why)
+        # 기록이 아직 없으면 사유가 재시도 중이라고 말한다(#82).
+        self.assertIn("재시도 1회째",
+                      srcs.sync_plan(self.state, fp="bbbbbbbbb2")["reason"])
+        done, _ = srcs.finish_recovery(self.state, "bbbbbbbbb2", failed_units=0)
+        self.assertTrue(done)
+        self.assertFalse(srcs.finish_recovery(self.state, "", failed_units=0)[0])
+
+    def test_the_state_write_is_atomic_and_needs_no_other_module(self):
+        """price_provider 를 빌려 쓰면 그 모듈의 ImportError 가 `except OSError`
+        밖으로 새 성공한 동기화가 트레이스백으로 끝난다(리뷰 L3)."""
+        from unittest import mock
+        from trade import price_provider as pp
+
+        def _boom(*a, **k):
+            raise RuntimeError("빌려 쓰면 안 된다")
+
+        with mock.patch.object(pp, "_atomic_write_json", _boom):
+            self.assertTrue(srcs.record_sync(self.state, "cccccccccc"))
+        self.assertEqual("cccccccccc",
+                         srcs.sync_plan(self.state, fp="cccccccccc")["fp"])
+        self.assertEqual([self.state.name],
+                         sorted(p.name for p in self.dir.iterdir()))  # .tmp 없음
+
+    def test_an_unreadable_record_is_named_and_not_trusted(self):
+        for body, why in (("{broken", "JSONDecodeError"),
+                          ("[]", "기록 형식이 다르다"),
+                          ('{"relevance_fp": ""}', "기록 형식이 다르다")):
+            self.state.write_text(body, encoding="utf-8")
+            plan = srcs.sync_plan(self.state, fp="bbbbbbbbbb")
+            self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"], body)
+            self.assertIn(why, plan["reason"], body)
+
+    # 시계는 **주입**한다 — 실제 오늘로 재면 `since="2026-09-01"` 이 11월엔
+    # 40일을 넘어 판정이 뒤집힌다(#249·#291 날짜 리터럴 시한폭탄).
+    _NOW = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
+
+    def test_an_explicit_narrow_window_neither_recovers_nor_records(self):
+        """좁을 수 있는 창을 회수로 치면 다 된 줄 알고 다시 안 훑는다."""
+        cases = (({"since": "2026-09-01"}, None),       # 23일
+                 ({"lookback_days": 7}, 7),
+                 ({"lookback_days": 39}, 39),
+                 ({"to": "2026-09-10"}, srcs.DEFAULT_LOOKBACK_DAYS),
+                 ({"since": "2026-01-01", "to": "2026-09-10"}, None),
+                 ({"since": "nonsense"}, None))
+        for kw, days in cases:
+            plan = srcs.sync_plan(self.state, fp="cccccccccc", now=self._NOW, **kw)
+            self.assertEqual(days, plan["days"], kw)
+            self.assertFalse(plan["record"], kw)
+            self.assertIn("명시", plan["reason"], kw)
+            self.assertIn("덮지 않아", plan["reason"], kw)
+        # ⚠️ `--lookback-days 0` 도 명시다 — 0 을 '없음' 으로 읽으면 사람이
+        # 고른 창을 회수 창이 덮는다(#235·#297 `or` 가 값을 지운다).
+        self.assertEqual(0, srcs.sync_plan(self.state, fp="c" * 10, now=self._NOW,
+                                           lookback_days=0)["days"])
+
+    def test_an_explicit_window_that_covers_the_recovery_window_records(self):
+        """수렴 — 자동 회수가 후보 상한에 걸려 중단되면 알림이 명시 실행을
+        시킨다. 그 넓은 실행까지 무시하면 6시간마다 같은 중단이 영원히 반복된다
+        (#171). 덮는 창이 성공하면 기록한다."""
+        for kw, days in (({"lookback_days": 40}, 40),
+                         ({"lookback_days": 90}, 90),
+                         ({"since": "2026-08-15"}, None)):   # 40일
+            plan = srcs.sync_plan(self.state, fp="eeeeeeeeee", now=self._NOW, **kw)
+            self.assertEqual(days, plan["days"], kw)
+            self.assertTrue(plan["record"], kw)
+            self.assertEqual("eeeeeeeeee", plan["fp"], kw)
+            self.assertIn("덮으므로", plan["reason"], kw)
+        # 지문을 못 재면 덮어도 기록하지 않는다(#54).
+        plan = srcs.sync_plan(self.state, fp="", now=self._NOW, lookback_days=40)
+        self.assertFalse(plan["record"])
+        self.assertIn("기록 불가", plan["reason"])
+
+    def test_an_unknown_fingerprint_is_said_and_never_recorded(self):
+        plan = srcs.sync_plan(self.state, fp="")
+        self.assertEqual(srcs.DEFAULT_LOOKBACK_DAYS, plan["days"])
+        self.assertFalse(plan["record"])
+        self.assertIn("판정 불가", plan["reason"])
+        self.assertFalse(srcs.record_sync(self.state, ""))
+        self.assertFalse(self.state.exists(), "못 잰 지문을 기록했다")
+
+    def test_the_plan_computes_the_real_fingerprint_when_not_given(self):
+        """배선 — `fp` 를 안 주면 제품 지문을 잰다(백필은 인자 없이 부른다)."""
+        from unittest import mock
+        with mock.patch.object(srcs, "relevance_fingerprint",
+                               return_value="dddddddddd") as fp:
+            plan = srcs.sync_plan(self.state)
+        fp.assert_called_once_with()
+        self.assertEqual("dddddddddd", plan["fp"])
+        with mock.patch.object(srcs, "relevance_fingerprint") as fp:
+            srcs.sync_plan(self.state, since="2026-09-01", now=self._NOW)
+        fp.assert_not_called()      # 회수 창을 안 덮는 명시 창엔 지문이 필요 없다
+        with mock.patch.object(srcs, "relevance_fingerprint",
+                               return_value="ffffffffff") as fp:
+            plan = srcs.sync_plan(self.state, lookback_days=40, now=self._NOW)
+        fp.assert_called_once_with()
+        self.assertEqual("ffffffffff", plan["fp"])
+
+    # ── 지문 ─────────────────────────────────────────────────────────────
+    def _pkg(self, **files):
+        base = self.dir / "fakepkg"
+        base.mkdir(exist_ok=True)
+        (base / "__init__.py").write_text("", encoding="utf-8")
+        for name, body in files.items():
+            (base / f"{name}.py").write_text(body, encoding="utf-8")
+        return base
+
+    def _fp(self, base, roots=("fakepkg.adapter",)):
+        return srcs.relevance_fingerprint(roots=roots, base_dir=base)
+
+    def test_the_fingerprint_follows_imports_transitively(self):
+        """kri 의 파서 함수는 어댑터에 있지만 문법은 엔진에 산다 — 엔진만
+        고친 배포를 못 보면 이 장치가 막으려던 유실이 재발한다(#365)."""
+        base = self._pkg(
+            adapter="from fakepkg import engine\n\ndef parse(t):\n"
+                    "    return engine.parse(t)\n",
+            engine="from fakepkg.util import MARK\n\ndef parse(t):\n"
+                   "    return MARK in t\n",
+            util="MARK = '수입'\n",
+            unrelated="X = 1\n")
+        fp1 = self._fp(base)
+        self.assertRegex(fp1, r"^[0-9a-f]{10}$")
+        (base / "util.py").write_text("MARK = '수출'\n", encoding="utf-8")
+        fp2 = self._fp(base)
+        self.assertNotEqual(fp1, fp2, "두 단계 아래 모듈의 변경을 못 봤다")
+        (base / "unrelated.py").write_text("X = 2\n", encoding="utf-8")
+        self.assertEqual(fp2, self._fp(base), "필터와 무관한 모듈이 지문을 흔든다")
+
+    def test_the_fingerprint_ignores_comments_and_docstrings(self):
+        """설명만 고친 배포가 40일 회수를 부르면 안 된다(#266)."""
+        base = self._pkg(
+            adapter='"""옛 설명."""\nfrom fakepkg import engine\n\n'
+                    'def parse(t):\n    """옛."""\n    return engine.parse(t)\n',
+            engine="def parse(t):\n    return '수입' in t\n")
+        fp1 = self._fp(base)
+        (base / "adapter.py").write_text(
+            '"""새 설명 — 훨씬 길다."""\nfrom fakepkg import engine  # 주석\n\n'
+            'def parse(t):\n    """새."""\n    # 주석 한 줄\n'
+            '    return engine.parse(t)\n', encoding="utf-8")
+        self.assertEqual(fp1, self._fp(base))
+        (base / "engine.py").write_text(
+            "def parse(t):\n    return '수출' in t\n", encoding="utf-8")
+        self.assertNotEqual(fp1, self._fp(base), "코드 변경을 못 봤다")
+
+    def test_relative_imports_are_followed(self):
+        """지금 trade 엔 상대 import 가 없다 — 생기는 날 조용히 새지 않게."""
+        base = self._pkg(
+            adapter="from . import engine\n\ndef parse(t):\n"
+                    "    return engine.parse(t)\n",
+            engine="def parse(t):\n    return 1\n")
+        fp1 = self._fp(base)
+        (base / "engine.py").write_text("def parse(t):\n    return 2\n",
+                                        encoding="utf-8")
+        self.assertNotEqual(fp1, self._fp(base))
+
+    def test_plain_import_statements_are_followed(self):
+        """`import fakepkg.util` 형태 — 지금 trade 엔 없지만 생기면 샌다(리뷰 S11)."""
+        base = self._pkg(
+            adapter="import fakepkg.util\n\ndef parse(t):\n"
+                    "    return fakepkg.util.MARK in t\n",
+            util="MARK = '수입'\n")
+        fp1 = self._fp(base)
+        (base / "util.py").write_text("MARK = '수출'\n", encoding="utf-8")
+        self.assertNotEqual(fp1, self._fp(base))
+
+    def test_package_init_code_is_covered(self):
+        """`from fakepkg import MARK` 의 MARK 가 패키지 `__init__.py` 에 산다 —
+        오늘 `trade/__init__.py` 는 비어 있어 이 경로가 안 걸렸다(리뷰 S15)."""
+        base = self._pkg(
+            adapter="from fakepkg import MARK\n\ndef parse(t):\n"
+                    "    return MARK in t\n")
+        (base / "__init__.py").write_text("MARK = '수입'\n", encoding="utf-8")
+        fp1 = self._fp(base)
+        (base / "__init__.py").write_text("MARK = '수출'\n", encoding="utf-8")
+        self.assertNotEqual(fp1, self._fp(base))
+
+    def test_a_missing_or_broken_module_means_no_fingerprint(self):
+        """덜 덮은 지문을 전부 덮은 것처럼 내지 않는다(#364·#365·#54)."""
+        base = self._pkg(adapter="from fakepkg import engine\n",
+                         engine="def parse(t):\n    return 1\n")
+        self.assertTrue(self._fp(base))
+        self.assertEqual("", self._fp(base, roots=("fakepkg.adapter",
+                                                   "fakepkg.nope")))
+        (base / "engine.py").write_text("def parse(t)\n", encoding="utf-8")
+        self.assertEqual("", self._fp(base))
+
+    def test_roots_are_derived_from_the_registry(self):
+        """이름 열거가 아니라 레지스트리에서 — 소스를 더하면 저절로 덮인다(#24)."""
+        from unittest import mock
+        roots = srcs.filter_roots()
+        self.assertIn("trade.badonion_sources", roots)
+        self.assertIn("trade.kr_stock_imports", roots)      # kri 어댑터
+        self.assertIn("trade.kr_company_flow",
+                      srcs.filter_closure(roots))            # 그 엔진
+        self.assertTrue(srcs.relevance_fingerprint())
+        with mock.patch.object(srcs, "SOURCES", []):
+            self.assertEqual(("trade.badonion_sources",), srcs.filter_roots())
+
+    # ── 포워드할 유닛 줄 ─────────────────────────────────────────────────
+    def test_unit_labels_names_every_source_in_registry_order(self):
+        _M = TestRelevanceBreakdown20260917._M
+        cap = TestRelevanceBreakdown20260917._KR_EXPORT
+        self.assertEqual("한국 수출(종목별)", srcs.unit_labels([_M(cap)]))
+        self.assertEqual("(없음)", srcs.unit_labels([_M("오늘 점심 뭐 먹지")]))
+        # 앨범 — 캡션 없는 사진 멤버가 섞여도 캡션 멤버가 정한다.
+        self.assertEqual("한국 수출(종목별)",
+                         srcs.unit_labels([_M(""), _M(cap)]))
+        from unittest import mock
+
+        class _S:                       # 합성 — 원천 소스가 아니다(#165)
+            def __init__(self, key):
+                self.key, self.label = key, f"합성 {key}"
+
+            def parse(self, text):
+                return {"ok": 1} if "겹침" in text else None
+
+        with mock.patch.object(srcs, "SOURCES", [_S("b"), _S("a")]):
+            self.assertEqual("합성 b, 합성 a", srcs.unit_labels([_M("겹침")]))
 
 
 
