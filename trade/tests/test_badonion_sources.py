@@ -660,6 +660,19 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         self.assertNotIn("바뀌었다", plan["reason"])
         self.assertIn(f"{srcs.RECOVERY_LOOKBACK_DAYS}일", plan["reason"])
 
+    def test_a_foreign_shaped_record_is_named_not_quoted(self):
+        """`relevance_fp` 가 문자열이 아니거나 `retry` 가 dict 가 아니면 '기록
+        형식이 다르다' 고 말한다 — 그 값을 옛 지문처럼 적으면(`123 → …`) 없는
+        변화를 주장하고(#165), 표식처럼 읽으면 없는 재시도를 말한다(3차 리뷰
+        S11·S29). 어느 쪽이든 회수 창은 연다(못 읽은 기록으로 좁히지 않는다)."""
+        for raw in ('{"relevance_fp": 123}', '{"retry": "x"}'):
+            self.state.write_text(raw, encoding="utf-8")
+            plan = srcs.sync_plan(self.state, fp="aaaaaaaaaa")
+            self.assertIn("기록 형식이 다르다", plan["reason"], raw)
+            self.assertNotIn("123 →", plan["reason"], raw)
+            self.assertNotIn("재시도 표식", plan["reason"], raw)
+            self.assertEqual(srcs.RECOVERY_LOOKBACK_DAYS, plan["days"], raw)
+
     def test_recovery_happens_once_then_settles_to_the_default(self):
         """수렴 — 회수가 성공해 기록되면 다음부터는 기본 창이다(#171)."""
         self.state.write_text('{"relevance_fp": "oldoldold0"}', encoding="utf-8")
@@ -762,13 +775,35 @@ class TestSyncRecoveryWindow20260924(unittest.TestCase):
         self.assertTrue(done)
         pointers = re.findall(r"'([^']+)'", why)
         self.assertGreaterEqual(len(pointers), 2, why)
-        tree = ast.parse(Path("trade/scripts/backfill_badonion.py").read_text(
-            encoding="utf-8"))
+        # cwd 와 무관하게 — 레포 루트 밖에서 돌려도 같은 파일을 연다(3차 리뷰).
+        script = (Path(__file__).resolve().parents[1] / "scripts"
+                  / "backfill_badonion.py")
+        tree = ast.parse(script.read_text(encoding="utf-8"))
         consts = [n.value for n in ast.walk(tree)
                   if isinstance(n, ast.Constant) and isinstance(n.value, str)]
         for ptr in pointers:
             self.assertTrue(any(c.startswith(ptr) for c in consts),
                             f"백필에 '{ptr}' 로 시작하는 로그 줄이 없다")
+
+    def test_an_aborted_run_is_counted_and_named_by_its_reason(self):
+        """중단된 회수도 재시도 횟수에 센다(3차 리뷰 Medium) — 안 세면 남은
+        유닛이 전부 이전 실패분일 때 매 틱이 중단돼 영영 수렴하지 않는다.
+        사유는 '포워드 실패 N건' 이 아니라 **중단 사유**다 — FloodWait 중단은
+        실패 0건일 수 있다(#292 틀린 라벨)."""
+        reason = "Telegram FloodWait 900s exceeds TRADE_MAX_FLOOD_WAIT_S=600s"
+        done, why = srcs.finish_recovery(self.state, "samesame00",
+                                         failed_units=0, aborted=reason)
+        self.assertFalse(done)                  # 실패 0건이어도 기록하지 않는다
+        self.assertIn("도중 중단", why)
+        self.assertIn("FloodWait 900s", why)
+        self.assertNotIn("포워드 실패 0건", why)
+        self.assertEqual(1, json.loads(self.state.read_text(
+            encoding="utf-8"))["retry"]["count"])
+        for _ in range(srcs.RECOVERY_MAX_ATTEMPTS - 1):
+            done, why = srcs.finish_recovery(self.state, "samesame00",
+                                             failed_units=5, aborted="x")
+        self.assertTrue(done)                   # 상한에서 수렴한다(#171)
+        self.assertIn("재시도 상한", why)
 
     def test_a_retry_marker_reopens_the_window_even_when_the_fp_is_recorded(self):
         """명시 회수(`--lookback-days 40`)가 **이미 기록된 지문**으로 일부

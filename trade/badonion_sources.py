@@ -607,8 +607,11 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
 #    '실패' 경로로 오므로, 기록하면 다음 틱이 3일로 돌아가 그 캡션을 영영 잃는다.
 #    다만 **정말 지워진** 메시지는 매번 실패하므로 같은 지문의 3회째 실행에도
 #    실패가 남으면 더 재시도하지 않고 기록한다(수렴 지점, #171 — 무한히 40일을
-#    훑으며 6시간마다 알리지 않게). 횟수는 유닛별이 아니라 실행별이라 '영구
-#    실패' 로 단정하지 않는다(#165, 2차 리뷰).
+#    훑으며 6시간마다 알리지 않게). 포워드 **도중 중단된** 실행(연속 실패·긴
+#    FloodWait)도 센다 — 안 세면 남은 유닛이 전부 이전 실패분일 때 매 틱이
+#    중단돼 이 수렴 지점에 영영 못 닿는다(3차 리뷰). 프로세스가 죽은 실행은
+#    못 센다(`finish_recovery` 독스트링). 횟수는 유닛별이 아니라 실행별이라
+#    '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰).
 RECOVERY_MAX_ATTEMPTS = 3
 # ② 자동 회수가 한 번에 포워드할 유닛 상한 — 평소 회수는 파서 배포 전에
 #    버려진 캡션 몇 건이다(월간 소스 한 달치가 수십 장: kr_stock 21·jp_stock 13
@@ -641,29 +644,42 @@ def record_sync(state_path: Path, fp: str, *,
 
 
 def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
+                    aborted: str = "",
                     now: datetime | None = None) -> tuple[bool, str]:
-    """성공한(rc 0) 회수 실행 뒤 → (기록했나, 사람이 읽는 사유).
+    """회수 실행이 포워드를 **끝냈거나 도중에 중단된** 뒤 → (기록했나, 사유).
 
-    포워드가 전부 됐으면 기록한다. 일부 실패면 기록하지 않고 **재시도 표식**만
-    남긴다(옛 지문은 그대로 둔다 — 다음 자동 동기화는 그 표식을 보고 회수 창을
-    다시 쓴다, `sync_plan`). 같은 지문으로 `RECOVERY_MAX_ATTEMPTS` 회째 실행에도
-    실패가 남으면 더 재시도하지 않고 기록한다(수렴, #171).
+    포워드가 전부 됐으면 기록한다. 일부 실패했거나 중단됐으면(`aborted` = 중단
+    사유) 기록하지 않고 **재시도 표식**만 남긴다(옛 지문은 그대로 둔다 — 다음
+    자동 동기화는 그 표식을 보고 회수 창을 다시 쓴다, `sync_plan`). 같은 지문으로
+    `RECOVERY_MAX_ATTEMPTS` 회째 실행에도 실패나 중단이 남으면 더 재시도하지 않고
+    기록한다(수렴, #171).
+
+    ⚠️ 중단도 센다(3차 리뷰): 남은 유닛이 전부 이전에 실패한 메시지면 매 틱이
+    연속 실패 상한에서 중단돼, 중단을 안 세면 횟수가 영영 안 올라 6시간마다
+    40일을 다시 훑는다. 시작 실패·후보/회수 상한 중단은 아무것도 포워드하지
+    않아 호출부가 부르지 않는다. 프로세스가 죽은 실행(타임아웃 kill)은 여기
+    오지 못해 못 센다 — 그때도 포워드된 유닛은 inbox 로 들어가 다음 틱 후보에서
+    빠진다(멱등).
 
     ⚠️ 횟수는 **유닛별이 아니라 이 지문의 회수 실행별**로 센다 — 3회째에 처음
     실패한 유닛도 거기서 멈춘다. 그래서 '영구 실패' 라고 단정하지 않고 몇 회째
-    실행이었는지와 어디서 msg id 를 보는지만 말한다(#165, 2차 리뷰)."""
+    실행이었는지와 어디서 msg id 를 보는지만 말한다(#165, 2차 리뷰). 중단은
+    '포워드 실패 N건' 으로 적지 않고 중단 사유를 적는다 — FloodWait 중단은
+    실패 0건일 수 있다(#292 틀린 라벨)."""
     if not fp:
         return False, "관련성 필터 지문을 못 재 기록하지 않는다"
-    if failed_units <= 0:
+    if failed_units <= 0 and not aborted:
         record_sync(state_path, fp, now=now)
         return True, (f"관련성 필터 지문 {fp} 기록 — 다음 동기화부터 기본 "
                       f"{DEFAULT_LOOKBACK_DAYS}일")
+    what = (f"포워드 도중 중단({aborted[:120]}, 그 전 실패 {failed_units}건)"
+            if aborted else f"포워드 실패 {failed_units}건")
     rec, _why = _read_state(state_path)
     rec = rec or {}
     n = (_retry_count(rec, fp) or 0) + 1
     if n >= RECOVERY_MAX_ATTEMPTS:
         record_sync(state_path, fp, now=now)
-        return True, (f"회수 {n}회째 실행에도 포워드 실패 {failed_units}건 — "
+        return True, (f"회수 {n}회째 실행에도 {what} — "
                       f"재시도 상한({RECOVERY_MAX_ATTEMPTS}회)이라 지문 {fp} 를 "
                       "기록하고 더 재시도하지 않는다(실패한 msg id 는 위 "
                       "'permanent forward failure' · 'giving up on msgs' 줄 — "
@@ -674,7 +690,7 @@ def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
                                                 "at": now.isoformat()}})
     # ⚠️ 무엇을 다시 훑는지 **정확히** 적는다 — 자동 재시도는 최근 회수 창만
     # 본다. 더 넓은 명시 창의 그 밖 실패까지 '다시 시도한다' 고 적으면 거짓이다.
-    return False, (f"포워드 실패 {failed_units}건 — 재시도 표식을 남겨 다음 자동 "
+    return False, (f"{what} — 재시도 표식을 남겨 다음 자동 "
                    f"동기화가 최근 {RECOVERY_LOOKBACK_DAYS}일을 다시 훑는다"
                    f"({n}/{RECOVERY_MAX_ATTEMPTS})")
 

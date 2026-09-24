@@ -24,11 +24,16 @@ Read-only 계약 — 아래를 **호출하지 않는다**:
 쓰는 것은 client.get_entity / client.iter_messages 뿐.
 
 세션 파일(.badonion-session)은 6시간 주기 백필 타이머가 쓰는 SQLite 라,
-이 스크립트는 **임시 복사본**을 만들어 접속한다(`_session_copy`). 원본을
-건드리지 않으므로 타이머를 멈출 필요가 없고, 진단 때문에 운영 백필이
-`database is locked` 로 죽지도 않는다. auth key 가 복사되므로 재로그인도
-불필요하다. 다만 세션 경로가 **cwd 상대**라 반드시 리포 루트에서 실행할 것.
-(리스너는 .badonion-listener-session 으로 파일 자체가 다르다.)
+이 스크립트는 **임시 복사본**을 만들어 접속한다 — 백필 dry-run 과 **같은
+함수**다(`backfill_badonion._dry_run_session` · `tg_entities.start_client`,
+#38). 원본을 건드리지 않으므로 타이머를 멈출 필요가 없고, 진단 때문에 운영
+백필이 `database is locked` 로 죽지도 않는다. auth key 가 복사되므로 인증된
+세션이면 재로그인도 불필요하다. 인증이 풀린 세션이면 **로그인하지 않고
+멈춘다** — 복사본에 로그인하면 실행 끝에 임시 디렉터리와 함께 지워진다(#403
+3차 리뷰). 원본이 없거나 복사가 실패하면 라이브 경로로 접속하고 그렇다고
+말한다(이때는 잠금 경합을 못 피한다). 세션 경로가 **cwd 상대**라 반드시
+리포 루트에서 실행할 것. (리스너는 .badonion-listener-session 으로 파일
+자체가 다르다.)
 
 Usage on host:
     cd ~/stock-trade
@@ -42,7 +47,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import shutil
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -59,6 +63,7 @@ from trade.scripts.backfill_badonion import (
     API_ID,
     SESSION_PATH,
     SOURCE_USERNAME,
+    _dry_run_session,
     _group_by_album,
     _is_relevant,
 )
@@ -101,30 +106,16 @@ def _dump(msg) -> None:
         print(f"  text (파서 입력)         : {txt!r}")
 
 
-def _session_copy(tmpdir: str) -> str:
-    """라이브 세션 파일을 **복사**해서 쓴다.
-
-    `.badonion-session` 은 6시간 주기 백필 타이머가 쓰는 SQLite 파일이다.
-    직접 열면 (a) 진단 중 타이머가 돌아 `database is locked` 로 **운영
-    백필이 실패**하거나 (b) Telethon 이 세션 상태를 갱신하며 서로의 업데이트
-    상태를 덮어쓴다. 복사본은 auth key 를 그대로 갖고 있어 재로그인이
-    필요없고(전화번호 코드 입력 불가한 헤드리스 VM 대응), 원본은 손대지
-    않는다. 원본이 없으면 그대로 두어 Telethon 의 로그인 흐름을 탄다."""
-    src = Path(f"{SESSION_PATH}.session")
-    dst = Path(tmpdir) / "diagnose.session"
-    if src.exists():
-        shutil.copy2(src, dst)
-        log.info("세션 복사본 사용: %s → %s (원본 미변경)", src, dst)
-    else:
-        log.warning("세션 파일 %s 없음 — 새 로그인 흐름을 탄다", src)
-    return str(dst.with_suffix(""))
-
-
 async def run(since: datetime, until: datetime | None, grep: str | None,
               limit: int, sample: int, tmpdir: str) -> int:
-    client = TelegramClient(_session_copy(tmpdir), API_ID, API_HASH)
+    from trade.tg_entities import guarded_client, start_client
+    session = _dry_run_session(tmpdir)
+    # 복사본이면 형식이 올라가도 무해하다 — 못 읽는 형식만 처방과 함께 막는다.
+    # 원본이 없거나 복사가 실패하면 라이브 경로라 운영 세션으로 잰다(#404).
+    client = guarded_client(TelegramClient, session, API_ID, API_HASH,
+                            live=(session == SESSION_PATH))
     try:
-        await client.start()
+        await start_client(client, copy=(session != SESSION_PATH))
         log.info("Telethon session ready (read-only)")
         from telethon import utils as _tutils
 
@@ -189,9 +180,17 @@ def main() -> None:
              else datetime.now(timezone.utc) - timedelta(days=args.days))
     # --to 는 그 날을 포함하도록 하루 더한다(백필의 exclusive 동작과 다름).
     until = (_parse_date(args.to) + timedelta(days=1)) if args.to else None
+    from trade.tg_entities import SessionFormatError, SessionNotAuthorizedError
     with tempfile.TemporaryDirectory() as tmp:
-        sys.exit(asyncio.run(run(since, until, args.grep or None,
-                                 args.limit, args.sample, tmp)))
+        try:
+            rc = asyncio.run(run(since, until, args.grep or None,
+                                 args.limit, args.sample, tmp))
+        except (SessionFormatError, SessionNotAuthorizedError) as exc:
+            # 처방을 담은 문장이다 — 트레이스백에 묻히면 VM 에서 무엇을 깔아야
+            # 하는지 안 보인다(#404 · #82).
+            log.error("시작 실패 — %s", exc)
+            rc = 1
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

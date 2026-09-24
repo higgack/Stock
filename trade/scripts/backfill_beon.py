@@ -427,8 +427,12 @@ async def run(
     # it just means the channel was quiet since the last tick, which is
     # the normal case for a 2-hourly safety net behind the realtime
     # listener.
-    client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    # ⚠️ 생성도 이 try 안이다 — 세션 형식 불일치는 생성자가 던진다(실수 #404,
+    # 형제 backfill_badonion 과 같은 규약 #38).
+    client = None
     try:
+        from trade.tg_entities import guarded_client
+        client = guarded_client(TelegramClient, SESSION_PATH, API_ID, API_HASH)
         await client.start()
         log.info("Telethon session ready")
         # ⚠️ get_entity(username) 은 매 실행 ResolveUsernameRequest — 계정
@@ -442,16 +446,23 @@ async def run(
     except Exception as exc:
         from trade.tg_entities import startup_failure_note
         log.exception("session/access failure during startup")
-        _notify(
-            "⚠️ <b>BeOn 동기화 — 시작 실패</b>\n"
-            f"{html.escape(type(exc).__name__)}: "
-            f"{html.escape(str(exc)[:200])}\n"
-            + html.escape(startup_failure_note(exc))
-        )
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
+        if dry_run:
+            # 사람이 터미널에서 돌린 진단이다 — 폰의 '시작 실패' 는 2시간 타이머의
+            # 장애로 읽힌다(#82 · 형제 backfill_badonion 과 같은 규약 #38).
+            log.error("dry-run 시작 실패 — 진단 실행이라 알리지 않는다: %s",
+                      startup_failure_note(exc))
+        else:
+            _notify(
+                "⚠️ <b>BeOn 동기화 — 시작 실패</b>\n"
+                f"{html.escape(type(exc).__name__)}: "
+                f"{html.escape(str(exc)[:200])}\n"
+                + html.escape(startup_failure_note(exc))
+            )
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
         return 1
 
     try:

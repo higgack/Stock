@@ -62,7 +62,10 @@ Default window (실수 #403): 3일. 단 관련성 필터(= 레지스트리 파�
 **일부** 실패한 회수는 기록 대신 **재시도 표식**을 남기고, 다음 자동 동기화가
 그 표식을 보고 최근 40일을 다시 훑는다 — 지문이 이미 기록돼 있어도(명시 회수가
 일부 실패한 경우). 표식은 지문별로 세어 3회째 실행에도 실패가 남으면 기록하고
-멈춘다(유닛별이 아니라 실행별로 센다 — rc≠0 실행은 세지 않는다). 자동 회수는
+멈춘다(유닛별이 아니라 실행별로 센다 — 포워드 도중 중단된 실행(rc 1)도 세고,
+아무것도 포워드하지 않은 시작 실패·상한 중단은 세지 않으며, 프로세스가 죽은
+실행은 못 센다 — 그때도 포워드된 유닛은 inbox 로 들어가 다음 틱 후보에서
+빠진다). 자동 회수는
 한 번에 100유닛까지만 포워드한다(넘으면 파서가 너무 넓게 잡았을 수 있어 멈추고
 알린다). `--since`·`--lookback-days`·`--to` 를 명시하면 그 창을 쓰고(둘 다
 주면 `--since` 가 이긴다), 그 창이 지금까지 40일을 덮을 때만 성공 뒤 기록한다.
@@ -72,10 +75,18 @@ Default window (실수 #403): 3일. 단 관련성 필터(= 레지스트리 파�
 캡션 하나가 **어디로** 갔는지는 `--dry-run --since YYYY-MM-DD --find TEXT`
 (원문·마크다운 둘 다, 대소문자 무시)가 갈래로 말하고, **왜** 버려졌는지(원문
 repr·필터 판정)는 형제 `diagnose_badonion --since … --grep …` 이 찍는다.
-dry-run 류(`--dry-run`·`--show-irrelevant`·`--find`)는 세션 **복사본**으로
-접속해 6시간 타이머와 잠금 경합하지 않고, 포워드하지 않으므로 후보 상한에서도
-멈추지 않으며, 시작에 실패해도 알림을 보내지 않는다(로그로만 — 폰의 '동기화 시작
-실패' 는 타이머 장애로 읽힌다).
+dry-run 류(`--dry-run`·`--show-irrelevant`·`--find`)는 라이브 세션이 있으면
+그 **복사본**으로 접속해 6시간 타이머와 잠금 경합하지 않는다(원본이 없거나
+복사가 실패하면 라이브 경로로 접속하고 그렇다고 경고한다 — 그때는 경합을 못
+피한다). 복사본은 인증이 풀렸으면 로그인하지 않고 멈춘다(그 로그인은 복사본과
+함께 지워진다). 포워드하지 않으므로 후보 상한에서도 멈추지 않고, 시작에
+실패해도 알림을 보내지 않는다(로그로만 — 폰의 '동기화 시작 실패' 는 타이머
+장애로 읽힌다).
+
+클라이언트는 `trade.tg_entities.guarded_client` 로만 만든다(실수 #404): 세션
+파일 형식이 이 인터프리터의 telethon 과 안 맞으면 **생성 전에** 멈추고 무엇을
+깔아야 하는지 알린다. 옛 판은 생성자가 `too many values to unpack` 으로 알림
+경로 밖에서 죽었다.
 
 Run by systemd (trade-bot-badonion-sync.timer):
   Invoked without --since; uses the default window above — 3 days (realtime
@@ -188,21 +199,30 @@ def _dry_run_session(tmpdir: str) -> str:
 
     `.badonion-session` 은 6시간 타이머가 쓰는 SQLite 라, 사람이 진단을 돌리는
     동안 타이머가 겹치면 한쪽이 `database is locked` 로 죽는다 — 형제
-    `diagnose_badonion._session_copy` 가 같은 이유로 복사본을 쓴다(#38).
-    복사본은 auth key 를 그대로 가져 재로그인이 필요 없다.
-    ⚠️ 원본이 없으면 라이브 경로를 그대로 쓴다 — 복사본에 로그인하면 실행이
-    끝날 때 지워져 로그인이 사라진다. 복사가 실패해도 라이브로 돌아가되 말한다."""
+    `diagnose_badonion` 도 이 함수를 쓴다(#38).
+    복사본은 auth key 를 그대로 가져, 인증된 세션이면 재로그인이 필요 없다.
+    인증이 풀린 세션이면 `tg_entities.start_client` 가 복사본에 로그인하지 않고
+    멈춘다(로그인이 복사본에 저장됐다가 실행 끝에 지워진다 — 3차 리뷰 L2).
+    ⚠️ 원본이 없으면 라이브 경로를 쓴다(처음 로그인은 원본에 남아야 한다) —
+    그리고 그 사실을 말한다. 복사가 실패해도 라이브로 돌아가되 말한다.
+    이 두 경우엔 잠금 경합을 피하지 못한다."""
     src = Path(f"{SESSION_PATH}.session")
     if not src.exists():
+        # 조용히 라이브 경로로 가면 '다른 디렉터리에서 돌렸다' 가 안 보인다 —
+        # 세션 경로는 cwd 상대다(3차 리뷰 L3, 형제 diagnose 와 같은 규약 #38).
+        log.warning("세션 파일 %s 없음(cwd=%s) — 라이브 경로로 접속한다(처음이면 "
+                    "로그인 흐름을 타고, 그 로그인은 원본에 저장된다)",
+                    src, Path.cwd())
         return SESSION_PATH
     dst = Path(tmpdir) / "dry-run.session"
     try:
         shutil.copy2(src, dst)
     except OSError as exc:
-        log.warning("dry-run 세션 복사 실패(%s: %s) — 라이브 세션으로 접속한다",
+        log.warning("세션 복사 실패(%s: %s) — 라이브 세션으로 접속한다",
                     type(exc).__name__, exc)
         return SESSION_PATH
-    log.info("dry-run: 세션 복사본으로 접속(원본 미변경 — 타이머와 잠금 경합 없음)")
+    log.info("세션 복사본으로 접속: %s → %s (원본 미변경 — 타이머와 잠금 경합 "
+             "없음)", src, dst)
     return str(dst.with_suffix(""))
 
 
@@ -411,18 +431,31 @@ async def run(
     find: str | None = None,
     recovery: bool = False,
     stats: dict | None = None,
-    session: str = SESSION_PATH,
+    session: str | None = None,
 ) -> int:
     """`recovery` = 필터 지문이 바뀌어 **자동으로** 넓힌 창(#403) — 포워드 상한과
     알림 문구가 달라진다. `stats` 를 주면 포워드 결과를 채운다(호출부가 기록
     여부를 정한다 — 일부 실패한 회수는 기록하지 않는다). `session` 은 dry-run
-    이면 복사본이다(`_dry_run_session`)."""
+    이면 복사본이다(`_dry_run_session`). 기본값은 **호출 시점**의 `SESSION_PATH`
+    — 정의 시점에 굳히면 경로를 바꾼 테스트·호출이 옛 경로(cwd 의 운영
+    파일)를 연다(3차 리뷰)."""
+    session = session or SESSION_PATH
     existing = _load_existing_keys()
     log.info("already ingested: %d forward keys", len(existing))
 
-    client = TelegramClient(session, API_ID, API_HASH)
+    # ⚠️ 생성도 이 try 안이다 — 세션 파일 형식이 이 telethon 과 안 맞으면
+    # `TelegramClient(...)` **생성자**가 던지는데(1.36.0 이 v8 세션을 열면
+    # `too many values to unpack`), 옛 판은 그게 try 밖이라 6시간 타이머가
+    # 알림 없이 트레이스백으로 죽었다(실수 #404 · #12). 형식은 생성 전에
+    # 재서 처방을 말한다(`guarded_client`). 복사본은 올라가도 무해하다.
+    client = None
     try:
-        await client.start()
+        from trade.tg_entities import guarded_client, start_client
+        client = guarded_client(TelegramClient, session, API_ID, API_HASH,
+                                live=(session == SESSION_PATH))
+        # 복사본(dry-run)은 로그인하지 않는다 — 로그인이 복사본과 함께 지워진다
+        # (3차 리뷰 L2). 형제 `diagnose_badonion` 과 같은 함수다(#38).
+        await start_client(client, copy=(session != SESSION_PATH))
         log.info("Telethon session ready")
         # ⚠️ get_entity(username) 은 매 실행 ResolveUsernameRequest — 계정
         # 단위 강한 제한에 걸린다(FloodWait 8073s 실측 2026-08-27, #258).
@@ -447,10 +480,11 @@ async def run(
                 f"{html.escape(str(exc)[:200])}\n"
                 + html.escape(startup_failure_note(exc))
             )
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
         return 1
 
     try:
@@ -538,17 +572,18 @@ async def run(
             if recovery:
                 # 이 중단은 6시간마다 반복된다 — 무엇을 돌려야 멈추는지 적는다
                 # (명시 창이 회수 창을 덮어야 기록된다, 독립 리뷰 L2·#171).
-                # ⚠️ 그 명시 실행의 포워드가 **일부** 실패하면 기록하지 않으므로
-                # 이 알림은 다시 온다 — '한 번이면 멈춘다' 고 적으면 거짓이다
-                # (2차 리뷰 — 자동 재시도는 여기서 중단돼 횟수가 안 오른다).
+                # ⚠️ 그 명시 실행의 포워드가 **일부** 실패하거나 도중에 중단되면
+                # 기록하지 않으므로 이 알림은 다시 온다 — '한 번이면 멈춘다' 고
+                # 적으면 거짓이다(2차 리뷰). 이 상한 중단 자체는 재시도 횟수에
+                # 세지 않는다 — 사람에게 묻는 장치라, 세면 3틱 뒤 사람 대신
+                # 기록해 버린다. 도중 중단(연속 실패·긴 FloodWait)은 센다(3차 리뷰).
                 _note += (
                     f"\n자동 회수({_srcs.RECOVERY_LOOKBACK_DAYS}일) 중이다 — "
                     f"<code>--lookback-days {_srcs.RECOVERY_LOOKBACK_DAYS} "
                     f"--max-candidates {len(candidates)+100}</code> 로 돌리면 "
-                    f"성공 뒤 기록돼 이 알림이 멈춘다(포워드가 일부 실패하면 "
-                    f"기록하지 않아 다시 온다 — 그렇게 일부 실패한 실행이 "
-                    f"{_srcs.RECOVERY_MAX_ATTEMPTS}회째가 되면 기록된다. 도중에 "
-                    f"중단된 실행은 세지 않는다)."
+                    f"성공 뒤 기록돼 이 알림이 멈춘다(포워드가 일부 실패하거나 "
+                    f"도중에 중단되면 기록하지 않아 다시 온다 — 그런 실행이 "
+                    f"{_srcs.RECOVERY_MAX_ATTEMPTS}회째가 되면 기록된다)."
                 )
             _notify(_note)
             return 2
@@ -629,6 +664,11 @@ async def run(
                             first_irrelevant = when[:10]
                         log.info("find %s unit %s [%s]: %s", kind, when,
                                  _srcs.unit_labels(u), head)
+            if hits:
+                # 갈래별 수를 한 줄로 — 여러 건이 걸리면 어디에 몰렸는지가 곧
+                # 다음 수다(3차 리뷰 L4 — 세어 놓고 안 쓰던 계수).
+                log.info("find: 갈래별 %s", " · ".join(
+                    f"{k} {v}" for k, v in hits.items()))
             if not hits:
                 # 대조 0건도 말한다(#54) — 창과 훑은 수를 같이 적어야 '창 밖'
                 # 인지 '원천에 없음' 인지 사람이 가른다.
@@ -643,7 +683,7 @@ async def run(
                 # 그 캡션에 못 닿으면 안내가 거짓이 된다(#371).
                 log.info("find: irrelevant 가 왜 버려졌는지(원문 repr·필터 판정)는 "
                          "cd ~/stock-trade && .backfill-venv/bin/python -m "
-                         "trade.scripts.diagnose_badonion --since %s --grep %s",
+                         "trade.scripts.diagnose_badonion --since %s --grep=%s",
                          first_irrelevant, shlex.quote(find))
         # 자동 회수의 포워드 상한(#403 L5) — 새 파서가 너무 넓게 잡으면 40일치
         # 무관 글이 비공개 채널에 한 번에 쏟아진다. 사람에게 묻고 멈춘다.
@@ -704,12 +744,26 @@ async def run(
                 await asyncio.sleep(_current_pause(forwarded_msgs))
         except BackfillAborted as exc:
             log.error("aborted: %s", exc)
-            _notify(
+            # 중단도 회수 시도다 — 호출부가 재시도 횟수에 센다. 안 세면 남은
+            # 유닛이 전부 이전에 실패한 메시지일 때 매 틱이 여기서 끊겨 횟수가
+            # 영영 안 올라 40일 재스캔이 끝없이 반복된다(3차 리뷰 Medium, #171).
+            if stats is not None:
+                stats.update(forwarded=forwarded_msgs,
+                             skipped_units=skipped_units, aborted=str(exc))
+            _note = (
                 f"❌ <b>나쁜양파 백필 중단</b>\n"
                 f"사유: {html.escape(str(exc))}\n"
                 f"진행: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"같은 명령으로 재실행하면 이어서 진행 (idempotent)."
             )
+            if recovery:
+                _note += (
+                    "\n자동 회수 중이다 — 재시도라면 남은 유닛이 전부 이전에 "
+                    "실패한 메시지(삭제 등)라 연달아 실패했을 수 있어 "
+                    "'systemic' 은 단정이 아니다. 이 중단도 재시도 횟수에 센다"
+                    f"(같은 지문 {_srcs.RECOVERY_MAX_ATTEMPTS}회째에 기록하고 멈춘다)."
+                )
+            _notify(_note)
             return 1
 
         log.info(
@@ -793,8 +847,9 @@ def main() -> None:
     ap.add_argument(
         "--dry-run",
         action="store_true",
-        help=("enumerate candidates without forwarding — 세션 복사본으로 접속하고"
-              "(타이머와 잠금 경합 없음) 후보 상한에서도 멈추지 않는다"),
+        help=("enumerate candidates without forwarding — 라이브 세션이 있으면 그 "
+              "복사본으로 접속하고(타이머와 잠금 경합 없음 · 인증이 풀렸으면 로그인"
+              "하지 않고 멈춘다) 후보 상한에서도 멈추지 않는다"),
     )
     ap.add_argument(
         "--show-irrelevant",
@@ -891,15 +946,21 @@ def main() -> None:
     # 되고(#264·#283), 실패한 회수를 기록하면 다 된 줄 알고 다시 안 훑는다.
     # 포워드가 일부 실패했으면 기록하지 않고 재시도한다 — 일시 장애도 같은
     # 경로로 오기 때문이다(상한은 레지스트리가 정한다, 독립 리뷰 M1).
-    if plan["record"] and rc == 0 and not dry_run:
+    # 포워드 도중 **중단된** 회수(연속 실패·긴 FloodWait)도 시도로 센다 — 안 세면
+    # 남은 유닛이 전부 이전에 실패한 메시지일 때 매 틱이 중단돼 횟수가 영영 안
+    # 오른다(3차 리뷰 Medium). 시작 실패(rc 1, stats 비어 있음)는 아무것도 시도
+    # 하지 않았으니 세지 않는다. 도중에 죽은 실행(systemd 타임아웃 kill)도 못 센다.
+    aborted = str(stats.get("aborted") or "")
+    if plan["record"] and not dry_run and (rc == 0 or aborted):
         try:
             done, why = _srcs.finish_recovery(
                 state_path, plan["fp"],
-                failed_units=int(stats.get("skipped_units") or 0))
+                failed_units=int(stats.get("skipped_units") or 0),
+                aborted=aborted)
             (log.info if done else log.warning)("%s", why)
         except Exception as exc:                         # noqa: BLE001
-            # 동기화 자체는 성공했다(포워드는 끝났다) — 기록 실패 하나로
-            # 트레이스백·실패로 끝내지 않는다. OSError 만 잡으면 깨진 상태
+            # 포워드는 이미 끝났거나 중단됐다 — 기록 실패 하나로
+            # 트레이스백으로 끝내지 않는다. OSError 만 잡으면 깨진 상태
             # 파일의 ValueError 가 새 매 틱 같은 자리에서 죽었다(2차 리뷰 P6).
             # 대가는 다음 틱이 회수 창을 한 번 더 쓰는 것뿐이고, 조용히
             # 넘기지는 않는다(#12).

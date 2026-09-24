@@ -65,23 +65,48 @@ class _Client:
     messages: list = []
     instances: list = []
     fail_start = False
+    fail_init = False
+    authorized = True
     fail_forward_ids: set = set()
+    flood_ids: set = set()
 
     def __init__(self, session, api_id, api_hash):
+        if _Client.fail_init:
+            # VM 실측 그대로(2026-09-24): telethon 1.36.0 이 DB v8 세션을 열면
+            # **생성자**가 `sessions` 행을 5개로 풀다 죽는다(실수 #404).
+            raise ValueError("too many values to unpack (expected 5)")
         self.forwarded: list = []
         self.offset_date = None
         self.session = session
-        f = Path(f"{session}.session")
+        self.started = self.connected = False
+        # telethon 은 접미가 **없을 때만** `.session` 을 붙인다(sessions/
+        # sqlite.py) — 늘 붙이면 이미 붙은 경로를 넘기는 변형이 가짜에서만
+        # 깨져 '잡힌 것' 처럼 보인다(3차 리뷰).
+        name = str(session)
+        self.session_file = Path(
+            name if name.endswith(".session") else f"{name}.session")
+        f = self.session_file
         self.session_bytes = f.read_bytes() if f.exists() else None
         _Client.instances.append(self)
+
+    async def connect(self):
+        self.connected = True
+
+    async def is_user_authorized(self):
+        return _Client.authorized
 
     async def start(self):
         if _Client.fail_start:
             raise RuntimeError("세션 없음(테스트)")
+        self.started = True
         # 진짜 telethon 도 접속하면 세션 SQLite 를 갱신한다 — 그래서 dry-run 이
         # 라이브 파일을 열면 6시간 타이머와 잠금 경합한다(#403 2차 리뷰).
-        f = Path(f"{self.session}.session")
-        if f.exists():
+        # 인증이 풀린 세션이면 전화번호 로그인을 묻고 그 결과를 이 파일에
+        # 쓴다 — 가짜는 그 '로그인' 을 파일 쓰기로 흉내 낸다(3차 리뷰 L2).
+        f = self.session_file
+        if not _Client.authorized:
+            f.write_bytes(b"LOGGED-IN")
+        elif f.exists():
             with f.open("ab") as fh:
                 fh.write(b"+touched")
 
@@ -91,13 +116,22 @@ class _Client:
     async def get_input_entity(self, ref):
         return _Peer(-100111 if ref == "Badonions" else -100222)
 
-    async def iter_messages(self, source, offset_date=None, reverse=False):
+    async def iter_messages(self, source, offset_date=None, reverse=False,
+                            limit=None):
         self.offset_date = offset_date
+        n = 0
         for m in sorted(_Client.messages, key=lambda m: m.date):
             if offset_date is None or m.date >= offset_date:
+                if limit is not None and n >= limit:
+                    return
+                n += 1
                 yield m
 
     async def forward_messages(self, dest, ids, from_peer=None):
+        if set(ids) & _Client.flood_ids:
+            err = sys.modules["telethon.errors"].FloodWaitError()
+            err.seconds = 10 ** 6            # 상한(TRADE_MAX_FLOOD_WAIT_S) 너머
+            raise err
         if set(ids) & _Client.fail_forward_ids:
             raise RuntimeError("포워드 실패(테스트 — 일시 장애일 수도 삭제일 수도)")
         self.forwarded.append(list(ids))
@@ -157,7 +191,10 @@ def backfill(monkeypatch, tmp_path):
     monkeypatch.setattr(_Client, "messages", [])
     monkeypatch.setattr(_Client, "instances", [])
     monkeypatch.setattr(_Client, "fail_start", False)
+    monkeypatch.setattr(_Client, "fail_init", False)
+    monkeypatch.setattr(_Client, "authorized", True)
     monkeypatch.setattr(_Client, "fail_forward_ids", set())
+    monkeypatch.setattr(_Client, "flood_ids", set())
     mod._test_notes = notes
     mod._test_state = tmp_path / srcs.SYNC_STATE_NAME
     mod._test_inbox = tmp_path / "inbox.jsonl"
@@ -274,10 +311,12 @@ def test_a_candidate_cap_abort_does_not_record_and_says_how_to_stop(
     note = backfill._test_notes[-1]
     assert f"--lookback-days {srcs.RECOVERY_LOOKBACK_DAYS}" in note
     # '한 번 돌리면 멈춘다' 만 적으면 그 명시 실행이 일부 실패할 때 거짓이다 —
-    # 언제 기록되는지(일부 실패한 실행의 횟수)와 무엇은 안 세는지를 같이 적는다
-    # (2차 리뷰 — 이 경로는 finish_recovery 에 안 닿아 횟수가 안 오른다).
-    assert "일부 실패" in note and f"{srcs.RECOVERY_MAX_ATTEMPTS}회째" in note
-    assert "중단된 실행은 세지 않는다" in note
+    # 언제 기록되는지(일부 실패하거나 도중에 중단된 실행의 횟수)를 같이 적는다
+    # (2차 리뷰). 도중 중단은 이제 센다(3차 리뷰 Medium) — 옛 문구 '도중에
+    # 중단된 실행은 세지 않는다' 가 남으면 거짓이다.
+    assert "일부 실패" in note and "도중에 중단" in note
+    assert f"{srcs.RECOVERY_MAX_ATTEMPTS}회째" in note
+    assert "세지 않는다" not in note
 
 
 def test_a_partly_failed_recovery_retries_then_gives_up_boundedly(
@@ -447,6 +486,10 @@ def test_find_names_where_each_caption_went(backfill, monkeypatch, caplog):
         assert head in lines[kind][0], (kind, lines[kind])
     # 포워드할 유닛이 irrelevant 로 **또** 찍히지 않는다(B16).
     assert sum(len(v) for v in lines.values()) == 4
+    # 갈래별 수를 한 줄로 — 세어 놓고 안 쓰던 계수(3차 리뷰 L4).
+    summary = next(l for l in text.splitlines() if "find: 갈래별" in l)
+    for kind in want:
+        assert f"{kind} 1" in summary, (kind, summary)
     assert "를 담은 글이 이 창" not in text          # 찾았으면 '없다' 는 없다(B30)
     assert _Client.instances[-1].forwarded == []
     assert not backfill._test_state.exists()
@@ -455,7 +498,7 @@ def test_find_names_where_each_caption_went(backfill, monkeypatch, caplog):
     assert "'없는회사' 를 담은 글이 이 창" in caplog.text     # 대조 0건도 말한다
 
 
-# ── 2차 독립 리뷰(da4e430..abf8fa6) — 동작 결함 5건 + 생존 뮤테이션 ─────────
+# ── 2차 독립 리뷰(da4e430..abf8fa6) — P1·P2·P6·P11·P12 + 생존 뮤테이션 ──────
 @pytest.mark.parametrize("value", ["", "   "])
 def test_an_empty_find_is_refused_before_any_sync(backfill, monkeypatch, value):
     """`--find ""` 는 `bool("")` 이 False 라 옛 판에선 dry-run 을 강제하지 않고
@@ -674,8 +717,8 @@ def test_find_points_at_the_sibling_that_says_why_a_caption_was_dropped(
                 if "diagnose_badonion" in l)
     # 창 시작일(40일 전)이 아니라 드랍된 그 글의 날짜에서 시작한다.
     assert f"--since {dropped.date.date().isoformat()} " in line
-    assert "--grep '신고가 돌파'" in line                      # 셸 인용
-    flags = {t for t in line.split() if t.startswith("--")}
+    assert "--grep='신고가 돌파'" in line                      # 셸 인용
+    flags = {t.split("=", 1)[0] for t in line.split() if t.startswith("--")}
     assert flags and flags <= _diagnose_flags(), flags - _diagnose_flags()
     caplog.clear()                    # 반대 증거 — 드랍된 게 없으면 안내도 없다
     assert _run(backfill, monkeypatch, "--find", "차량용") == 0
@@ -711,6 +754,13 @@ def test_a_dry_run_without_a_live_session_logs_in_on_the_live_path(
     assert _run(backfill, monkeypatch, "--dry-run") == 0
     assert _Client.instances[-1].session == backfill.SESSION_PATH
     assert "세션 복사 실패" not in caplog.text     # 없는 걸 복사하려다 경고하지 않는다
+    # 대신 '없다' 를 말한다 — 세션 경로는 cwd 상대라 다른 디렉터리에서 돌리면
+    # 조용히 새 로그인을 탄다(3차 리뷰 L3). 경로와 cwd 를 같이 적는다.
+    warn = [r for r in caplog.records if r.levelname == "WARNING"
+            and "세션 파일" in r.getMessage()]
+    assert warn and "없음" in warn[0].getMessage()
+    assert f"{backfill.SESSION_PATH}.session" in warn[0].getMessage()
+    assert f"cwd={Path.cwd()}" in warn[0].getMessage()
     caplog.clear()
     Path(f"{backfill.SESSION_PATH}.session").write_bytes(b"LIVE")
 
@@ -720,7 +770,7 @@ def test_a_dry_run_without_a_live_session_logs_in_on_the_live_path(
     monkeypatch.setattr(backfill.shutil, "copy2", _boom)
     assert _run(backfill, monkeypatch, "--dry-run") == 0
     assert _Client.instances[-1].session == backfill.SESSION_PATH
-    assert "dry-run 세션 복사 실패" in caplog.text and "OSError" in caplog.text
+    assert "세션 복사 실패" in caplog.text and "OSError" in caplog.text
 
 
 def test_a_dry_run_that_fails_to_start_does_not_page_anyone(
@@ -736,3 +786,378 @@ def test_a_dry_run_that_fails_to_start_does_not_page_anyone(
     assert backfill._test_notes == []
     assert "진단 실행이라 알리지 않는다" in caplog.text
     assert not backfill._test_state.exists()
+
+
+# ── 실수 #404 — 세션 형식이 안 맞으면 생성자가 던진다: 조용히 죽지 말 것 ─────
+def test_a_session_this_telethon_cannot_open_pages_instead_of_dying_silently(
+        backfill, monkeypatch, caplog):
+    """VM 실측(2026-09-24): 운영 venv 의 telethon 1.36.0 이 다른 venv 의 새
+    telethon 이 v8 로 올린 세션을 열다 **생성자**에서 죽었다. 옛 판은 생성이
+    알림 `try` 밖이라 6시간 타이머가 트레이스백으로만 끝났다(#12) — 이제
+    시작 실패로 알리고 rc 1 로 끝난다(기록 없음)."""
+    _seed()
+    _Client.fail_init = True
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch) == 1
+    assert _Client.instances == []
+    assert backfill._test_notes and "시작 실패" in backfill._test_notes[-1]
+    assert "ValueError" in backfill._test_notes[-1]
+    assert not backfill._test_state.exists()
+
+
+def test_a_dry_run_that_cannot_open_the_session_logs_but_does_not_page(
+        backfill, monkeypatch, caplog):
+    """같은 실패라도 사람이 돌린 진단이면 폰에 보내지 않는다(#82 — 타이머
+    장애로 읽힌다). 그 명령이 바로 오늘 VM 에서 죽은 그 명령이다."""
+    _seed()
+    _Client.fail_init = True
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run", "--find", "텔레칩스") == 1
+    assert backfill._test_notes == []
+    assert "진단 실행이라 알리지 않는다" in caplog.text
+
+
+def test_the_format_guard_runs_before_the_client_is_built(
+        backfill, monkeypatch):
+    """형식을 **생성 전에** 재서 처방을 말한다 — 생성자의 unpack 오류는 무엇을
+    깔아야 하는지 말하지 않는다(#82). 막히면 클라이언트를 만들지 않는다."""
+    _seed()
+    monkeypatch.setattr(_tg, "session_format_problem",
+                        lambda session, live=True: "세션 형식 처방(테스트)")
+    assert _run(backfill, monkeypatch) == 1
+    assert _Client.instances == []
+    assert "세션 형식 처방(테스트)" in backfill._test_notes[-1]
+
+
+def test_only_the_live_session_is_guarded_as_live(backfill, monkeypatch):
+    """복사본은 형식이 올라가도 무해하다(`live=False`) — 라이브 파일을 열 때만
+    '비고정판이 운영 세션을 올린다' 를 막는다. dry-run 이라도 복사가 안 되면
+    라이브 경로를 쓰므로 그때는 live 다."""
+    seen: list = []
+
+    def _spy(session, live=True):
+        seen.append((session, live))
+        return None
+
+    monkeypatch.setattr(_tg, "session_format_problem", _spy)
+    _seed()
+    assert _run(backfill, monkeypatch, "--dry-run") == 0         # 원본 없음
+    assert seen[-1] == (backfill.SESSION_PATH, True)
+    Path(f"{backfill.SESSION_PATH}.session").write_bytes(b"LIVE")
+    assert _run(backfill, monkeypatch, "--dry-run") == 0         # 복사본
+    assert seen[-1][0] != backfill.SESSION_PATH and seen[-1][1] is False
+    assert _run(backfill, monkeypatch) == 0                      # 실제 실행
+    assert seen[-1] == (backfill.SESSION_PATH, True)
+
+
+
+# ── 3차 독립 리뷰(abf8fa6..1ecef2f) ────────────────────────────────────────
+def test_an_aborted_retry_still_counts_toward_the_limit(
+        backfill, monkeypatch, caplog):
+    """3차 리뷰 Medium 재현: 첫 회수가 흩어진 영구 실패로 rc 0 → 표식 1.
+    좋은 유닛은 inbox 로 들어가고(리스너·ingest), 다음 틱엔 **남은 실패만
+    연달아** 와 연속 실패 상한에서 `BackfillAborted`(rc 1) — 옛 판은 그 경로가
+    `finish_recovery` 에 안 닿아 횟수가 영영 1 이었고, 6시간마다 40일 재스캔과
+    '❌ 백필 중단' 이 끝없이 반복됐다(#171). 중단된 회수도 횟수에 센다."""
+    ids = list(range(501, 511))
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(20 - (i - 501) * 0.1))
+        for i in ids]
+    bad = {503, 505, 507, 508, 509}          # 흩어져 있어 첫 실행은 안 끊긴다
+    _Client.fail_forward_ids = bad
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch) == 0
+    assert _state(backfill)["retry"]["count"] == 1
+    backfill._test_inbox.write_text("".join(
+        json.dumps({"forward_origin_chat_id": -100111,
+                    "forward_origin_message_id": i}) + "\n"
+        for i in ids if i not in bad), encoding="utf-8")
+    rcs = []
+    for _tick in range(srcs.RECOVERY_MAX_ATTEMPTS):
+        rcs.append(_run(backfill, monkeypatch))
+        if "relevance_fp" in _state(backfill):
+            break
+    assert 1 in rcs, "재현 조건이 안 섰다 — 남은 실패가 연달아 와 중단돼야 한다"
+    st = _state(backfill)
+    assert st.get("relevance_fp") == srcs.relevance_fingerprint(), (
+        "중단된 회수가 횟수에 안 세여 영원히 40일을 훑는다", st, rcs)
+    # 중단 알림은 자동 회수의 재시도일 수 있다고 말한다 — 'systemic' 만 적으면
+    # 남은 유닛이 전부 이전에 실패한 메시지인 이 경우에 거짓이다(#82).
+    aborted = [n for n in backfill._test_notes if "백필 중단" in n]
+    assert aborted and "재시도 횟수에 센다" in aborted[-1]
+
+
+def test_a_dry_run_never_logs_in_on_the_copy(backfill, monkeypatch, caplog):
+    """3차 리뷰 L2: 인증이 풀린 세션을 복사본으로 `start()` 하면 전화번호
+    로그인을 묻고, 그 로그인은 복사본에 저장됐다가 실행 끝에 임시 디렉터리와
+    함께 지워진다 — 사람이 코드까지 입력하고도 아무것도 안 남는다. 복사본은
+    접속만 하고 인증을 확인해 멈추며 처방을 말한다(폰엔 안 보낸다)."""
+    live = Path(f"{backfill.SESSION_PATH}.session")
+    live.write_bytes(b"LIVE")
+    _seed()
+    _Client.authorized = False
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run", "--find", "텔레칩스") == 1
+    c = _Client.instances[-1]
+    assert c.session != backfill.SESSION_PATH          # 복사본이었다
+    assert c.connected and not c.started              # 로그인 흐름을 안 탔다
+    assert live.read_bytes() == b"LIVE"
+    assert backfill._test_notes == []
+    # 처방이 **판정 줄**에 실린다 — `log.exception` 의 트레이스백도 예외 문장을
+    # 담으므로 caplog 전체로 재면 판정 줄에서 빠져도 통과한다(#75).
+    rec = next(r for r in caplog.records if "시작 실패" in r.getMessage())
+    assert "로그인하지 않는다" in rec.getMessage()
+    # 반대 증거(#25): 실제 실행은 라이브 경로로 로그인 흐름을 탄다 — 그
+    # 로그인은 원본에 남아야 한다(처음 인증하는 유일한 길이다).
+    assert _run(backfill, monkeypatch) == 0
+    c = _Client.instances[-1]
+    assert c.session == backfill.SESSION_PATH and c.started
+    assert live.read_bytes() == b"LOGGED-IN"
+
+
+def _load_diagnose(backfill, monkeypatch):
+    """형제 `diagnose_badonion` 을 같은 가짜 telethon 위에서 태운다 — 그
+    스크립트는 백필 모듈에서 이름을 가져오므로, 이 테스트의 사설 백필 모듈을
+    그 이름으로 **monkeypatch** 로만 꽂는다(#397 — 테스트가 끝나면 빠진다)."""
+    monkeypatch.setitem(sys.modules, "trade.scripts.backfill_badonion", backfill)
+    spec = importlib.util.spec_from_file_location(
+        "_diagnose_badonion_under_test", _SCRIPT.parent / "diagnose_badonion.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)            # sys.modules 에 등록하지 않는다
+    return mod
+
+
+def _diagnose(diag, monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["diagnose_badonion.py", *argv])
+    with pytest.raises(SystemExit) as ex:
+        diag.main()
+    return ex.value.code
+
+
+def test_the_sibling_diagnose_tool_shares_the_copy_rule(
+        backfill, monkeypatch, caplog, capsys):
+    """두 도구가 같은 세션 파일을 복사해 쓰는데 규약이 둘이면 한쪽만 고쳐진다
+    — 3차 리뷰가 그걸 잡았다: 원본이 없을 때 백필은 라이브 경로로, 형제는
+    복사본에 로그인해 지웠다(#38). 이제 같은 함수(`_dry_run_session`·
+    `start_client`)다. 인증이 풀린 복사본에선 로그인하지 않고 처방과 함께
+    rc 1 로 끝난다 — 트레이스백이 아니다(#404 · #82)."""
+    diag = _load_diagnose(backfill, monkeypatch)
+    live = Path(f"{backfill.SESSION_PATH}.session")
+    live.write_bytes(b"LIVE")
+    _Client.messages = [_Msg(501, _KRI, _ago(2))]
+    _Client.authorized = False
+    caplog.set_level("INFO")
+    assert _diagnose(diag, monkeypatch, "--grep", "텔레칩스") == 1
+    c = _Client.instances[-1]
+    assert c.session != backfill.SESSION_PATH and not c.started
+    assert live.read_bytes() == b"LIVE"
+    assert "시작 실패" in caplog.text and "로그인하지 않는다" in caplog.text
+    # 반대 증거: 인증된 복사본이면 원문을 덤프하고 끝난다(원본 미변경).
+    _Client.authorized = True
+    assert _diagnose(diag, monkeypatch, "--grep", "텔레칩스") == 0
+    assert "msg.id=501" in capsys.readouterr().out
+    assert live.read_bytes() == b"LIVE"
+    assert _Client.instances[-1].session != backfill.SESSION_PATH
+
+
+# ── 3차 리뷰 생존 뮤테이션(S·B 번호는 그 리뷰의 것) ──────────────────────────
+def test_a_copy_says_which_file_it_copied(backfill, monkeypatch, caplog):
+    """B06: 복사본으로 접속했다는 사실과 **어느 파일**을 복사했는지 — 세션
+    경로는 cwd 상대라 틀린 디렉터리에서 돌리면 이 줄이 곧 증거다."""
+    live = Path(f"{backfill.SESSION_PATH}.session")
+    live.write_bytes(b"LIVE")
+    _seed()
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run") == 0
+    line = next(l for l in caplog.text.splitlines() if "세션 복사본으로 접속" in l)
+    assert str(live) in line
+
+
+def test_find_sees_what_only_the_markdown_text_carries(
+        backfill, monkeypatch, caplog):
+    """B09: 링크 엔티티의 URL 은 `text`(마크다운 되붙임)에만 남는다 — 원문
+    `raw_text` 만 보면 그 글을 못 찾는다."""
+    _Client.messages = [_Msg(702, "[원문](https://badonion.co.kr/kr-imports) 잡담",
+                             _ago(2), raw="원문 잡담")]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--find", "kr-imports") == 0
+    assert len(_find_lines(caplog.text).get("irrelevant", [])) == 1
+
+
+def test_find_does_not_match_across_the_seam_of_the_two_texts(
+        backfill, monkeypatch, caplog):
+    """B10: 두 텍스트를 이어 붙인 자리에서 낱말이 만들어지면 없는 글을
+    '찾았다' 고 한다(`끝` + `머리말` = `끝머리`)."""
+    _Client.messages = [_Msg(703, "머리말 꼬리", _ago(2), raw="앞말 끝")]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--find", "끝머리") == 0
+    assert _find_lines(caplog.text) == {}
+    assert "를 담은 글이 이 창" in caplog.text
+
+
+def test_a_dry_run_exactly_at_the_cap_is_not_over_it(
+        backfill, monkeypatch, caplog):
+    """B16·B43: 상한과 **같은** 수는 넘은 게 아니다 — 경고가 늘 뜨면 아무것도
+    안 재는 것과 같다(#25). 반대 증거로 하나 넘기면 뜬다."""
+    _Client.messages = [_Msg(501, _KRI, _ago(20)), _Msg(502, _KRI2, _ago(19))]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run", "--max-candidates", "2") == 0
+    assert "멈추지 않는다" not in caplog.text
+    caplog.clear()
+    assert _run(backfill, monkeypatch, "--dry-run", "--max-candidates", "1") == 0
+    assert "멈추지 않는다" in caplog.text
+
+
+def _pointer_argv(caplog) -> list:
+    import shlex
+    line = next(l for l in caplog.text.splitlines() if "diagnose_badonion" in l)
+    return shlex.split(line.split("판정)는 ", 1)[1])
+
+
+def test_the_pointer_starts_at_the_earliest_dropped_caption(
+        backfill, monkeypatch, caplog):
+    """B22: 드랍된 글이 여럿이면 **가장 이른** 날짜부터 — 형제 진단은
+    `--since` 부터 앞으로 훑으므로 늦은 날짜를 주면 이른 글에 못 닿는다."""
+    a = _Msg(600, "텔레칩스 잡담 A", _ago(20))
+    b = _Msg(601, "텔레칩스 잡담 B", _ago(10))
+    _Client.messages = [a, b]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--find", "텔레칩스") == 0
+    argv = _pointer_argv(caplog)
+    assert argv[argv.index("--since") + 1] == a.date.date().isoformat()
+
+
+def test_no_pointer_when_the_filter_dropped_nothing(
+        backfill, monkeypatch, caplog):
+    """B23: 무시 목록·inbox 에 있는 글은 필터가 버린 게 아니다 — '왜
+    버려졌는지' 안내를 찍으면 없는 문제로 사람을 보낸다(#292)."""
+    _Client.messages = [_Msg(800, "이달의 주요 기업 수출데이터 — 갈래시험",
+                             _ago(2))]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--find", "갈래시험") == 0
+    assert set(_find_lines(caplog.text)) == {"ignored"}
+    assert "diagnose_badonion" not in caplog.text
+
+
+def test_the_dry_run_caveat_follows_the_record_promise(
+        backfill, monkeypatch, caplog):
+    """B34·B35: '(dry-run 이라 포워드·기록하지 않는다)' 는 사유가 기록을
+    약속할 때만 붙는다 — 기록할 게 없는 창에 붙이면 소음이고(#25), 넓은
+    `--since` 처럼 약속하는 갈래에 안 붙으면 거짓이다(2차 리뷰)."""
+    caveat = "(dry-run 이라 포워드·기록하지 않는다)"
+    srcs.record_sync(backfill._test_state, srcs.relevance_fingerprint())
+    _seed()
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run") == 0          # 기본 창
+    assert caveat not in caplog.text
+    caplog.clear()
+    assert _run(backfill, monkeypatch, "--dry-run", "--since",
+                _ago(45).date().isoformat()) == 0                  # 넓은 명시 창
+    assert caveat in caplog.text
+
+
+def test_find_alone_says_the_dry_run_is_forced(backfill, monkeypatch, caplog):
+    """B37: `--find` 만 줘도 dry-run 이 강제된다는 걸 말한다(형제
+    `--show-irrelevant` 와 같은 줄)."""
+    _seed()
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--find", "텔레칩스") == 0
+    assert "dry-run 강제" in caplog.text
+    assert _Client.instances[-1].forwarded == []
+
+
+def test_a_dry_run_startup_failure_names_the_branch(
+        backfill, monkeypatch, caplog):
+    """B44: 폰에 안 보내는 대신 로그의 판정 줄이 갈래를 말한다(#82) — 트레이스백
+    줄이 아니라 그 줄에 있어야 한다."""
+    _seed()
+    _Client.fail_start = True
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run") == 1
+    rec = next(r for r in caplog.records if "시작 실패" in r.getMessage())
+    assert "원인 미상" in rec.getMessage()
+
+
+def test_the_pointer_is_a_command_that_runs_and_reaches_the_caption(
+        backfill, monkeypatch, caplog, capsys):
+    """B45~47·L1: 안내 명령을 **그대로 실행**한다 — 플래그 이름만 맞춰서는
+    안 된다. 레포 루트로 가고(세션 경로가 cwd 상대), 운영 유닛과 같은 venv 로,
+    그 캡션에 닿는 날짜부터, 대시로 시작하는 검색어(`-KY` 티커 류)도 값으로
+    읽혀야 한다 — 옛 `--grep -KY` 는 형제 argparse 가 거부했다."""
+    dropped = _Msg(600, "百達-KY 신고가 돌파", _ago(10))
+    _Client.messages = [_Msg(501, _KRI, _ago(30)), dropped]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--find=-KY") == 0
+    argv = _pointer_argv(caplog)
+    assert argv[:3] == ["cd", "~/stock-trade", "&&"]
+    unit = (_SCRIPT.parents[2] / "deploy"
+            / "trade-bot-badonion-sync.service").read_text(encoding="utf-8")
+    interp = next(l.split("=", 1)[1].split()[0] for l in unit.splitlines()
+                  if l.startswith("ExecStart="))
+    assert interp.endswith("/" + argv[3]), (interp, argv[3])
+    assert argv[4:6] == ["-m", "trade.scripts.diagnose_badonion"]
+    diag = _load_diagnose(backfill, monkeypatch)
+    capsys.readouterr()
+    assert _diagnose(diag, monkeypatch, *argv[6:]) == 0
+    assert f"msg.id={dropped.id}" in capsys.readouterr().out
+
+
+def test_a_floodwait_abort_is_not_recorded_as_a_finished_recovery(
+        backfill, monkeypatch, caplog):
+    """긴 FloodWait 은 **실패 0건**으로 중단한다 — 중단 사유를 기록 단계에
+    넘기지 않으면 '실패 0건 = 다 됐다' 로 읽혀 지문이 기록되고, 포워드 못 한
+    캡션이 다시는 안 훑인다(3차 리뷰 Medium 의 반대편). 중단 사유가 로그에
+    그대로 남는다(#292 — '포워드 실패 N건' 이 아니다)."""
+    _seed()
+    _Client.flood_ids = {501}
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch) == 1
+    st = _state(backfill)
+    assert "relevance_fp" not in st and st["retry"]["count"] == 1
+    assert "포워드 도중 중단" in caplog.text and "FloodWait" in caplog.text
+
+
+def test_an_explicit_run_abort_note_does_not_claim_a_recovery(
+        backfill, monkeypatch):
+    """자동 회수 중의 중단만 '재시도 횟수에 센다' 를 붙인다 — 사람이 좁은
+    창으로 돌린 실행의 중단에 그 문장을 붙이면 없는 회수를 말한다(#292)."""
+    _Client.messages = [
+        _Msg(i, _KRI.replace("텔레칩스", f"회사{i}"), _ago(1 + (i - 501) * 0.01))
+        for i in range(501, 507)]
+    _Client.fail_forward_ids = set(range(501, 507))
+    assert _run(backfill, monkeypatch, "--lookback-days", "3") == 1
+    note = next(n for n in backfill._test_notes if "백필 중단" in n)
+    assert "자동 회수" not in note and "재시도 횟수" not in note
+    assert not backfill._test_state.exists()        # 좁은 명시 창 = 기록 없음
+
+
+def test_run_resolves_the_session_path_when_called(backfill, monkeypatch):
+    """`run()` 의 세션 기본값은 **부르는 시점**의 경로다 — 정의 시점에 굳히면
+    경로를 바꾼 호출이 cwd 의 운영 파일을 연다(3차 리뷰)."""
+    import asyncio
+    _seed()
+    rc = asyncio.run(backfill.run(_ago(40), None, True, 1000))
+    assert rc == 0
+    assert _Client.instances[-1].session == backfill.SESSION_PATH
+
+
+def test_the_sibling_diagnose_tool_guards_the_live_path_as_live(
+        backfill, monkeypatch):
+    """형제 진단도 원본이 없어 라이브 경로로 떨어지면 그건 **운영 세션**이다 —
+    복사본처럼 `live=False` 로 재면 비고정판이 운영 세션을 올려도 통과한다
+    (#404 사고의 그 방향)."""
+    seen: list = []
+
+    def _spy(session, live=True):
+        seen.append((session, live))
+        return None
+
+    monkeypatch.setattr(_tg, "session_format_problem", _spy)
+    diag = _load_diagnose(backfill, monkeypatch)
+    _Client.messages = [_Msg(501, _KRI, _ago(2))]
+    assert _diagnose(diag, monkeypatch, "--grep", "텔레칩스") == 0     # 원본 없음
+    assert seen[-1] == (backfill.SESSION_PATH, True)
+    Path(f"{backfill.SESSION_PATH}.session").write_bytes(b"LIVE")
+    assert _diagnose(diag, monkeypatch, "--grep", "텔레칩스") == 0     # 복사본
+    assert seen[-1][0] != backfill.SESSION_PATH and seen[-1][1] is False
+
