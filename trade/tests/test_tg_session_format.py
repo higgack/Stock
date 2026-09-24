@@ -7,9 +7,11 @@ VM 실측: 운영 유닛은 `.backfill-venv`(telethon 1.36.0 고정 = 세션 DB 
 로 못 열었고, 생성이 알림 경로 밖이라 6시간 동기화가 조용히 죽었다(#12).
 
 여기서 재는 것: (1) 형식을 **실측**으로 판정한다(예외 문구를 읽지 않는다, #65)
-(2) 못 여는 형식이면 무엇을 깔아야 하는지 말한다 (3) 고정판이 아닌 telethon 이
-운영 세션을 새 형식으로 올리려 하면 막는다 — 고정판이 올리는 정상 업그레이드는
-막지 않는다 (4) 모든 생성 지점이 가드를 거친다(디렉터리 전수, #24) (5) 리스너는
+(2) 못 여는 형식이면 무엇을 깔아야 하는지 말한다 (3) 운영 세션을 새 형식으로
+올리는 것은 운영 venv 가 고정판일 때만 허용한다 — 운영 venv 가 아니면 판이
+무엇이든 막는다(4차 리뷰 M1: 판으로 가르면 다른 venv 가 마침 고정판과 같은 판일
+때 뚫린다) (4) 모든 생성 지점이 가드를 거친다(디렉터리 전수 · 별칭·partial·재바인딩
+우회까지, #24) (5) 리스너는
 형식 오류면 EX_CONFIG(78)로 끝나 재시작 루프를 막고 알린다 (6) 형제 백필도 생성
 실패를 알린다.
 """
@@ -72,6 +74,15 @@ def _lib(monkeypatch, ver, db):
     monkeypatch.setattr(tg, "telethon_db_version", lambda: (ver, db))
 
 
+# VM 의 두 인터프리터 — 운영 유닛의 venv 와, 사고를 낸 NOAH `.venv`.
+_PROD_EXE = f"/home/higgack/stock-trade/{tg.PROD_VENV}/bin/python"
+_OTHER_EXE = "/home/higgack/stock/.venv/bin/python"
+
+
+def _exe(monkeypatch, exe):
+    monkeypatch.setattr(tg.sys, "executable", exe)
+
+
 # ── 실측 함수 ────────────────────────────────────────────────────────────
 def test_the_session_version_is_read_read_only(tmp_path):
     """형식을 재는 쪽이 운영 파일을 바꾸거나 잠그면 안 된다(#264)."""
@@ -93,6 +104,45 @@ def test_a_missing_or_foreign_file_is_not_a_version(tmp_path):
     assert tg.session_db_version(empty) is None
 
 
+def test_an_empty_version_table_is_not_a_version(tmp_path):
+    """version 테이블은 있는데 행이 없으면 형식을 모르는 것이다 — 0 으로 읽으면
+    '아주 옛 형식' 이 되어 승격 판정이 엉뚱하게 돈다(4차 리뷰 T06)."""
+    p = tmp_path / "e.session"
+    con = sqlite3.connect(p)
+    con.execute("create table version (version integer primary key)")
+    con.commit()
+    con.close()
+    assert tg.session_db_version(p) is None
+    assert tg._session_db_probe(p) == (None, "version 테이블에 행이 없다")
+
+
+def test_measuring_never_rolls_back_a_hot_journal(tmp_path):
+    """쓰기 모드로 열면 SQLite 가 **핫 저널을 롤백**해 운영 파일을 바꾼다 — 형식을
+    재는 쪽은 읽기 전용이어야 한다(#264). 읽기 전용은 롤백하지 못해 못 잰 것으로
+    끝난다(4차 리뷰 T05 — 옛 테스트는 ro 와 rw 를 못 갈랐다)."""
+    import subprocess
+    import textwrap
+    p = _session(tmp_path, 7)
+    code = textwrap.dedent(f"""
+        import os, sqlite3
+        con = sqlite3.connect({str(p)!r}, isolation_level=None)
+        con.execute("pragma cache_size=1")
+        con.execute("begin exclusive")
+        con.execute("create table big (x blob)")
+        for i in range(200):
+            con.execute("insert into big values (randomblob(4000))")
+        con.execute("update version set version = 99")
+        os._exit(0)                                   # 커밋 없이 죽는다 → 핫 저널
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True)
+    journal = Path(str(p) + "-journal")
+    assert journal.exists()
+    before = p.read_bytes()
+    v, why = tg._session_db_probe(p)
+    assert v is None and why                           # 못 잰 것 — 사유가 있다
+    assert p.read_bytes() == before and journal.exists()
+
+
 def test_the_installed_telethon_format_is_measured_not_assumed(monkeypatch):
     fake = types.ModuleType("telethon")
     fake.__version__ = "9.9.9"
@@ -109,8 +159,10 @@ def test_the_installed_telethon_format_is_measured_not_assumed(monkeypatch):
 
 
 def test_the_pin_is_read_from_the_file_the_production_venv_installs(tmp_path):
-    """고정판의 단일 출처 — 운영 venv 를 까는 그 파일이다(trade/README.md)."""
-    assert tg.pinned_telethon() == "1.45.0"
+    """고정판의 단일 출처 — 운영 venv 를 까는 그 파일이다(trade/README.md).
+    판 리터럴을 박지 않는다 — 핀을 올릴 때마다 무관한 빨간불이 된다(#67)."""
+    assert tg._REQUIREMENTS == _SCRIPTS / "requirements.txt"
+    assert re.fullmatch(r"\d+\.\d+(\.\d+)?", tg.pinned_telethon() or "")
     f = tmp_path / "req.txt"
     f.write_text("# 주석\npython-dotenv==1.0.1\n  Telethon == 1.2.3  \n", encoding="utf-8")
     assert tg.pinned_telethon(f) == "1.2.3"
@@ -153,38 +205,92 @@ def test_a_session_newer_than_this_telethon_names_the_fix(tmp_path, monkeypatch)
     assert f"{tg.PROD_VENV}/bin/python" in msg
     assert f"{tg.PROD_VENV}/bin/pip install telethon==1.45.0" in msg
     # 고정판 자신이 못 읽으면 '고정판을 깔라' 는 헛걸음이다 — 핀을 올리라고 말한다.
+    # 운영 venv 에서도 마찬가지다 — 이미 깔린 판을 다시 깔라고 하지 않는다(T10).
     _pin(monkeypatch, "1.36.0")
+    for exe in (other, prod):
+        monkeypatch.setattr(tg.sys, "executable", exe)
+        msg = tg.session_format_problem(p)
+        assert "고정판" in msg and "pip install telethon==1.36.0" not in msg
+    # 핀을 못 읽었으면 'telethon None' 을 고정판처럼 적지 않는다(4차 리뷰 L2).
+    _pin(monkeypatch, None)
     msg = tg.session_format_problem(p)
-    assert "고정판" in msg and "pip install telethon==1.36.0" not in msg
+    assert "None" not in msg and "requirements.txt" in msg
     # 복사본이어도 못 여는 건 못 여는 것이다.
     assert tg.session_format_problem(p, live=False)
 
 
-def test_an_unpinned_telethon_may_not_upgrade_a_live_session(tmp_path, monkeypatch):
-    """사고의 원인 방향 — 고정판이 아닌 새 telethon 이 운영 세션을 열면 파일이
-    올라가 고정판 운영 유닛이 그 뒤로 못 연다. 막고, 어느 venv 로 돌릴지 말한다."""
+def test_only_the_production_venv_on_the_pin_may_upgrade_a_live_session(
+        tmp_path, monkeypatch):
+    """사고의 원인 방향 — 다른 venv 의 telethon 이 운영 세션을 열면 파일이 올라가
+    운영 유닛이 그 뒤로 못 연다. 판별 기준은 **인터프리터**다(4차 리뷰 M1): 옛 판은
+    '판 ≠ 고정판' 으로 갈라, NOAH `.venv` 가 마침 고정판과 같은 판(1.45.0)이면
+    통과시켰다 — 핀은 git pull 로 움직이지만 운영 venv 는 pip 를 돌려야 움직인다."""
     p = _session(tmp_path, 7)
-    _lib(monkeypatch, "1.46.0", 8)
     _pin(monkeypatch, "1.45.0")
-    msg = tg.session_format_problem(p, live=True)
-    assert msg and "올린다" in msg and f"{tg.PROD_VENV}/bin/python" in msg
-    assert tg.session_format_problem(p, live=False) is None        # 복사본은 무해
-    _lib(monkeypatch, "1.45.0", 8)                                   # 고정판이 올린다
+    _exe(monkeypatch, _OTHER_EXE)
+    for ver in ("1.46.0", "1.45.0"):                   # 판이 무엇이든 — 고정판이어도
+        _lib(monkeypatch, ver, 8)
+        msg = tg.session_format_problem(p, live=True)
+        assert msg and "운영 venv" in msg and f"{tg.PROD_VENV}/bin/python" in msg, ver
+        assert tg.session_format_problem(p, live=False) is None     # 복사본은 무해
+    _exe(monkeypatch, _PROD_EXE)
+    _lib(monkeypatch, "1.45.0", 8)                     # 운영 venv 의 고정판이 올린다
     assert tg.session_format_problem(p, live=True) is None           # = 정상 업그레이드
+    # 운영 venv 인데 고정판이 아니면 **고정판을 깔라** 고 한다 — 이미 그 venv 에
+    # 있는 사람에게 '그 venv 로 돌려라' 는 처방이 아니다(4차 리뷰 L1).
+    _pin(monkeypatch, "1.46.0")
+    msg = tg.session_format_problem(p, live=True)
+    assert msg and f"{_PROD_EXE} -m pip install telethon==1.46.0" in msg
+    assert "cd ~/stock-trade" not in msg
 
 
-def test_matching_or_unmeasurable_formats_never_block(tmp_path, monkeypatch):
-    """못 잰 것으로 막으면 첫 인증부터 막힌다 — 재지 못하면 통과(#54 는 '말하라')."""
+def test_a_same_version_foreign_venv_cannot_upgrade_the_live_session_for_real(
+        tmp_path, monkeypatch):
+    """M1 을 **실물 telethon** 으로 — 다른 venv 가 고정판과 같은 판이어도, 가드가
+    없으면 생성자가 운영 세션을 올린다(리뷰어 재현). 가드는 만들기 전에 멈춰야
+    하고, 파일은 그대로여야 한다."""
+    telethon = pytest.importorskip("telethon")
+    sq = pytest.importorskip("telethon.sessions.sqlite")
+    if sq.CURRENT_VERSION <= 7:
+        pytest.skip("설치판이 v7 을 쓴다 — 올라갈 형식이 없다")
+    p = _session(tmp_path, 7)
+    con = sqlite3.connect(p)                           # 옛 판이 쓴 모양 그대로
+    con.execute("insert into sessions values (2, '149.154.167.51', 443, x'00', null)")
+    con.commit()
+    con.close()
+    _pin(monkeypatch, str(telethon.__version__))       # 그 venv 의 판 = 고정판
+    _exe(monkeypatch, _OTHER_EXE)
+    with pytest.raises(tg.SessionFormatError, match="운영 venv"):
+        tg.guarded_client(telethon.TelegramClient, str(p)[:-len(".session")], 1, "x")
+    assert tg.session_db_version(p) == 7               # 올라가지 않았다
+
+
+def test_matching_or_unmeasurable_formats_never_block_but_say_so(
+        tmp_path, monkeypatch, caplog):
+    """못 잰 것으로 막으면 첫 인증부터 막힌다 — 재지 못하면 통과하되 **말한다**
+    (#54 는 '말하라' 다 — 옛 판은 한 줄도 안 남겼다, 4차 리뷰 L3). 보호할 파일이
+    아예 없는 것(첫 인증)은 못 잰 것이 아니라 조용하다."""
+    caplog.set_level("WARNING", logger="trade.tg_entities")
     p = _session(tmp_path, 8)
     _pin(monkeypatch, "1.45.0")
+    _exe(monkeypatch, _PROD_EXE)
     _lib(monkeypatch, "1.99.0", 8)                   # 판이 달라도 형식이 같으면 무해
     assert tg.session_format_problem(p) is None
+    assert tg.session_format_problem(tmp_path / "new") is None     # 새 세션
+    assert caplog.records == []                      # 잰 것·없는 것은 조용하다
     _lib(monkeypatch, None, None)                    # telethon 을 못 잼
     assert tg.session_format_problem(p) is None
+    assert "telethon" in caplog.records[-1].getMessage()
     _lib(monkeypatch, "1.46.0", 9)
-    assert tg.session_format_problem(tmp_path / "new") is None     # 새 세션
-    _pin(monkeypatch, None)                          # 고정판을 못 잼
+    junk = tmp_path / "junk.session"
+    junk.write_bytes(b"not a sqlite file")
+    assert tg.session_format_problem(junk) is None   # 손상 — 막지 않고 말한다
+    assert "junk.session" in caplog.records[-1].getMessage()
+    _pin(monkeypatch, None)                          # 운영 venv 인데 고정판을 못 잼
     assert tg.session_format_problem(p, live=True) is None
+    assert "고정판을 못 읽어" in caplog.records[-1].getMessage()
+    _exe(monkeypatch, _OTHER_EXE)                    # 운영 venv 가 아니면 핀과 무관
+    assert tg.session_format_problem(p, live=True)
 
 
 def test_the_guard_refuses_before_building_and_passes_through_otherwise(
@@ -267,21 +373,52 @@ def _prod_py():
             yield f
 
 
+def _unguarded_client_refs(tree) -> list[int]:
+    """클래스를 **참조**하는 자리 중 `guarded_client(...)` 첫 인자가 아닌 곳의 줄.
+    호출만 보면 `from telethon import TelegramClient as _TC` · `partial(TelegramClient,
+    …)` · `_mk = TelegramClient` 로 빠져나간다(4차 리뷰 L7) — 그래서 호출이 아니라
+    **그 이름을 읽는 모든 자리**를 본다(별칭 포함 · `telethon.TelegramClient` 속성)."""
+    names = {a.asname or a.name for n in ast.walk(tree)
+             if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("telethon")
+             for a in n.names if a.name == "TelegramClient"}
+    ok = {id(c.args[0]) for c in ast.walk(tree)
+          if isinstance(c, ast.Call) and c.args
+          and (getattr(c.func, "id", None) or getattr(c.func, "attr", None))
+          == "guarded_client"}
+    return [n.lineno for n in ast.walk(tree)
+            if ((isinstance(n, ast.Name) and n.id in names
+                 and isinstance(n.ctx, ast.Load))
+                or (isinstance(n, ast.Attribute) and n.attr == "TelegramClient"))
+            and id(n) not in ok]
+
+
+def test_the_client_guard_scan_catches_every_evasion():
+    """위 검사가 우회를 실제로 잡는지 합성 소스로 태운다(#286 fires 테스트)."""
+    base = "from telethon import TelegramClient\n"
+    for evasion in ("c = TelegramClient('s', 1, 'h')\n",
+                    "import functools\nmk = functools.partial(TelegramClient, 's')\n",
+                    "mk = TelegramClient\n",
+                    "import telethon\nc = telethon.TelegramClient('s', 1, 'h')\n"):
+        assert _unguarded_client_refs(ast.parse(base + evasion)), evasion
+    alias = "from telethon import TelegramClient as _TC\nc = _TC('s', 1, 'h')\n"
+    assert _unguarded_client_refs(ast.parse(alias))
+    fine = (base + "from trade.tg_entities import guarded_client\n"
+            "c = guarded_client(TelegramClient, 's', 1, 'h', live=True)\n")
+    assert _unguarded_client_refs(ast.parse(fine)) == []
+
+
 def test_no_production_code_builds_a_telegram_client_directly():
     """새 스크립트가 옛 방식(`TelegramClient(...)`)으로 돌아가면 형식 가드를
-    건너뛴다 — 디렉터리 전수로 잡는다. 인자로 넘기는 건 괜찮다(가드가 만든다)."""
+    건너뛴다 — 디렉터리 전수로 잡는다. 클래스는 `guarded_client` 첫 인자로만
+    나타나야 한다(가드가 만든다)."""
     bad, guarded = [], []
     for f in _prod_py():
         tree = ast.parse(f.read_text(encoding="utf-8"))
-        for n in ast.walk(tree):
-            if not isinstance(n, ast.Call):
-                continue
-            fn = n.func
-            name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
-            if name == "TelegramClient":
-                bad.append(f"{f.relative_to(_ROOT)}:{n.lineno}")
-            if name == "guarded_client":
-                guarded.append(f.name)
+        bad += [f"{f.relative_to(_ROOT)}:{ln}" for ln in _unguarded_client_refs(tree)]
+        if any(isinstance(n, ast.Call)
+               and (getattr(n.func, "id", None) or getattr(n.func, "attr", None))
+               == "guarded_client" for n in ast.walk(tree)):
+            guarded.append(f.name)
     assert not bad, bad
     # 대조 0건은 통과가 아니다(#54) — 실제 생성 지점이 가드를 거치고 있어야 한다.
     assert {"backfill_badonion.py", "backfill_beon.py", "listen_badonion.py",
@@ -376,6 +513,54 @@ def test_a_listener_with_an_unreadable_session_stops_cleanly_and_says_why(
     unit = (_ROOT / "deploy" / f"trade-bot-{script.split('_')[1]}-listener.service"
             ).read_text(encoding="utf-8")
     assert "RestartPreventExitStatus=78" in unit       # 78 이 정말 루프를 막는다
+
+
+def _live_spy(monkeypatch) -> list:
+    """`session_format_problem` 이 받은 `live` 를 기록하고 막는다. 옛 스텁은
+    `live` 를 무시해, 호출부가 운영 세션을 **복사본으로** 재도(live=False — 승격
+    가드가 꺼진다) 전부 통과했다(4차 리뷰 T19·L03·N02·E03·Q02)."""
+    seen: list = []
+
+    def _spy(s, live=True):
+        seen.append(live)
+        return "세션 형식 처방(테스트)"
+
+    monkeypatch.setattr(tg, "session_format_problem", _spy)
+    return seen
+
+
+@pytest.mark.parametrize("script", ["listen_badonion", "listen_beon"])
+def test_a_listener_measures_its_session_as_live(monkeypatch, tmp_path, script):
+    mod, _notes = _load(monkeypatch, tmp_path, script)
+    seen = _live_spy(monkeypatch)
+    monkeypatch.setattr(sys, "argv", [f"{script}.py"])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert seen == [True]
+
+
+def test_the_beon_backfill_measures_its_session_as_live(monkeypatch, tmp_path):
+    mod, _notes = _load(monkeypatch, tmp_path, "backfill_beon")
+    seen = _live_spy(monkeypatch)
+    assert asyncio.run(mod.run(mod._parse_date("2026-09-20"), None, False, 100)) == 1
+    assert seen == [True]
+
+
+def test_the_dedup_diagnostic_measures_the_live_session_as_live(monkeypatch, tmp_path):
+    """`diagnose_dedup` 은 BeOn 의 **운영** 세션을 그대로 연다 — 다른 venv 로
+    돌리면 그 파일을 올린다. 운영 세션으로 재야 한다."""
+    beon, _notes = _load(monkeypatch, tmp_path, "backfill_beon")
+    # 진단은 `trade.scripts.backfill_beon` 을 import 한다 — 가짜 telethon 위에서
+    # 올린 모듈을 그 이름으로 잠시 보인다(teardown 에 되돌린다, #397).
+    monkeypatch.setitem(sys.modules, "trade.scripts.backfill_beon", beon)
+    spec = importlib.util.spec_from_file_location(
+        "_diagnose_dedup_under_test", _SCRIPTS / "diagnose_dedup.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    seen = _live_spy(monkeypatch)
+    with pytest.raises(tg.SessionFormatError):
+        asyncio.run(mod.run(1, None, 0))
+    assert seen == [True] and _FakeClient.built == []
 
 
 @pytest.mark.parametrize("script", ["listen_badonion", "listen_beon"])

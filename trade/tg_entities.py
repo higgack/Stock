@@ -26,15 +26,25 @@ telethon 을 module-level 로 import 하지 않는다 — 판정은 예외 이�
 트레이드 스크립트를 한 번 돌리자 `.badonion-session` 이 v8 로 올라가 6시간
 동기화가 **생성자에서** 죽었다 — 알림 경로 앞이라 조용했다(#12).
 `guarded_client` 가 생성 전에 세션 형식을 재서 (a) 못 읽는 형식이면 처방을
-말하고 (b) 고정판이 아닌 telethon 이 운영 세션을 새 형식으로 올리려 하면
-막는다. 고정판은 `trade/scripts/requirements.txt` 한 곳이다(#38).
+말하고 (b) 운영 세션을 새 형식으로 올리는 것은 **운영 venv 가 고정판일 때만**
+허용한다 — 운영 venv 가 아닌 인터프리터는 판이 무엇이든 막는다. 고정판은
+`trade/scripts/requirements.txt` 한 곳이다(#38).
+
+⚠️ 판별 기준은 **판이 아니라 인터프리터**다(4차 리뷰 M1). 옛 판은 '판 ≠ 고정판'
+을 '운영 venv 가 아니다' 의 대용으로 썼는데, 상한 없는 NOAH `.venv` 가 마침
+고정판과 같은 판으로 풀리면(오늘 1.45.0) 그 venv 로 돈 실행이 운영 세션을 올려도
+통과했다 — 핀은 `git pull` 로 움직이지만 운영 venv 는 사람이 pip 를 돌려야
+움직이므로, 그 사이 운영 유닛이 옛 판인 창에서 #404 가 그대로 재발한다.
 """
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import sys
 from pathlib import Path
+
+log = logging.getLogger("trade.tg_entities")
 
 # 트레이드 텔레그램 스크립트가 쓰는 telethon 고정판의 **단일 출처** — 운영
 # venv 를 까는 파일이다(trade/README.md). 여기서 읽어야 핀과 가드가 안 갈린다.
@@ -58,23 +68,38 @@ def pinned_telethon(path=None) -> str | None:
     return m.group(1) if m else None
 
 
-def session_db_version(session) -> int | None:
-    """세션 파일의 DB 형식 버전(telethon 의 `version` 테이블). 파일이 없거나
-    못 읽으면 None. **읽기 전용**(`mode=ro`)으로 연다 — 형식을 재는 쪽이 운영
-    파일을 건드리거나 잠그면 안 된다(#264)."""
+def _session_db_probe(session) -> tuple[int | None, str]:
+    """(DB 형식 버전, 못 잰 사유). 파일이 없으면 `(None, "")` — 보호할 파일이
+    없는 것(첫 인증)이지 못 잰 것이 아니다. 파일은 있는데 못 읽으면(핫 저널 ·
+    잠금 · 손상 · version 행 없음) 사유를 이름으로 준다(#82).
+
+    **읽기 전용**(`mode=ro`)으로 연다 — 형식을 재는 쪽이 운영 파일을 건드리거나
+    잠그면 안 된다(#264). 쓰기 모드로 열면 SQLite 가 핫 저널을 **롤백**해 파일을
+    바꾼다 — 읽기 전용은 롤백하지 못해 오류로 끝나고, 그건 못 잰 것이다."""
     name = str(session)
     p = Path(name if name.endswith(".session") else f"{name}.session")
     if not p.is_file():
-        return None
+        return None, ""
     try:
         con = sqlite3.connect(p.resolve().as_uri() + "?mode=ro", uri=True)
         try:
             row = con.execute("select version from version").fetchone()
         finally:
             con.close()
-        return int(row[0]) if row else None
-    except Exception:                                          # noqa: BLE001
-        return None
+    except Exception as exc:                                   # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    if not row:
+        return None, "version 테이블에 행이 없다"
+    try:
+        return int(row[0]), ""
+    except (TypeError, ValueError):
+        return None, f"version 값을 못 읽었다({row[0]!r})"
+
+
+def session_db_version(session) -> int | None:
+    """세션 파일의 DB 형식 버전(telethon 의 `version` 테이블). 파일이 없거나
+    못 읽으면 None(`_session_db_probe` 가 둘을 가른다)."""
+    return _session_db_probe(session)[0]
 
 
 def telethon_db_version() -> tuple[str | None, int | None]:
@@ -87,46 +112,82 @@ def telethon_db_version() -> tuple[str | None, int | None]:
         return None, None
 
 
+def in_prod_venv() -> bool:
+    """이 인터프리터가 운영 유닛의 venv 인가 — 판이 아니라 **경로**로 잰다(M1)."""
+    return f"/{PROD_VENV}/" in sys.executable.replace("\\", "/")
+
+
 def session_format_problem(session, *, live: bool = True) -> str | None:
     """세션을 열기 **전에** 형식을 잰다 → 막아야 하면 처방을 담은 문장, 아니면 None.
 
     - 파일 형식 > 이 telethon 형식: 못 연다(열면 telethon 이 알아볼 수 없는
-      unpack 오류로 죽는다). 어느 판을 깔아야 하는지 말한다.
-    - 파일 형식 < 이 telethon 형식 + **운영 세션**(`live`) + 이 telethon 이 고정판이
-      아니다: 열면 파일이 새 형식으로 올라가 고정판으로 도는 운영 유닛이 그 뒤로
-      못 연다 — 2026-09 사고의 원인 방향이다. 막는다. 고정판이면(= 운영이 판을
-      올린 것) 허용한다 — 핀을 올리는 정상 경로를 막으면 업그레이드마다 운영이
-      멈춘다.
-    - 재지 못하면(새 세션 · telethon 없음 · 핀 없음) 막지 않는다 — 못 잰 것으로
-      막으면 첫 인증부터 막힌다(#54 는 '말하라' 이지 '멈추라' 가 아니다).
+      unpack 오류로 죽는다). 어느 판을 깔아야 하는지 말한다 — 운영 venv 면 그
+      venv 에 고정판을, 아니면 운영 venv 로 돌리라고(다른 프로젝트의 venv 에
+      깔라고 하지 않는다), 고정판 자신이 못 읽으면 핀을 올리라고.
+    - 파일 형식 < 이 telethon 형식 + **운영 세션**(`live`): 열면 파일이 새 형식으로
+      올라간다 — 운영 유닛이 모두 운영 venv 로 도므로, 그 venv 가 **고정판**일 때만
+      허용한다(핀을 올리는 정상 업그레이드). 운영 venv 가 아니면 **판이 무엇이든**
+      막는다 — 2026-09 사고의 원인 방향이고, 판으로 가르면 다른 venv 가 마침
+      고정판과 같은 판일 때 뚫린다(4차 리뷰 M1). 운영 venv 인데 고정판이 아니면
+      고정판을 깔라고 한다(L1 — 이미 그 venv 에 있는 사람에게 '그 venv 로 돌려라'
+      는 처방이 아니다).
+    - 재지 못하면(세션 파일을 못 읽음 · telethon 을 못 잼 · 운영 venv 인데 핀을
+      못 읽음) 막지 않고 **경고 로그로 말한다** — 못 잰 것으로 막으면 첫 인증부터
+      막힌다(#54 는 '말하라' 이지 '멈추라' 가 아니다, 4차 리뷰 L3). 파일이 아예
+      없으면(첫 인증) 보호할 것이 없어 조용히 통과한다.
     - 복사본(`live=False` — dry-run·진단)은 올라가도 무해하다."""
-    f = session_db_version(session)
-    ver, lib = telethon_db_version()
-    if f is None or lib is None:
-        return None
     name = Path(str(session)).name
+    f, why = _session_db_probe(session)
+    if f is None:
+        if why:
+            log.warning("세션 %s 형식을 못 쟀다(%s) — 형식 가드를 건너뛴다",
+                        name, why)
+        return None
+    ver, lib = telethon_db_version()
+    if lib is None:
+        log.warning("설치된 telethon 의 세션 형식을 못 쟀다 — 세션 %s(DB v%d) "
+                    "형식 가드를 건너뛴다", name, f)
+        return None
     pin = pinned_telethon()
+    prod = in_prod_venv()
     if f > lib:
-        if pin and pin != ver and f"/{PROD_VENV}/" in sys.executable.replace("\\", "/"):
+        if prod and pin and pin != ver:
             fix = f"{sys.executable} -m pip install telethon=={pin}"
-        elif pin and pin != ver:
+        elif not prod and pin and pin != ver:
             # 운영 venv 가 아니면 **이** 인터프리터에 깔라고 하지 않는다 — 다른
             # 프로젝트의 venv(NOAH `.venv`)의 telethon 을 바꾸게 된다. 운영 유닛이
             # 도는 venv 를 가리킨다(실수 #404 — 틀린 venv 가 이 사고의 시작이다).
             fix = (f"운영 유닛은 {PROD_VENV} 로 돈다 — 그 venv 로 돌릴 것: cd "
                    f"~/stock-trade && {PROD_VENV}/bin/python … (그 venv 의 telethon 이 "
                    f"고정판이 아니면 {PROD_VENV}/bin/pip install telethon=={pin})")
-        else:
+        elif pin:
             fix = (f"고정판(telethon {pin}, trade/scripts/requirements.txt)도 이 형식을 "
                    "못 읽는다 — 고정판을 그 파일을 쓴 판 이상으로 올려 다시 깔 것")
+        else:
+            # 핀을 못 읽었으면 'telethon None' 을 고정판처럼 적지 않는다(L2).
+            fix = ("고정판을 못 읽었다(trade/scripts/requirements.txt 의 telethon== "
+                   f"줄) — 그 줄을 확인하고 이 파일을 쓴 판 이상을 {PROD_VENV} 에 깔 것")
         return (f"세션 {name} 은 DB v{f} 형식인데 이 인터프리터의 telethon {ver} 은 "
                 f"v{lib} 까지만 읽는다 — 더 새 telethon 이 이 파일을 연 적이 있다"
                 f"(다른 venv 로 돌린 실행). 처방: {fix}")
-    if f < lib and live and pin and ver != pin:
-        return (f"이 인터프리터의 telethon {ver}(DB v{lib})이 운영 세션 {name}"
-                f"(DB v{f})을 새 형식으로 올린다 — 고정판(telethon {pin})으로 도는 "
-                "운영 유닛이 그 뒤로 이 파일을 못 연다(실수 #404). 운영과 같은 venv "
-                f"로 돌릴 것: cd ~/stock-trade && {PROD_VENV}/bin/python …")
+    if f < lib and live:
+        if not prod:
+            return (f"이 인터프리터({sys.executable})는 운영 venv({PROD_VENV})가 "
+                    f"아니다 — 그 telethon {ver}(DB v{lib})이 운영 세션 {name}(DB v{f})"
+                    "을 새 형식으로 올리면 운영 유닛이 그 뒤로 이 파일을 못 열 수 있다"
+                    "(실수 #404 — 판이 고정판과 같아도 운영 venv 에 그 판이 깔렸다는 "
+                    "보장은 없다). 운영과 같은 venv 로 돌릴 것: cd ~/stock-trade && "
+                    f"{PROD_VENV}/bin/python …")
+        if not pin:
+            log.warning("고정판을 못 읽어(trade/scripts/requirements.txt) 운영 venv 의 "
+                        "telethon %s 이 고정판인지 모른다 — 세션 %s 을 DB v%d → v%d 로 "
+                        "올리는 것을 막지 않는다", ver, name, f, lib)
+            return None
+        if ver != pin:
+            return (f"운영 venv 의 telethon {ver}(DB v{lib})이 고정판({pin})이 아니다 — "
+                    f"이대로 열면 운영 세션 {name}(DB v{f})이 고정판이 아닌 판의 형식으로 "
+                    f"올라간다. 고정판을 깔 것: {sys.executable} -m pip install "
+                    f"telethon=={pin}")
     return None
 
 
