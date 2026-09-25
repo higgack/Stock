@@ -119,10 +119,18 @@ def _read(path) -> tuple[dict, str, str]:
         # #411 L3: 그대로 올라가면 봇 게이트가 그 글을 예외로 놓치고, 쓰는 쪽은 파일을
         # 고치기 전에 죽어 매 동기화가 재게시 유닛을 보류했다).
         return {}, f"형식 오류({type(exc).__name__})", "format"
-    if not isinstance(doc, dict) or not isinstance(doc.get("chats"), dict):
+    if not isinstance(doc, dict):
         return {}, "형식 오류(chats 가 없다)", "format"
+    # 판을 구조보다 **먼저** 본다 — 모르는 판이 `chats` 를 안 가졌다고 '깨졌다' 로 읽으면
+    # 쓰는 쪽이 덮어쓴다(배포 전 독립 리뷰 L4). 새 코드가 쓴 기록을 옛 코드가 지우는 게
+    # "version" 갈래가 막는 사고다. 판 표시가 **없는** 파일은 우리가 쓴 적 없는 모양(우리는
+    # 늘 v 를 쓴다)이라 깨진 것으로 본다 — 모르는 판으로 두면 보증이 영영 막힌다.
+    if "v" not in doc:
+        return {}, "형식 오류(판 표시 v 가 없다)", "format"
     if doc.get("v") != _VER:
         return {}, f"모르는 판(v={doc.get('v')!r}, 이 코드는 v={_VER})", "version"
+    if not isinstance(doc.get("chats"), dict):
+        return {}, "형식 오류(chats 가 없다)", "format"
     out: dict = {}
     bad = 0
     for ck, cv in doc["chats"].items():

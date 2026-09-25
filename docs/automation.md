@@ -93,7 +93,7 @@
 | `daju-listener.service` | `bot.daju_watch` | DAJU(다주) 실적 예정 알림 실시간 포워드 → 블로그 대시보드 아카이브 | 세션 미인증(exit 78) → RestartPreventExitStatus 로 hot-loop 방지 |
 | `trade-bot-beon-listener.service` | `trade.scripts.listen_beon` | BeOn_BeClear(대만·중국·일본 수출통계) 실시간 forward | 위와 동일 패턴 + 세션 형식 불일치도 알리고 exit 78(#404) |
 | `trade-bot-beon-sync.timer`(2h) | `trade.scripts.backfill_beon` | 리스너 다운타임 안전망(--lookback-days 2 기본) | 없음(idempotent 재스캔) · 세션 형식 불일치는 생성 전에 멈추고 알린다(#404) |
-| `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward — 재게시 글은 큐에 넣기 **전에** 원래 출처를 보증(#411 · 못 쓰면 큐에 안 넣고 알림 — 같은 사유는 프로세스당 한 번 — → 주기 sync 가 회수) | 세션 미인증·세션 형식 불일치(exit 78, #404) |
+| `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward — 재게시 글은 큐에 넣기 **전에** 원래 출처를 보증(#411 · 못 쓰면 큐에 안 넣고 알림 — 같은 사유는 **전달이 확인되면** 프로세스당 한 번, 못 간 알림은 10분 뒤 같은 사유가 다시 나면 다시 — → 주기 sync 가 회수) | 세션 미인증·세션 형식 불일치(exit 78, #404) |
 | `trade-bot-badonion-sync.timer`(6h) | `trade/scripts/backfill_badonion.py` | 위 안전망 + 파서 배포 뒤 40일 회수(#403) | 없음(성공해야 기록 — 시작 실패·상한 중단이면 다음 틱이 다시 넓게 훑는다 · 포워드 일부 실패나 도중 중단은 재시도 표식으로 다시 훑고 센 실행 3회째엔 기록 + 실패·미시도 id·수동 명령 알림 — 자동 회수는 연속 실패로 끊지 않고, 긴 FloodWait 중단·죽은 실행은 안 센다) · 세션 형식 불일치는 생성 전에 멈추고 알린다(#404) |
 
 ## 자동화가 **아닌** 것 — 회귀가 방아쇠인 도구 (2026-09-12)

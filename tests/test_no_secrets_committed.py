@@ -123,10 +123,18 @@ def test_no_hardcoded_secrets_in_tracked_files():
         + "\n  ".join(sorted(set(hits))))
 
 
-def test_scope_is_what_would_be_committed(tmp_path):
+def test_scope_is_what_would_be_committed(tmp_path, monkeypatch):
     """#407 — 범위는 '커밋될 것': 추적 중인 것 + 아직 add 안 한 새 파일. 무시 목록과
     가상환경(`pyvenv.cfg`)의 새 파일은 뺀다. **임시 저장소**에서 잰다 — 레포 트리에 파일을
     쓰면 다른 가드의 mtime·추적 상태를 흔든다(#365). 토큰은 소스에 리터럴로 두지 않는다."""
+    import os
+    # 바깥 git 환경(훅·`rebase --exec` 의 절대경로 GIT_INDEX_FILE/GIT_DIR)을 물려받으면
+    # 임시 저장소의 `git add` 가 바깥 레포의 인덱스를 고친다(배포 전 독립 리뷰 L2 실측).
+    # 그 환경을 흉내 낸다 — 정리를 지우면 `git add` 가 이 파일을 만든다.
+    outer = tmp_path.parent / f"{tmp_path.name}-outer-index"
+    monkeypatch.setenv("GIT_INDEX_FILE", str(outer))
+    for k in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(k)
     tok = "123456789" + ":" + "AA" + "x" * 34
 
     def git(*a: str) -> None:
@@ -152,3 +160,4 @@ def test_scope_is_what_would_be_committed(tmp_path):
     # 반대 증거(#25) — 가상환경이라도 **추적 중**이면 이미 커밋된 것이라 본다
     git("add", "-f", "anyname/lib/b.py")
     assert "anyname/lib/b.py:1 [Telegram bot token]" in _scan(_tracked_files(tmp_path), tmp_path)
+    assert not outer.exists(), "임시 저장소의 git 이 바깥 인덱스를 고쳤다"

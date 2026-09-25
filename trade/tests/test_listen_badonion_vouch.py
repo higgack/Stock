@@ -116,7 +116,12 @@ def listener(monkeypatch, tmp_path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)                       # sys.modules 에 등록하지 않는다
     notes: list = []
-    monkeypatch.setattr(mod, "_notify", notes.append)
+
+    def _delivered(text):                              # 전달 확인된 알림(기본)
+        notes.append(text)
+        return True
+    mod._test_real_notify = mod._notify                # 전달 판정 자체를 재는 테스트용
+    monkeypatch.setattr(mod, "_notify", _delivered)
     monkeypatch.setattr(mod, "ALBUM_DEBOUNCE_S", 0.0)
     monkeypatch.setattr(mod, "PACE_S", 0.0)
     # 세션은 cwd 상대 경로다 — 레포 루트의 파일을 재지 않게(#30)
@@ -188,6 +193,62 @@ def test_a_repost_that_cannot_be_vouched_is_not_queued_and_is_alerted(
     assert "msg=501: 재게시 출처 보증 실패" in caplog.text
     assert "album gid=8: 재게시 출처 보증 실패" in caplog.text     # 두 번째는 로그로만
     assert "msg=505: 재게시 출처 보증 실패" in caplog.text
+
+
+def test_an_undelivered_vouch_alert_is_not_recorded_and_is_retried_later(
+        listener, monkeypatch, caplog):
+    """전달되지 않은 알림을 '알렸다' 로 적지 않는다 — 적으면 429·타임아웃 한 번이 그 사유를
+    프로세스 수명 내내 묻는다(배포 전 독립 리뷰 L1 · 실수 #410 '기록은 결과를 확인한 뒤에').
+    대신 루프를 세우지 않게 `_VOUCH_ALERT_RETRY_S` 동안은 다시 시도하지 않고, 그 뒤 같은
+    사유가 다시 나면 다시 알린다. 한 번 전달되면 그 사유는 다시 알리지 않는다."""
+    def _denied(*a, **k):
+        raise PermissionError("쓰기 권한 없음(테스트)")
+    monkeypatch.setattr(ro, "vouch", _denied)
+    sent: list = []
+    delivered = iter([False, True, True])
+
+    def _flaky(text):
+        sent.append(text)
+        return next(delivered)
+    monkeypatch.setattr(listener, "_notify", _flaky)
+    clock = [1000.0]
+    # 모듈의 `time` 이름만 갈아끼운다 — 전역 time.monotonic 을 건드리지 않는다
+    monkeypatch.setattr(listener, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    caplog.set_level(logging.INFO)
+
+    def once() -> bool:
+        return listener._vouch_before_queue([_msg(501, _KRI, post=4242)],
+                                            lambda p: getattr(p, "id", 0), what="msg=501")
+    assert once() is False and len(sent) == 1                     # 시도했지만 못 갔다
+    assert "보증 실패 알림이 전달되지 않았다" in caplog.text
+    assert listener._VOUCH_ALERTED == set(), listener._VOUCH_ALERTED
+    clock[0] += listener._VOUCH_ALERT_RETRY_S - 1
+    assert once() is False and len(sent) == 1                     # 재시도 간격 안 — 안 보낸다
+    clock[0] += 1
+    assert once() is False and len(sent) == 2                     # 간격이 지나면 다시 알린다
+    assert len(listener._VOUCH_ALERTED) == 1                      # 이번엔 전달됐다
+    clock[0] += 10 * listener._VOUCH_ALERT_RETRY_S
+    assert once() is False and len(sent) == 2                     # 전달된 사유는 다시 안 알린다
+
+
+def test_notify_counts_only_a_telegram_ok_as_delivered(listener, monkeypatch):
+    """`curl -s` 는 HTTP 429 에도 종료코드 0 이다 — 전달 여부는 텔레그램 응답의 `ok` 로 잰다."""
+    import subprocess as _sp
+    monkeypatch.setenv("TRADE_BOT_TOKEN", "stub")                 # 값은 쓰이지 않는다(가짜 run)
+    replies = iter([
+        _sp.CompletedProcess([], 0, stdout=b'{"ok":true,"result":{}}', stderr=b""),
+        _sp.CompletedProcess([], 0, stdout=b'{"ok":false,"error_code":429,'
+                                            b'"description":"Too Many Requests"}', stderr=b""),
+        _sp.CompletedProcess([], 28, stdout=b"", stderr=b""),     # curl 타임아웃
+        _sp.CompletedProcess([], 0, stdout=b"<html>bad gateway</html>", stderr=b""),
+        _sp.CompletedProcess([], 0, stdout=b"[true]", stderr=b""),  # dict 가 아닌 JSON
+    ])
+    monkeypatch.setattr(listener, "subprocess",
+                        types.SimpleNamespace(run=lambda *a, **k: next(replies)))
+    notify = listener._test_real_notify
+    assert [notify("x") for _ in range(5)] == [True, False, False, False, False]
+    monkeypatch.delenv("TRADE_BOT_TOKEN")
+    assert notify("x") is False                                   # 설정이 없으면 못 간 것
 
 
 def test_an_unvouchable_forward_is_forwarded_as_before_and_counted(listener, caplog):

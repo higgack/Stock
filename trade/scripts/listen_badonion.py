@@ -64,10 +64,12 @@ hot-loop on a config error.
 import argparse
 import asyncio
 import html
+import json
 import logging
 import os
 import subprocess
 import sys
+import time
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
@@ -124,16 +126,19 @@ FLOOD_DROP_S = 600  # 이보다 긴 FloodWait 요구 시 해당 건 드랍(주�
 EX_CONFIG = 78  # /usr/include/sysexits.h — matches unit's RestartPreventExitStatus
 
 
-def _notify(text: str) -> None:
+def _notify(text: str) -> bool:
+    """텔레그램 알림 → **전달됐나**. 전달 확인은 텔레그램 응답의 `ok` 로 한다 — `curl -s`
+    는 HTTP 429·400 에도 종료코드 0 이라 종료코드만 보면 못 간 알림을 간 것으로 센다
+    (실수 #410 '기록은 결과를 확인한 뒤에'). 설정이 없어 못 보내도 False 다."""
     token = os.environ.get("TRADE_BOT_TOKEN")
     chat_ids = os.environ.get("TRADE_CHANNEL_CHAT_IDS", "")
     if not token or not chat_ids:
-        return
+        return False
     chat_id = chat_ids.split(",")[0].strip()
     if not chat_id:
-        return
+        return False
     try:
-        subprocess.run(
+        r = subprocess.run(
             [
                 "curl", "-s", "-m", "10",
                 "-X", "POST",
@@ -148,12 +153,29 @@ def _notify(text: str) -> None:
         )
     except Exception as e:
         log.warning("notify failed: %s", e)
+        return False
+    try:
+        body = json.loads(r.stdout or b"{}")
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    if r.returncode == 0 and body.get("ok") is True:
+        return True
+    # 원천 사유만 적는다 — 요청 URL 에는 토큰이 있다(§Secrets).
+    log.warning("notify not delivered: curl rc=%s · error_code=%s · %s", r.returncode,
+                body.get("error_code"), str(body.get("description") or "")[:120])
+    return False
 
 
-# 같은 사유의 보증 실패 알림은 프로세스당 한 번 — 재게시 글마다 알리면 같은 장애(데이터 디렉터리
-# 쓰기 불가)가 알림 폭탄이 되고, 알림(curl · 최대 ~15초)이 그때마다 이벤트 루프를 세운다(독립
-# 리뷰 #411 L7). 건마다는 로그가 남고, 못 보낸 글은 주기 sync 가 다시 보증해 포워드한다.
+# 같은 사유의 보증 실패 알림은 **전달이 확인되면** 프로세스당 한 번 — 재게시 글마다 알리면 같은
+# 장애(데이터 디렉터리 쓰기 불가)가 알림 폭탄이 되고, 알림(curl · 최대 ~15초)이 그때마다 이벤트
+# 루프를 세운다(독립 리뷰 #411 L7). 건마다는 로그가 남고, 못 보낸 글은 주기 sync 가 다시 보증해
+# 포워드한다. ⚠️ 전달 전에 '알렸다' 로 적으면 429·타임아웃 한 번이 그 사유를 프로세스 수명
+# 내내 묻는다(배포 전 독립 리뷰 L1 · #410) — 못 간 알림은 `_VOUCH_ALERT_RETRY_S` 뒤에 같은
+# 사유가 다시 나면 다시 시도한다(그 사이엔 루프를 세우지 않는다).
 _VOUCH_ALERTED: set[str] = set()
+_VOUCH_ALERT_RETRY_AT: dict[str, float] = {}
+_VOUCH_ALERT_RETRY_S = 600.0
 
 
 def _vouch_before_queue(msgs, get_peer_id, *, what: str) -> bool:
@@ -177,13 +199,19 @@ def _vouch_before_queue(msgs, get_peer_id, *, what: str) -> bool:
         why = f"{type(exc).__name__}: {exc}"[:200]
         log.error("%s: 재게시 출처 보증 실패(%s) — 포워드하지 않는다(주기 sync 가 회수)",
                   what, why)
-        if why not in _VOUCH_ALERTED:
-            _VOUCH_ALERTED.add(why)
-            _notify("⚠️ <b>나쁜양파 리스너 — 재게시 출처 보증 실패</b>\n"
-                    f"{html.escape(why)}\n"
-                    "포워드하지 않았다(하면 봇이 원래 출처로 받아 버린다). 데이터 디렉터리 "
-                    "쓰기를 확인할 것 — 주기 sync 가 다시 보증해 포워드한다. 같은 사유는 이 "
-                    "프로세스에서 다시 알리지 않는다(건마다 로그에 남는다).")
+        now = time.monotonic()
+        if why not in _VOUCH_ALERTED and now >= _VOUCH_ALERT_RETRY_AT.get(why, 0.0):
+            if _notify("⚠️ <b>나쁜양파 리스너 — 재게시 출처 보증 실패</b>\n"
+                       f"{html.escape(why)}\n"
+                       "포워드하지 않았다(하면 봇이 원래 출처로 받아 버린다). 데이터 디렉터리 "
+                       "쓰기를 확인할 것 — 주기 sync 가 다시 보증해 포워드한다. 같은 사유는 이 "
+                       "프로세스에서 다시 알리지 않는다(건마다 로그에 남는다)."):
+                _VOUCH_ALERTED.add(why)
+                _VOUCH_ALERT_RETRY_AT.pop(why, None)
+            else:
+                _VOUCH_ALERT_RETRY_AT[why] = now + _VOUCH_ALERT_RETRY_S
+                log.warning("%s: 보증 실패 알림이 전달되지 않았다 — 같은 사유가 %.0f초 뒤에 "
+                            "다시 나면 다시 알린다", what, _VOUCH_ALERT_RETRY_S)
         return False
     log.info("%s: vouched repost origin=%s (새로 %d건)", what, _relay.describe(pairs), added)
     return True

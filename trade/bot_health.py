@@ -167,6 +167,10 @@ _PTB_UNLABELED = "No error handlers are registered"
 # 사라지고 없는 수신이 생겼다(독립 리뷰 #411 L2 실측). 앞쪽 칸은 봇이 쓴 값뿐이다 — 사용자명은
 # [A-Za-z0-9_], 허용 목록은 운영자 .env — 그래서 **첫** 표식에서 자른다. 제목·원문 줄은 따로
 # 원문에서 읽는다(`_title`·`scrub`).
+# ⚠️ 못 보는 축(배포 전 독립 리뷰 I8, #274): 이 두 표식이 있는 **한 줄 기록**만 자른다.
+# 예외의 트레이스백 이어진 줄이나 다른 자유 문자열을 싣는 줄(`watchlist parse failed: %s` 등)은
+# 자르지 않는다 — 오늘 그 줄들로 수신·버림 표식이 흉내 내질 경로는 찾지 못했다(제목은 %r 라
+# 줄바꿈을 못 담는다). 새 로그 줄에 남의 글을 실으면 여기 표식을 더할 것.
 _FREE_TAILS = (" origin_title=", " exc=")
 
 
@@ -918,9 +922,15 @@ def verdict(f: dict) -> tuple[int, list[str]]:
             notes.append(f"보증한 재게시 글 {len(healed)}건을 보증 뒤에 버렸다가 그 뒤 보증으로 "
                          "받았다(같은 원래 글의 수용 줄이 버림보다 늦다) — 버릴 때의 봇 쪽 사유는 "
                          "vouch= 칸이다. 예: " + healed[-1]["line"][-200:])
-        if not relay_drops and jc is not None:
+        # 재시작 전 프로세스의 릴레이 버림 메모는 지금 ❌ 가 없을 때만 — **치유된** 보증 버림은
+        # ❌ 가 아니므로 막지 않는다(배포 전 독립 리뷰 L3: 옛 게이트가 치유분까지 센
+        # `relay_drops` 를 봐 그 메모를 가렸다). 건수는 재시작 전 몫만 센다 — `j` 는 창 전체라
+        # 지금 프로세스의 버림을 빼지 않으면 그 메모에 섞인다.
+        if not (by_name or by_vouch) and jc is not None:
+            now_lines = {d["line"] for d in cur["drops_origin"]}
             old_relay = [d for d in forward_drops(j["drops_origin"], relay_names, relay_ids,
-                                                  vouched) if d["relay"]]
+                                                  vouched)
+                         if d["relay"] and d["line"] not in now_lines]
             if old_relay:
                 notes.append(f"{prior} 릴레이 포워드 {len(old_relay)}건을 출처 게이트에서 "
                              "버렸다 — 그 글은 그때 inbox 에 안 들어갔다(그 뒤 다시 포워드해 "

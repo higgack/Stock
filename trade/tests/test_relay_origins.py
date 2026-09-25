@@ -62,6 +62,8 @@ def test_a_missing_file_is_the_normal_empty_state(tmp_path):
     (b"[1, 2]", "chats 가 없다"),
     (json.dumps({"v": 1}).encode(), "chats 가 없다"),
     (json.dumps({"v": 9, "chats": {}}).encode(), "모르는 판"),
+    (json.dumps({"v": 2, "entries": []}).encode(), "모르는 판"),     # 판이 구조보다 먼저
+    (json.dumps({"chats": {}}).encode(), "판 표시 v 가 없다"),
 ])
 def test_an_unreadable_file_never_raises_and_says_why(tmp_path, raw, why):
     """봇 게이트가 매 글마다 부른다 — 던지면 그 글 처리가 예외로 끝나 **아무 흔적 없이**
@@ -271,6 +273,26 @@ def test_an_unknown_version_is_not_overwritten(tmp_path):
         ro.vouch({(_SRC, 1): None}, by="backfill", path=p, now=T0)
     assert p.read_bytes() == raw
     assert ro.load(p) == ({}, "모르는 판(v=2, 이 코드는 v=1)")
+    # 모르는 판이 우리 구조(`chats`)를 안 가져도 덮어쓰지 않는다 — 구조를 먼저 보면 '깨졌다'
+    # 로 읽혀 지워졌다(배포 전 독립 리뷰 L4)
+    raw2 = json.dumps({"v": 2, "entries": [{"chat": -100, "msg": 1}]}).encode()
+    p.write_bytes(raw2)
+    with pytest.raises(RuntimeError, match="모르는 판"):
+        ro.vouch({(_SRC, 1): None}, by="backfill", path=p, now=T0)
+    assert p.read_bytes() == raw2
+
+
+def test_a_file_without_a_version_is_broken_and_is_rewritten(tmp_path, caplog):
+    """판 표시가 없는 파일은 우리가 쓴 적 없는 모양이다(우리는 늘 v 를 쓴다) — 모르는 판으로
+    두면 보증이 **영영** 막혀 재게시 포워드가 전부 멈춘다(배포 전 독립 리뷰 L4 Info). 깨진
+    것으로 보고 새로 쓰되 조용히 쓰지 않는다(#12)."""
+    p = ro.path_in(tmp_path)
+    p.write_text(json.dumps({"chats": {str(_SRC): {"title": None, "posts": {}}}}),
+                 encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        assert ro.vouch({(_SRC, 1): "퍼온 채널"}, by="backfill", path=p, now=T0) == 1
+    assert "판 표시 v 가 없다" in caplog.text, caplog.text
+    assert ro.load(p) == ({(_SRC, 1): {"at": T0, "by": "backfill", "title": "퍼온 채널"}}, "")
 
 
 def test_vouch_rereads_the_file_under_the_lock(tmp_path, monkeypatch):

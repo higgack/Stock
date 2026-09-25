@@ -66426,20 +66426,32 @@ class TestKoreaCompanyFlowBoards20260916:
         missing = [t for t in roots if t not in covered and t not in exempt]
         assert not missing, f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})"
 
-    def test_the_gate_scope_is_what_git_would_commit(self, tmp_path):
+    def test_the_gate_scope_is_what_git_would_commit(self, tmp_path, monkeypatch):
         """트리 열거가 **무시된 경로는 빼고** 추적·새 파일은 센다 — 임시 저장소에서
         잰다(레포 트리에 파일을 심지 않는다, #328). 옛 판(디스크 전체)은 무시된
         `.claude/worktrees/…` 사본을 게이트 밖 트리로 셌다(2026-09-25 — 리뷰가 도는
         동안 `make test` 거짓 빨간불). 반대 증거를 같이 둔다(#25): 새 트리가 **add
-        전**이어도 잡혀야 게이트 밖 트리를 막는 원래 일을 한다."""
+        전**이어도 잡혀야 게이트 밖 트리를 막는 원래 일을 한다. 형제 접두 트리
+        (`tests_e2e`)는 `tests` 에 접히지 않고, `.py` 가 아닌 `test_*` 는 트리가 아니다
+        (배포 전 독립 리뷰 L6 — '/' 경계·접미 필터를 지우는 뮤테이션이 살아남았다)."""
+        import os
         import subprocess as _sp
+        # 임시 저장소의 git 은 바깥 git 환경을 물려받지 않는다 — 훅·`rebase --exec` 가
+        # 절대경로 GIT_INDEX_FILE/GIT_DIR 를 넘기면 `git add` 가 **바깥 레포의 인덱스**를
+        # 고친다(배포 전 독립 리뷰 L2 실측: 바깥 인덱스의 .gitignore 가 바뀌었는데 통과했다).
+        # 훅이 넘긴 바깥 인덱스를 흉내 낸다 — 정리를 지우면 `git add` 가 이 파일을 만든다.
+        outer = tmp_path.parent / f"{tmp_path.name}-outer-index"
+        monkeypatch.setenv("GIT_INDEX_FILE", str(outer))
+        for k in [k for k in os.environ if k.startswith("GIT_")]:
+            monkeypatch.delenv(k)
 
         def git(*a):
             _sp.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
         git("init", "-q")
         for rel in ("tests/test_a.py", "tests/deep/test_g.py", "pkg/tests/sub/test_b.py",
                     "new/test_c.py", "test_top.py", ".claude/worktrees/w/tests/test_d.py",
-                    ".venv/lib/x/tests/test_e.py", "venvish/site-packages/y/test_f.py"):
+                    ".venv/lib/x/tests/test_e.py", "venvish/site-packages/y/test_f.py",
+                    "tests_e2e/test_h.py", "notes/test_plan.md"):
             f = tmp_path / rel
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("def test_x():\n    pass\n", encoding="utf-8")
@@ -66447,9 +66459,11 @@ class TestKoreaCompanyFlowBoards20260916:
         git("add", ".gitignore", "tests/test_a.py", "tests/deep/test_g.py",
             "pkg/tests/sub/test_b.py")
         roots = self._test_trees(tmp_path)
-        # 추적(tests — 그 아래 tests/deep 은 덮인다 · pkg/tests/sub) + add 전 새 트리(new).
-        # 무시된 worktree 사본 · 가상환경 · 레포 최상위 파일은 뺀다.
-        assert roots == ["new", "pkg/tests/sub", "tests"], roots
+        # 추적(tests — 그 아래 tests/deep 은 덮인다 · pkg/tests/sub) + add 전 새 트리(new ·
+        # tests_e2e — 이름이 `tests` 로 시작해도 그 아래가 아니다). 무시된 worktree 사본 ·
+        # 가상환경 · 레포 최상위 파일 · `.py` 가 아닌 파일은 뺀다.
+        assert roots == ["new", "pkg/tests/sub", "tests", "tests_e2e"], roots
+        assert not outer.exists(), "임시 저장소의 git 이 바깥 인덱스를 고쳤다"
 
     def test_every_source_declares_its_caption_grammar(self):
         """문법 축이 비면 그 소스는 **어느 형제 계약에도 안 걸린다**(#24·#54).

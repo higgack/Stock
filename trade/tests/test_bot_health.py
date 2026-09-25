@@ -2128,6 +2128,7 @@ def test_pre_restart_exceptions_of_other_origin_posts_are_not_called_lost_relay_
 # 대조 결과·채널 제목)을 소스의 실제 형식으로 읽고 (b) 보증 **뒤의** 버림을 ❌ 로, 보증 **전의**
 # 버림을 받았는지와 함께 ⚠️ 로 가르며 (c) 보증을 모르는 옛 판 봇이면 ❓ 로 `&&` 를 막는다.
 _REPOST = -1009990000001        # 합성 — 운영 재게시 채널 ID 를 쓰지 않는다(#393)
+_REPOST2 = -1009990000002       # 합성 — 같은 글번호를 가진 다른 재게시 채널
 
 
 def _bot_line(ts: str, head: str, args, level: str = "info") -> str:
@@ -2273,6 +2274,41 @@ def test_a_vouched_drop_that_came_back_later_is_a_note_not_red():
     assert rc3 == 1 and "보증한** 재게시 글 1건" in out3, out3
 
 
+def test_an_accept_of_the_same_number_in_another_channel_does_not_heal():
+    """글번호는 채널마다 따로 센다 — 다른 재게시 채널의 같은 번호를 받은 것은 이 글의 회복이
+    아니다. 회복으로 치면 손실이 메모(rc 0)가 되고 매시간 알림에서도 빠진다(배포 전 독립 리뷰
+    L5: `vouch_recovered` 의 채널 대조를 지우는 뮤테이션이 살아남았다)."""
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242), (_REPOST2, 4242)))
+    f["journal"] = bh.journal_facts([
+        _start(), _poll("2026-09-25T08:29:50"),
+        _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+        _vaccept("2026-09-25T08:20:00", 9, 4242, chat=_REPOST2)])
+    rc, out = _v(f)
+    assert rc == 1 and "보증한** 재게시 글 1건" in out, out
+    assert "보증 뒤에 버렸다가 그 뒤 보증으로 받았다" not in out, out
+
+
+def test_a_healed_drop_now_does_not_hide_the_previous_process_relay_drop():
+    """지금 프로세스의 **치유된** 보증 버림(메모)이 재시작 전 프로세스의 릴레이 버림 메모를
+    가렸다 — 옛 게이트가 치유분까지 센 목록을 봤다(배포 전 독립 리뷰 L3, 이 델타가 만든 회귀).
+    치유된 버림은 ❌ 가 아니므로 옛 메모를 막을 이유가 없다. 그리고 그 메모의 건수는 재시작
+    전 몫만 센다(창 전체를 세면 지금 프로세스의 버림이 섞인다)."""
+    old = [_start(ts="2026-09-25T06:00:00", pid=1111),
+           _drop("2026-09-25T06:20:00", 9, _BAD, "Badonions", pid=1111)]
+    new = [_start(ts="2026-09-25T07:50:00", pid=4242), _poll("2026-09-25T08:29:50"),
+           _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+           _vaccept("2026-09-25T08:20:00", 11, 4242)]
+    f, _ = _collect(old + new)
+    assert f["journal_cur"] is not None and f["running"]["pid"] == 4242
+    f["tg"] = _good()["tg"]
+    f["vouch"] = _vf(_vouched((_REPOST, 4242)))
+    rc, out = _v(f)
+    assert rc == 0, out
+    assert _note_with(out, "보증 뒤에 버렸다가 그 뒤 보증으로 받았다"), out
+    assert "⚠️ 재시작 전 프로세스가 릴레이 포워드 1건을 출처 게이트에서" in out, out
+
+
 def test_a_drop_before_the_vouch_is_a_note_that_says_whether_it_came_back():
     """버린 **뒤에** 보증됐다 = 버릴 땐 보증이 없었다(보증하기 전의 판이 포워드했거나 다른 릴레이가
     되포워드했다 — 진단은 둘을 못 가르므로 원인을 단정하지 않는다, 독립 리뷰 #411 I12 · #165).
@@ -2413,6 +2449,19 @@ def test_the_hourly_check_skips_a_vouched_drop_that_came_back(hc, monkeypatch):
     hc.check_delivery_gap()
     assert hc._sent == [], hc._sent
     del bot[-1]                                      # 대조군: 받은 줄이 없다 → 알린다
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1, hc._sent
+
+
+def test_the_hourly_check_does_not_heal_with_another_channels_same_number(hc, monkeypatch):
+    """매시간 알림도 같은 규칙이다(#38) — 다른 재게시 채널의 같은 글번호를 받은 줄은 이 글의
+    회복이 아니다(배포 전 독립 리뷰 L5)."""
+    from trade import relay_origins as ro
+    ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=ro.path_in(hc.DATA_DIR),
+             now=datetime(2026, 9, 25, 7, 0, tzinfo=_KST))
+    bot = [_poll("2026-09-25T08:29:50"), _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+           _vaccept("2026-09-25T08:20:00", 9, 4242, chat=_REPOST2)]
+    _drive(monkeypatch, bot=bot, relay=[])
     hc.check_delivery_gap()
     assert len(hc._sent) == 1, hc._sent
 
