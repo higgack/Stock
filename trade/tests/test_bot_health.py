@@ -24,7 +24,9 @@ from trade import bot_health as bh
 
 _REPO = Path(__file__).resolve().parents[2]
 _KST = timezone(timedelta(hours=9))
-TOKEN = "123456789:AAAbbbCCCdddEEEfffGGGhhhIIIjjjKKKlll"
+# ⚠️ 토큰 모양 리터럴을 소스에 두면 시크릿 스캐너가 문다 — 조립해서 만든다
+# (tests/test_regression.py 의 같은 선례 · 실수 #407).
+TOKEN = "123456789" + ":" + "AAAbbbCCCdddEEEfffGGGhhhIIIjjjKKKlll"
 _DEST = -1003715527602
 _BAD = -1003322526960
 _BEON = -1002695068357
@@ -753,3 +755,54 @@ def test_relay_drop_is_recognised_by_inbox_id_even_when_telegram_is_unreachable(
                                    "allowed_origins=['badonions']")])
     rc, out = _v(f)
     assert rc == 1 and "❌ 봇이 릴레이 포워드 1건을" in out, out
+
+
+def test_split_by_start():
+    t = NOW - timedelta(hours=2)
+    fwd = [_fwd(t - timedelta(minutes=1), 3), _fwd(t + timedelta(minutes=1), 2), _fwd(None, 1)]
+    cur, old = bh.split_by_start(fwd, t)
+    assert [x["n"] for x in cur] == [2, 1] and [x["n"] for x in old] == [3]
+    assert bh.split_by_start(fwd, None) == (fwd, [])     # 시작을 모르면 가르지 않는다
+
+
+def test_losses_before_the_running_process_are_a_note_not_the_verdict():
+    """재시작(배포) 전의 누락은 **지금** 상태의 증거가 아니다 — 옛 판·옛 설정의 일이다.
+    그걸 판정에 섞으면 옛 판이 버림을 안 적었다는 사실이 새 판의 '버림 0건' 으로 둔갑해
+    '텔레그램이 안 줬다' 로 오보한다(#165). 그 전 누락은 사실 메모로 따로 말하고, 다시
+    포워드해 받았으면 메모도 사라진다(그 기간의 글이 결국 inbox 에 들어왔다)."""
+    old_fwd = _jl("2026-09-25T07:49:09", "done: forwarded 27 of 27 candidate messages "
+                  "(skipped_units=0)", logger="backfill_badonion", pid=99)
+    new_fwd = _jl("2026-09-25T08:05:00", "done: forwarded 27 of 27 candidate messages "
+                  "(skipped_units=0)", logger="backfill_badonion", pid=98)
+    restarted = _start(ts="2026-09-25T08:00:00", pid=4242, drop_log=True)
+    ingested = [_jl("2026-09-25T08:04:5%d" % (i % 10), f"ingested msg={i} mg=- caption=1 photo=-")
+                for i in range(27)]
+
+    def verdict_of(f):
+        f["tg"] = _good()["tg"]
+        return _v(f)
+    # A. 재시작 뒤, 다시 포워드하기 전: 지금 판정은 깨끗하고 그 전 누락은 메모
+    fa, _ = _collect([restarted, _poll("2026-09-25T08:29:50")], [old_fwd])
+    assert fa["gap"]["kind"] == "none" and fa["gap_before"]["kind"] == "total"
+    rc, out = verdict_of(fa)
+    assert rc == 0, out
+    assert "⚠️ 지금 프로세스가 뜨기 전" in out and "그 뒤 봇 수신 줄은 0건" in out
+    assert "inbox 에 없다" not in out            # 수로 센 것을 inbox 사실로 단정하지 않는다
+    assert "텔레그램이 전달하지 않았다" not in out
+    # ⑤ 줄도 두 기준을 갈라 적는다 — 한 쌍으로 뭉치면 '보냄 27 / 받음 0' 이 지금 일로 읽힌다
+    r5 = [ln for ln in bh.render(fa, "x") if ln.startswith("⑤")]
+    assert r5 and "재시작 전 포워드 27건 / 그 뒤 수신 0건" in r5[0], r5
+    assert "지금 프로세스 뒤 대조" not in r5[0], r5    # 재시작 뒤 포워드가 없으면 그 쌍은 없다
+    # B. 다시 포워드해 다 받았다: 지금 판정도 그 전 메모도 깨끗하다
+    fb, _ = _collect([restarted, _poll("2026-09-25T08:29:50"), *ingested], [old_fwd, new_fwd])
+    assert fb["gap"]["kind"] == "ok" and fb["gap_before"]["kind"] == "ok"
+    rc, out = verdict_of(fb)
+    assert rc == 0 and "지금 프로세스가 뜨기 전" not in out, out
+    # C. 대조군: 재시작 뒤 포워드를 못 받았으면 그건 지금의 ❌ 다 — 재시작 **전** 수신을
+    #    지금 포워드의 몫으로 세면 안 된다(그러면 누락이 가려진다)
+    before = [_jl("2026-09-25T07:50:0%d" % (i % 10), f"ingested msg={i} mg=- caption=1 photo=-",
+                  pid=1111) for i in range(27)]
+    fc, _ = _collect([*before, restarted, _poll("2026-09-25T08:29:50")], [old_fwd, new_fwd])
+    assert fc["gap"]["kind"] == "total", fc["gap"]
+    rc, out = verdict_of(fc)
+    assert rc == 1 and "❌ 릴레이가 27건을 포워드했는데" in out

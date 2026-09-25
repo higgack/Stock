@@ -213,7 +213,8 @@ def relay_forwards(lines) -> list[dict]:
 
 
 def delivery_gap(forwards, ingested_ts, now: datetime, *,
-                 grace_s: int = GAP_GRACE_S, slack_s: int = RUN_SLACK_S) -> dict:
+                 grace_s: int = GAP_GRACE_S, slack_s: int = RUN_SLACK_S,
+                 not_before: datetime | None = None) -> dict:
     """릴레이가 보낸 만큼 봇이 받았나. 순수 함수.
 
     `kind`: none(기다릴 만큼 지난 포워드가 없다) · ok · partial(일부만) ·
@@ -221,6 +222,8 @@ def delivery_gap(forwards, ingested_ts, now: datetime, *,
     ⚠️ 수신은 1:1 이다 — 포워드한 메시지 하나가 채널 글 하나, 봇 `ingested`
     한 줄이다(앨범 멤버도 각각). 시각을 못 읽은 사건은 세지 않고 **센 수를
     말한다**(#54 — 모르는 것을 '누락' 으로 세면 없는 결함을 만든다).
+    `not_before` 보다 앞의 수신은 세지 않는다 — 지금 프로세스가 뜬 뒤의 포워드는
+    지금 프로세스만 받을 수 있으므로, 그 전 수신(옛 포워드의 몫)을 세면 누락을 가린다.
     """
     due = [f for f in forwards or []
            if f.get("ts") is not None and (now - f["ts"]).total_seconds() >= grace_s]
@@ -232,6 +235,8 @@ def delivery_gap(forwards, ingested_ts, now: datetime, *,
     last = max(f["ts"] for f in due)
     # 백필 'done' 줄은 실행 끝 시각이라 그 실행의 수신은 더 앞에서 시작한다.
     start = first - timedelta(seconds=slack_s if any(f["done"] for f in due) else 5)
+    if not_before is not None and not_before > start:
+        start = not_before
     sent = sum(f["n"] for f in due)
     got = sum(1 for t in ingested_ts or [] if t is not None and t >= start)
     after_last = sum(1 for t in ingested_ts or [] if t is not None and t >= last)
@@ -239,6 +244,19 @@ def delivery_gap(forwards, ingested_ts, now: datetime, *,
     return {"kind": kind, "sent": sent, "got": got, "after_last": after_last,
             "first": first, "last": last, "undated": undated,
             "who": sorted({f["who"] for f in due})}
+
+
+def split_by_start(forwards, start) -> tuple[list[dict], list[dict]]:
+    """포워드를 '지금 프로세스가 뜬 뒤' 와 '그 전' 으로 가른다. 순수 함수.
+
+    시작 시각을 모르면 가르지 않는다(전부 '뒤' — 옛 동작). 시각을 못 읽은 사건은
+    '뒤' 에 둔다 — `delivery_gap` 이 판정 불가로 센다(#54).
+    """
+    if start is None:
+        return list(forwards or []), []
+    cur = [x for x in forwards or [] if x.get("ts") is None or x["ts"] >= start]
+    old = [x for x in forwards or [] if x.get("ts") is not None and x["ts"] < start]
+    return cur, old
 
 
 def relay_sources(scripts_dir: Path) -> dict[str, list[str]]:
@@ -358,6 +376,17 @@ def verdict(f: dict) -> tuple[int, list[str]]:
     elif gap.get("kind") == "unknown":
         unk.append("릴레이 포워드와 봇 수신을 대조 못 했다 — "
                    + (gap.get("err") or f"포워드 {gap.get('undated')}건의 시각을 못 읽었다"))
+    gb = f.get("gap_before") or {}
+    if gb.get("kind") in ("total", "partial"):
+        started = _kst((f.get("running") or {}).get("ts"))
+        # 수로 센 것이다 — 어느 글이 빠졌는지는 모르고, 재시작 뒤 수신도 같이 센다(그래서
+        # 다시 포워드해 받으면 이 메모가 사라진다 · 재시작 뒤 수신이 많으면 모자람을 덜
+        # 말한다, #274). 'inbox 에 없다' 를 단정하지 않는다(#165).
+        notes.append(f"지금 프로세스가 뜨기 전(시작 {started}) 릴레이가 {gb['sent']}건을 "
+                     f"포워드했는데(첫 {_kst(gb['first'])}) 그 뒤 봇 수신 줄은 {gb['got']}건"
+                     "이다 — 모자란 만큼은 inbox 에 안 들어갔다고 봐야 한다(수로 센 것이라 "
+                     "어느 글인지는 모른다). 지금 판정이 이상 없으면 그 기간을 다시 포워드할 "
+                     "것 — 백필은 inbox 에 이미 있는 글을 건너뛴다")
 
     tg = f.get("tg") or {}
     dest = (f.get("env") or {}).get("dest")
@@ -742,6 +771,9 @@ def delivery_check(since: str, *, now: datetime | None = None,
 
     `trade.scripts.health_check` 가 매시간 부른다. 저널을 못 읽으면 `kind=
     "unknown"` 과 사유 — 판정 불가를 '이상 없음' 으로 접지 않는다(#54).
+    ⚠️ 여기는 재시작 전후를 **가르지 않는다**(`collect` 는 가른다) — 알림이 묻는 것은
+    '지난 두 시간에 글이 빠졌나' 이고 그건 어느 프로세스의 일이든 사실이다. 지금 상태가
+    원인인지는 알림이 가리키는 `bot_health` 가 가른다(재시작 전 누락은 ⚠️ 메모).
     """
     now = now or datetime.now(timezone.utc)
     fwd, ferr = _forwards(read, since)
@@ -812,7 +844,15 @@ def collect(since: str, *, now: datetime | None = None, env=None, facts_fn=None,
         f["gap"] = ({"kind": "unknown", "undated": 0,
                      "err": f"trade-bot 저널을 못 읽었다 — {err}"} if fwd else {"kind": "none"})
     else:
-        f["gap"] = delivery_gap(fwd, f["journal"]["ingested"], now)
+        # 판정은 **지금 프로세스가 뜬 뒤의 포워드**로만 한다 — 그 전 것은 옛 판·옛 설정이
+        # 받았거나 버린 것이라 지금 상태의 증거가 아니고, 다시 포워드한 뒤에도 24시간
+        # 창에 남아 '보냄 54 / 받음 27' 같은 거짓 누락을 만든다. 그 전 누락은 사실
+        # 메모로 따로 말한다(다시 포워드해야 들어온다).
+        cur, old = split_by_start(fwd, (run or {}).get("ts"))
+        f["gap"] = delivery_gap(cur, f["journal"]["ingested"], now,
+                                not_before=(run or {}).get("ts"))
+        f["gap_before"] = (delivery_gap(old, f["journal"]["ingested"], now)
+                           if old else {"kind": "none"})
     f["inbox"] = inbox_facts(Path(env.get("inbox") or ""), now) if env.get("inbox") else {}
     f["tg"] = tg_fn(env.get("token") or "", env.get("dest"), sorted(f["relays"]))
     f["others"] = procs_fn({os.getpid()} | ({main_pid} if main_pid else set()))
@@ -892,6 +932,7 @@ def render(f: dict, since: str) -> list[str]:
             out.append(f"   오류 표본: {ln[-220:]}")
     fwd = f.get("forwards") or []
     gap = f.get("gap") or {}
+    gb = f.get("gap_before") or {}
     if fwd:
         by: Counter = Counter()
         for x in fwd:
@@ -899,8 +940,10 @@ def render(f: dict, since: str) -> list[str]:
         out.append(f"⑤ 릴레이 포워드 {sum(by.values())}건("
                    + ", ".join(f"{k} {v}" for k, v in sorted(by.items()))
                    + f") · 마지막 {_kst(max((x['ts'] for x in fwd if x['ts']), default=None))}"
-                   + (f" · 대조: 보냄 {gap.get('sent')} / 받음 {gap.get('got')}"
-                      if gap.get("kind") not in (None, "none", "unknown") else ""))
+                   + (f" · 지금 프로세스 뒤 대조: 보냄 {gap.get('sent')} / 받음 {gap.get('got')}"
+                      if gap.get("kind") not in (None, "none", "unknown") else "")
+                   + (f" · 재시작 전 포워드 {gb.get('sent')}건 / 그 뒤 수신 {gb.get('got')}건"
+                      if gb.get("kind") not in (None, "none", "unknown") else ""))
     else:
         out.append("⑤ 릴레이 포워드: 창 안에 없음(systemd 유닛 실행만 센다 — 손으로 돌린 백필은 안 잡힌다)")
 

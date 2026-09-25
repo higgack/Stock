@@ -54,24 +54,43 @@ def _shannon(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
-def _tracked_files() -> list[Path]:
-    out = subprocess.run(
-        ["git", "-C", str(_ROOT), "ls-files"],
-        capture_output=True, text=True, check=True).stdout
-    files = []
-    for rel in out.splitlines():
-        if rel.endswith(_EXTS) and Path(rel).name != _SELF:
-            files.append(_ROOT / rel)
-    return files
+def _in_venv(root: Path, rel: str, seen: dict) -> bool:
+    """rel 의 조상 디렉터리가 가상환경(`pyvenv.cfg`)인가 — 커밋할 일이 없는 로컬 환경이다.
+
+    이름(.venv·.backfill-venv…)을 열거하지 않고 구조로 가른다(#24) — 운영 `.backfill-venv/`
+    는 무시 목록 밖이라 이걸 안 빼면 그 site-packages 의 예시 키(문서용 AWS 키 등)가
+    `make test` 를 빨갛게 만든다."""
+    parts = Path(rel).parts[:-1]
+    for i in range(1, len(parts) + 1):
+        d = Path(*parts[:i])
+        if d not in seen:
+            seen[d] = (root / d / "pyvenv.cfg").is_file()
+        if seen[d]:
+            return True
+    return False
 
 
-def test_no_hardcoded_secrets_in_tracked_files():
-    """추적된 코드/스크립트/템플릿에 하드코딩 credential 이 없어야.
-    노출 시 .env + os.getenv 로 이전(CLAUDE.md Secrets 규칙). 회전 권고."""
+def _tracked_files(root: Path = _ROOT) -> list[Path]:
+    """커밋될 파일 — 이미 추적 중인 것 **과 아직 add 안 한 새 파일**(무시 목록 밖).
+
+    ⚠️ 추적 파일만 보면 새 파일은 `git add` 전에 돌린 `make test` 를 그대로
+    통과하고 커밋에 실린다 — 2026-09-25 새 테스트의 가짜 토큰 리터럴이 그렇게
+    커밋된 뒤에야 걸렸다(실수 #407). 가드의 범위는 '커밋될 것' 이어야 한다.
+    새 파일 중 가상환경 안의 것은 뺀다(추적 중이면 이미 커밋된 것이라 그대로 본다)."""
+    def ls(*extra: str) -> list[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), "ls-files", *extra],
+            capture_output=True, text=True, check=True).stdout.splitlines()
+    seen: dict = {}
+    rels = ls("--cached") + [r for r in ls("--others", "--exclude-standard")
+                             if not _in_venv(root, r, seen)]
+    return [root / r for r in dict.fromkeys(rels)
+            if r.endswith(_EXTS) and Path(r).name != _SELF]
+
+
+def _scan(files: list[Path], root: Path = _ROOT) -> list[str]:
+    """파일들 → `경로:줄 [종류]` 목록."""
     hits: list[str] = []
-    files = _tracked_files()
-    assert files, "추적파일 0개 — git ls-files 실패?"
-
     for fp in files:
         try:
             text = fp.read_text(encoding="utf-8")
@@ -82,14 +101,54 @@ def test_no_hardcoded_secrets_in_tracked_files():
                 continue
             for label, pat in _PROVIDER:
                 if pat.search(line):
-                    hits.append(f"{fp.relative_to(_ROOT)}:{ln_no} [{label}]")
+                    hits.append(f"{fp.relative_to(root)}:{ln_no} [{label}]")
             m = _ASSIGN.search(line)
             if m:
                 val = m.group(1)
                 # env 조회/플레이스홀더 제외 + 고엔트로피(무작위 키스러움)만 신고.
                 if not _BENIGN.search(line) and _shannon(val) >= 3.2:
-                    hits.append(f"{fp.relative_to(_ROOT)}:{ln_no} [hardcoded secret literal]")
+                    hits.append(f"{fp.relative_to(root)}:{ln_no} [hardcoded secret literal]")
+    return hits
+
+
+def test_no_hardcoded_secrets_in_tracked_files():
+    """추적된 코드/스크립트/템플릿에 하드코딩 credential 이 없어야.
+    노출 시 .env + os.getenv 로 이전(CLAUDE.md Secrets 규칙). 회전 권고."""
+    files = _tracked_files()
+    assert files, "추적파일 0개 — git ls-files 실패?"
+    hits = _scan(files)
 
     assert not hits, (
         "하드코딩 시크릿 의심 — .env + os.getenv 로 이전하고 노출 키 회전:\n  "
         + "\n  ".join(sorted(set(hits))))
+
+
+def test_scope_is_what_would_be_committed(tmp_path):
+    """#407 — 범위는 '커밋될 것': 추적 중인 것 + 아직 add 안 한 새 파일. 무시 목록과
+    가상환경(`pyvenv.cfg`)의 새 파일은 뺀다. **임시 저장소**에서 잰다 — 레포 트리에 파일을
+    쓰면 다른 가드의 mtime·추적 상태를 흔든다(#365). 토큰은 소스에 리터럴로 두지 않는다."""
+    tok = "123456789" + ":" + "AA" + "x" * 34
+
+    def git(*a: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    git("init", "-q")
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    (tmp_path / "clean.py").write_text("x = 1\n")
+    git("add", ".gitignore", "clean.py")
+    (tmp_path / "new_test.py").write_text(f'T = "{tok}"\n')        # add 전 — 잡혀야 한다
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "a.py").write_text(f'T = "{tok}"\n')   # 무시 목록 — 안 본다
+    venv = tmp_path / "anyname" / "lib"
+    venv.mkdir(parents=True)
+    (tmp_path / "anyname" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "b.py").write_text(f'T = "{tok}"\n')                    # 가상환경 — 안 본다
+    nested = tmp_path / "tools" / "env2"                           # 하위 디렉터리의 가상환경도
+    (nested / "lib").mkdir(parents=True)
+    (nested / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (nested / "lib" / "c.py").write_text(f'T = "{tok}"\n')
+    files = _tracked_files(tmp_path)
+    assert sorted(str(p.relative_to(tmp_path)) for p in files) == ["clean.py", "new_test.py"]
+    assert _scan(files, tmp_path) == ["new_test.py:1 [Telegram bot token]"]
+    # 반대 증거(#25) — 가상환경이라도 **추적 중**이면 이미 커밋된 것이라 본다
+    git("add", "-f", "anyname/lib/b.py")
+    assert "anyname/lib/b.py:1 [Telegram bot token]" in _scan(_tracked_files(tmp_path), tmp_path)
