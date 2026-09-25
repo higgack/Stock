@@ -63,10 +63,40 @@ from trade.parser import parse_caption
 
 load_dotenv()
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    level=logging.INFO,
-)
+# 로그 한 줄의 틀. ⚠️ `trade.bot_health` 는 판정을 **메시지 본문**(`ingested msg=`
+# · `dropped msg=` · `handler error update=` · `trade-bot starting —`)으로 한다 — 그
+# 계약은 본문 쪽이고 회귀(test_bot_drop_log)가 그 본문을 bot_health 파서로 태워 본다.
+# 틀에서 읽는 것은 오류 **표본**을 고르는 레벨 표식(`[ERROR]`·`[CRITICAL]`, `_ERR_RE`)
+# 하나다 — 레벨 칸의 모양을 바꾸면 표본이 빈다(3차 독립 리뷰 L5).
+# watchdog(deploy/trade-watchdog.sh)는 본문('trade-bot starting' · 'getUpdates')만 센다.
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+
+
+class _TokenRedactFormatter(logging.Formatter):
+    """봇 토큰을 출력 직전에 `BOT_TOKEN` 으로 바꾼다 — 메시지·인자·트레이스백 전부.
+
+    ⚠️ 왜 있나(실수 #406 독립 리뷰 M3d). httpx 는 요청마다 URL 을 INFO 로 찍는데
+    그 경로에 `bot<TOKEN>` 이 평문으로 든다 — trade-bot 저널의 getUpdates 줄마다 토큰이
+    남았고, `systemctl status`·`journalctl` 출력을 붙여 넣는 순간 샜다. NOAH 봇
+    (`bot/telegram_bot.py` `_TokenRedactFilter`)과 같은 규약(#38)이되 **포매터**에
+    둔다: 필터는 레코드를 제자리에서 고쳐 같은 레코드를 받는 다른 핸들러까지 바꾸고,
+    트레이스백(exc_info)은 못 가린다. 레벨은 INFO 그대로 — watchdog
+    (deploy/trade-watchdog.sh)가 'getUpdates' 줄을 세므로 억제하면 오탐 재시작이다.
+    토큰은 서식 시각에 모듈 전역에서 읽는다(이 클래스가 TOKEN 보다 먼저 정의된다).
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        out = super().format(record)
+        tok = globals().get("TOKEN") or ""
+        return out.replace(tok, "BOT_TOKEN") if tok else out
+
+
+# 봇 자신의 핸들러에만 붙인다 — 루트에 이미 핸들러가 있으면(테스트 러너) basicConfig 는
+# 아무것도 안 하고, 그 핸들러들은 건드리지 않는다. 운영(`python -m trade.bot`)에선
+# 루트에 이것 하나다 — 회귀가 별도 프로세스로 그걸 잰다.
+_LOG_HANDLER = logging.StreamHandler()
+_LOG_HANDLER.setFormatter(_TokenRedactFormatter(_LOG_FORMAT))
+logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
 log = logging.getLogger("trade-bot")
 
 def _require_env(name: str) -> str:
@@ -186,11 +216,26 @@ BeOn(<code>t.me/BeOn_BeClear</code>) 수출입 알림 자동 수집·정리 — 
 """
 
 
+# 거절한 채널은 프로세스당 한 번만 적는다 — 봇이 관리자인 다른 채널이
+# 바쁘면 저널이 그 채널 줄로 덮여 watchdog·진단이 읽을 줄을 밀어낸다.
+_DROPPED_CHANNELS: set[int] = set()
+
+
 def _allowed_channel(chat_id: int) -> bool:
     if not CHANNEL_CHAT_IDS:
         log.info("TRADE_CHANNEL_CHAT_IDS not set — channel chat ID is %s", chat_id)
         return True
-    return chat_id in CHANNEL_CHAT_IDS
+    if chat_id in CHANNEL_CHAT_IDS:
+        return True
+    # ⚠️ 조용히 버리면 릴레이는 '포워드 N/N 성공' 을 찍는데 inbox 는 한 줄도
+    # 안 늘고, 그 둘을 가를 흔적이 저널에 없다(2026-09-25 40일 회수 27건 ·
+    # 실수 #406 · #12 silent-fail 금지). `trade.bot_health` 가 이 줄을 센다.
+    if chat_id not in _DROPPED_CHANNELS:
+        _DROPPED_CHANNELS.add(chat_id)
+        log.info("dropped channel=%s reason=channel allowed=%s "
+                 "(이 채널의 글은 계속 버린다 — 프로세스당 1회만 기록)",
+                 chat_id, sorted(CHANNEL_CHAT_IDS))
+    return False
 
 
 def _origin_matches(post: Message) -> bool:
@@ -204,6 +249,8 @@ def _origin_matches(post: Message) -> bool:
     non-BeOn origin silently fails here and never reaches inbox.jsonl
     (no log line — this is exactly how the Badonion pipeline's forwards
     disappeared despite Telethon reporting them forwarded successfully).
+    A False here is now logged by the caller (`_log_origin_drop`, #406) —
+    this function stays a pure predicate so the tests can call it bare.
     """
     if not SOURCE_ORIGINS:
         return True
@@ -227,6 +274,36 @@ def _origin_matches(post: Message) -> bool:
         return True
 
     return False
+
+
+def _origin_fields(post) -> tuple:
+    """포워드 출처 → (종류, 채널 ID, 사용자명) — 버림 줄과 예외 줄이 같은 규약으로 적는다
+    (#38). 종류는 텔레그램 `forward_origin.type` · 옛 필드만 있으면 'legacy' · 포워드가
+    아니면(운영자가 직접 쓴 글·명령) 'none'. `trade.bot_health` 가 이 셋으로 릴레이 원천의
+    글인지 가른다."""
+    origin = getattr(post, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    if chat is None:
+        chat = getattr(post, "forward_from_chat", None)
+    return (getattr(origin, "type", None) or ("legacy" if chat is not None else "none"),
+            getattr(chat, "id", None), getattr(chat, "username", None))
+
+
+def _log_origin_drop(post: Message) -> None:
+    """출처 게이트가 버린 글을 **사유와 함께** 한 줄 남긴다.
+
+    ⚠️ 왜 있나. 이 게이트는 2026-07-11 에 한 번 나쁜양파 포워드 68건을
+    조용히 버렸고(test_bot_origin 독스트링), 그때 출처 목록만 넓히고 **버림
+    자체는 계속 조용히** 뒀다. 2026-09-25 40일 회수 27건이 inbox 에 안 들어
+    갔을 때 저널에 'ingested' 가 0 이었는데, 그 0 은 '못 받았다' 와 '받고
+    여기서 버렸다' 를 가르지 못했다(실수 #406). 드물게만 일어나는 일이라
+    건마다 적는다 — 운영자가 채널에 직접 쓴 글 정도다.
+    """
+    log.info(
+        "dropped msg=%s reason=origin origin_type=%s origin_chat=%s "
+        "origin_username=%s allowed_origins=%s",
+        getattr(post, "message_id", None), *_origin_fields(post), sorted(SOURCE_ORIGINS),
+    )
 
 
 def _serialize(post: Message) -> dict:
@@ -404,6 +481,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if not _origin_matches(post):
+        _log_origin_drop(post)
         return
 
     record = _serialize(post)
@@ -1303,6 +1381,38 @@ async def _post_init(app: Application) -> None:
         log.warning("heatmap startup kick failed (timer will cover): %s", e)
 
 
+async def _on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB 가 넘기는 예외를 **한 줄 표식**으로 남긴다 — 트레이스백은 그대로(exc_info).
+
+    ⚠️ 왜 있나(실수 #406 독립 리뷰 M2). 에러 핸들러가 없으면 PTB 는 'No error handlers
+    are registered, logging exception.' 만 찍는데, 그 줄은 **어느 업데이트였는지** 말하지
+    않는다. 채널 글을 처리하다 예외가 나면(디스크 가득 · inbox 권한) 그 글은 수신 줄도
+    버림 줄도 없이 사라지고, `trade.bot_health` 는 그 누락을 '텔레그램이 안 줬다' 로
+    읽었다. 이 줄이 메시지 번호까지 적어 '받았는데 처리하다 죽었다' 를 가른다.
+    `run_polling` 은 getUpdates 실패(409·네트워크)도 `update=None` 으로 여기 넘긴다 —
+    그건 '폴링 오류' 로 따로 적는다(처방이 다르다, #82). 형식은 bot_health `_EXC_RE` 와
+    짝이다(회귀가 이 함수를 태워 그 파서로 읽는다).
+    채널 글이면 **포워드 출처**도 버림 줄과 같은 규약으로 적는다(2차 독립 리뷰 H1) — 그래야
+    bot_health 가 '릴레이 포워드를 놓쳤다(❌)' 와 '채널에 직접 쓴 명령의 답장이 실패했다'
+    를 가른다. 수 대조(보냄 vs 받음)는 다른 글의 수신이 이 손실을 덮을 수 있어 이 줄이
+    손실의 직접 증거다.
+    """
+    err = getattr(ctx, "error", None)
+    if update is None:
+        log.error("polling error exc=%s: %s", type(err).__name__, err, exc_info=err)
+        return
+    post = getattr(update, "channel_post", None)
+    if post is not None:
+        log.error("handler error update=channel_post msg=%s origin_type=%s origin_chat=%s "
+                  "origin_username=%s exc=%s: %s",
+                  getattr(post, "message_id", None), *_origin_fields(post),
+                  type(err).__name__, err, exc_info=err)
+        return
+    log.error("handler error update=%s msg=%s exc=%s: %s", type(update).__name__,
+              getattr(getattr(update, "effective_message", None), "message_id", None),
+              type(err).__name__, err, exc_info=err)
+
+
 def main() -> None:
     app = (
         Application.builder()
@@ -1310,6 +1420,7 @@ def main() -> None:
         .post_init(_post_init)
         .build()
     )
+    app.add_error_handler(_on_error)
     # Commands fire in private chats (DM the bot directly).
     app.add_handler(CommandHandler(["help", "start"], cmd_help))
     app.add_handler(CommandHandler("watch", cmd_watch))
@@ -1330,16 +1441,41 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_beon_skip_callback, pattern=r"^beon_skip:"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
+    # `drop_log=on` 은 이 프로세스가 게이트 버림을 저널에 적는 판이라는 표식이다
+    # — `trade.bot_health` 는 이게 없으면 '버림 0건' 을 증거로 쓰지 않는다(옛 판은
+    # 버려도 아무것도 안 적었다, 실수 #406). 앞부분 "trade-bot starting" 은
+    # watchdog 가 grep 하므로 바꾸지 말 것(deploy/trade-watchdog.sh).
     log.info(
-        "trade-bot starting — inbox=%s media=%s allowed=%s origin=%s concurrency=%d",
+        "trade-bot starting — inbox=%s media=%s allowed=%s origin=%s concurrency=%d "
+        "drop_log=on",
         INBOX_PATH,
         MEDIA_ROOT,
         CHANNEL_CHAT_IDS or "<discovery>",
         SOURCE_ORIGINS or "<any>",
         DOWNLOAD_CONCURRENCY,
     )
-    app.run_polling()
+    # ⚠️ allowed_updates 를 비워 두면 텔레그램은 **마지막으로 누군가 설정한 값**을
+    # 계속 쓴다(Bot API getUpdates 문서). 어느 클라이언트든 같은 토큰으로
+    # channel_post 를 뺀 목록을 한 번 보내면 이 봇은 재시작해도 채널 글을 영영
+    # 못 받는다 — 폴링은 200 이라 watchdog 도 못 잡는다. 매 시작에 명시해
+    # 재시작이 그 상태를 풀게 한다(NOAH `bot/telegram_bot.py` 와 같은 규약, #38).
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+def _run() -> int:
+    """진입점 — 잡히지 않은 예외도 **가림 포매터를 거쳐** 찍는다.
+
+    ⚠️ 인터프리터가 직접 찍는 트레이스백은 로깅을 안 거친다. python-telegram-bot 은
+    시작 때 토큰이 거절되면 예외 문구에 토큰을 그대로 싣는다(21.6 `_bot.py`
+    'The token `…` was rejected by the server.') — 그 줄이 저널에 평문으로 남는다.
+    종료 코드는 전과 같다(1 — systemd 가 실패로 본다)."""
+    try:
+        main()
+    except Exception:                                          # noqa: BLE001
+        log.exception("trade-bot crashed")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_run())

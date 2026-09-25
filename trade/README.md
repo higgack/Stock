@@ -100,7 +100,7 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 1. Add the bot as an **admin** of the destination private channel
    (regular members don't receive channel posts via Bot API).
 2. With `TRADE_CHANNEL_CHAT_IDS=` empty, post any message in the channel.
-3. `journalctl -u trade-bot -n 20` will show `channel chat ID is -100...`.
+3. `journalctl -u trade-bot -n 20 | grep 'channel chat ID'` will show `channel chat ID is -100...` (grep 으로 거르는 이유: 봇이 토큰을 가리기 전 판이 찍은 줄엔 토큰이 평문으로 남아 있다).
 4. Set `TRADE_CHANNEL_CHAT_IDS=-100...` in `.env`, `systemctl restart trade-bot`.
 
 ## Verifying ingestion
@@ -108,8 +108,35 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 ```bash
 tail -f ~/.trade/inbox.jsonl                # one line per message
 ls ~/.trade/media/$(date -I)/                # downloaded photos for today
-journalctl -u trade-bot -f                   # live log
+# live log — 봇은 자기 로그의 토큰을 `BOT_TOKEN` 으로 가린다(실수 #406 리뷰). ⚠️ 가리기
+# 전 판이 찍은 getUpdates 줄엔 토큰이 평문으로 남아 있다(저널 보존기간 동안) — 출력을
+# 어디 붙여 넣을 거면 가릴 것:
+journalctl -u trade-bot -f | sed -u -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'
 ```
+
+포워드했는데 inbox 에 안 들어오면(실수 #406) 봇이 못 받았는지 · 받고 버렸는지 ·
+어디서 막혔는지(미가동·409·웹훅·수신 종류·관리자·게이트·inbox 경로)를 한 번에
+가른다 — 읽기 전용이고 getUpdates 를 부르지 않으며 토큰을 찍지 않는다:
+
+```bash
+cd ~/stock-trade && .venv/bin/python -m trade.bot_health
+```
+
+종료코드는 0 이상 없음 · 1 문제(❌) · 2 판정 불가(❓)다. 버림을 적지 않는 **옛 판** 봇이
+돌면 증상이 없어도 2 다 — 그래서 다시 포워드는 `bot_health && 백필` 로 이으면 봇이 새
+판으로 재시작되기 전엔 나가지 않는다(실수 #409).
+
+같은 대조(릴레이가 보낸 수 ↔ 봇이 받은 수 — 받음은 기록 + 출처 게이트 버림)를
+`trade-bot-health.timer` 가 매시간 돌려, 못 받았거나 릴레이 원천의 글을 버렸거나 채널
+글을 처리하다 예외로 놓쳤으면(수신 줄 없는 번호 — 수와 무관한 직접 증거) 채널로 알린다.
+다른 출처 포워드의 버림은 알리지 않는다 — BeOn 이 되포워드한 남의 글이 대부분이라서다.
+⚠️ 그래서 나쁜양파가 **재게시**한 관련 글(다른 채널에서 퍼 온 글 — 텔레그램은 원래 출처를
+단다)을 버린 손실은 알림에 안 잡힌다. 진단의 ⚠️ 메모가 그 출처·건수와 가르는 명령(`--find`
+로 그 글이 여전히 to-forward 인가)을 적는다. 같은 사실은 한 번만 알린다 — **전달된** 알림의
+사실만 `~/.trade/.health-markers/delivery-alerted.json` 에 적고(전달 실패는 다음 실행이 다시
+알린다), 끊김이 이어지면 새로 빠진 포워드만 알린다. ⚠️ 수로 대조하므로 같은 창의 다른 글
+수신(운영자가 직접 포워드한 글 등)이 예외 없는 손실을 덮을 수 있다. 손으로 돌린 백필은
+저널에 안 남아 '보낸 수' 에 안 든다.
 
 ## One-time backfill — Telethon (`trade/scripts/backfill_beon.py`)
 
@@ -175,7 +202,7 @@ rm -rf .backfill-venv .backfill-session*
 While it runs, watch ingestion in another terminal:
 ```bash
 tail -f ~/.trade/inbox.jsonl
-journalctl -u trade-bot -f
+journalctl -u trade-bot -f | sed -u -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'   # 토큰 가림
 ```
 
 If a ⏸ Telegram alert arrives mid-run:

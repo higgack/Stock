@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+# trade-bot 이 죽었을 때 볼 명령 — `systemctl status` 가 아니다: 그건 저널 꼬리를 같이 찍고
+# 옛 판이 찍은 getUpdates 줄엔 봇 토큰이 평문이다(§Secrets · 실수 #406 독립 리뷰 M3c).
+from trade.bot_health import USAGE as BOT_HEALTH_CMD
+
 # 관세청 발표 규약(11일·21일 잠정 / 익월 1일 전월 전체 잠정 / 익월 15일 전월 확정).
 # `trade/scripts/health_check.py` 의 `_expected_recent_publications` 와 같은 규약 —
 # 회귀가 두 구현의 결과를 대조한다(복제가 갈리면 잡힌다, #38·#317).
@@ -112,7 +116,7 @@ def verdict(facts: dict, today: date) -> dict:
             note = "inbox.jsonl 에 기록이 없음(파일 없음/빈 파일 — 경로가 다르면 --why 의 ④ 경로를 볼 것)"
         if active is False:
             return {"branch": "listener", "lines": lines,
-                    "reason": f"{note} · trade-bot.service 비활성 — 리스너가 죽었다. `systemctl status trade-bot` 부터"}
+                    "reason": f"{note} · trade-bot.service 비활성 — 리스너가 죽었다. `{BOT_HEALTH_CMD}` 부터"}
         if active is True:
             return {"branch": "channel_quiet", "lines": lines,
                     "reason": f"{note} · 리스너는 활성 — 채널 메시지가 안 왔거나 전달 필터에 걸림"}
@@ -125,7 +129,7 @@ def verdict(facts: dict, today: date) -> dict:
         if active is False:
             return {"branch": "listener", "lines": lines,
                     "reason": (f"{_scope(facts)} 최신이 {ib_age}일 전이고 trade-bot.service 가 활성이 "
-                               "아님 — 리스너가 죽었다. `systemctl status trade-bot` 부터")}
+                               f"아님 — 리스너가 죽었다. `{BOT_HEALTH_CMD}` 부터")}
         if active is True:
             return {"branch": "channel_quiet", "lines": lines,
                     "reason": (f"리스너는 활성인데 {_scope(facts)} 최신이 {ib_age}일 전 — 채널에 "

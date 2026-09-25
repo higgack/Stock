@@ -18,20 +18,37 @@ import re
 _UNIT = "trade-bot-beon-listener"
 _SERVICE = f"{_UNIT}.service"
 
-# LoadState 갈래마다 처방이 정반대다 — 하나로 뭉뚱그리면 `masked` 에
-# `enable --now` 를 시켜 실패한다(#82).
-_LOAD_FIX = {
-    "not-found": (f"유닛이 없다 — `systemctl status {_SERVICE}` 로 확인하고, "
-                  f"없으면 `deploy/install-trade-units.sh`. ⚠️ `--user` 를 "
-                  f"붙이면 **시스템 유닛이 안 보인다**(그 스코프엔 없다)."),
-    "masked": f"마스크부터 해제: `sudo systemctl unmask {_SERVICE}` 뒤 "
-              f"`sudo systemctl enable --now {_UNIT}`",
-    "error": "유닛 파일을 못 읽었다 — `sudo systemctl daemon-reload`",
-    "bad-setting": f"유닛 파일 설정 오류 — `systemctl status {_SERVICE}`",
-}
+def _show_cmd(unit: str) -> str:
+    """상태를 묻는 명령. ⚠️ `systemctl status` 가 아니다 — 그건 저널 꼬리를
+    같이 찍고, 봇이 토큰을 가리기 전 판이 찍은 trade-bot 저널의 getUpdates 줄엔
+    **봇 토큰이 평문**이다(httpx 가 URL 을 INFO 로 찍었다 — 저널 보존기간 동안 남는다).
+    그 출력을 붙여 넣으면 토큰이 새므로 저널을 안 싣는 `show` 로 묻는다(§Secrets ·
+    실수 #406)."""
+    return f"`systemctl show {unit}.service -p LoadState -p ActiveState -p SubState`"
 
 
-def listener_verdict(facts: dict, unit: str = _UNIT) -> dict:
+def _load_fix(unit: str) -> dict:
+    """LoadState 갈래마다 처방이 정반대다 — 하나로 뭉뚱그리면 `masked` 에
+    `enable --now` 를 시켜 실패한다(#82). ⚠️ 유닛 이름은 **인자에서** 만든다 —
+    옛 판은 BeOn 리스너 이름을 박아 둬서, 다른 유닛(trade-bot)에 쓰면 남의
+    유닛을 고치라는 처방이 나갔다(#38 · 실수 #406 때 trade-bot 에 쓰며 발각)."""
+    svc = f"{unit}.service"
+    return {
+        "not-found": (f"유닛이 없다 — {_show_cmd(unit)} 로 확인하고, "
+                      f"없으면 `deploy/install-trade-units.sh`. ⚠️ `--user` 를 "
+                      f"붙이면 **시스템 유닛이 안 보인다**(그 스코프엔 없다)."),
+        "masked": f"마스크부터 해제: `sudo systemctl unmask {svc}` 뒤 "
+                  f"`sudo systemctl enable --now {unit}`",
+        "error": "유닛 파일을 못 읽었다 — `sudo systemctl daemon-reload`",
+        "bad-setting": f"유닛 파일 설정 오류 — {_show_cmd(unit)}",
+    }
+
+
+_LOAD_FIX = _load_fix(_UNIT)
+
+
+def listener_verdict(facts: dict, unit: str = _UNIT, *,
+                     reauth: bool = True) -> dict:
     """long-running 리스너의 상태를 **갈래로** 말한다(#82). 순수 함수.
 
     타이머(`Type=oneshot`)와 의미가 다르다 — 여기선 `active/running` 이
@@ -41,12 +58,12 @@ def listener_verdict(facts: dict, unit: str = _UNIT) -> dict:
     if not facts.get("ok"):
         return {"kind": "unknown",
                 "text": (f"systemd 에 못 물었다({facts.get('err') or '사유 미상'})"
-                         f" — `systemctl status {unit}.service`")}
+                         f" — {_show_cmd(unit)}")}
     load = facts.get("s_LoadState") or "?"
     if load != "loaded":
         return {"kind": {"not-found": "not_installed"}.get(load, load.replace("-", "_")),
                 "text": f"유닛 상태가 `{load}` 다 — "
-                        + _LOAD_FIX.get(load, f"`systemctl status {unit}.service`")}
+                        + _load_fix(unit).get(load, _show_cmd(unit))}
     active = facts.get("s_ActiveState") or "?"
     sub = facts.get("s_SubState") or "?"
     started = facts.get("s_ExecMainStartTimestamp") or "?"
@@ -61,7 +78,9 @@ def listener_verdict(facts: dict, unit: str = _UNIT) -> dict:
                          f"— 아래 저널의 실패 사유부터 볼 것")}
     status = str(facts.get("s_ExecMainStatus") or "")
     result = facts.get("s_Result") or ""
-    if status == "78":
+    if status == "78" and reauth:
+        # `reauth=False` 는 세션이 없는 유닛(trade-bot)용 — 거기서 78 을
+        # '재인증' 으로 적으면 없는 명령을 시킨다(#187b).
         # 유닛이 RestartPreventExitStatus=78 로 hot-loop 를 막는다 —
         # 이걸 '설치 문제'로 적으면 운영자가 헛걸음한다(#187b).
         return {"kind": "needs_auth",

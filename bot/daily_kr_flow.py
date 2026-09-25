@@ -905,7 +905,8 @@ _TIMER_CMDS = (f"`systemctl status {_TIMER_UNIT}` · "
 
 
 def systemd_facts(timer: str | None = _TIMER_UNIT,
-                  service: str = _SERVICE_UNIT) -> dict:
+                  service: str = _SERVICE_UNIT, *,
+                  extra: tuple[str, ...] = ()) -> dict:
     """systemd 에 **물어서** 타이머 상태를 재 온다(읽기 전용).
 
     도장(`feed_health`)이 없다는 사실만으로 '타이머가 안 돌았을 수 있다' 고
@@ -929,8 +930,12 @@ def systemd_facts(timer: str | None = _TIMER_UNIT,
     # 그 경우 서비스만 묻는다. 없는 유닛을 물으면 rc!=0 이 나서 판정 불가로
     # 떨어지고, 그건 '멈췄다'와 구별되지 않는다(#82·#54).
     # 그리고 리스너 판정엔 `LoadState` 가 필요하다(설치 안 됨 ↔ 멈춤).
+    # `extra` 는 서비스 쪽에 더 물을 속성(`MainPID`·`NRestarts` 등, `s_` 접두로
+    # 실린다) — trade-bot 진단이 '지금 도는 프로세스의 시작 줄' 을 찾는 데 쓴다
+    # (`trade.bot_health`, 실수 #406). 기본값이면 예전과 같은 질의다.
     _pairs = [(service, ("LoadState", "ActiveState", "SubState",
-                         "ExecMainStartTimestamp", "ExecMainStatus", "Result"))]
+                         "ExecMainStartTimestamp", "ExecMainStatus", "Result",
+                         *extra))]
     if timer:
         _pairs.insert(0, (timer, ("LoadState", "ActiveState", "SubState",
                                   "LastTriggerUSec", "NextElapseUSecRealtime")))
@@ -1140,8 +1145,11 @@ _JOURNAL_EMPTY_TEXT = {
                 "으로 지워진 것이다(권한 문제 아님 · 다시 조회해도 안 나온다)"),
     "denied": ("시스템 저널 읽기 권한이 없다 — `sudo usermod -aG "
                "systemd-journal $USER` 후 다시 로그인"),
-    "unknown": ("이 유닛의 줄이 없다 — 비어 있는 것인지 못 읽는 것인지 "
-                "판정 불가(`sudo journalctl -u <unit> -n 50` 로 확인)"),
+    # ⚠️ 권하는 명령은 **가림을 붙여** 준다 — 봇 유닛 저널엔 가림 이전 판이 찍은 토큰
+    # 줄이 남아 있을 수 있고(trade-bot, 실수 #406 리뷰), 사람은 그 출력을 붙여 넣는다.
+    "unknown": ("이 유닛의 줄이 없다 — 비어 있는 것인지 못 읽는 것인지 판정 불가"
+                "(`sudo journalctl -u <unit> -n 50 | sed -E "
+                "'s/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'` 로 확인)"),
 }
 
 
