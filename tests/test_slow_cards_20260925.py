@@ -508,3 +508,24 @@ def test_the_history_boundary_is_inclusive(tmp_path):
     (fred / "PCEPILFE_2026-08-04.json").write_text(json.dumps({"time": "2026-06-01"}))
     pce = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 근원PCE")
     assert "(기간 종료 +35일)" in pce[2] and "⚠️ 규약보다 최소 5일" in pce[2], pce
+
+
+# ── 2차 독립 리뷰(217aace..ef33923) 반영 ─────────────────────────────────────
+def test_an_empty_fred_answer_is_remembered_and_a_yoy_success_clears_it(tmp_path, monkeypatch):
+    """F3·F6 — 빈 답도 30초마다 다시 묻지 않는다(헤드라인·YoY 둘 다). F7 — YoY 성공은 자기
+    기억을 지운다(안 지우면 다음 실패가 10분 전 기록을 이어받는다)."""
+    mo, _f = _fred_cache(tmp_path, monkeypatch)
+    calls: list = []
+    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: calls.append(url) or _Resp([]))
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None and len(calls) == 1
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None and len(calls) == 1
+    assert mo._fetch_fred_yoy("CPIAUCSL") is None and len(calls) == 2
+    assert mo._fetch_fred_yoy("CPIAUCSL") is None and len(calls) == 2
+    for k in list(mo._fred_fail):
+        mo._fred_fail[k] -= mo._FRED_FAIL_TTL_S + 1
+    obs = [{"date": f"{yy}-{mm:02d}-01", "value": f"{300 + i}"}
+           for i, (yy, mm) in enumerate([(2026, 7), (2026, 6), (2025, 7), (2025, 6)])]
+    monkeypatch.setattr(mo.requests, "get",
+                        lambda url, timeout=None: calls.append(url) or _Resp(obs))
+    assert mo._fetch_fred_yoy("CPIAUCSL")["time"] == "2026-07-01" and len(calls) == 3
+    assert [k for k in mo._fred_fail if "_yoy_" in k] == [], mo._fred_fail

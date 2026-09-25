@@ -17385,6 +17385,7 @@ def _render_market_card(title: str, items: list, yf: dict) -> str:
 def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
     """Render the FRED indicators card."""
     from bot.macro_snapshot import _fmt_asof   # 기준월 포맷 공유(사용자 2026-06-24)
+    from bot.macro_snapshot import _FRED_QUARTERLY, _as_quarter   # 분기 규칙 한 벌(리뷰 M2)
     # 일별 series(국채금리) — macro_snapshot._DAILY_CADENCE_KEYS 와 같은 목적.
     # 2026-08-02 macro_snapshot fix(full=True 로 월 잘림 없이 정확한 날짜)가
     # 이 카드엔 안 옮겨져 있었다(2026-08-03 사용자 스크린샷 — 미국채 2/10/30년이
@@ -17431,7 +17432,6 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         # 분기 계열은 분기로 — FRED 는 분기를 **분기 첫날**로 찍어 와 월로 자르면 미국 GDP 가
         # '(2026-04)' 가 된다. 같은 화면의 매크로 카드는 '2026 Q2' 라 두 표면이 한 값을 다른
         # 기간으로 말했다(리뷰 M2 · #38 — 규칙은 `macro_snapshot` 한 벌을 쓴다).
-        from bot.macro_snapshot import _FRED_QUARTERLY, _as_quarter
         _t = d.get("time", "")
         _asof = _fmt_asof(_as_quarter(_t) if item.get("series_id") in _FRED_QUARTERLY else _t,
                           full=_full)

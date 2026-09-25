@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 _log = logging.getLogger("bot.env_keys")
 
@@ -28,7 +29,11 @@ _TRIED: set[str] = set()
 
 # ── 여기서 건넨 비밀값은 어느 로그에도 평문으로 남지 않는다(실수 #416) ─────────────
 # ⚠️ 왜 여기인가. 키를 URL 에 싣는 클라이언트(data.go.kr `serviceKey` · FRED `api_key` ·
-# ECOS 경로 속 키 …)는 전부 이 헬퍼로 키를 받는다(#23 회귀가 강제). 그런데 httpx 는 매
+# ECOS 경로 속 키 …)는 대부분 이 헬퍼로 키를 받는다(#23 회귀가 `bot/*.py` 의 직접 읽기를
+# 막는다). 그 회귀의 **예외**는 스스로 등록한다 — `dart_client` 는 자체 `.env` 폴백과 빈
+# 문자열='키 없음' 규약 때문에 이 헬퍼를 안 거쳐 `remember_secret()` 을 부른다(2차 리뷰 M1:
+# 등록이 없으면 `crtfc_key=` 가 든 예외 URL 이 그대로 샌다). Google SDK 키는 URL 이 아니라
+# 헤더로 가서 요청 줄에 안 실린다. 그런데 httpx 는 매
 # 요청 URL 을 INFO 로 찍고(`HTTP Request: GET …?serviceKey=…`), requests 예외 문구도
 # URL 을 싣는다 — 클라이언트의 가림(`_mask`)은 **그 클라이언트가 만든 문자열**만 덮어
 # 그 줄들은 journald 로 그대로 갔다(독립 리뷰 2026-09-25 H1 · 관세청 카드가 6시간마다
@@ -39,9 +44,14 @@ _TRIED: set[str] = set()
 # ⚠️ 비밀값이 **없는** 레코드는 한 글자도 바꾸지 않는다(args 유지) — 가림이 다른 로깅을
 # 바꾸지 않게.
 # 못 보는 축(#274): 16자 미만 값(짧은 비밀번호 — 흔한 글자를 가리는 오탐을 막는 대가) ·
-# `print()` 출력 · 이 헬퍼를 거치지 않은 값(텔레그램 토큰은 `telegram_bot` 의 필터가 가린다).
+# `print()` 출력 · 로깅을 거치지 않는 출력(잡히지 않은 예외를 `sys.excepthook`·`http.server`
+# 가 stderr 로 직접 찍는 트레이스백) · 이 헬퍼로도 `remember_secret` 으로도 등록되지 않은 값
+# (텔레그램 토큰은 `telegram_bot` 의 필터가 가린다) · 원천이 되읊은 **다른 대·소문자** 인코딩.
 _SECRET_MIN = 16
 _SECRETS: tuple[str, ...] = ()        # 긴 것 먼저 — 인코딩 변형이 원문을 품을 수 있다
+# 읽고-고쳐-쓰기를 한 번에 — 두 스레드가 동시에 등록하면 한쪽 값이 사라져, 그 직후 요청의
+# 로그가 평문이 된다(2차 리뷰 L1 실측: 8스레드·300회 중 73회 유실).
+_SECRETS_LOCK = threading.Lock()
 
 
 def _remember(value: str) -> None:
@@ -54,8 +64,16 @@ def _remember(value: str) -> None:
     enc = quote(value, safe="")
     forms = {value, enc, quote(value), unquote(value),
              re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), enc)}
-    _SECRETS = tuple(sorted(set(_SECRETS) | {f for f in forms if len(f) >= _SECRET_MIN},
-                            key=len, reverse=True))
+    with _SECRETS_LOCK:
+        _SECRETS = tuple(sorted(set(_SECRETS) | {f for f in forms if len(f) >= _SECRET_MIN},
+                                key=len, reverse=True))
+
+
+def remember_secret(value: str) -> None:
+    """이 헬퍼를 **안 거치고** 얻은 비밀값을 가림 목록에 올린다(공개 — `dart_client` 처럼 자체
+    규약으로 키를 읽는 자리용). 빈 값·16자 미만은 무시한다."""
+    if value:
+        _remember(value.strip())
 
 
 def redact(text: str) -> str:
@@ -75,7 +93,16 @@ def _redact_record(record: logging.LogRecord) -> None:
     try:
         msg = record.getMessage()
     except Exception:                                          # noqa: BLE001
-        msg = None                  # 포맷이 깨진 레코드 — 로깅이 원래대로 오류를 알린다
+        # 포맷이 깨진 레코드 — 로깅이 원래대로 오류를 알리되, 그 알림은 `Arguments: (…)` 로
+        # **인자를 통째로** stderr 에 찍는다. 문자열 인자를 미리 가린다(2차 리뷰 L2).
+        msg = None
+        if isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: redact(v) if isinstance(v, str) else v
+                           for k, v in record.args.items()}
     if msg is not None:
         red = redact(msg)
         if red != msg:

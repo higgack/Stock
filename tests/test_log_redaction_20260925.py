@@ -178,3 +178,122 @@ def test_the_factory_is_installed_once(fresh):
     assert getattr(f1, "_noah_redact", False)
     fresh._install_record_redaction()
     assert logging.getLogRecordFactory() is f1
+
+
+# ── 2차 독립 리뷰(217aace..ef33923) 반영 ─────────────────────────────────────
+def test_realistic_key_lengths_are_hidden_and_the_threshold_is_sixteen(fresh, monkeypatch,
+                                                                       caplog):
+    """M2 — 80자 픽스처만 쓰면 하한을 21·33 으로 올려도 전부 통과한다(2차 리뷰 실측). 실제 키
+    길이로 잰다: ECOS·Finnhub 20자 영숫자 · FRED·EDINET 32자 소문자 hex. 경계는 15자 안 기억 ·
+    16자 기억."""
+    ecos = "".join(("ABCD", "1234", "EFGH", "5678", "IJKL"))
+    fred = "".join(("0a1b2c3d", "4e5f6a7b", "8c9d0e1f", "2a3b4c5d"))
+    assert len(ecos) == 20 and len(fred) == 32
+    monkeypatch.setenv("BOK_ECOS_API_KEY", ecos)
+    monkeypatch.setenv("FRED_API_KEY", fred)
+    fresh.env_key("BOK_ECOS_API_KEY")
+    fresh.env_key("FRED_API_KEY")
+    caplog.set_level(logging.INFO)
+    log = logging.getLogger("bot.len")
+    log.warning("ecos: HTTP fetch failed: %s",
+                RuntimeError(f"Max retries exceeded with url: /api/StatisticSearch/{ecos}/json"))
+    log.warning("fred: fetch failed: %s",
+                f"https://api.stlouisfed.org/fred/series/observations?api_key={fred}&s=1")
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert ecos not in text and fred not in text and text.count("***") == 2, text
+    fresh._remember("a" * 15)
+    fresh._remember("b" * 16)
+    assert "a" * 15 not in fresh._SECRETS and "b" * 16 in fresh._SECRETS
+
+
+def test_the_decoded_form_of_an_encoded_key_is_hidden(fresh, caplog):
+    """`.env` 에 인코딩 키(`%2B…`)를 넣었어도, 어떤 경로가 그걸 풀어 찍으면 원문 모양이다."""
+    fresh.remember_secret(quote(_KEY, safe=""))
+    caplog.set_level(logging.INFO)
+    logging.getLogger("bot.x").info("decoded %s", _KEY)
+    assert caplog.records[-1].getMessage() == "decoded ***"
+
+
+def test_every_occurrence_in_one_record_is_hidden(fresh, caplog):
+    """requests 의 연쇄 트레이스백엔 한 레코드에 키가 세 번 실린다(2차 리뷰 실측)."""
+    fresh.remember_secret(_KEY)
+    caplog.set_level(logging.INFO)
+    logging.getLogger("bot.x").info("%s | %s | %s", _KEY, _KEY, _KEY)
+    assert caplog.records[-1].getMessage() == "*** | *** | ***"
+
+
+def test_stack_info_is_hidden(fresh):
+    """`stack_info` 도 가린다 — 레코드 팩토리를 타는 `makeRecord` 로 직접 만든다."""
+    fresh.remember_secret(_KEY)
+    rec = logging.getLogger("bot.x").makeRecord(
+        "bot.x", logging.INFO, "f.py", 1, "m", (), None,
+        sinfo=f"Stack (most recent call last):\n  url={_KEY}")
+    assert _KEY not in rec.stack_info and "url=***" in rec.stack_info
+
+
+def test_concurrent_remembers_do_not_lose_a_key(fresh):
+    """L1 — 두 스레드가 동시에 등록하면 한쪽 값이 사라졌다(2차 리뷰 실측: 8스레드·300회 중 73회).
+    스레드 전환 간격을 좁혀 경합을 강제한다 — 락이 없으면 50회 안에 사실상 반드시 잃는다."""
+    # ⚠️ 스레드를 차례로 띄우기만 하면 앞 스레드가 끝난 뒤 다음이 시작해 경합이 안 생긴다 —
+    # 첫 판이 그래서 락을 지워도 통과했다(#91c). 배리어로 **동시에** 출발시키고 스레드마다
+    # 여러 번 등록한다.
+    import sys
+    import threading
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for run in range(20):
+            fresh._SECRETS = ()
+            gate = threading.Barrier(8)
+            keys = [[f"{run:02d}-{t:01d}-{i:02d}-" + "k" * 16 for i in range(20)]
+                    for t in range(8)]
+
+            def work(mine, gate=gate):
+                gate.wait()
+                for k in mine:
+                    fresh.remember_secret(k)
+            ts = [threading.Thread(target=work, args=(mine,)) for mine in keys]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            missing = [k for mine in keys for k in mine if k not in fresh._SECRETS]
+            assert not missing, (run, len(missing))
+    finally:
+        sys.setswitchinterval(old)
+
+
+def test_a_malformed_log_call_does_not_print_the_key_to_stderr(fresh, monkeypatch, capsys):
+    """L2 — 포맷이 깨진 호출은 로깅이 `Arguments: (…)` 로 인자를 **통째로** stderr 에 찍는다."""
+    fresh.remember_secret(_KEY)
+    lg = logging.getLogger("bot.badfmt")
+    h = logging.StreamHandler()
+    lg.addHandler(h)
+    monkeypatch.setattr(lg, "propagate", False)
+    try:
+        lg.warning("bad %d", f"https://x/y?serviceKey={_KEY}&a=1")
+    finally:
+        lg.removeHandler(h)
+    err = capsys.readouterr().err
+    assert "Arguments:" in err and "serviceKey=***" in err, err
+    assert not _leaked(err, _KEY), err
+
+
+def test_dart_client_registers_the_key_it_reads_itself(fresh, monkeypatch, caplog):
+    """M1(2차 리뷰) — DART 키는 `env_key` 를 안 거친다(자체 .env 폴백 · 빈 문자열='키 없음').
+    등록이 없으면 `crtfc_key=` 가 든 예외 URL 이 실패 로그로 그대로 샌다. 환경에서 읽은 키와
+    인자로 받은 키 둘 다."""
+    from bot import dart_client
+    dart = "".join(("0123456789", "abcdef0123", "456789abcd", "ef01234567"))
+    monkeypatch.setenv("DART_API_KEY", dart)
+    dart_client.DartClient()
+    caplog.set_level(logging.INFO)
+    logging.getLogger("bot.dart").warning(
+        "dart: company.json failed: %s",
+        ConnectionError(f"Max retries exceeded with url: /api/company.json?crtfc_key={dart}&c=1"))
+    m = caplog.records[-1].getMessage()
+    assert dart not in m and "crtfc_key=***" in m, m
+    other = dart[::-1]
+    dart_client.DartClient(other)
+    logging.getLogger("bot.dart").warning("k=%s", other)
+    assert caplog.records[-1].getMessage() == "k=***"

@@ -422,9 +422,17 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
     # 6시간 구워지고, 카드는 그 점들을 이어 '직전' 이 몇 달을 건너뛴 변화를 말한다. 최신 쪽
     # 꼬리(아직 안 나온 달)는 정상이지만, **받은 마지막 달보다 앞의 빈 달**은 결함이다 —
     # 굽지 않고 계열 통째 ECOS 로 폴백한다(한 차트에 원천을 섞지 않는다, #240).
-    have = {r["ym"] for r in out}
-    holes = [m for m in (ym_shift(start, j) for j in range(month_count(start, out[-1]["ym"])))
-             if m not in have]
+    # ⚠️ 빈 달은 **카드(계열)마다** 센다 — 카드는 수출·수입을 따로 그리고(`series_points` 가
+    # 칸별 0 을 뺀다) 한 칸만 0 인 달도 그 카드에선 빈 달이다(2차 리뷰 M3: 행 단위로만 보면
+    # 수입만 빈 가운데 달이 6시간 구워진다).
+    holes: list[str] = []
+    for fld in ("exp", "imp"):
+        have = {r["ym"] for r in out if r.get(fld)}
+        if have:
+            last = max(have)
+            holes += [m for m in (ym_shift(start, j) for j in range(month_count(start, last)))
+                      if m not in have]
+    holes = sorted(set(holes))
     info["holes"] = holes
     if holes:
         return _fail_out("달 누락", (
@@ -529,7 +537,8 @@ def check() -> int:
         print(f"   {path} {ws}~{we} → " + (f"HTTP {status}{tail}" if status is not None
                                            else f"요청 실패 {exc}"))
     if not rows:
-        print(f"② ❌ 행 없음 — {info['kind']}: {info['why']}")
+        # 갈래 이름이 머리다 — '달 누락' 은 행을 **받고도** 버린 것이라 '행 없음' 이 아니다(2차 리뷰 L4)
+        print(f"② ❌ {info['kind'] or '행 없음'} — {info['why']}")
     else:
         print(f"② 달 행 {len(rows)}개({rows[0]['ym']}~{rows[-1]['ym']}) · 경로 "
               f"{info['path']}" + (f" · 창 밖 행 {info['dropped']}개 버림"

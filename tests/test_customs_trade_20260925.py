@@ -922,3 +922,55 @@ def test_cadence_stale_covers_customs_like_ecos():
     for raw in ("202001", ct.ym_shift(ct._kst_today().strftime("%Y%m"), -1)):
         assert ms._cadence_stale("customs", "import_amt", raw) == \
             ms._cadence_stale("ecos", "import_amt", raw), raw
+
+
+# ── 2차 독립 리뷰(217aace..ef33923) 반영 ─────────────────────────────────────
+def test_the_param_pattern_is_masked_in_reasons_too(cti):
+    """C7 — 다른 인코딩(대·소문자)으로 되읊은 `serviceKey=…` 는 값 그대로의 모양과 달라, 사유
+    전체에 거는 패턴 가림만이 막는다."""
+    def boom(p, s, e, k):
+        raise RuntimeError(f"url https://x/{p}?serviceKey={_LONG.lower()}&a=1")
+    rows, info = ct.monthly_totals(fetch=boom, key=_LONG, use_cache=False)
+    assert rows == [] and "serviceKey=***" in info["why"], info["why"]
+    assert not _pieces(info["why"], _LONG.lower(), 8), info["why"]
+
+
+def test_a_hole_in_one_card_only_is_still_a_hole(cti):
+    """M3 — 행 단위로만 보면 **수입만** 빈 가운데 달이 6시간 구워지고, 수입 카드가 그 달을 건너뛴
+    변화를 '직전' 으로 말한다(카드는 계열마다 그린다 · `series_points` 는 칸별 0 을 뺀다)."""
+    base = _window_fetch([])
+    win = cti.windows(*cti.monthly_totals(fetch=base, use_cache=False)[1]["window"])
+    mid = win[1][0]
+
+    def fetch(path, s, e, key):
+        rows = [(f"{m[:4]}.{m[4:]}", _usd(m), 0 if m == mid else _usd(m) * 0.8)
+                for m in _months(s, e)]
+        return 200, _xml(rows)
+    rows, info = cti.monthly_totals(fetch=fetch)
+    assert rows == [] and info["kind"] == "달 누락" and info["holes"] == [mid], info
+    assert not list(cti._CACHE_DIR.glob("*.json")), "한 계열이 빈 계열을 캐시에 구웠다"
+
+
+def test_check_names_the_hole_kind_not_no_rows(cti, monkeypatch):
+    """L4 — '달 누락' 은 행을 **받고도** 버린 것이라 '행 없음' 이 아니다. 갈래 이름이 머리다."""
+    monkeypatch.setattr(cti, "_ecos_points", _ecos_same)
+    win = cti.windows(*cti.monthly_totals(fetch=_window_fetch([]), use_cache=False)[1]["window"])
+    monkeypatch.setattr(cti, "_http_get", _hole_fetch([], win[1][0]))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = cti._main(["--check"])
+    out = buf.getvalue()
+    assert rc == 1 and "② ❌ 달 누락 — " in out and "행 없음 — 달 누락" not in out, out
+
+
+def test_the_publication_delay_note_carries_no_countable_glyph(monkeypatch):
+    """L7 — 결산(`audit_sweep.sweep`)은 ⚠️ 를 **글자 수**로 센다. 처방 줄에 글자가 있으면 같은
+    지연이 두 번 세어진다(#289). 1주기 뒤진 관세청 계열 = 원천 공표 지연 ⚠️ 한 줄뿐이어야."""
+    from bot.macro_cadence import judge
+    today = ct._kst_today()
+    exp_ = judge("export_amt", today.strftime("%Y%m"), today)["expected"]
+    raw = ct.ym_shift(exp_.strftime("%Y%m"), -1)
+    out = _run_audit(monkeypatch, {"points": [(raw, 1.0)], "src": "관세청", "why": "",
+                                   "detail": "", "verified": True, "check": "ok"})
+    assert "원천 공표 지연은 우리가 고칠 게 없다" in out, out
+    assert out.count("⚠️") == 1, out

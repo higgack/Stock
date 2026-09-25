@@ -768,7 +768,6 @@ def _monthly_buckets(points: list[tuple[str, float]],
     return [(m, by_month[m]) for m in sorted(by_month.keys())[-n:]]
 
 
-
 # ── 네이버 현재값 매핑 (사용자 2026-06-14 '값 네이버 + 차트 유지') ──────────
 # Macro 가격 카드의 '현재값'을 네이버에서(=카드 안 사라짐, 야후 멈춤 영향 0).
 # 차트(스파크라인)는 네이버가 시계열 미제공 → yfinance history 그대로 유지.
