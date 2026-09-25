@@ -18494,7 +18494,9 @@ def _render_macro_snapshot(macro: dict) -> str:
     <summary style="cursor:pointer;list-style:none">ℹ️ 기준 날짜·<b>⚠ 지연</b> 배지 읽는 법</summary>
     <ul style="margin:6px 0 0 16px;padding:0;line-height:1.7">
       <li><b>기준 YYYY-MM</b> = 그 통계의 최신 <b>공표치</b>. 발표지표는 공표 일정상
-          지연이 정상입니다(통관 수출입·물가 ≈ 1개월 · 국제수지 ≈ 2개월 · GDP 분기).</li>
+          지연이 정상입니다(통관 수출입 ≈ 익월 중순 · 물가 ≈ 1개월 · 국제수지 ≈ 2개월 · GDP 분기).
+          한국 수출·수입은 <b>관세청</b> 확정치 — 못 받으면 ECOS 재게시분(약 한 달 늦음)으로
+          그리고 <b>ECOS(관세청 …)</b> 로 적습니다.</li>
       <li><b>(N개월 전)</b> = 오늘 기준 경과. 경과만으론 정상인지 알 수 없어, 지표마다
           <b>통상 공표 일정</b>을 등록해두고 그보다 뒤처진 카드에만 <b>⚠ 지연</b>을 붙입니다.
           <b>배지가 없으면 그 지표 기준으로는 최신</b>입니다.</li>

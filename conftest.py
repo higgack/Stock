@@ -272,6 +272,9 @@ def _redirect_disk_caches() -> list:
         # 링크 단언을 뒤집는다(#399 Blocking 과 같은 모양 — 규율로 네 번 졌다,
         # #30·#312·#344·#384). 빌더의 실패 곁파일도 이 경로에서 파생된다.
         ("trade.jpx_master", "PATH", "jpx_codes.json"),
+        # 관세청 수출입총괄 캐시(실수 #413) — 매크로 스냅샷 렌더가 부른다. 스텁으로 태운
+        # 회귀가 성공 캐시를 운영 경로에 구우면 6시간 동안 카드가 가짜 값을 그린다.
+        ("bot.customs_trade_client", "_CACHE_DIR", "customs_trade"),
     )
     done = []
     for mod, attr, leaf in targets:

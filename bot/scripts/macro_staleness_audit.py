@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from datetime import date, datetime, timedelta
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 
 def _p(*a):
@@ -198,6 +198,26 @@ def empty_diag(src: str, sid: str, window_start: str = "") -> tuple[str, str]:
                        f"우리가 고칠 게 없다")
 
 
+def customs_fallback_line(cs: dict) -> str:
+    """관세청 카드가 **관세청을 못 써 폴백했으면** 그 한 줄(순수), 아니면 "".
+
+    폴백은 조용하면 안 된다(#42a) — 화면엔 'ECOS(관세청 …)' 로 뜨지만 결산은 ❌·⚠️ 만
+    올린다(#303). 갈래로 기호를 가른다(#82·#260): 원천이 잠깐 막힌 것(조회 실패 —
+    타임아웃·429·5xx·한도)은 기다리면 풀리니 ⚠️, 키·경로·응답 형식·단위 불일치·행 없음은
+    **우리가 고칠 것**이라 ❌. 줄이 혼자서 행동 가능하게 사유 원문을 같이 싣는다(#356).
+    ⚠️ ECOS 까지 비었으면 **카드가 화면에서 빠진다** — 갈래와 무관하게 ❌ 한 줄로,
+    관세청 사유를 같이 싣는다. 폴백 줄과 '관측 없음' 줄을 따로 내면 한 카드가 결산에서
+    두 번 세어진다(#45·#250)."""
+    if not cs or cs.get("src") == "관세청":
+        return ""
+    why = str(cs.get("why") or "못 받음")
+    detail = str(cs.get("detail") or "")[:200]
+    if not cs.get("points"):
+        return f"❌ 관측 없음 — 관세청({why}: {detail})·ECOS 둘 다 행이 없다"
+    mark = "⚠️" if why == "조회 실패" else "❌"
+    return f"{mark} 관세청 원천을 못 써 ECOS 로 그렸다 — {why}: {detail}"
+
+
 def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
     """감사가 훑는 행 — (표면, 라벨, "src:id", 경로, 창 일수). 순수에 가깝게.
 
@@ -212,7 +232,7 @@ def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
     seen: set[tuple[str, str]] = set()
     for surface, defs in (("Macro/국내", ms.DOMESTIC), ("Macro/글로벌", ms.GLOBAL)):
         for _k, label, _u, src, sid, _d in defs:
-            if src in ("fred", "fred_yoy", "ecos") and (src, sid) not in seen:
+            if src in ("fred", "fred_yoy", "ecos", "customs") and (src, sid) not in seen:
                 seen.add((src, sid))
                 rows.append((surface, label, f"{src}:{sid}", "spot", 400))
     for label, sid, _u, lb in mo.FRED_INDICATORS:
@@ -233,9 +253,11 @@ def main() -> int:
        f"grace {GRACE_DAYS}일 · 기준 {today} (KST)")
     _keysrc = {"fred": env_source("FRED_API_KEY"),
                "fred_yoy": env_source("FRED_API_KEY"),
-               "ecos": env_source("BOK_ECOS_API_KEY")}
+               "ecos": env_source("BOK_ECOS_API_KEY"),
+               "customs": env_source("DATA_GO_KR_API_KEY")}
     _p(f"키: FRED_API_KEY={_keysrc['fred']} · "
-       f"BOK_ECOS_API_KEY={_keysrc['ecos']}")
+       f"BOK_ECOS_API_KEY={_keysrc['ecos']} · "
+       f"DATA_GO_KR_API_KEY={_keysrc['customs']}")
     _p("")
 
     # 화면에 실제로 뜨는 발표지표만(실시간 가격 카드 src='yf' 는 대상 아님).
@@ -248,10 +270,25 @@ def main() -> int:
         src, sid = key.split(":", 1)
         raw = ""
         win_start = ""
+        fell_back = False          # 관세청 카드가 ECOS 로 폴백 — 그 탓의 지연은 한 번만 센다
         try:
             if src == "ecos":
                 pts = ms._ecos_series(sid)
                 raw = pts[-1][0] if pts else ""
+            elif src == "customs":
+                # 화면과 **같은 함수**(관세청 → ECOS 대조 → 폴백)로 묻는다(#35·#176).
+                _cs = ms._customs_series(sid)
+                pts = _cs.get("points") or []
+                raw = pts[-1][0] if pts else ""
+                key += f" ·{_cs.get('src') or '원천 없음'}"
+                _fb = customs_fallback_line(_cs)
+                if _fb:
+                    _p(f"  {label:<18} {key:<28} {_fb}")
+                    (src_lag if _fb.startswith("⚠️") else late).append(
+                        f"{label}(관세청 {_cs.get('why')})")
+                    if not pts:
+                        continue       # 카드가 빠졌다 — 위 한 줄이 이미 셌다(#45)
+                    fell_back = True
             else:
                 # ⚠️ 화면이 쓰는 그 선택기로 묻는다 — 옛 판은 전 행을
                 # `_fred_fetch_series(sid, 400)` 로 물어 **YoY 카드**(730일
@@ -304,6 +341,10 @@ def main() -> int:
         elif j["expected"] is None or j["actual"] is None:
             verdict = "❌ 관측 라벨 판독 실패"
             late.append(f"{label}(라벨 {raw})")
+        elif j["stale"] and fell_back:
+            # 폴백한 원천(ECOS)이 뒤처진 것은 위 폴백 줄과 **같은 원인**이다 — 두 번 세면
+            # 결산의 ❌ 가 두 배가 된다(#45·#250). 판정 글자 없이 사실만 적는다.
+            verdict = f"뒤처짐(기대 {j['expected']}) — 위 폴백 탓, 따로 세지 않는다"
         elif j["stale"]:
             bucket, verdict = stale_verdict(j)
             (src_lag if bucket == "src_lag" else late).append(

@@ -37,7 +37,8 @@ _CACHE_TTL_SEC = 30  # 30초 (사용자 2026-06-15 — 글로벌 스냅샷과 �
 
 # ── Indicator definitions ───────────────────────────────────────────
 # (key, label, unit, source, source_id, decimals)
-#   source: "ecos" | "fred" | "fred_yoy" | "yf"
+#   source: "ecos" | "customs" | "fred" | "fred_yoy" | "yf"
+#   ("customs" = 관세청 수출입총괄 · ECOS 는 계열 통째 폴백 — bot/customs_trade_client, 실수 #413)
 DOMESTIC = [
     ("kr_rate", "한국 기준금리", "%", "ecos", "base_rate", 2),
     ("kr_3y", "국고채 3년", "%", "ecos", "kr3y", 2),
@@ -45,8 +46,10 @@ DOMESTIC = [
     ("kr_cpi", "한국 CPI", "", "ecos", "cpi_idx", 2),
     ("usdkrw", "USD/KRW", "", "yf", "USDKRW=X", 1),
     # 무역 흐름 순서(사용자 2026-06-23): 수출·수입 → 경상수지(요약) → 외환·성장.
-    ("kr_export", "한국 수출", "억$", "ecos", "export_amt", 0),
-    ("kr_import", "한국 수입", "억$", "ecos", "import_amt", 0),
+    # 원천 = 관세청 수출입총괄(사용자 2026-09-25) — ECOS 는 확정치를 +34일에야 재게시해
+    # 공표 규약('관세청 확정 익월 15일')보다 매달 열흘 뒤처졌다(실수 #413).
+    ("kr_export", "한국 수출", "억$", "customs", "export_amt", 0),
+    ("kr_import", "한국 수입", "억$", "customs", "import_amt", 0),
     ("kr_ca", "경상수지", "억$", "ecos", "current_account", 0),
     ("kr_reserve", "외환보유액", "억$", "ecos", "fx_reserve", 0),
     ("kr_gdp", "한국 GDP", "%", "ecos", "kr_gdp", 1),   # 분기 전기대비 성장률
@@ -133,7 +136,7 @@ _ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote_valsrc367").encode()
+     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote_valsrc367_customs413").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -214,6 +217,8 @@ def drop_reason(src: str, sid: str, *, naver_mapped: bool) -> str:
         return "FRED 관측을 못 받았습니다"
     if src == "ecos":
         return "ECOS 관측을 못 받았습니다"
+    if src == "customs":
+        return "관세청·ECOS 관측을 둘 다 못 받았습니다"
     if naver_mapped:
         return "네이버 값·히스토리를 둘 다 못 받았습니다"
     return (f"네이버 매핑이 없어 yfinance 월간 배치에만 의존하는데 그 배치가 "
@@ -654,13 +659,40 @@ def _ecos_series(key: str) -> list[tuple[str, float]]:
         return []
 
 
+def _customs_series(key: str) -> dict:
+    """한국 수출·수입 카드 계열 — 관세청 → (ECOS 대조) → 실패면 ECOS **통째** 폴백.
+    화면과 감사(`macro_staleness_audit`)가 같은 함수를 부른다(#35·#176).
+    → `customs_trade_client.card_series` 의 dict(points·src·why·detail)."""
+    try:
+        from bot.customs_trade_client import card_series
+        # ECOS 는 **다른 ECOS 카드와 같은 경로**(`_ecos_series`)로 — 대조·폴백이 따로
+        # 받으면 한 화면에서 ECOS 값이 두 벌이 된다(#38). 늦게 묶어 갈아끼울 수 있게.
+        return card_series(key, ecos=lambda k: _ecos_series(k))
+    except Exception as exc:                       # noqa: BLE001
+        log.warning("macro: 관세청 계열 %s 실패: %s", key, exc)
+        pts = _ecos_series(key)
+        # ECOS 도 비었으면 'ECOS 로 그렸다' 가 거짓이다 — 원천 칸을 비운다(card_series 와 같은 규약)
+        return {"points": pts, "src": "ECOS" if pts else "", "why": "조회 실패",
+                "detail": f"{type(exc).__name__}: {exc}"}
+
+
+def _customs_note(cs: dict) -> str:
+    """카드 기준 줄 뒤에 붙일 원천 표기(순수) — 관세청이면 그렇다고, ECOS 로 폴백했으면
+    **그 사실과 갈래**를(#43·#136 조용한 원천 교체 금지 · 규칙 10b)."""
+    if cs.get("src") == "관세청":
+        return " · 관세청"
+    if cs.get("src") == "ECOS":
+        return f" · ECOS(관세청 {cs.get('why') or '못 받음'})"
+    return ""
+
+
 def _cadence_stale(src: str, sid: str, raw: str) -> bool:
     """이 관측이 **통상 공표 일정보다 뒤처졌는지**(bot/macro_cadence 규약).
 
     경과 개월만 찍던 배지는 "경상수지 2개월 전"(정상)과 "수출 2개월 전"
     (지연)을 구분 못 했다 — 사용자 2026-08-18 "제때제때 잘 가져오는지".
     판정 불가는 False(배지 없음) — 감사 프로브가 '규약 없음'으로 따로 본다."""
-    if src not in ("fred", "fred_yoy", "ecos") or not raw:
+    if src not in ("fred", "fred_yoy", "ecos", "customs") or not raw:
         return False
     try:
         from bot.macro_cadence import judge
@@ -671,8 +703,13 @@ def _cadence_stale(src: str, sid: str, raw: str) -> bool:
     return bool(j and j.get("stale"))
 
 
-def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> list[float]:
-    """Collapse points to one-per-month (last value of each month), last n."""
+def _monthly_buckets(points: list[tuple[str, float]],
+                     n: int = _SPARK_N) -> list[tuple[str, float]]:
+    """점들 → [(기간, 그 기간의 마지막 값)] 최근 n개(오름차순). 기간 = TIME 앞 6자
+    (YYYYMMDD·YYYYMM → YYYYMM, 분기 YYYYQn 은 그대로).
+
+    ⚠️ 스파크라인(`_downsample_monthly`)과 카드의 **시작 기간 라벨**이 같은 버킷을 써야
+    한다 — 따로 세면 '2025-09 대비' 라고 적어 놓고 다른 달 값을 그린다(#38·#33)."""
     if not points:
         return []
     by_month: dict[str, float] = {}
@@ -680,8 +717,12 @@ def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> l
         # TIME like YYYYMMDD / YYYYMM / YYYYQn
         m = t[:6] if len(t) >= 6 else t
         by_month[m] = v  # points are sorted asc → last wins
-    months = sorted(by_month.keys())[-n:]
-    return [by_month[m] for m in months]
+    return [(m, by_month[m]) for m in sorted(by_month.keys())[-n:]]
+
+
+def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> list[float]:
+    """Collapse points to one-per-month (last value of each month), last n."""
+    return [v for _m, v in _monthly_buckets(points, n)]
 
 
 # ── 네이버 현재값 매핑 (사용자 2026-06-14 '값 네이버 + 차트 유지') ──────────
@@ -826,6 +867,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             spark_span = "12개월"           # 라인 기간 라벨(작게 표기)
             asof_raw = ""                   # 헤드라인 값의 기준 기간(ECOS/FRED 관측월)
             _src_note = ""                  # 소스가 FRED 아닌 것으로 대체됐을 때 표기
+            _ps_period = ""                 # 스파크라인 **첫 기간**(ECOS·관세청, "12개월 전" 어림 대신)
             # 값이 **실제로 어느 캐시에서 왔나** — 분기 이름이 아니라 값으로
             # 정한다(같은 분기 안에서도 네이버 값/히스토리 폴백이 갈린다).
             _val_tag = ""
@@ -927,15 +969,22 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     if len(chart_spark) >= 2:
                         change = chart_spark[-1] - chart_spark[-2]
                 spark_dir = _spark_dir(card_spark, -2)  # 직전 월 대비(추세 색)
-            elif src == "ecos":
-                pts = _ecos_series(sid)
+            elif src in ("ecos", "customs"):
+                if src == "customs":
+                    _cs = _customs_series(sid)
+                    pts = _cs.get("points") or []
+                    _src_note = _customs_note(_cs)
+                else:
+                    pts = _ecos_series(sid)
                 if pts:
                     value = pts[-1][1]
-                    asof_raw = pts[-1][0]              # ECOS 관측 기간(YYYYMM/YYYYQn)
+                    asof_raw = pts[-1][0]              # 관측 기간(YYYYMM/YYYYQn)
                     if len(pts) >= 2:
                         change = pts[-1][1] - pts[-2][1]
-                    chart_spark = _downsample_monthly(pts)
+                    _mb = _monthly_buckets(pts)
+                    chart_spark = [v for _m, v in _mb]
                     card_spark = chart_spark
+                    _ps_period = _fmt_asof(_mb[0][0]) if _mb else ""
                 spark_dir = _spark_dir(card_spark, -2)
             if value is None:
                 # 카드는 그리지 않되(옛 동작) **왜 빠졌는지 남긴다** — 그냥
@@ -985,8 +1034,11 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "period_start": period_start,
                 # 기간 시작점의 **실제 관측 기간** — "12개월 전" 같은 어림
                 # 라벨 대신 이 값으로 표기해 사용자가 검산할 수 있게 한다.
+                # ⚠️ ECOS·관세청 카드도 날짜를 싣는다 — 2026-09-25 까지 FRED 만 실어
+                # 한국 수출 카드가 '12개월 전 583억$' 라고 적었는데 그건 11개월 전
+                # (2025-08) 값이라 ▲407 이 전년동월 대비로 읽혔다(실수 #413).
                 "period_start_asof": (_FRED_SPARK_START.get(sid, "")[:7]
-                                      if src == "fred" else ""),
+                                      if src == "fred" else _ps_period),
                 "period_change": period_change,
                 "period_change_pct": period_change_pct,
                 # 변동 표기 단위를 **서버가 명시** — 프론트가 change_pct 유무로
