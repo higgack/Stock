@@ -468,7 +468,7 @@ def test_the_ecos_chip_counts_what_was_drawn(tmp_path, monkeypatch):
     (tmp_path / "snap").mkdir()
     for name, val in (("_fetch_macro_naver_values", lambda sids: {}),
                       ("_yf_monthly_batch", lambda tk: {}), ("_yf_daily_1mo_batch", lambda tk: {}),
-                      ("_fred_monthly", lambda sid, months=12: []),
+                      ("_fred_monthly", lambda sid, months=12, **kw: []),
                       ("_customs_series", lambda key: {"points": [], "src": ""})):
         monkeypatch.setattr(ms, name, val)
     for fn in ("fetch_commodity_spark", "fetch_naver_index_history",
@@ -596,3 +596,54 @@ def test_history_counts_days_not_files_and_collapses_same_day_copies(tmp_path):
     # 같은 날 못 읽은 파일만 있는 날은 '직전 기록' 이 되지 않는다(없었다는 증거가 아니다)
     rows2 = rows + [("2026-09-21", "??")]
     assert first_seen(rows2, "D") == first_seen(rows, "D")
+
+
+def test_history_header_counts_only_days_it_could_read_and_says_what_it_merged(tmp_path):
+    """독립 리뷰 Low 둘: ① '캐시 N일치' 가 기간을 **못 읽은 날**까지 세어 아래 판정의 재료보다
+    많다고 말했다(`first_seen` 은 그 날을 건너뛴다, #45) ② 두 화면(매크로 400일 · 유동성 950일)의
+    사본을 날짜로 합치는데 헤더가 그 사실을 안 말해, 이 줄이 '원천이 언제 실었나' 를 잰다는 것
+    (한 화면의 사본이 늦은 것은 못 본다)이 안 보였다(#274 못 보는 축을 같이 말할 것)."""
+    from bot.scripts.macro_staleness_audit import history_lines
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    for d, t in (("2026-08-26", "2026-06-01"), ("2026-08-27", "2026-07-01"), ("2026-08-28", "??")):
+        (fred / f"PCEPILFE_{d}.json").write_text(json.dumps({"time": t}))
+    pce = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 근원PCE")
+    assert "캐시 2일치 2026-08-26~2026-08-27" in pce[0] and "기간을 못 읽은 1일 제외" in pce[0], pce
+    assert "합침" not in pce[0], pce                              # 하루 한 사본이면 합친 게 없다
+    for d in ("2026-09-18", "2026-09-19"):
+        for lb in (400, 950):
+            (ecos / f"series_v2_kr10y_{lb}_{d}.json").write_text(json.dumps([["20260914", 3.0]]))
+    kr = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "국고채 10년")
+    assert "캐시 2일치" in kr[0] and "사본 4개를 날짜로 합침" in kr[0], kr
+    # 전부 못 읽었으면 판정하지 않고 그렇게 말한다(IndexError 로 죽지 않는다, #54)
+    for d in ("2026-09-01", "2026-09-02"):
+        (fred / f"UNRATE_{d}.json").write_text(json.dumps({"time": "??"}))
+    un = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 실업률")
+    assert "❓ 캐시 2일치가 있으나 기간을 하나도 못 읽었다" in un[0], un
+
+
+def test_history_period_label_follows_the_cards_own_daily_list():
+    """기간 칸을 날짜로 통째 쓸지는 **카드가 쓰는 목록**(`_DAILY_CADENCE_KEYS`)이 정한다 — 공표
+    규약의 freq 로 따로 가르면 두 목록이 갈리는 날 칸이 카드와 다르게 찍힌다(독립 리뷰 Low ·
+    #24·#38). 규약과 카드 목록이 **엇갈리는** 입력으로 누가 이기는지 잰다."""
+    from bot.scripts.macro_staleness_audit import period_label
+    assert "us_10y" in ms._DAILY_CADENCE_KEYS and "us_pce" not in ms._DAILY_CADENCE_KEYS
+    assert period_label(ms, "2026-09-24", "M", "us_10y") == ms._fmt_asof("2026-09-24", full=True)
+    assert period_label(ms, "2026-09-24", "D", "us_pce") == ms._fmt_asof("2026-09-24", full=False)
+    assert period_label(ms, "2026-09-24", "D") == ms._fmt_asof("2026-09-24", full=True)   # 키 없음
+
+
+def test_history_passes_the_card_key_to_the_label(tmp_path, monkeypatch):
+    """배선(#20) — 두 목록이 오늘은 일치해 `history_report` 가 키를 안 넘겨도 출력이 같다(동등
+    뮤테이션). 카드 목록을 **일부러 갈라** 누가 이기는지 본다."""
+    from bot.scripts.macro_staleness_audit import history_lines
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    for d, t in (("2026-09-23", "2026-09-21"), ("2026-09-24", "2026-09-22")):
+        (fred / f"DGS10_{d}.json").write_text(json.dumps({"time": t}))
+    monkeypatch.setattr(ms, "_DAILY_CADENCE_KEYS", set(ms._DAILY_CADENCE_KEYS) - {"us_10y"})
+    dgs = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 10Y")
+    assert dgs[2].split()[0] == "2026-09", dgs                   # 카드 목록이 이긴다

@@ -177,13 +177,29 @@ def _as_quarter(raw: str) -> str:
 
 
 # ── FRED monthly fetch ──────────────────────────────────────────────
-# series_id → 그 시리즈 스파크라인 창의 **첫 관측 기간**(YYYY-MM-DD).
-# `_fred_monthly` 가 값만 돌려주는 계약이라(호출부 다수) 옆에 남긴다.
-_FRED_SPARK_START: dict[str, str] = {}
-
-# 스파크 디스크 캐시 판(#18·#21b) — 저장 모양(`vals`·`start`)이나 관측을 고르는 규칙이
+# 스파크 디스크 캐시 판(#18·#21b) — 저장 모양(`vals`·`dates`)이나 관측을 고르는 규칙이
 # 바뀌면 올린다. 안 올리면 코드를 고쳐도 같은 날 사본이 옛 모양으로 서빙된다.
 _FRED_SPARK_CACHE_VER = 1
+
+
+class _SparkVals(list):
+    """스파크 값(오래된→최신)에 **그 창의 관측일**(`dates`)을 붙여 다닌다.
+
+    옛 판은 창 첫 관측을 모듈 전역(`_FRED_SPARK_START`)에 옆으로 남겨, 대시보드 요청 스레드
+    둘이 겹치면 한쪽의 빈 결과가 다른 쪽의 라벨을 지웠다(독립 리뷰 L7 · #160 값과 그 기준은
+    같은 응답에서). list 라 호출부·JSON 직렬화·테스트 스텁(`lambda …: []`)이 그대로 산다."""
+
+    def __init__(self, vals=(), dates=()):
+        super().__init__(vals)
+        self.dates = list(dates)
+
+    @property
+    def start(self) -> str:
+        return self.dates[0] if self.dates else ""
+
+    @property
+    def end(self) -> str:
+        return self.dates[-1] if self.dates else ""
 
 
 def _fred_spark_cache_file(series_id: str, freq: str, months: int) -> Path:
@@ -209,26 +225,122 @@ def _fred_spark_cache_read(f: Path, ttl_h: float) -> tuple[Optional[dict], Optio
         return None, None
     if not isinstance(c, dict):
         return None, None
-    vals = c.get("vals")
+    vals, dates = c.get("vals"), c.get("dates")
     if not (c.get("cv") == _FRED_SPARK_CACHE_VER and isinstance(vals, list) and vals
             and all(isinstance(v, (int, float)) for v in vals)
-            and isinstance(c.get("start"), str)):
+            and isinstance(dates, list) and len(dates) == len(vals)
+            and all(isinstance(d, str) and d for d in dates)):
         return None, None
     return (c, None) if age_h < ttl_h else (None, c)
 
 
-def _fred_spark_use(series_id: str, doc: Optional[dict]) -> list[float]:
-    """사본 → 스파크 값 + 창 첫 관측 기록. 사본이 없으면 **기록도 비운다** — 앞선 실행의 창
-    라벨이 빈(또는 다른) 스파크 옆에 남으면 한 카드가 두 창을 말한다(#33)."""
+def _spark_until(series_id: str, headline_time: str) -> str:
+    """헤드라인 관측일 — 스파크와 **같은 주기로 비교할 수 있을 때만**(아니면 "").
+
+    월간·분기 원천 계열은 스파크를 같은 주기로 묻고(`frequency=m`/`q`) FRED 는 두 요청 모두
+    관측일을 **기간 첫날**로 준다 — 날짜 문자열을 그대로 대조할 수 있다. 일별·주간 계열은
+    헤드라인이 일별 스팟이고 스파크는 월평균이라 **설계상** 다른 기간을 말한다(아래 FRED 분기
+    주석) — 대조하지 않는다. 주기는 공표 규약(`macro_cadence.CADENCE`)이 단일 출처다(#38);
+    표에 없으면 모르는 것이니 대조하지 않는다(#165)."""
+    from bot.macro_cadence import CADENCE
+    spec = CADENCE.get(series_id)
+    if not spec or spec[0] not in ("M", "Q"):
+        return ""
+    t = (headline_time or "").strip()[:10]
+    return t if len(t) == 10 and t[4] == "-" and t[7] == "-" else ""
+
+
+def _spark_reaches(doc: Optional[dict], until: str) -> bool:
+    """사본이 헤드라인 기간까지 닿나 — `until` 이 없으면(대조 불가) 닿는 것으로 본다."""
+    return bool(doc) and (not until or doc["dates"][-1] >= until)
+
+
+def _fred_spark_use(doc: Optional[dict], until: str = "") -> _SparkVals:
+    """사본 → 스파크. `until`(같은 주기의 헤드라인 관측일)이 있으면 **그 기간까지만** 쓴다.
+
+    - 헤드라인보다 **낡은** 사본(창 끝 < `until`)은 비운다 — 헤드라인은 새 달을 말하는데 차트·
+      기간 변동은 옛 창에서 나와 한 카드가 두 기간을 말한다(#33, 독립 리뷰 M2). 옛 판(캐시
+      도입 전)도 스파크가 실패하면 빈 차트였다 — 그 동작으로 돌아간다.
+    - 헤드라인보다 **앞선** 점은 자른다 — 헤드라인 사본이 아직 옛 기간이다(두 캐시의 수명은
+      따로 돈다). TTL(1시간) 안에 헤드라인이 따라오면 다시 전체 창이 된다."""
     if not doc:
-        _FRED_SPARK_START[series_id] = ""
-        return []
-    _FRED_SPARK_START[series_id] = doc["start"]
-    return [float(v) for v in doc["vals"]]
+        return _SparkVals()
+    pairs = list(zip(doc["dates"], doc["vals"]))
+    if until:
+        if pairs[-1][0] < until:
+            return _SparkVals()
+        pairs = [(d, v) for d, v in pairs if d <= until]
+    return _SparkVals([float(v) for _d, v in pairs], [d for d, _v in pairs])
 
 
-def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
-    """FRED observations, oldest→newest, last `months` values. 분기 series 는
+def _stale_note(stale: Optional[dict], until: str) -> str:
+    """실패 로그 꼬리 — 옛 사본을 **줬는지, 헤드라인보다 낡아 비웠는지** 사실대로(#82)."""
+    if not stale:
+        return ""
+    if not _spark_reaches(stale, until):
+        return (f" — 같은 날 옛 사본(창 끝 {stale['dates'][-1]})이 헤드라인 {until} 보다 "
+                "낡아 비운다")
+    return " — 같은 날 옛 사본을 준다"
+
+
+_FRED_RULES_FALLBACK = None      # market_overview 를 못 올렸을 때의 대체(아래)
+
+
+def _fred_cache_rules():
+    """헤드라인과 **같은** TTL·실패 기억(`market_overview` 의 `_fred_ttl_h`·`_fred_fail`·
+    `_fred_recently_failed`).
+
+    그 모듈을 못 올리면(yfinance 없는 인터프리터로 진단을 돌린 날 — #132) 스냅샷이 통째로
+    죽지 않게 같은 TTL(1시간)·실패 기억 없음으로 대신한다(독립 리뷰 L2 — 옛 판 af57db1 은
+    그때도 스냅샷을 지었다. 헤드라인도 그때는 없으니 두 절반이 갈릴 일도 없다). 조용하지
+    않다 — 처음 한 번 경고한다(#12)."""
+    global _FRED_RULES_FALLBACK
+    try:
+        from bot import market_overview as _mo
+        return _mo
+    except Exception as exc:                                  # noqa: BLE001
+        if _FRED_RULES_FALLBACK is None:
+            import types as _types
+            log.warning("macro: market_overview 를 못 불러 스파크를 캐시 1시간·실패 기억 "
+                        "없이 묻는다: %s: %s", type(exc).__name__, exc)
+            _FRED_RULES_FALLBACK = _types.SimpleNamespace(
+                _fred_ttl_h=lambda _sid: 1.0, _fred_fail={},
+                _fred_recently_failed=lambda _key: False)
+        return _FRED_RULES_FALLBACK
+
+
+def _fred_spark_write(cache_file: Path, doc: dict, series_id: str) -> None:
+    """사본을 통째로 갈아 끼운다 — 다른 프로세스(봇·대시보드)가 쓰다 만 파일을 읽지 않게(#379).
+
+    이름에 pid·스레드를 싣는다 — 대시보드는 요청마다 스레드라 같은 프로세스의 두 재생성이
+    같은 사본을 동시에 쓸 수 있고(스레드만이면 다른 **프로세스**의 같은 id 와 겹친다 — 주
+    스레드 id 는 프로세스가 달라도 같을 수 있다). 쓰기 전에 **어제 이전 사본**을 지운다 —
+    날짜 키라 다시 안 읽히는데 계열마다 하루 한 벌씩 쌓였다(독립 리뷰 L6 · `fred_client` 의
+    hist 캐시와 같은 처방). 다른 프로세스의 쓰다 만 임시파일(`.tmp`)은 안 건드린다."""
+    tmp = cache_file.with_name(
+        f"{cache_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        stem = cache_file.name.rsplit("_", 1)[0]              # {sid}_{freq}{N}
+        for old in cache_file.parent.glob(f"{stem}_*.json"):
+            if old != cache_file:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
+        os.replace(tmp, cache_file)
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        log.warning("macro: FRED %s 스파크 캐시를 못 썼다: %s", series_id, exc)
+
+
+def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
+                  until: str = "") -> _SparkVals:
+    """FRED observations, oldest→newest, last `months` values(+ 그 관측일). 분기 series 는
     frequency=q(monthly 요청 시 FRED 400).
 
     헤드라인(`market_overview._fred_fetch_series`)과 **같은 캐시 규약**이다(2차 리뷰 L6):
@@ -236,25 +348,34 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
     실패·빈 답이면 **같은 날 옛 사본**을 주며 그 계열을 10분 동안 다시 묻지 않는다(같은
     `_fred_fail`, 키 = 캐시 파일 경로). 옛 판은 캐시가 없어 30초 재생성마다 FRED 카드 9장을
     전부 새로 물었고(정상일 때 시리즈당 시간 120회), FRED 가 막히면 재생성마다 12초 × 9 를
-    줄지어 기다렸다. 같은 TTL 이라 한 카드의 헤드라인과 스파크는 같은 재생성에서 함께
-    넘어간다(#33 한 카드가 두 기간을 말하지 않게) — 못 보는 축: 한쪽만 실패하면 실패
-    기억(10분) 동안 두 절반이 갈릴 수 있다(#274)."""
+    줄지어 기다렸다.
+
+    ⚠️ TTL 이 같아도 두 절반이 **같은 재생성에서 함께 넘어가지는 않는다**(독립 리뷰 M2 — 옛
+    독스트링이 그렇게 적었다). 두 사본의 나이는 따로 돈다(다른 프로세스가 헤드라인 파일만 새로
+    받는다) — 그리고 한쪽만 계속 실패하면 같은 날 사본이 날짜가 바뀔 때까지 산다. 그래서
+    `until`(같은 주기의 헤드라인 관측일, `_spark_until`)을 받으면 그 기간과 **맞춘다**: 사본이
+    헤드라인보다 낡았으면 TTL 안이어도 다시 묻고, 그래도 못 닿으면 비운다(`_fred_spark_use`).
+    못 보는 축(#274): 일별·주간 계열은 대조하지 않는다(헤드라인=일별 스팟·스파크=월평균)."""
     # ⚠️ `os.getenv` 로 직접 읽으면 `load_dotenv()` 를 부르는 봇 엔트리포인트
     # 밖(진단 스크립트·크론)에서 **키가 있는데도 빈 리스트**를 준다 —
     # 스파크라인만 조용히 사라진다(실수 #23). 공용 헬퍼로 통일.
     from bot.env_keys import env_key as _env_key
-    from bot import market_overview as _mo
     api_key = _env_key("FRED_API_KEY")
     if not api_key:
-        return []
+        return _SparkVals()
+    rules = _fred_cache_rules()
     freq = "q" if series_id in _FRED_QUARTERLY else "m"
     cache_file = _fred_spark_cache_file(series_id, freq, months)
-    fresh, stale = _fred_spark_cache_read(cache_file, _mo._fred_ttl_h(series_id))
+    fresh, stale = _fred_spark_cache_read(cache_file, rules._fred_ttl_h(series_id))
+    if fresh is not None and not _spark_reaches(fresh, until):
+        # TTL 안이지만 헤드라인이 **더 새 기간**을 말한다 — 다시 묻고, 못 받으면 이 사본을
+        # '같은 날 옛 사본' 으로 다룬다(독립 리뷰 M2).
+        fresh, stale = None, fresh
     if fresh is not None:
-        return _fred_spark_use(series_id, fresh)
+        return _fred_spark_use(fresh, until)
     fail_key = str(cache_file)
-    if _mo._fred_recently_failed(fail_key):
-        return _fred_spark_use(series_id, stale)    # 10분 안에 실패했다 — 다시 묻지 않는다
+    if rules._fred_recently_failed(fail_key):
+        return _fred_spark_use(stale, until)    # 10분 안에 실패했다 — 다시 묻지 않는다
     try:
         r = requests.get(
             "https://api.stlouisfed.org/fred/series/observations",
@@ -271,60 +392,64 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
         r.raise_for_status()
         obs = r.json().get("observations") or []
     except Exception as exc:
-        _mo._fred_fail[fail_key] = time.monotonic()
+        rules._fred_fail[fail_key] = time.monotonic()
         # 예외 문구의 `api_key=` 는 `bot.env_keys` 레코드 팩토리가 가린다(#416)
         log.warning("macro: FRED %s monthly failed: %s%s", series_id, exc,
-                    " — 같은 날 옛 사본을 준다" if stale else "")
-        return _fred_spark_use(series_id, stale)
+                    _stale_note(stale, until))
+        return _fred_spark_use(stale, until)
     vals: list[float] = []
     dates: list[str] = []
     for o in obs:
         v = o.get("value", "")
-        if not v or v == ".":
+        d = str(o.get("date") or "")
+        if not v or v == "." or not d:
             continue
         try:
             vals.append(float(v))
         except ValueError:
             continue
-        dates.append(str(o.get("date") or ""))
+        dates.append(d)
         if len(vals) >= months:
             break
     if not vals:
         # 빈 답은 굽지 않고(#280) 30초마다 다시 묻지도 않는다 — 옛 판은 여기서 한 줄도 안
         # 남기고 빈 스파크를 줬다(#12).
-        _mo._fred_fail[fail_key] = time.monotonic()
+        rules._fred_fail[fail_key] = time.monotonic()
         log.warning("macro: FRED %s monthly 빈 답(관측 %d행 중 값 0)%s", series_id, len(obs),
-                    " — 같은 날 옛 사본을 준다" if stale else "")
-        return _fred_spark_use(series_id, stale)
-    _mo._fred_fail.pop(fail_key, None)
-    # ⚠️ 창의 **첫 관측 기간**을 함께 남긴다. 카드가 "12개월 전" 이라고
+                    _stale_note(stale, until))
+        return _fred_spark_use(stale, until)
+    # ⚠️ 창의 **관측일**을 함께 남긴다. 카드가 "12개월 전" 이라고
     # 적어 왔는데 이 창은 **최근 N개 관측**이라 실제로는 N−1개월 전이다
     # (2026-08-20 실측: 근원PCE 카드 '12개월 전 126.43' 은 11개월 전 값이라
     # 글로벌 스냅샷의 YoY 3.29% 와 계산이 안 맞았다). 라벨을 날짜로 바꿔
-    # 검산 가능하게 한다 — vol_history 와 같은 처방(#29).
-    doc = {"cv": _FRED_SPARK_CACHE_VER, "vals": list(reversed(vals)), "start": dates[-1]}
-    # 이름에 pid·스레드를 싣는다 — 대시보드는 요청마다 스레드라 같은 프로세스의 두 재생성이
-    # 같은 사본을 동시에 쓸 수 있다(pid 만이면 한쪽이 다른 쪽의 반쯤 쓴 파일을 옮긴다).
-    tmp = cache_file.with_name(
-        f"{cache_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        # 다른 프로세스(봇·대시보드)가 쓰다 만 파일을 읽지 않게 통째로 갈아 끼운다(#379)
-        tmp.write_text(json.dumps(doc), encoding="utf-8")
-        os.replace(tmp, cache_file)
-    except Exception as exc:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        log.warning("macro: FRED %s 스파크 캐시를 못 썼다: %s", series_id, exc)
-    return _fred_spark_use(series_id, doc)
+    # 검산 가능하게 한다 — vol_history 와 같은 처방(#29). 창 끝은 헤드라인과 맞추는 데 쓴다.
+    doc = {"cv": _FRED_SPARK_CACHE_VER, "vals": list(reversed(vals)),
+           "dates": list(reversed(dates))}
+    if (len(vals) < months and stale and len(stale["vals"]) > len(vals)
+            and stale["dates"][-1] >= doc["dates"][-1]):
+        # **짧은 답**(원천이 창을 다 못 줬다) — 같은 날 더 긴 사본이 같은 기간까지 닿으면 그걸
+        # 지키고 덮지 않는다(#280 부분을 완전본으로 굽지 않는다 · 독립 리뷰 L1). 30초마다 다시
+        # 묻지도 않는다. 더 긴 사본이 없거나 낡았으면 짧은 답이 가장 새 사실이라 그대로 쓴다
+        # (칩은 그린 점 수에서 센다 — `_build`).
+        rules._fred_fail[fail_key] = time.monotonic()
+        log.warning("macro: FRED %s monthly 짧은 답(%d/%d점) — 같은 날 더 긴 사본을 준다",
+                    series_id, len(vals), months)
+        return _fred_spark_use(stale, until)
+    rules._fred_fail.pop(fail_key, None)
+    _fred_spark_write(cache_file, doc, series_id)
+    if not _spark_reaches(doc, until):
+        # 방금 받은 스파크도 헤드라인보다 한 기간 뒤다(같은 원천이라 드물다) — 두 기간을 섞지
+        # 않으려 비우고, 10분 동안 다시 묻지 않는다(30초마다 묻지 않게, #303).
+        rules._fred_fail[fail_key] = time.monotonic()
+        log.warning("macro: FRED %s 스파크 창 끝 %s 가 헤드라인 %s 보다 이르다 — 두 기간을 "
+                    "섞지 않으려 스파크를 비운다", series_id, doc["dates"][-1], until)
+    return _fred_spark_use(doc, until)
 
 
-def _fred_start_label(sid: str, quarterly: bool = False) -> str:
-    """FRED 스파크 창의 첫 관측 → 카드의 '… 대비' 라벨(순수에 가깝게 — 창 기록만 읽는다).
-    분기 계열은 'YYYY Qn'(첫날 날짜를 월로 자르면 '2023-07' 이 된다, 실수 #415)."""
-    start = _FRED_SPARK_START.get(sid, "")
+def _fred_start_label(start: str, quarterly: bool = False) -> str:
+    """FRED 스파크 창의 첫 관측(`_SparkVals.start`) → 카드의 '… 대비' 라벨(순수). 분기 계열은
+    'YYYY Qn'(첫날 날짜를 월로 자르면 '2023-07' 이 된다, 실수 #415)."""
+    start = start or ""
     return _fmt_asof(_as_quarter(start)) if quarterly else start[:7]
 
 
@@ -1079,20 +1204,35 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     if _prev not in (None, 0):
                         change_pct = change / _prev * 100
             elif src == "fred":
-                chart_spark = _fred_monthly(sid)
-                card_spark = chart_spark      # 월간 시계열(스파크라인)
                 # 헤드라인 값/변동 = 최신 관측치(spot) — 글로벌 핵심지표와 **동일 소스**
                 # (_fred_fetch_series 캐시 공유 — 월간·분기 1시간, 실수 #415)로 통일(사용자 2026-06-23 '두 표면
                 # 일치'). 일별 series(2Y/10Y/금리차/하이일드)는 macro 월평균(freq=m)이
                 # 글로벌 spot 과 달라 불일치했음(2Y 4.00 vs 4.20). 월간 series(CPI/실업률/
                 # PPI)는 최신 관측 = 월말값이라 무변. 차트(추세)는 월간 그대로.
+                # ⚠️ 헤드라인을 **먼저** 받는다 — 스파크가 그 기간과 맞춰야 한다(월간·분기
+                # 계열만, `_spark_until`). 두 사본의 나이는 따로 돌아 한 카드가 두 기간을 말할 수
+                # 있었다(독립 리뷰 M2 · #33).
                 _spot = None
                 try:
                     from bot.market_overview import _fred_fetch_series
                     _spot = _fred_fetch_series(sid, 400)
                 except Exception:
                     _spot = None
-                if _spot and _spot.get("value") is not None:
+                _has_spot = bool(_spot and _spot.get("value") is not None)
+                try:
+                    chart_spark = _fred_monthly(
+                        sid, until=_spark_until(sid, _spot.get("time", "") if _has_spot else ""))
+                except Exception as exc:                          # noqa: BLE001
+                    # 스파크 하나가 스냅샷 전체를 죽이지 않는다 — 헤드라인 조회와 같은 처방
+                    # (독립 리뷰 L2 — 옛 판은 이 호출만 맨몸이었다). 조용하지 않다(#12).
+                    log.warning("macro: FRED %s 스파크 실패 — 차트 없이 그린다: %s: %s",
+                                sid, type(exc).__name__, exc)
+                    chart_spark = []
+                card_spark = chart_spark      # 월간 시계열(스파크라인)
+                # 칩은 **그린 점 수**에서 센다 — 원천이 짧게 준 날에도 '12개월' 이라 적으면 창을
+                # 부풀려 말한다(독립 리뷰 L1 · ECOS 칩과 같은 규칙, #29). 안 그렸으면 칩도 없다.
+                spark_span = f"{len(card_spark)}개월" if card_spark else ""
+                if _has_spot:
                     value = _spot["value"]
                     change = _spot.get("change")
                     asof_raw = _spot.get("time", "")   # FRED 관측일(YYYY-MM-DD)
@@ -1184,7 +1324,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # ⚠️ ECOS·관세청 카드도 날짜를 싣는다 — 2026-09-25 까지 FRED 만 실어
                 # 한국 수출 카드가 '12개월 전 583억$' 라고 적었는데 그건 11개월 전
                 # (2025-08) 값이라 ▲407 이 전년동월 대비로 읽혔다(실수 #413).
-                "period_start_asof": (_fred_start_label(sid, _qtr)
+                "period_start_asof": (_fred_start_label(getattr(chart_spark, "start", ""), _qtr)
                                       if src == "fred" else _ps_period),
                 "period_change": period_change,
                 "period_change_pct": period_change_pct,
@@ -1196,7 +1336,10 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 규칙은 2026-06-10 그대로:
                 # 1개월(가격) 카드 = % · 12개월(FRED/ECOS) = 절대값,
                 # 단 환율(_ABS_CHANGE_SIDS)은 ₩ 절대값이 직관적이라 예외.
-                "pct_style": bool(spark_span == "1개월"
+                # ⚠️ 판정은 **카드 종류**(가격 = src yf)로 한다 — 칩 문자열("1개월")로 가르면
+                # 점 수에서 센 칩(FRED·ECOS, 리뷰 L1·L9)이 1점인 날 '1개월' 이 되어 발표지표
+                # 카드가 %로 뒤집힌다(#34 한 라벨이 두 뜻을 대표하면 한쪽은 거짓말).
+                "pct_style": bool(src == "yf"
                                   and sid not in _ABS_CHANGE_SIDS),
                 "asof": (_live_label if src == "yf" else
                          _fmt_asof(asof_raw, full=_is_daily_card)
@@ -1365,11 +1508,13 @@ _SPARK_CACHE_TTL_SEC = 3600      # naver_comhist_*.json (naver_marketindex)
 
 
 def flatness_verdict(distinct: int, points: int,
-                     line_age_sec: float | None) -> tuple[str, str]:
+                     line_age_sec: float | None,
+                     ttl_sec: float = _SPARK_CACHE_TTL_SEC) -> tuple[str, str]:
     """(판정, 사유) — 순수 함수라 값으로 고정된다(#41·#176).
 
     판정 ∈ "source"(원천이 평평) · "cache"(우리 캐시가 얼었을 수 있다)
           · "moving"(움직인다) · "unknown"(판정 불가 — 통과가 아니다, #54)
+    `ttl_sec` = 그 라인을 채우는 캐시의 TTL(원자재 1시간 · FRED 스파크는 헤드라인과 같은 TTL).
     """
     if points <= 1:
         return "unknown", f"점이 {points}개라 평평한지 판정할 수 없다"
@@ -1377,11 +1522,11 @@ def flatness_verdict(distinct: int, points: int,
         return "moving", f"서로 다른 값 {distinct}개 — 움직인다"
     if line_age_sec is None:
         return "unknown", "라인 캐시 나이를 못 재 원천/캐시를 가를 수 없다"
-    if line_age_sec <= _SPARK_CACHE_TTL_SEC:
+    if line_age_sec <= ttl_sec:
         return "source", (f"라인이 {line_age_sec / 60:.0f}분 전에 새로 왔는데도 "
                           f"{points}점이 전부 같다 — 원천이 평평한 것")
     return "cache", (f"라인 캐시가 {line_age_sec / 3600:.1f}시간째라 "
-                     f"TTL({_SPARK_CACHE_TTL_SEC / 3600:.0f}h)을 넘겼다 "
+                     f"TTL({ttl_sec / 3600:g}h)을 넘겼다 "
                      "— 캐시가 얼었을 수 있다")
 
 
@@ -1392,6 +1537,29 @@ def _sid_for(key: str) -> str:
             if row[0] == key:
                 return row[4]
     return ""
+
+
+def _src_for(key: str) -> str:
+    """카드 key → 정의의 원천(`fred`·`ecos`·`yf` …) — `_sid_for` 와 같은 출처(#38)."""
+    for d in (DOMESTIC, GLOBAL):
+        for row in d:
+            if row[0] == key:
+                return row[3]
+    return ""
+
+
+def _fred_line_age(sid: str) -> tuple[float | None, float]:
+    """FRED 스파크 사본의 (나이 초, 그 캐시 TTL 초) — 사본이 없으면 나이 None(판정 불가).
+
+    2026-09-25 부터 FRED 스파크도 날짜별 사본을 둔다(`_fred_spark_cache_file`) — 그 mtime 이 곧
+    라인 나이다. 옛 `--why` 는 "FRED 는 라인 캐시가 없다" 고 적어 FRED 카드를 늘 판정 불가로
+    냈다(독립 리뷰 L3 · #55 설명이 코드와 어긋나면 버그)."""
+    ttl = _fred_cache_rules()._fred_ttl_h(sid) * 3600
+    f = _fred_spark_cache_file(sid, "q" if sid in _FRED_QUARTERLY else "m", _SPARK_N)
+    try:
+        return time.time() - f.stat().st_mtime, ttl
+    except OSError:
+        return None, ttl
 
 
 def _why(keys: tuple[str, ...] = ()) -> int:
@@ -1446,7 +1614,8 @@ def _why(keys: tuple[str, ...] = ()) -> int:
               f"값수집 {r.get('asof') or '미기록'}"
               + (f" ({age_min}분 전)" if isinstance(age_min, int) else ""))
         line_age = None
-        try:                 # 라인(스파크)이 어느 캐시에서 왔나 — 원자재만 잰다
+        line_ttl = _SPARK_CACHE_TTL_SEC
+        try:                 # 라인(스파크)이 어느 캐시에서 왔나 — 원자재·FRED 를 잰다
             # payload 엔 sid 가 없다 — **정의에서** 되짚는다(새 필드를 더하면
             # 캐시 salt 를 같이 올려야 한다, #304).
             sid = _sid_for(r.get("key") or "")
@@ -1455,16 +1624,18 @@ def _why(keys: tuple[str, ...] = ()) -> int:
             if rec.get("category") and rec.get("reutersCode"):
                 line_age = cache_age_sec(
                     f"naver_comhist_{rec['category']}_{rec['reutersCode']}_30.json")
+            elif sid and _src_for(r.get("key") or "") == "fred":
+                line_age, line_ttl = _fred_line_age(sid)
         except Exception as exc:                              # noqa: BLE001
             print(f"      라인 캐시 나이 측정 실패: {type(exc).__name__}: {exc}")
-        verdict, why = flatness_verdict(distinct, len(spark), line_age)
+        verdict, why = flatness_verdict(distinct, len(spark), line_age, line_ttl)
         mark = {"source": "✅", "moving": "✅", "cache": "⚠️",
                 "unknown": "❓"}[verdict]
         print(f"      스파크 {len(spark)}점 · 서로 다른 값 {distinct}개 "
               f"{mark} {why}")
-        # ⚠️ rc 는 **고칠 수 있는 것**만 센다. 원자재 캐시가 없는 카드(FRED·
-        # ECOS 40장 중 27장)는 라인 나이를 잴 길이 자체가 없어 늘 '판정 불가'
-        # 다 — 그걸 실패로 세면 정상적으로 평평한 정책금리 하나 때문에 도구가
+        # ⚠️ rc 는 **고칠 수 있는 것**만 센다. 라인 캐시 나이를 잴 길이 없는 카드
+        # (ECOS·관세청 등 — FRED 는 2026-09-25 부터 스파크 사본으로 잰다)는 늘 '판정
+        # 불가' 다 — 그걸 실패로 세면 정상적으로 평평한 정책금리 하나 때문에 도구가
         # 항상 rc=1 이 되고, 그러면 아무도 rc 를 안 본다(#25·#260).
         # 판정 불가는 **출력에는 남기고**(#54) 종료코드에서만 뺀다.
         if verdict == "cache":
@@ -1472,8 +1643,8 @@ def _why(keys: tuple[str, ...] = ()) -> int:
         elif verdict == "unknown":
             unjudged += 1
     if unjudged:
-        print(f"  ❓ 판정 불가 {unjudged}건 — 라인 캐시가 없는 카드"
-              "(FRED·ECOS 등)는 원천/캐시를 가를 재료가 없다")
+        print(f"  ❓ 판정 불가 {unjudged}건 — 라인 캐시 나이를 못 잰 카드(ECOS·관세청 등,"
+              " 사본이 아직 없는 FRED)는 원천/캐시를 가를 재료가 없다")
     return 1 if bad else 0
 
 

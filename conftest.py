@@ -230,13 +230,77 @@ _CHILD_GUARD_DIR = _install_child_backstop()
 # import 해야 해서 비용이 크다. 그러니 "테스트는 운영 캐시를 못 만진다"고
 # **주장하지 않는다**(#286 지시서가 자기 자신에 대해 거짓이면 다음 사람이 가드를
 # 건너뛴다). 오염을 관측하면 그 모듈을 여기 한 줄로 추가할 것.
+#
+# ⚠️ 대상 모듈을 **여기서 import 하지 않는다** — 그 모듈이 **import 될 때** 갈아
+# 끼운다(아래 `_RedirectOnImport`). 2026-09-25 까지는 목록을 import 하며 걸었는데,
+# `bot.market_overview` 를 더하자 모듈 레벨 `import yfinance` 가 **진짜 yfinance**
+# 를 먼저 올려 `bot/tests/conftest.py` 의 MagicMock(`if _mod not in sys.modules`)이
+# 조용히 빠졌다 — `pytest bot/tests` 가 '오프라인 모의' 약속을 잃고 소켓 가드만
+# 남았다(독립 리뷰 M1 실측: 기준 conftest 가 먼저 올리는 모의 대상 `[]` → `['yfinance']`).
+# "무거운 모듈만 늦게" 는 목록이라 다음 무거운 모듈을 놓친다(#24) — 전부 늦게 건다.
+# 덤으로 모듈을 **새로 import**(pop 뒤 재import·`importlib.reload`)해도 다시 걸린다
+# (옛 판은 그때 운영 경로로 돌아갔다). 못 보는 축: `runpy.run_module` 은 로더의
+# `exec_module` 을 안 거치므로 여기 안 걸린다 — 그런 테스트는 HOME 을 스스로 돌린다.
+import importlib.abc as _iabc
+import sys as _sys
+
+
+class _RedirectOnImport(_iabc.MetaPathFinder):
+    """대상 모듈의 로더를 감싸 **모듈 코드가 끝난 직후** 상수를 갈아 끼운다.
+
+    스펙은 뒤의 finder 들에게 그대로 묻고(경로·패키지 판정을 바꾸지 않는다), 받은
+    로더의 `exec_module` 만 감싼다 — 파일 로더는 스펙마다 새 인스턴스라 다른 import
+    에 번지지 않는다. 뒤 finder 가 던지면 그대로 던진다(보통 import 와 같은 결과)."""
+
+    def __init__(self, root, table: dict):
+        self.root = root
+        self.table = table          # 모듈 → [(속성, 잎)]
+        self.applied: list = []     # 실제로 갈아 끼운 "모듈.속성" — 회귀가 선언과 대조한다
+
+    def apply(self, name: str, module) -> None:
+        for attr, leaf in self.table.get(name, ()):
+            if not hasattr(module, attr):
+                continue            # 상수 이름이 바뀌었다 — 회귀가 잡는다(값이 홈 밖인가)
+            setattr(module, attr, self.root / leaf)
+            dotted = f"{name}.{attr}"
+            if dotted not in self.applied:
+                self.applied.append(dotted)
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in self.table:
+            return None
+        for finder in _sys.meta_path:
+            if finder is self:
+                continue
+            find = getattr(finder, "find_spec", None)
+            spec = find(fullname, path, target) if find else None
+            if spec is not None:
+                break
+        else:
+            return None
+        loader = spec.loader
+        run = getattr(loader, "exec_module", None)
+        if run is None:
+            return spec             # 감쌀 수 없다 — 회귀가 '홈 밖인가' 로 잡는다
+        def exec_module(module, _run=run, _name=fullname):
+            _run(module)
+            self.apply(_name, module)
+        loader.exec_module = exec_module
+        return spec
+
+
 _REDIRECTED: list = []
 
 
 def _redirect_disk_caches() -> list:
+    import atexit
+    import shutil
     import tempfile
     from pathlib import Path as _P
     root = _P(tempfile.mkdtemp(prefix="noah-test-caches-"))
+    # 세션이 끝나면 지운다 — 옛 판은 안 지워 `/tmp/noah-test-caches-*` 가 4,897개 쌓였다
+    # (독립 리뷰 L8). 바로 위 자식 가드 디렉터리와 같은 처방이다.
+    atexit.register(shutil.rmtree, str(root), True)
     targets = (
         ("bot.naver_sector_client", "_CACHE_DIR", "naver_sector"),
         ("bot.market_timing", "_VOL_CACHE_DIR", "market_timing"),
@@ -288,18 +352,16 @@ def _redirect_disk_caches() -> list:
         ("bot.market_overview", "_CACHE_DIR", "market_overview"),
         ("bot.fear_greed_client", "_CACHE", "fear_greed.json"),
     )
-    done = []
+    table: dict = {}
     for mod, attr, leaf in targets:
-        try:
-            import importlib
-            m = importlib.import_module(mod)
-            if not hasattr(m, attr):
-                continue           # 상수 이름이 바뀌었다 — 아래 회귀가 잡는다
-            setattr(m, attr, root / leaf)
-            done.append(f"{mod}.{attr}")
-        except Exception:
-            continue
-    return done
+        table.setdefault(mod, []).append((attr, leaf))
+    finder = _RedirectOnImport(root, table)
+    _sys.meta_path.insert(0, finder)
+    for mod in table:                      # 이미 올라온 모듈은 지금 건다
+        m = _sys.modules.get(mod)
+        if m is not None:
+            finder.apply(mod, m)
+    return finder.applied                  # 뒤의 import 가 채운다 — 같은 리스트 객체
 
 
 _REDIRECTED = _redirect_disk_caches()

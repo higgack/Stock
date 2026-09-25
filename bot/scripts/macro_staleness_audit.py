@@ -24,8 +24,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-# v5 = `--history` 기간 칸을 카드 표기로 · 같은 날 여러 사본을 하루로(2026-09-26 VM 출력, #418) — 옛
-#      출력(`캐시 62일치`·`2026-04-01`)과 새 출력을 배너로 가른다(#21)
+# v5 = `--history` 기간 칸을 카드 표기로 · 같은 날 여러 사본을 하루로(2026-09-26 VM 출력, #418) · 헤더가
+#      기간을 못 읽은 날·날짜로 합친 사본 수를 밝힌다(독립 리뷰 Low) — 옛 출력(`캐시 62일치`·
+#      `2026-04-01`)과 새 출력을 배너로 가른다(#21)
 _PROBE_VER = 5
 
 
@@ -266,7 +267,8 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def first_seen(daily: list[tuple[str, str]], freq: str) -> list[tuple[str, str, str]]:
-    """[(파일 날짜 YYYY-MM-DD, 그날 본 최신 기간 원문)] → [(기간, 처음 본 날, 직전 기록 날)](순수).
+    """[(파일 날짜 YYYY-MM-DD, 그 파일이 본 최신 기간 원문)] — **같은 날 여러 행**(조회 길이별
+    사본)일 수 있다 — → [(기간, 처음 본 날, 직전 기록 날)](순수).
 
     날짜순으로 훑어 **최신 기간이 새로 바뀐 날**만 남긴다. `직전 기록 날` 은 그 기간이 아직
     없던 마지막 파일의 날짜다 — 원천은 그 다음 날부터 처음 본 날 사이 어딘가에서 실었다.
@@ -297,12 +299,16 @@ def first_seen(daily: list[tuple[str, str]], freq: str) -> list[tuple[str, str, 
     return out
 
 
-def period_label(ms, raw: str, freq: str) -> str:
+def period_label(ms, raw: str, freq: str, key: str = "") -> str:
     """history 줄의 기간 칸 — **카드와 같은 표기**(순수, #38). 원문(`2026-04-01`)을 그대로 찍으면
     옆의 '기간 종료 +N일' 을 표시된 기간으로 검산할 수 없다(분기 말 06-30 기준인데 04-01 로 읽힌다,
-    #33). 분기는 `_as_quarter` 를 거쳐 'YYYY Qn', 일별은 날짜 그대로, 월은 'YYYY-MM'."""
+    #33). 분기는 `_as_quarter` 를 거쳐 'YYYY Qn', 일별은 날짜 그대로, 월은 'YYYY-MM'.
+    날짜를 통째로 쓸지는 **카드가 쓰는 그 목록**(`_DAILY_CADENCE_KEYS`)이 정한다 — 공표 규약의
+    freq 로 따로 가르면 두 목록이 갈리는 날 기간 칸이 카드와 다른 표기가 된다(독립 리뷰 Low ·
+    #24·#38). 카드 키가 없는 호출만 규약으로 가른다."""
     s = ms._as_quarter(raw) if freq == "Q" else raw
-    return ms._fmt_asof(s, full=(freq == "D")) or raw
+    full = (key in ms._DAILY_CADENCE_KEYS) if key else (freq == "D")
+    return ms._fmt_asof(s, full=full) or raw
 
 
 def _history_daily(src: str, sid: str, ecos_dir: Path, fred_dir: Path) -> list[tuple[str, str]]:
@@ -360,7 +366,7 @@ def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Pa
     out: list[str] = []
     measured = total = 0
     for defs in (ms.DOMESTIC, ms.GLOBAL):
-        for _k, label, _u, src, sid, _d in defs:
+        for key, label, _u, src, sid, _d in defs:
             if src not in ("fred", "fred_yoy", "ecos", "customs"):
                 continue
             total += 1
@@ -377,11 +383,26 @@ def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Pa
             if freq == "E":
                 out.append(f"  {label:<14} {name:<30} ⚪ 이벤트성({why}) — 첫 등장 판정 안 함")
                 continue
-            # 날짜 수 — 파일 수가 아니다(조회 길이가 다른 사본이 하루에 둘일 수 있다, #45·#418)
-            days = sorted({d for d, _r in daily})
+            # 날짜 수 — 파일 수가 아니다(조회 길이가 다른 사본이 하루에 둘일 수 있다, #45·#418).
+            # 그리고 **기간을 읽은 날**만 센다 — `first_seen` 이 못 읽은 사본을 건너뛰므로, 그걸
+            # 세면 헤더의 '캐시 N일치' 가 아래 판정의 재료보다 많다고 말한다(독립 리뷰 Low · #45).
+            days = sorted({d for d, r in daily if parse_period_end(r, freq) is not None})
+            unread = len({d for d, _r in daily} - set(days))
+            if not days:
+                out.append(f"  {label:<14} {name:<30} ❓ 캐시 {unread}일치가 있으나 기간을 하나도 "
+                           "못 읽었다 — 첫 등장을 잴 재료가 없다")
+                continue
             measured += 1
+            notes = ""
+            if unread:
+                notes += f" · 기간을 못 읽은 {unread}일 제외"
+            if len(daily) > len({d for d, _r in daily}):
+                # 두 화면(매크로 카드 400일 · 유동성 보드 950일 …)의 사본을 **날짜로 합쳤다** —
+                # 이 줄은 '원천이 언제 실었나' 를 잰다. 어느 한 화면의 사본이 늦은 것은 못 본다.
+                notes += (f" · 사본 {len(daily)}개를 날짜로 합침(조회 길이가 다른 화면 사본 — "
+                          "원천이 실은 날을 잰다)")
             out.append(f"  {label:<14} {name:<30} 캐시 {len(days)}일치 {days[0]}~{days[-1]}"
-                       f" · 규약 +{lag}일({why})")
+                       f" · 규약 +{lag}일({why}){notes}")
             limit = lag + GRACE_DAYS
             for raw, d, prev in first_seen(daily, freq)[-keep:]:
                 end = parse_period_end(raw, freq)
@@ -404,7 +425,7 @@ def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Pa
                         verdict = "✅ 규약 안"
                     else:
                         verdict = "❓ 기록 사이가 비어 규약 안인지 못 가른다"
-                out.append(f"      {period_label(ms, raw, freq):<12} 처음 본 날 {d} "
+                out.append(f"      {period_label(ms, raw, freq, key):<12} 처음 본 날 {d} "
                            f"(기간 종료 +{hi}일){gap}  {verdict}")
     return out, measured, total
 
