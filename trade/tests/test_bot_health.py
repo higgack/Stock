@@ -2171,6 +2171,34 @@ def test_drop_and_accept_lines_from_the_bot_source_parse_every_new_field():
     assert len(j["ingested"]) == 0                 # 보증 수용 줄은 수신 줄이 아니다(따로 센다)
 
 
+def test_a_channel_title_cannot_become_another_journal_fact():
+    """제목은 **남(채널 주인)이 쓴** 글이다 — 그 안의 `ingested msg=…`·정상 폴링 문구·수용 줄
+    문구가 다른 사실로 읽히면 버림이 사라지고 없는 수신·폴링·보증 수용이 생긴다(독립 리뷰
+    #411 L2 실측). 분류는 봇이 쓴 칸까지만 본다 — 수용 줄의 제목에 버림 줄 문구가 들어
+    있어도, 예외 줄의 예외 문구에 수신 줄 문구가 들어 있어도 같다. 제목 자체는 그대로 읽는다."""
+    fake_ingest = "x ingested msg=999 y"
+    fake_poll = 'x /getUpdates "HTTP/1.1 200 OK" y'
+    fake_accept = f"accepted msg=7 reason=relay_vouch origin_chat={_REPOST} origin_msg=5"
+    fake_drop = (f" dropped msg=8 reason=origin origin_type=channel origin_chat={_REPOST} "
+                 "origin_username=None origin_msg=6")
+    exc_fmt = _log_format(_REPO / "trade" / "bot.py", "handler error update=channel_post", "error")
+    exc = _jl("2026-09-25T08:00:04", exc_fmt % (77, "channel", _BAD, "Badonions", 4242,
+                                                 "ValueError", "caption ingested msg=55"))
+    j = bh.journal_facts([
+        _vdrop("2026-09-25T08:00:00", 1, 101, title=fake_ingest),
+        _vdrop("2026-09-25T08:00:01", 2, 102, title=fake_poll),
+        _vdrop("2026-09-25T08:00:02", 3, 103, title=fake_accept),
+        _vaccept("2026-09-25T08:00:03", 4, 104, title=fake_drop),
+        exc,
+    ])
+    assert [(d["msg"], d["title"]) for d in j["drops_origin"]] == [
+        (1, fake_ingest), (2, fake_poll), (3, fake_accept)], j["drops_origin"]
+    assert j["ingested_ids"] == set() and j["ingested"] == [], j["ingested_ids"]
+    assert j["polls"] == {} and j["last_ok"] is None, j["polls"]
+    assert [(a["msg"], a["omsg"], a["title"]) for a in j["vouch_accepts"]] == [(4, 104, fake_drop)]
+    assert [(e["msg"], e["chat"]) for e in j["exceptions"]] == [(77, _BAD)], j["exceptions"]
+
+
 def test_vouch_order_is_by_time_with_the_journals_one_second_grain():
     """보증 **전의** 버림과 **뒤의** 버림은 뜻이 반대다 — 앞은 보증하기 전의 판이 포워드한
     것(다시 포워드하면 받는다), 뒤는 보증 경로가 깨진 것(❌). 저널 시각은 초로 잘려 같은 초
@@ -2220,9 +2248,35 @@ def test_a_drop_after_the_vouch_is_red_with_the_bots_own_reason():
     assert rc2 == 0 and "보증한** 재게시 글" not in out2, out2
 
 
+def test_a_vouched_drop_that_came_back_later_is_a_note_not_red():
+    """보증 뒤에 버렸어도 **그 뒤** 같은 원래 글을 보증으로 받았으면 손실이 아니다 — ❌ 로 두면
+    원인을 고치고 다시 포워드해 받았는데도 그 줄이 창에서 빠질 때까지 `bot_health && 다시
+    포워드` 가 막힌다(독립 리뷰 #411 L5). 한 번 깨졌던 사실은 메모로 남긴다(#43). 다른 글을
+    받은 것은 이 글의 회복이 아니고, 같은 초의 수용 줄은 순서를 모른다 — 받았다고 단정하지
+    않는다(#165)."""
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242), (_REPOST, 4243)))
+    drop = _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable")
+
+    def with_accept(ts, omsg):
+        f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), drop,
+                                         _vaccept(ts, 9, omsg)])
+        return _v(f)
+    rc, out = with_accept("2026-09-25T08:20:00", 4242)
+    assert rc == 0, out
+    note = _note_with(out, "보증 뒤에 버렸다가 그 뒤 보증으로 받았다")
+    assert note.startswith("⚠️") and "vouch=unreadable" in note, note
+    assert "보증한** 재게시 글" not in out, out
+    rc2, out2 = with_accept("2026-09-25T08:20:00", 4243)          # 다른 글을 받았다
+    assert rc2 == 1 and "보증한** 재게시 글 1건" in out2, out2
+    rc3, out3 = with_accept("2026-09-25T08:00:00", 4242)          # 같은 초 — 순서를 모른다
+    assert rc3 == 1 and "보증한** 재게시 글 1건" in out3, out3
+
+
 def test_a_drop_before_the_vouch_is_a_note_that_says_whether_it_came_back():
-    """버린 **뒤에** 보증됐다 = 보증하기 전의 판이 포워드했고, 그 뒤 보증하는 릴레이가 다시
-    포워드했다. 받았는지는 봇의 보증 수용 줄이 말한다 — 받았으면 그렇다고, 아니면 볼 곳을."""
+    """버린 **뒤에** 보증됐다 = 버릴 땐 보증이 없었다(보증하기 전의 판이 포워드했거나 다른 릴레이가
+    되포워드했다 — 진단은 둘을 못 가르므로 원인을 단정하지 않는다, 독립 리뷰 #411 I12 · #165).
+    받았는지는 봇의 보증 수용 줄이 말한다 — 받았으면 그렇다고, 아니면 볼 곳을."""
     late = datetime(2026, 9, 25, 8, 10, tzinfo=_KST)
     f = _good()
     f["vouch"] = _vf(_vouched((_REPOST, 4242), (_REPOST, 4243), at=late))
@@ -2235,6 +2289,8 @@ def test_a_drop_before_the_vouch_is_a_note_that_says_whether_it_came_back():
     note = _note_with(out, "버린 **뒤에** 릴레이가 보증한 재게시 글")
     assert note.startswith("⚠️") and "그중 2건" in note and "받은 줄이 1건" in note, note
     assert "나머지 1건은 아직 받은 줄이 없다" in note and bh.FIND_CMD in note, note
+    assert "버릴 땐 보증이 없었다 — 보증하기 전의 판이나 다른 릴레이가" in note, note
+    assert "(보증하기 전의 판이 포워드했다)" not in note, note       # 한 원인으로 단정하지 않는다
     # 보증 없는 다른 출처가 없으니 '여기서 못 가른다' 는 안 붙는다(할 말이 없는 갈래)
     assert "보증 없는 다른 출처 포워드는 여기서 못 가른다" not in note, note
 
@@ -2343,6 +2399,39 @@ def test_the_hourly_check_alerts_a_dropped_vouched_repost_with_its_own_advice(
     assert "TRADE_SOURCE_ORIGIN" not in hc._sent[0]
     hc.check_delivery_gap()
     assert len(hc._sent) == 1                              # 같은 버림은 한 번만
+
+
+def test_the_hourly_check_skips_a_vouched_drop_that_came_back(hc, monkeypatch):
+    """매시간 알림도 같은 규칙이다(#38) — 보증 뒤의 버림이라도 그 뒤 같은 원래 글을 받았으면
+    알릴 손실이 아니다(독립 리뷰 #411 L5). 대조군: 받은 줄이 없으면 알린다."""
+    from trade import relay_origins as ro
+    ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=ro.path_in(hc.DATA_DIR),
+             now=datetime(2026, 9, 25, 7, 0, tzinfo=_KST))
+    bot = [_poll("2026-09-25T08:29:50"), _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+           _vaccept("2026-09-25T08:20:00", 9, 4242)]
+    _drive(monkeypatch, bot=bot, relay=[])           # `_drive` 는 부를 때 줄을 읽는다
+    hc.check_delivery_gap()
+    assert hc._sent == [], hc._sent
+    del bot[-1]                                      # 대조군: 받은 줄이 없다 → 알린다
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1, hc._sent
+
+
+def test_the_hourly_check_says_when_it_cannot_read_the_vouch_record(hc, monkeypatch, caplog):
+    """보증 기록을 못 읽으면 **그 갈래만** 못 본다는 사실을 남기고 나머지 대조는 그대로 한다
+    (#54 — 판정 불가를 '이상 없음' 으로 접지 않는다). 독립 리뷰 #411 에서 이 경고를 지워도
+    전부 통과했다(뮤테이션 HC2)."""
+    from trade import relay_origins as ro
+    rec = ro.path_in(hc.DATA_DIR)
+    rec.parent.mkdir(parents=True, exist_ok=True)
+    rec.write_text("{broken", encoding="utf-8")
+    _drive(monkeypatch, bot=[_poll("2026-09-25T08:29:50"), _exc("2026-09-25T08:00:05", 77)],
+           relay=[])
+    with caplog.at_level(logging.WARNING):
+        hc.check_delivery_gap()
+    warn = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("재게시 보증 기록을 못 읽었다" in m and "형식 오류" in m for m in warn), warn
+    assert len(hc._sent) == 1, hc._sent          # 나머지 대조(예외로 놓친 글)는 그대로 알린다
 
 
 def test_an_exception_on_a_vouched_repost_is_a_lost_relay_post():

@@ -150,6 +150,12 @@ def _notify(text: str) -> None:
         log.warning("notify failed: %s", e)
 
 
+# 같은 사유의 보증 실패 알림은 프로세스당 한 번 — 재게시 글마다 알리면 같은 장애(데이터 디렉터리
+# 쓰기 불가)가 알림 폭탄이 되고, 알림(curl · 최대 ~15초)이 그때마다 이벤트 루프를 세운다(독립
+# 리뷰 #411 L7). 건마다는 로그가 남고, 못 보낸 글은 주기 sync 가 다시 보증해 포워드한다.
+_VOUCH_ALERTED: set[str] = set()
+
+
 def _vouch_before_queue(msgs, get_peer_id, *, what: str) -> bool:
     """재게시 글을 봇이 받도록 포워드 큐에 넣기 **전에** 보증한다(실수 #411) → 넣어도 되나.
 
@@ -171,10 +177,13 @@ def _vouch_before_queue(msgs, get_peer_id, *, what: str) -> bool:
         why = f"{type(exc).__name__}: {exc}"[:200]
         log.error("%s: 재게시 출처 보증 실패(%s) — 포워드하지 않는다(주기 sync 가 회수)",
                   what, why)
-        _notify("⚠️ <b>나쁜양파 리스너 — 재게시 출처 보증 실패</b>\n"
-                f"{html.escape(why)}\n"
-                "포워드하지 않았다(하면 봇이 원래 출처로 받아 버린다). 데이터 디렉터리 "
-                "쓰기를 확인할 것 — 주기 sync 가 다시 보증해 포워드한다.")
+        if why not in _VOUCH_ALERTED:
+            _VOUCH_ALERTED.add(why)
+            _notify("⚠️ <b>나쁜양파 리스너 — 재게시 출처 보증 실패</b>\n"
+                    f"{html.escape(why)}\n"
+                    "포워드하지 않았다(하면 봇이 원래 출처로 받아 버린다). 데이터 디렉터리 "
+                    "쓰기를 확인할 것 — 주기 sync 가 다시 보증해 포워드한다. 같은 사유는 이 "
+                    "프로세스에서 다시 알리지 않는다(건마다 로그에 남는다).")
         return False
     log.info("%s: vouched repost origin=%s (새로 %d건)", what, _relay.describe(pairs), added)
     return True

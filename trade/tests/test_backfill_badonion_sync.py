@@ -1640,7 +1640,9 @@ def test_a_forward_failure_and_a_vouch_failure_are_counted_apart(backfill, monke
 
 def test_consecutive_vouch_failures_abort_and_name_the_cause(backfill, monkeypatch):
     """사람이 연 창에서 연속 실패는 체계적 장애라 멈춘다 — 그 중단 사유가 '세션·권한·
-    네트워크' 로만 적히면 보증 기록 쓰기(데이터 디렉터리)를 못 찾는다."""
+    네트워크' 로만 적히면 보증 기록 쓰기(데이터 디렉터리)를 못 찾는다. 보증 실패**만** 이어진
+    구간은 '포워드 실패' 라 부르지 않는다 — 그 유닛들은 포워드를 시도하지도 않았다(독립 리뷰
+    #411 L1)."""
     from trade import relay_origins as ro
 
     def boom(*a, **k):
@@ -1652,8 +1654,36 @@ def test_consecutive_vouch_failures_abort_and_name_the_cause(backfill, monkeypat
     assert _run(backfill, monkeypatch, "--since", _since_recent()) == 1
     assert _Client.instances[-1].forwarded == []
     note = backfill._test_notes[-1]
-    assert "백필 중단" in note and f"그중 재게시 출처 보증 실패 {n}건" in note, note
-    assert "읽기 전용 파일 시스템" in note, note
+    assert "백필 중단" in note and f"{n} consecutive failures — 전부 재게시 출처 보증 실패" in note, note
+    assert "session/permission/network" not in note, note      # 포워드 실패로 부르지 않는다
+    assert "읽기 전용 파일 시스템" in note and "데이터 디렉터리" in note, note
+
+
+def test_the_abort_reason_counts_only_the_vouch_failures_in_the_streak(backfill, monkeypatch):
+    """중단 사유의 '그중 보증 실패' 는 **연속 구간 안의** 것만 센다 — 옛 판은 실행 전체의 수를
+    적어, 앞서 보증이 몇 번 실패했을 뿐인 세션 장애(포워드 연속 실패)를 데이터 디렉터리로
+    보냈다(독립 리뷰 #411 L1 실측: 보증 실패 3 → 성공 1 → 포워드 실패 5 가 '그중 보증 실패
+    3건' 으로 적혔다). 사이의 성공이 구간을 끊는다."""
+    from trade import relay_origins as ro
+
+    def boom(*a, **k):
+        raise OSError("디스크 가득(테스트)")
+    monkeypatch.setattr(ro, "vouch", boom)
+    n = backfill.MAX_CONSECUTIVE_FAILURES
+    k = min(3, n - 1)                                  # 구간 앞의 보증 실패(혼자선 안 멈춘다)
+    t = _ago(1)
+    early = [_repost(501 + i, _KRI, t + timedelta(seconds=i), post=10 + i) for i in range(k)]
+    good = [_Msg(530, _KRI2, t + timedelta(seconds=20))]
+    bad = [_Msg(540 + i, _KRI2.replace("합성회사", f"회사{i}"), t + timedelta(seconds=30 + i))
+           for i in range(n)]
+    _Client.messages = early + good + bad
+    _Client.fail_forward_ids = {m.id for m in bad}
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 1
+    note = backfill._test_notes[-1]
+    assert "백필 중단" in note and f"{n} consecutive forward failures" in note, note
+    assert "재게시 출처 보증 실패" not in note, note
+    assert [ids for ids in _Client.instances[-1].forwarded] == [[530]], \
+        _Client.instances[-1].forwarded
 
 
 def test_an_unvouchable_forward_is_named_and_forwarded_as_before(

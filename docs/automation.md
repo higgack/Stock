@@ -49,7 +49,7 @@
 
 | Timer | 주기 | 실행 | 하는 일 |
 |---|---|---|---|
-| `trade-bot-update.timer` | 1분 | `deploy/trade-auto-update.sh` | 같은 base 브랜치 추적, 독립 재배포 · 나쁜양파 리스너는 `listen_badonion.py` **또는 `trade/*.py`**(리스너가 import 하는 필터·보증 모듈) 변경 시 재시작(#411 — 옛 규칙은 그 파일만 봐 import 한 모듈만 바뀐 배포는 리스너를 재시작하지 않았다 · 폐포가 규칙에 걸리는지 `trade/tests/test_listen_badonion_vouch.py` 가 소스에서 잰다) |
+| `trade-bot-update.timer` | 1분 | `deploy/trade-auto-update.sh` | 같은 base 브랜치 추적, 독립 재배포 · 나쁜양파 리스너는 `listen_badonion.py` · `trade/scripts/__init__.py` **또는 `trade/*.py`** 변경 시 재시작(#411 — 옛 규칙은 그 파일만 봐 import 한 모듈(필터·보증)만 바뀐 배포는 리스너를 재시작하지 않았다 · 폐포(진입점이 실행하는 위 패키지 `__init__.py` 포함)가 규칙에 걸리는지 `trade/tests/test_listen_badonion_vouch.py` 가 소스에서 잰다 · ⚠️ 규칙은 폐포보다 넓다(대시보드 모듈도 걸린다 — 지난 한 달 base 커밋 66개 실측: 옛 규칙 1회 → 새 규칙 15회) · 재시작은 몇 초라 그 사이 올라온 글은 주기 sync 가 회수) |
 | `trade-bot-watchdog.timer` | 1분 | `deploy/trade-watchdog.sh` | 무응답 재시작 |
 | `trade-bot-customs-probe.timer` | 10분 | `trade.scripts.scan_customs --if-changed` | 관세청 변경 감지 스캔 |
 | `trade-bot-prov-fetch.timer` | 월 1-3/11-13/21-23일 30분 | `trade.scripts.fetch_provisional` | 잠정치 수집(발표 몰린 기간 집중) |
@@ -93,7 +93,7 @@
 | `daju-listener.service` | `bot.daju_watch` | DAJU(다주) 실적 예정 알림 실시간 포워드 → 블로그 대시보드 아카이브 | 세션 미인증(exit 78) → RestartPreventExitStatus 로 hot-loop 방지 |
 | `trade-bot-beon-listener.service` | `trade.scripts.listen_beon` | BeOn_BeClear(대만·중국·일본 수출통계) 실시간 forward | 위와 동일 패턴 + 세션 형식 불일치도 알리고 exit 78(#404) |
 | `trade-bot-beon-sync.timer`(2h) | `trade.scripts.backfill_beon` | 리스너 다운타임 안전망(--lookback-days 2 기본) | 없음(idempotent 재스캔) · 세션 형식 불일치는 생성 전에 멈추고 알린다(#404) |
-| `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward — 재게시 글은 큐에 넣기 **전에** 원래 출처를 보증(#411 · 못 쓰면 큐에 안 넣고 알림 → 주기 sync 가 회수) | 세션 미인증·세션 형식 불일치(exit 78, #404) |
+| `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward — 재게시 글은 큐에 넣기 **전에** 원래 출처를 보증(#411 · 못 쓰면 큐에 안 넣고 알림 — 같은 사유는 프로세스당 한 번 — → 주기 sync 가 회수) | 세션 미인증·세션 형식 불일치(exit 78, #404) |
 | `trade-bot-badonion-sync.timer`(6h) | `trade/scripts/backfill_badonion.py` | 위 안전망 + 파서 배포 뒤 40일 회수(#403) | 없음(성공해야 기록 — 시작 실패·상한 중단이면 다음 틱이 다시 넓게 훑는다 · 포워드 일부 실패나 도중 중단은 재시도 표식으로 다시 훑고 센 실행 3회째엔 기록 + 실패·미시도 id·수동 명령 알림 — 자동 회수는 연속 실패로 끊지 않고, 긴 FloodWait 중단·죽은 실행은 안 센다) · 세션 형식 불일치는 생성 전에 멈추고 알린다(#404) |
 
 ## 자동화가 **아닌** 것 — 회귀가 방아쇠인 도구 (2026-09-12)

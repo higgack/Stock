@@ -164,19 +164,30 @@ def test_an_irrelevant_repost_is_neither_vouched_nor_forwarded(listener):
 def test_a_repost_that_cannot_be_vouched_is_not_queued_and_is_alerted(
         listener, monkeypatch, caplog):
     """보증을 못 쓰면 큐에 넣지 않는다(포워드하면 봇이 버린다) — 조용하지 않게 알리고,
-    같은 흐름의 다른 글은 그대로 간다. 주기 sync 가 다시 보증해 포워드한다."""
+    같은 흐름의 다른 글은 그대로 간다. 주기 sync 가 다시 보증해 포워드한다. 알림은 **같은
+    사유면 프로세스당 한 번**이다 — 재게시 글마다 알리면 같은 장애가 알림 폭탄이 되고 그때마다
+    알림(curl)이 이벤트 루프를 세운다(독립 리뷰 #411 L7). 사유가 바뀌면 다시 알리고, 건마다의
+    실패는 로그에 남는다."""
+    calls: list = []
+
     def boom(*a, **k):
-        raise PermissionError("쓰기 권한 없음(테스트)")
+        calls.append(1)
+        if len(calls) <= 2:
+            raise PermissionError("쓰기 권한 없음(테스트)")
+        raise OSError("디스크 가득(테스트)")
     monkeypatch.setattr(ro, "vouch", boom)
     caplog.set_level(logging.INFO)
     events = [_msg(501, _KRI, post=4242), _msg(502, _KRI),
-              _msg(503, _KRI, post=20, grouped_id=8), _msg(504, "", post=21, grouped_id=8)]
+              _msg(503, _KRI, post=20, grouped_id=8), _msg(504, "", post=21, grouped_id=8),
+              _msg(505, _KRI, post=4250)]
     assert _run(listener, events) == 0
     assert _Client.forwarded == [[502]], _Client.forwarded
     alerts = [n for n in listener._test_notes if "재게시 출처 보증 실패" in n]
-    assert len(alerts) == 2 and "쓰기 권한 없음(테스트)" in alerts[0], listener._test_notes
+    assert len(alerts) == 2, listener._test_notes                  # 사유마다 한 번
+    assert "쓰기 권한 없음(테스트)" in alerts[0] and "디스크 가득(테스트)" in alerts[1], alerts
     assert "msg=501: 재게시 출처 보증 실패" in caplog.text
-    assert "album gid=8: 재게시 출처 보증 실패" in caplog.text
+    assert "album gid=8: 재게시 출처 보증 실패" in caplog.text     # 두 번째는 로그로만
+    assert "msg=505: 재게시 출처 보증 실패" in caplog.text
 
 
 def test_an_unvouchable_forward_is_forwarded_as_before_and_counted(listener, caplog):
@@ -200,13 +211,22 @@ def _listener_restart_regex() -> re.Pattern:
 
 def _import_closure(start: Path) -> tuple[set[str], set[str]]:
     """`start` 가 (함수 안의 늦은 import 까지) 닿는 trade.* 모듈 파일 · bot.* 모듈 파일.
-    소스를 AST 로 훑는다 — 이름을 적어 두면 새 파서를 더할 때 빠진다(#24)."""
+    소스를 AST 로 훑는다 — 이름을 적어 두면 새 파서를 더할 때 빠진다(#24). 모듈을 import 하면
+    그 **위 패키지들의 `__init__.py`** 도 실행되므로 같이 센다 — 진입점이 `-m
+    trade.scripts.listen_badonion` 이라 `trade/scripts/__init__.py` 는 어느 import 문에도 안
+    나오는데도 돈다(독립 리뷰 #411 L9)."""
     def path_of(mod: str) -> Path | None:
         f = _ROOT.joinpath(*mod.split(".")).with_suffix(".py")
         if f.is_file():
             return f
         d = _ROOT.joinpath(*mod.split(".")) / "__init__.py"
         return d if d.is_file() else None
+
+    def add(p: Path) -> None:
+        rel = p.relative_to(_ROOT).as_posix()
+        (bot_mods if rel.startswith("bot/") else trade_mods).add(rel)
+        if rel.startswith("trade/"):
+            todo.append(p)
 
     done: set = set()
     todo, trade_mods, bot_mods = [start], set(), set()
@@ -216,6 +236,10 @@ def _import_closure(start: Path) -> tuple[set[str], set[str]]:
             continue
         done.add(f)
         pkg = f.relative_to(_ROOT).parent.parts
+        for i in range(1, len(pkg) + 1):                   # 위 패키지들의 __init__.py
+            init = _ROOT.joinpath(*pkg[:i]) / "__init__.py"
+            if init.is_file() and pkg[0] in ("trade", "bot"):
+                add(init)
         for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
             if isinstance(n, ast.Import):
                 mods = [a.name for a in n.names]
@@ -230,14 +254,8 @@ def _import_closure(start: Path) -> tuple[set[str], set[str]]:
             for m in mods:
                 top = m.split(".")[0]
                 p = path_of(m) if top in ("trade", "bot") else None
-                if p is None:
-                    continue
-                rel = p.relative_to(_ROOT).as_posix()
-                if top == "bot":
-                    bot_mods.add(rel)
-                else:
-                    trade_mods.add(rel)
-                    todo.append(p)
+                if p is not None:
+                    add(p)
     return trade_mods, bot_mods
 
 
@@ -245,13 +263,15 @@ def test_the_listener_restarts_when_any_module_it_imports_changes():
     """실수 #411 — 옛 규칙은 `listen_badonion.py` 한 파일만 봐서, 리스너가 import 하는 보증
     모듈(`relay_origins`)이나 관련성 필터(`badonion_sources` 와 그 파서들)만 바뀐 배포는
     리스너를 재시작하지 않았다(다른 이유로 재시작되기 전까지 **옛 코드**) — 보증 형식이
-    바뀌면 옛 리스너가 옛 형식으로 쓰고 새 봇이 못 읽어 재게시 글을 다시 버린다. 리스너의 trade.* import 폐포가 전부 재시작 조건에 걸리는지
-    소스에서 잰다(새 파서를 더해도 이름을 적을 필요가 없다)."""
+    바뀌면 옛 리스너가 옛 형식으로 쓰고 새 봇이 못 읽어 재게시 글을 다시 버린다. 리스너의
+    trade.* import 폐포(위 패키지의 `__init__.py` 포함)가 전부 재시작 조건에 걸리는지 소스에서
+    잰다(새 파서를 더해도 이름을 적을 필요가 없다)."""
     rx = _listener_restart_regex()
     trade_mods, bot_mods = _import_closure(_SCRIPT)
     # 반대 증거 — 폐포가 눈멀지 않았다(#54): 보증·필터·세션 가드와 파서들이 실제로 잡힌다
     assert {"trade/relay_origins.py", "trade/badonion_sources.py", "trade/tg_entities.py",
-            "trade/kr_stock_imports.py"} <= trade_mods, sorted(trade_mods)
+            "trade/kr_stock_imports.py", "trade/__init__.py",
+            "trade/scripts/__init__.py"} <= trade_mods, sorted(trade_mods)
     assert len(trade_mods) >= 20, sorted(trade_mods)
     missing = sorted(m for m in trade_mods | {"trade/scripts/listen_badonion.py"}
                      if not rx.search(m))

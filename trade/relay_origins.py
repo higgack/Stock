@@ -37,7 +37,10 @@ BeOn 릴레이는 채널 전체를 되포워드하고(관련성 필터 없음) �
     짝을 지을 수 없다 — 보증하지 못하고 릴레이가 그 수를 로그로 센다. 그 글은
     봇이 계속 버리고 `bot_health` 가 '다른 출처 포워드' 로 말한다.
   · 봇과 릴레이가 **다른 호스트**로 갈리면 봇은 이 파일을 못 본다 — 그때 재게시
-    글은 다시 버려진다(`bot_health` 가 보증된 글의 버림을 ❌ 로 말한다).
+    글은 다시 버려지고, 봇 호스트에서 도는 진단(`bot_health`·매시간 health)도 그 기록을
+    못 봐 '보증 없는 다른 출처' ⚠️ 메모로만 말한다(알림 없음 — 독립 리뷰 #411 L4). 지원하는
+    배치가 아니다: 백필의 중복 제거도 같은 호스트의 inbox 를 읽는다. 같은 호스트에서 봇만
+    다른 데이터 디렉터리를 쓰면 진단이 ③ 의 inbox 경로 불일치 ❌ 와 보증 뒤의 버림 ❌ 로 잡는다.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -57,6 +61,9 @@ FILE_NAME = "relay_origins.json"
 KEEP_DAYS = 60
 _VER = 1
 _TITLE_MAX = 80
+# 다른 릴레이가 쥔 락을 얼마나 기다리나 — 넘으면 락 없이 진행한다(`_locked`). 리스너는 이 대기를
+# 이벤트 루프 안에서 하므로 **상한이 있어야** 한다(독립 리뷰 #411 L7: 옛 판은 무한 대기).
+LOCK_WAIT_S = 5.0
 
 
 def default_dir() -> Path:
@@ -88,23 +95,34 @@ def load(path) -> tuple[dict, str]:
     일부 항목만 못 읽으면 나머지는 살리고 사유에 그 수를 적는다. 사유를 삼키지 않고
     돌려준다 — 부르는 쪽이 남긴다(#12). `at` 은 처음 보증한 시각(UTC, 못 읽으면 None).
     """
+    pairs, err, _kind = _read(path)
+    return pairs, err
+
+
+def _read(path) -> tuple[dict, str, str]:
+    """`load` + 갈래 — "ok" · "missing" · "io"(읽기 실패) · "empty" · "format"(깨졌다) ·
+    "version"(모르는 판) · "partial"(일부 항목만 못 읽음). 쓰는 쪽(`vouch`)이 갈래로 덮어쓸지
+    정한다 — 사유 문자열의 머리로 가르면 문구를 다듬는 순간 갈래가 깨진다(#200·#294)."""
     p = Path(path)
     try:
         raw = p.read_bytes()
     except FileNotFoundError:
-        return {}, ""
+        return {}, "", "missing"
     except OSError as exc:
-        return {}, f"읽기 실패({type(exc).__name__}: {exc})"[:200]
+        return {}, f"읽기 실패({type(exc).__name__}: {exc})"[:200], "io"
     if not raw.strip():
-        return {}, "빈 파일"
+        return {}, "빈 파일", "empty"
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        return {}, f"형식 오류({type(exc).__name__})"
+    except Exception as exc:                                   # noqa: BLE001
+        # 어떤 바이트가 와도 안 던진다 — 깊게 중첩된 JSON 은 `RecursionError` 다(독립 리뷰
+        # #411 L3: 그대로 올라가면 봇 게이트가 그 글을 예외로 놓치고, 쓰는 쪽은 파일을
+        # 고치기 전에 죽어 매 동기화가 재게시 유닛을 보류했다).
+        return {}, f"형식 오류({type(exc).__name__})", "format"
     if not isinstance(doc, dict) or not isinstance(doc.get("chats"), dict):
-        return {}, "형식 오류(chats 가 없다)"
+        return {}, "형식 오류(chats 가 없다)", "format"
     if doc.get("v") != _VER:
-        return {}, f"모르는 판(v={doc.get('v')!r}, 이 코드는 v={_VER})"
+        return {}, f"모르는 판(v={doc.get('v')!r}, 이 코드는 v={_VER})", "version"
     out: dict = {}
     bad = 0
     for ck, cv in doc["chats"].items():
@@ -121,7 +139,9 @@ def load(path) -> tuple[dict, str]:
             mv = mv if isinstance(mv, dict) else {}
             out[key] = {"at": _parse_at(mv.get("at")), "by": str(mv.get("by") or ""),
                         "title": title}
-    return out, (f"항목 {bad}개를 못 읽었다(나머지 {len(out)}건은 읽었다)" if bad else "")
+    if bad:
+        return out, f"항목 {bad}개를 못 읽었다(나머지 {len(out)}건은 읽었다)", "partial"
+    return out, "", "ok"
 
 
 def is_vouched(pairs: dict, chat_id, msg_id) -> bool:
@@ -148,23 +168,42 @@ def _write(p: Path, doc: dict) -> None:
     파일 이름에 PID 를 붙인다(리스너와 백필이 서로의 임시 파일을 덮지 않게)."""
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.tmp{os.getpid()}")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        # 실패하면 임시 파일을 남기지 않는다(독립 리뷰 #411 L8 — 프로세스마다 하나씩 쌓였다).
+        # 성공했으면 이미 없다. 치우다 실패해도 원래 예외를 가리지 않는다.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 @contextmanager
 def _locked(p: Path):
     """프로세스 간 배타 락 — 리스너와 백필이 동시에 더해도 한쪽 보증을 잃지 않게.
 
-    락을 못 걸면(플랫폼·권한) **그냥 진행한다** — 잠금 실패로 포워드를 멈추는 것보다
-    드물게 한쪽 보증을 잃는 편이 낫다(그 글은 봇이 버리고 다음 동기화가 다시 보증해
-    포워드한다). 대신 그 사실을 로그로 남긴다(#42a 폴백은 조용하면 안 된다)."""
+    락을 못 걸면(플랫폼·권한 · `LOCK_WAIT_S` 안에 못 잡음) **그냥 진행한다** — 잠금 실패로
+    포워드를 멈추는 것보다 드물게 한쪽 보증을 잃는 편이 낫다(그 글은 봇이 버리고 다음
+    동기화가 다시 보증해 포워드한다). 대신 그 사실을 로그로 남긴다(#42a 폴백은 조용하면
+    안 된다). 기다림에 상한을 둔 이유: 리스너는 이 대기를 이벤트 루프 안에서 한다 — 락을
+    쥔 채 멈춘 프로세스 하나가 리스너를 통째로 세우면 안 된다(독립 리뷰 #411 L7)."""
     f = None
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         import fcntl
         f = open(p.with_name(p.name + ".lock"), "w")
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"{LOCK_WAIT_S:g}초 안에 락을 못 잡았다 — 다른 릴레이가 "
+                                       "쥐고 있다") from None
+                time.sleep(0.05)
     except Exception as exc:                                   # noqa: BLE001
         log.warning("relay_origins: 파일 락 없이 진행합니다(%s: %s)", type(exc).__name__, exc)
         if f is not None:
@@ -194,10 +233,18 @@ def vouch(pairs: dict, *, by: str, path, now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     p = Path(path)
     with _locked(p):
-        cur, err = load(p)
+        cur, err, kind = _read(p)
+        # 덮어쓰지 않고 **던진다**(독립 리뷰 #411 L6). 읽기 실패는 일시적일 수 있고(EIO·권한 —
+        # 파일은 멀쩡하다) 모르는 판은 새 코드가 쓴 기록이다 — 새로 쓰면 봇이 아직 안 받은
+        # 보증까지 지운다. 던지면 부르는 쪽이 그 유닛을 포워드하지 않고 다음 동기화가 다시
+        # 시도한다(보증 실패로 따로 센다).
+        if kind == "io":
+            raise OSError(f"보증 기록을 덮어쓰지 않는다 — {err}")
+        if kind == "version":
+            raise RuntimeError(f"보증 기록을 덮어쓰지 않는다 — {err}")
         if err:
-            # 못 읽은 기록은 새로 쓴다 — 보증은 봇이 받을 때까지(초~분)만 필요하고, 막으면
-            # 이 포워드가 막힌다. 잃는 것은 진단의 옛 보증뿐이라 그 사실을 남긴다(#43).
+            # 깨진 기록(빈 파일·형식 오류·일부 항목)은 새로 쓴다 — 보증은 봇이 받을 때까지(초~분)만
+            # 필요하고, 막으면 이 포워드가 막힌다. 잃는 것(읽지 못한 항목)을 로그로 남긴다(#43).
             log.warning("relay_origins: %s 를 못 읽어(%s) 읽은 만큼만 두고 새로 쓴다", p, err)
         cutoff = now - timedelta(days=KEEP_DAYS)
         kept = {k: v for k, v in cur.items() if v.get("at") is None or v["at"] >= cutoff}

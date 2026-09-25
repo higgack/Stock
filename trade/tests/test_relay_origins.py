@@ -207,6 +207,70 @@ def test_the_write_is_atomic_and_leaves_no_temp_file(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         ro.vouch({(_SRC, 2): None}, by="backfill", path=p, now=T0)
     assert p.read_bytes() == before                            # 원본은 그대로
+    # 실패해도 임시 파일이 안 남는다(독립 리뷰 #411 L8 — 프로세스마다 하나씩 쌓였다)
+    assert sorted(x.name for x in tmp_path.iterdir()) == [ro.FILE_NAME, ro.FILE_NAME + ".lock"]
+
+
+def test_the_temp_file_is_per_process(tmp_path, monkeypatch):
+    """임시 파일 이름에 PID 를 붙인다 — 락을 못 건 채 진행한 두 프로세스가 서로의 임시
+    파일을 덮지 않게(독립 리뷰 #411 에서 PID 를 빼도 통과했다: 뮤테이션 RO7)."""
+    seen = []
+    real = ro.os.replace
+
+    def spy(src, dst):
+        seen.append(Path(src).name)
+        return real(src, dst)
+    monkeypatch.setattr(ro.os, "getpid", lambda: 4242)
+    monkeypatch.setattr(ro.os, "replace", spy)
+    ro.vouch({(_SRC, 1): None}, by="backfill", path=ro.path_in(tmp_path), now=T0)
+    assert seen == [ro.FILE_NAME + ".tmp4242"], seen
+
+
+def test_deeply_nested_json_is_a_format_error_not_a_crash(tmp_path):
+    """깊게 중첩된 JSON 은 `json.loads` 가 `RecursionError` 를 올린다 — `ValueError` 만 잡으면
+    봇 게이트가 그 글을 예외로 놓치고, 쓰는 쪽은 파일을 고치기 전에 죽어 매 동기화가 재게시
+    유닛을 보류한다(독립 리뷰 #411 L3). 깨진 기록이라 쓰는 쪽은 새로 쓴다(스스로 고쳐진다)."""
+    p = ro.path_in(tmp_path)
+    p.write_bytes(b"[" * 200000)
+    assert ro.load(p) == ({}, "형식 오류(RecursionError)")
+    assert ro.vouch({(_SRC, 1): None}, by="backfill", path=p, now=T0) == 1
+    assert set(ro.load(p)[0]) == {(_SRC, 1)}
+
+
+def test_a_transient_read_error_does_not_wipe_existing_vouches(tmp_path, monkeypatch):
+    """읽기가 잠깐 실패했다고(EIO·권한) 빈 기록으로 **덮어쓰지 않는다** — 옛 판은 봇이 아직
+    안 받은 보증까지 지웠다(독립 리뷰 #411 L6 실측: 10·11 보증 뒤 EIO 한 번 → 12 만 남음).
+    던지면 부르는 쪽이 그 유닛을 보류하고 다음에 다시 시도한다 — 그때는 다 남아 있다."""
+    import errno
+    p = ro.path_in(tmp_path)
+    ro.vouch({(_SRC, 10): None, (_SRC, 11): None}, by="listener", path=p, now=T0)
+    before = p.read_bytes()
+    real = Path.read_bytes
+    hits: list = []
+
+    def eio_once(self):
+        if self == p and not hits:
+            hits.append(1)
+            raise OSError(errno.EIO, "입출력 오류(테스트)")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", eio_once)
+    with pytest.raises(OSError, match="덮어쓰지 않는다"):
+        ro.vouch({(_SRC, 12): None}, by="listener", path=p, now=T0)
+    assert hits == [1] and p.read_bytes() == before
+    assert ro.vouch({(_SRC, 12): None}, by="listener", path=p, now=T0) == 1
+    assert set(ro.load(p)[0]) == {(_SRC, 10), (_SRC, 11), (_SRC, 12)}
+
+
+def test_an_unknown_version_is_not_overwritten(tmp_path):
+    """모르는 판(새 코드가 쓴 기록)을 옛 코드가 덮어쓰면 그 기록이 사라진다 — 던지고 그대로
+    둔다(독립 리뷰 #411 L6). 읽기(봇 게이트)는 여전히 안 던지고 사유를 말한다."""
+    p = ro.path_in(tmp_path)
+    raw = json.dumps({"v": 2, "chats": {}}).encode()
+    p.write_bytes(raw)
+    with pytest.raises(RuntimeError, match="모르는 판"):
+        ro.vouch({(_SRC, 1): None}, by="backfill", path=p, now=T0)
+    assert p.read_bytes() == raw
+    assert ro.load(p) == ({}, "모르는 판(v=2, 이 코드는 v=1)")
 
 
 def test_vouch_rereads_the_file_under_the_lock(tmp_path, monkeypatch):
@@ -255,6 +319,30 @@ def test_without_a_lock_it_proceeds_and_says_so(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="trade.relay_origins"):
         assert ro.vouch({(_SRC, 1): None}, by="backfill", path=ro.path_in(tmp_path)) == 1
     assert "락 없이" in caplog.text and "flock 불가" in caplog.text
+
+
+def test_a_held_lock_is_waited_for_only_so_long(tmp_path, monkeypatch, caplog):
+    """다른 릴레이가 락을 쥔 채 멈춰도 무한정 기다리지 않는다 — 리스너는 이 대기를 이벤트
+    루프 안에서 한다(독립 리뷰 #411 L7: 옛 판은 무한 대기). 상한이 지나면 락 없이 진행하고
+    그렇다고 말한다. 스레드로 돌려 **끝나는지** 잰다 — 무한 대기로 되돌리면 이 테스트가
+    멈추지 않고 실패한다(시간 단언은 두지 않는다, #128)."""
+    import fcntl
+    import threading
+    p = ro.path_in(tmp_path)
+    holder = open(p.with_name(p.name + ".lock"), "w")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+    monkeypatch.setattr(ro, "LOCK_WAIT_S", 0.3)
+    done: list = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="trade.relay_origins"):
+            th = threading.Thread(target=lambda: done.append(
+                ro.vouch({(_SRC, 1): None}, by="listener", path=p, now=T0)), daemon=True)
+            th.start()
+            th.join(timeout=10)
+    finally:
+        holder.close()
+    assert done == [1], "락을 쥔 프로세스를 끝없이 기다렸다"
+    assert "락 없이" in caplog.text and "락을 못 잡았다" in caplog.text, caplog.text
 
 
 # ── 재게시 판정 · 조회 · 설명 ──────────────────────────────────────────────

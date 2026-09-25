@@ -440,6 +440,21 @@ def _repost_note(unit: list[Message]) -> str:
     return note + (f" · 보증 못 하는 포워드 {blind}건(봇이 버린다)" if blind else "")
 
 
+def _abort_reason(n: int, n_vouch: int, vouch_err: str) -> str:
+    """연속 실패로 멈출 때의 사유 — `n` 연속 실패 중 **그 구간 안의** 보증 실패 `n_vouch`.
+
+    갈래마다 처방이 다르다(#82): 포워드 실패는 세션·권한·네트워크, 보증 실패는 데이터
+    디렉터리 쓰기. 옛 판은 실행 **전체**의 보증 실패 수를 '그중' 이라 적어 — 앞서 보증이 몇
+    번 실패했을 뿐인 세션 장애를 데이터 디렉터리로 보냈고, 보증 실패만 이어진 구간은
+    '포워드 실패' 라 불렀다(독립 리뷰 #411 L1)."""
+    if n_vouch >= n:
+        return (f"{n} consecutive failures — 전부 재게시 출처 보증 실패({vouch_err}) — 데이터 "
+                "디렉터리 쓰기를 확인할 것(그 유닛들은 포워드를 시도하지 않았다)")
+    return (f"{n} consecutive forward failures — likely systemic (session/permission/"
+            f"network), not isolated per-message errors"
+            + (f" · 그중 재게시 출처 보증 실패 {n_vouch}건({vouch_err})" if n_vouch else ""))
+
+
 def _vouch_reposts(unit: list[Message]) -> str:
     """이 유닛의 재게시 글을 봇이 받도록 **포워드 전에** 보증한다 → 실패 사유("" = 성공
     또는 보증할 것 없음). 실수 #411.
@@ -825,6 +840,7 @@ async def run(
         consecutive_failures = 0
         failed_units: list = []
         vouch_failed = 0                  # 재게시 보증을 못 써 포워드하지 않은 유닛(#411)
+        streak_vouch = 0                  # 그중 지금 이어지는 연속 실패 **안의** 것(리뷰 L1)
         vouch_err = ""
         i = 0
         try:
@@ -837,6 +853,7 @@ async def run(
                     # 포워드하지 않는다 — 봇이 원래 출처로 받아 버린다(실수 #411)
                     ok = False
                     vouch_failed += 1
+                    streak_vouch += 1
                     vouch_err = verr
                     log.error("재게시 출처 보증 실패 msgs=%s (%s) — 포워드하지 않는다(봇이 "
                               "버린다 · 다음 동기화가 다시 시도)", [m.id for m in unit], verr)
@@ -845,6 +862,7 @@ async def run(
                 if ok:
                     forwarded_msgs += len(unit)
                     consecutive_failures = 0
+                    streak_vouch = 0
                 else:
                     skipped_units += 1
                     consecutive_failures += 1
@@ -864,13 +882,8 @@ async def run(
                         # that must abort loudly, not get ground through as
                         # thousands of individually "skipped" units (2026-07-11
                         # review of the per-unit skip fix above).
-                        raise BackfillAborted(
-                            f"{consecutive_failures} consecutive forward "
-                            f"failures — likely systemic (session/permission/"
-                            f"network), not isolated per-message errors"
-                            + (f" · 그중 재게시 출처 보증 실패 {vouch_failed}건"
-                               f"({vouch_err})" if vouch_failed else "")
-                        )
+                        raise BackfillAborted(_abort_reason(
+                            consecutive_failures, streak_vouch, vouch_err))
                 if i % 20 == 0:
                     pace = _current_pause(forwarded_msgs)
                     log.info(
