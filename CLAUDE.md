@@ -5939,6 +5939,13 @@ Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기
     가 ❓ 라 `&&` 재포워드가 봇 재시작 전에 흐르지 않는다(#409). ⚠️ 리스너 재시작 규칙이
     `listen_badonion.py` 만 봐, 그 파일이 import 하는 모듈(필터·보증)만 바뀐 배포는 리스너를
     재시작하지 않았다 — 재시작 트리거는 **import 폐포**로 잴 것(#11·#24).
+412. **디스크 전체를 훑는 가드는 무시된 임시 체크아웃을 레포로 센다**(2026-09-25 서브에이전트
+    `isolation: worktree` 리뷰 중): 게이트 완전성 회귀(#370)가 `root.glob("*/**/test_*.py")`
+    로 훑어 `.claude/worktrees/agent-…`(레포 사본 전체)를 '게이트 밖 트리' 로 세 `make test`
+    가 거짓 빨간불이었고, stop hook 은 그 사본을 커밋하라고 했다(도는 동안 변형된 파일을
+    담는다 — #328). 가드의 범위는 디스크가 아니라 **커밋될 것**이다(#407) — `git ls-files
+    --cached --others --exclude-standard` 로 잰다 · 임시 체크아웃 경로는 `.gitignore` 로
+    스테이징 자체를 막는다(#119).
    (새 실수 = 날짜 + 한 줄 추가 의무. 항목이 구조적으로 막히면[코드가 그 실패모드
    자체를 불가능하게 바꾼 경우 — 규율로 매번 기억하는 게 아니라] "#N SUPERSEDED by
    <커밋/PR>" 태그 추가, 2026-08-09 Cerebras 지식베이스 블로그 검토 — age-decay
@@ -5980,8 +5987,9 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
    프로세스로** 돈다(합치면 bot 쪽 conftest 의 sys.modules mock 이 `tests/` 73건을 깬다).
    ⚠️ `trade/tests` 는 2026-09-16 까지 **게이트 밖**이었다(레지스트리 계약 4건이 빨간불인 채
    `make test` 는 green) — 게이트 밖 트리의 계약은 없는 것과 같으므로, 회귀가 "test_*.py 를
-   담은 모든 트리가 `make test` 에 있는가"를 **파일 시스템에서 파생**해 전수로 잰다(예외는
-   이유와 함께 allowlist, #24). fail 시 commit 금지(누구든).
+   담은 모든 트리가 `make test` 에 있는가"를 **커밋될 파일**(git 추적 + add 전 새 파일, 무시
+   목록 밖)에서 파생해 전수로 잰다(예외는 이유와 함께 allowlist, #24 · 디스크 전체를 훑으면
+   무시된 에이전트 worktree 사본을 트리로 센다, #412). fail 시 commit 금지(누구든).
    새 회귀패턴 = `tests/test_regression.py` 영구추가(ad-hoc 1회용 금지). `make syntax`/`make help-len` 단축.
    - **rtk opt-in 토큰절감**(`command -v rtk` 있을 때만): noisy pass/fail 출력 = `rtk` 래핑
      (`rtk pytest …`/`rtk make test`/lint — 실패만+전체는 tee 보존). ⛔ `git diff`(배포전 셀프리뷰)·

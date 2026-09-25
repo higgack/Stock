@@ -243,7 +243,7 @@
 | nav 순서가 새 소스를 **형제 옆**에 놓는다(레지스트리 파생) | ✅ 자동 | `…::test_registry_places_the_new_source_next_to_its_sibling` |
 | 모든 소스가 **캡션 문법**을 밝힌다 — 안 밝히면 형제 계약 밖(#370·#24·#54) | ✅ 자동 | `…::test_every_source_declares_its_caption_grammar` |
 | 상관 4지표 계약의 **대상 집합이 조용히 줄지 않는다**(하한 리터럴, #66) | ✅ 자동 | `…::test_the_corr_contract_scope_cannot_silently_shrink` |
-| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` |
+| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) — 트리는 **커밋될 파일**(git 추적 + add 전 새 파일, 무시 목록 밖)에서 센다: 디스크 전체를 훑던 옛 판은 무시된 서브에이전트 worktree(`.claude/worktrees/…`, 레포 사본)를 게이트 밖 트리로 세 리뷰가 도는 동안 거짓 빨간불이었다(#412) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` · `…::test_the_gate_scope_is_what_git_would_commit`(임시 저장소 — 무시·가상환경·최상위 파일은 빼고 추적·add 전 새 트리는 센다 · 하위 트리는 상위가 덮는다 · 뮤테이션 6종 전부 잡힘) |
 
 ### 거래량 상위 보드 + KRX/NXT 세션 창 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrVolumeAndSessions20260916`
