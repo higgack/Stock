@@ -483,7 +483,7 @@ def _snapshot(tmp_path, monkeypatch, ecos_series):
     monkeypatch.setattr(ms, "_fetch_macro_naver_values", lambda sids: {})
     monkeypatch.setattr(ms, "_yf_monthly_batch", lambda tk: {})
     monkeypatch.setattr(ms, "_yf_daily_1mo_batch", lambda tk: {})
-    monkeypatch.setattr(ms, "_fred_monthly", lambda sid, months=12: [])
+    monkeypatch.setattr(ms, "_fred_monthly", lambda sid, months=12, **kw: [])
     monkeypatch.setattr(ms, "_ecos_series", ecos_series)
     for fn in ("fetch_commodity_spark", "fetch_naver_index_history",
                "fetch_naver_crypto_history", "fetch_naver_fx_history"):

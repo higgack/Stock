@@ -17834,7 +17834,15 @@ class TestNaverCommodityCharts:
         # 였음). 차트(스파크라인)는 _fred_monthly(월간) 유지.
         build_src = inspect.getsource(m.fetch_macro_snapshot)
         assert "_fred_fetch_series" in build_src, "macro FRED 헤드라인 spot 통일 누락"
-        assert "_fred_monthly(sid)" in build_src, "FRED 월간 스파크라인 유지 누락"
+        # ⚠️ 옛 판은 소스 문자열 `"_fred_monthly(sid)"` 를 찾았다 — 2026-09-25 스파크가 헤드라인
+        # 기간을 받게 되자(`until=`, 독립 리뷰 M2) 멀쩡한 배선을 틀렸다고 했다(#19). 계약은
+        # "FRED 분기가 차트를 `_fred_monthly` 로 **그 카드의 sid** 에 대해 받는다" 다 — AST 로 본다.
+        import ast as _ast
+        import textwrap as _tw
+        calls = [nd for nd in _ast.walk(_ast.parse(_tw.dedent(build_src)))
+                 if isinstance(nd, _ast.Call) and getattr(nd.func, "id", "") == "_fred_monthly"]
+        assert any(nd.args and getattr(nd.args[0], "id", "") == "sid" for nd in calls), (
+            "FRED 월간 스파크라인 유지 누락")
 
     def test_macro_asof_shows_publication_lag(self):
         """"8월인데 왜 6월 숫자냐"(사용자 2026-08-01) — 원천 통계 공표 지연이라
@@ -26281,10 +26289,12 @@ class TestFlowTrendDiagnosis20260818:
         assert {"DGS2", "DGS10", "DGS30"} <= _FRED_DAILY_SIDS
         assert _FRED_TTL_DAILY_H <= 2.0, "일별 시리즈 캐시가 너무 길다"
         # ⚠️ 옛 계약("월간·분기까지 짧게 하면 FRED 호출만 늘고 얻는 게 없다 — 12h 이상")은
-        # 2026-09-25 에 뒤집혔다(실수 #415): 같은 카드의 스파크(`_fred_monthly`)가 캐시 없이
-        # 30초마다 FRED 를 불러, 공표일엔 그래프가 새 달을 그리는데 헤드라인만 최대 하루
-        # 옛 달이었다. 호출 비용 논거도 스파크(시리즈당 시간 120회) 옆에선 0 이다.
-        # 짧아진 TTL 의 짝(FRED 장애 시 같은 날 사본)은 tests/test_slow_cards_20260925.py.
+        # 2026-09-25 에 뒤집혔다(실수 #415): 같은 카드의 스파크(`_fred_monthly`)가 그때 캐시
+        # 없이 30초마다 FRED 를 불러, 공표일엔 그래프가 새 달을 그리는데 헤드라인만 최대 하루
+        # 옛 달이었다. 이제 스파크도 같은 TTL 함수(`_fred_ttl_h`)를 쓰므로(2차 리뷰 L6) 둘은
+        # 함께 넘어가고, 1시간으로 두는 이유는 공표일 신선도다.
+        # 짧아진 TTL 의 짝(FRED 장애 시 같은 날 사본)은 tests/test_slow_cards_20260925.py ·
+        # 스파크 쪽은 tests/test_fred_spark_cache_20260925.py.
         assert _FRED_TTL_OTHER_H <= 1.0
 
     def test_treasury_client_refuses_a_mismatched_field(self, monkeypatch):
@@ -50331,7 +50341,7 @@ class TestMacroLiveAsOf20260908:
         monkeypatch.setattr(ms, "_ecos_series",
                             lambda k: [("202607", 1.0), ("202608", 2.0)])
         monkeypatch.setattr(ms, "_fred_monthly",
-                            lambda sid, months=12: [1.0, 2.0, 3.0])
+                            lambda sid, months=12, **kw: [1.0, 2.0, 3.0])
         for fn in ("fetch_commodity_spark", "fetch_naver_index_history",
                    "fetch_naver_crypto_history", "fetch_naver_fx_history"):
             monkeypatch.setattr(nm, fn, lambda *a, **k: [1.0, 2.0, 3.0])
@@ -51136,10 +51146,16 @@ class TestFrozenValueAndTickerAlias20260908:
         assert "DX-Y.NYB" not in ms._MACRO_NAVER      # 같은 처방의 선행 사례
 
     def test_macro_why_is_dispatched_and_reports_zero_as_failure(
-            self, monkeypatch, capsys):
+            self, monkeypatch, capsys, tmp_path):
         import runpy
         import sys
         import bot.macro_snapshot as ms
+        # ⚠️ `runpy` 는 모듈을 **새 네임스페이스로** 다시 실행한다 — 루트 conftest 의 캐시
+        # 리다이렉트도 아래 스텁도 거기엔 안 닿아(바로 아래 테스트 주석의 실측) 실제 수집이
+        # 돌고 운영 `~/.tradingagents/cache/macro_snapshot/snapshot.json` 에 **빈 스냅샷**을
+        # 구웠다(2026-09-25 테스트별 홈 쓰기 실측, #417 — 30초 동안 매크로 카드가 빈다).
+        # 새 네임스페이스의 `_CACHE_DIR` 은 `Path.home()` 에서 오므로 HOME 을 돌린다.
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(ms, "fetch_macro_snapshot", lambda: {
             "domestic": [], "global": []})
         monkeypatch.setattr(sys, "argv", ["macro_snapshot", "없는키", "--why"])
@@ -59626,6 +59642,8 @@ class TestNoOutboundHttpInTests20260911:
                 "bot.market_timing._VOL_CACHE_DIR",
                 "bot.finviz_client._CACHE_DIR",
                 "bot.market_favorites._FAVORITES_FILE"}
+        for dotted in sorted(want):   # 대상은 import 될 때 걸린다(아래 주석) — 먼저 올린다
+            importlib.import_module(dotted.rsplit(".", 1)[0])
         assert want <= set(_cf._REDIRECTED), (
             f"리다이렉트가 빠졌다(상수 이름 변경?): {want - set(_cf._REDIRECTED)}")
         # ⚠️ `want` 는 손으로 적은 목록이라 **나중에 더한 줄**을 못 본다 — 상수
@@ -59645,6 +59663,12 @@ class TestNoOutboundHttpInTests20260911:
                     if isinstance(el, _ast.Tuple) and len(el.elts) == 3:
                         declared.add(f"{el.elts[0].value}.{el.elts[1].value}")
         assert declared >= want, "conftest 의 targets 를 못 읽었다(대조 0건, #54)"
+        # 2026-09-25 부터 conftest 는 대상을 **import 될 때** 건다(독립 리뷰 M1 — 미리
+        # import 하면 진짜 yfinance 가 먼저 올라 `bot/tests` 의 모의가 빠진다). 그러니
+        # '걸렸나' 는 **모듈을 올린 뒤에** 본다(옛 계약 "import 시점에 이미 걸려 있다" 를
+        # 다시 썼다, #222 — 남는 보장: 선언한 것은 전부 걸리고 값은 홈 밖이다).
+        for dotted in sorted(declared):
+            importlib.import_module(dotted.rsplit(".", 1)[0])
         assert declared == set(_cf._REDIRECTED), (
             "선언했는데 안 걸린 대상이 있다(상수 이름 변경?): "
             f"{sorted(declared - set(_cf._REDIRECTED))}")
@@ -59663,6 +59687,58 @@ class TestNoOutboundHttpInTests20260911:
         assert not any(isinstance(nd, (_ast.Yield, _ast.YieldFrom))
                        for nd in _ast.walk(_fn)), (
             "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다")
+
+    def test_root_conftest_preloads_nothing_bot_tests_mock(self):
+        """루트 conftest 는 **아무 레포 모듈도 미리 올리지 않는다** — 그래야 `bot/tests`
+        의 모의(`sys.modules[...] = MagicMock()`, `if _mod not in sys.modules`)가 선다.
+
+        2026-09-25 독립 리뷰 M1 실측: 리다이렉트 목록에 `bot.market_overview` 를 더하자
+        그 모듈의 `import yfinance` 가 진짜 yfinance 를 먼저 올려 `pytest bot/tests` 의
+        yfinance 모의가 **조용히 빠졌다**(183건은 전부 통과 — 소켓 가드 하나만 남았다).
+        '무거운 모듈' 을 열거하면 다음 것을 놓친다(#24) — 계약을 **구조**로 잰다:
+        ① 루트 conftest 를 실행한 뒤 `bot`·`trade` 아래 모듈이 하나도 없다
+        ② 이어서 `bot/tests/conftest.py` 를 실행하면 그 모의 목록이 **전부** 모의다.
+        ⚠️ pytest 세션 안에선 이미 다 올라와 있어 못 잰다 — 새 인터프리터에서 잰다.
+        반대 증거(#25): 그 뒤 대상 모듈을 import 하면 상수가 **걸린다**(늦게 건다 ≠ 안 건다)."""
+        import json as _json
+        import subprocess
+        import sys
+        import textwrap
+        root = pathlib.Path(__file__).resolve().parents[1]
+        code = textwrap.dedent("""
+            import importlib, importlib.util, json, pathlib, sys
+            from unittest.mock import MagicMock
+            root = pathlib.Path(sys.argv[1])
+            sys.path.insert(0, str(root))
+            def load(name, path):
+                spec = importlib.util.spec_from_file_location(name, path)
+                m = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(m)
+                return m
+            cf = load("root_conftest_probe", root / "conftest.py")
+            pre = sorted(n for n in sys.modules
+                         if n.partition(".")[0] in ("bot", "trade"))
+            bt = load("bot_tests_conftest_probe", root / "bot" / "tests" / "conftest.py")
+            mocks = list(bt._HEAVY_MOCKS)
+            bad = [n for n in mocks if not isinstance(sys.modules.get(n), MagicMock)]
+            ms = importlib.import_module("bot.macro_snapshot")
+            print(json.dumps({"pre": pre, "mocks": len(mocks), "bad": bad,
+                              "ms_dir": str(ms._CACHE_DIR),
+                              "home": str(pathlib.Path.home())}))
+        """)
+        r = subprocess.run([sys.executable, "-c", code, str(root)], cwd=str(root),
+                           capture_output=True, text=True, timeout=180)
+        assert r.returncode == 0, r.stderr[-3000:]
+        out = _json.loads(r.stdout.strip().splitlines()[-1])
+        assert out["pre"] == [], f"루트 conftest 가 레포 모듈을 미리 올렸다: {out['pre']}"
+        assert out["mocks"] >= 10, out          # 대조 0건은 통과가 아니다(#54)
+        assert out["bad"] == [], f"bot/tests 모의가 안 섰다: {out['bad']}"
+        ms_dir = pathlib.Path(out["ms_dir"])
+        home = pathlib.Path(out["home"]) / ".tradingagents"
+        assert home not in ms_dir.parents and "noah-test-caches-" in str(ms_dir), out
+        # 그리고 그 임시 루트는 **프로세스가 끝나면 지워진다** — 옛 판은 안 지워
+        # `/tmp/noah-test-caches-*` 가 4,897개 쌓였다(독립 리뷰 L8)
+        assert not ms_dir.parent.exists(), f"임시 캐시 루트가 남았다: {ms_dir.parent}"
 
 
 class TestNaverSpaProbe20260911:
@@ -59835,7 +59911,7 @@ class TestPalladiumAndResearchPaging20260912:
         monkeypatch.setattr(ms, "_fetch_macro_naver_values", lambda sids: {})
         monkeypatch.setattr(ms, "_yf_monthly_batch", lambda t: {})
         monkeypatch.setattr(ms, "_yf_daily_1mo_batch", lambda t: {})
-        monkeypatch.setattr(ms, "_fred_monthly", lambda sid: [])
+        monkeypatch.setattr(ms, "_fred_monthly", lambda sid, *a, **kw: [])
         monkeypatch.setattr(ms, "_ecos_series", lambda sid: [])
         monkeypatch.setattr(ms, "_build_charts", lambda *a, **k: {})
         snap = ms.fetch_macro_snapshot()

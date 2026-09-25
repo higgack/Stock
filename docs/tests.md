@@ -2136,7 +2136,7 @@ verified 늘 참 · 시도한 경로 이름)이 전부 겨냥한 테스트에 �
 |---|---|---|
 | ① 분기 판정·라벨 | FRED 분기 관측일 → `YYYYQn`(못 읽으면 원문 그대로) · 분기 판정의 단일 출처는 공표 규약(`CADENCE` freq Q, #38·#24) · 경과는 분기 **말**부터(첫날로 세면 늘 2개월 부풀려진다 — 오늘이 언제든) | `::test_as_quarter_reads_fred_quarter_start_dates` · `::test_quarterly_ids_come_from_the_cadence_table` · `::test_the_quarter_label_counts_lag_from_quarter_end` |
 | ② 화면 배선 | 수집기를 통째로 태운다(#20) — 미국 GDP 가 `2026 Q2` · 분기 말 경과 · `2023 Q3 대비` · `12분기` · 창 첫 분기의 값 · FRED 에 분기를 **분기 주기로** 묻는다(월로 물으면 400) · 한국 GDP(ECOS)도 같은 칩 · 반대 증거로 월간 카드(근원PCE)는 `12개월`·`YYYY-MM` 그대로(#25) · 렌더가 칩·`… 대비`·`(3개월 전)` 을 찍는다 | `::test_us_gdp_card_speaks_in_quarters` · `::test_korea_gdp_card_gets_the_same_quarter_chip` · `::test_monthly_cards_keep_their_month_labels` · `::test_the_card_renders_the_quarter_chip_and_start` |
-| ③ FRED 헤드라인 캐시 | 월간·분기도 1시간(옛 24시간 — 스파크는 캐시 없이 30초마다 부른다) · 1시간 지난 같은 날 사본은 다시 묻고 새 사본은 재사용 · FRED 가 막히거나 빈 응답이면 **같은 날 사본**을 준다(#394 — TTL 을 줄이는 짝) · 옛 버전 사본은 안 믿는다(#18) | `::test_monthly_headline_cache_is_short_because_the_spark_is_not_cached` · `::test_fred_failure_serves_the_same_day_copy_not_nothing` · `tests/test_regression.py::…::test_daily_rate_series_are_not_cached_for_a_day`(옛 계약 `≥12h` 를 다시 썼다, #222) |
+| ③ FRED 헤드라인 캐시 | 월간·분기도 1시간(옛 24시간 — 그때 스파크는 캐시 없이 30초마다 불렀다. 지금은 같은 TTL 함수를 쓴다 — 아래 'FRED 스파크 캐시' 절) · 1시간 지난 같은 날 사본은 다시 묻고 새 사본은 재사용 · FRED 가 막히거나 빈 응답이면 **같은 날 사본**을 준다(#394 — TTL 을 줄이는 짝) · 옛 버전 사본은 안 믿는다(#18) | `::test_monthly_headline_cache_is_short_and_shared_with_the_spark`(옛 이름 `…because_the_spark_is_not_cached` — 전제가 뒤집혀 다시 썼다, #222) · `::test_fred_failure_serves_the_same_day_copy_not_nothing` · `tests/test_regression.py::…::test_daily_rate_series_are_not_cached_for_a_day`(옛 계약 `≥12h` 를 다시 썼다, #222) |
 | ④ `--history` | 새 기간을 **처음 본 날**만 남기고 · 기록 시작 전부터 있던 기간은 '모른다'(#54) · 못 읽은 파일은 '없었다' 의 증거가 아니다 · 규약 +유예 안이면 ✅, 빨라도 늦으면 ⚠️(최소 N일), 기록이 비어 못 가르면 ❓(#165) · 이름이 겹치는 다른 계열 파일(`PCEPILFE2`·`kr_gdp_extra`)이 안 섞인다 · 이벤트성은 판정 안 함 · 관세청 카드는 **ECOS 대조본** 기록이라고 밝힌다(#34) · 매일 감사(`main([])`)는 이걸 안 돌린다(사람이 부르는 플래그, #283) · 진입점이 인자를 넘긴다(#252 — 서브프로세스로 태운다) · rc 는 기록을 잰 계열이 하나라도 있으면 0, 0개면 1(대조 0건은 통과가 아니다, #54) · 끝줄이 `기록을 잰 계열 M/N개` 를 센다 | `::test_first_seen_marks_what_it_cannot_know` · `::test_history_reports_first_seen_against_the_cadence` · `::test_history_does_not_claim_across_a_gap` · `::test_history_is_a_flag_and_the_daily_sweep_does_not_run_it` · `::test_history_cli_entrypoint_passes_argv` · `::test_history_rc_is_zero_once_anything_was_measured` |
 
 ⚠️ 못 보는 축(#274): 캐시 파일 날짜는 서버 로컬 날짜이고 내용은 **그날 마지막 수집본**이라 첫 등장은
@@ -2179,8 +2179,8 @@ FRED(`raise_for_status` 예외 문구의 URL 속 `api_key=`)·ECOS(경로 속 �
 인코딩으로 다시 찍은 키(소문자 hex 로 저장된 인코딩 키를 requests 가 대문자로 바꾸는 경우 등 — data.go.kr
 키는 대문자라 드물다) · `sys.modules` 에서 지우고 다시 import 한 `bot.env_keys`(설치된 팩토리는 옛 모듈을
 읽는다 — 테스트에서만 생긴다) · 이 레포 밖 프로세스(`trade/` 는 urllib 이라 요청 URL 을 INFO 로 안 찍고
-자체 가림 헬퍼가 있다). FRED **스파크**(`macro_snapshot._fred_monthly`)는 캐시·실패 기억 없이 매번 12초
-상한으로 묻는다 — 이 배치 이전부터라 따로 다룬다(헤드라인 절반만 이번에 고쳤다). 관세청 지난달분이 익월
+자체 가림 헬퍼가 있다). FRED **스파크**(`macro_snapshot._fred_monthly`)의 캐시·실패 기억은 이 절에선
+헤드라인 절반만 고쳤고, 스파크는 아래 'FRED 스파크 캐시' 절에서 같은 규약으로 옮겼다. 관세청 지난달분이 익월
 1일 몇 시부터 온전한지는 여전히 `--check` 가 잰다(리뷰 L10 — 재기 전엔 TTL 을 안 바꾼다, #307).
 
 뮤테이션 40종(가림 10 · 관세청 11 · 매크로 스냅샷 5 · 대시보드 2 · FRED 7 · 감사 5 — 리뷰 때 살아남은 10종
@@ -2192,3 +2192,100 @@ FRED(`raise_for_status` 예외 문구의 URL 속 `api_key=`)·ECOS(경로 속 �
 앞 층만 막는 자리를 만들었다(#91c). 실패 기억 테스트는 캐시 디렉터리를 **바꿔서** 재야 '계열 이름으로
 기억' 변형이 잡힌다.
 
+
+## #417 — FRED 스파크 캐시(2차 리뷰 L6) + 테스트의 운영 홈 오염 실측 (`tests/test_fred_spark_cache_20260925.py` 22건 · 느린 카드 1건 다시 씀 · `runpy` 테스트 1건 격리 · 2026-09-25)
+
+PR #1304 2차 리뷰 L6: 같은 카드의 헤드라인(`market_overview._fred_fetch_series`)은 1시간 캐시·같은 날 사본·10분
+실패 기억을 갖는데 스파크(`macro_snapshot._fred_monthly`)는 셋 다 없어, 30초 재생성마다 FRED 카드 9장을 새로
+물었고(정상일 때 시리즈당 시간 120회) FRED 가 막히면 재생성마다 12초 × 9 를 줄지어 기다렸다. 이제 스파크가
+**같은 TTL 함수**(`_fred_ttl_h` — 헤드라인·YoY 의 인라인 식도 이리로 옮겼다, #38)와 **같은 실패 기억**
+(`_fred_fail`, 키 = 캐시 파일 경로)을 쓴다. 사본은 `snapshot.json` 옆(`macro_snapshot._CACHE_DIR/fred_spark/`)에
+둔다 — 스냅샷을 짓는 회귀가 이미 테스트마다 갈아 끼우는 디렉터리라 격리가 구조로 따라온다(#30·#119).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 캐시 | TTL 안이면 다시 묻지 않고 창 첫 관측 라벨도 사본에서 되살린다 · TTL 은 헤드라인과 **같은 함수**(상수를 바꾸면 스파크도 따라온다 · 일별 카드는 일별 TTL) · 세 경로(헤드라인·YoY·스파크)가 실제로 그 함수를 부른다(스파이, #20) · 캐시 키에 주기·길이(#61) | `::test_the_spark_is_cached_and_not_asked_again_within_the_ttl` · `::test_the_spark_reads_the_same_ttl_function_as_the_headline` · `::test_the_headline_yoy_and_spark_all_consult_the_shared_ttl` · `::test_the_cache_key_carries_frequency_and_length` |
+| ② 실패 | 실패하면 같은 날 사본 + 그 창의 라벨(#394) · 10분 창 안은 다시 묻지 않고 풀리면 다시 묻는다(#178) · 빈 답은 굽지 않고·곧바로 다시 묻지 않고·조용하지 않다(#280·#12) · 빈 답에도 같은 날 사본 · 성공하면 기억을 지운다 · 다른 캐시 디렉터리는 남의 실패를 안 물려받는다(#30) · 사본이 없으면 빈 스파크 + **라벨도 없다**(라벨은 값과 같이 다닌다 — `_SparkVals.start`, 아래 리뷰 반영 L7) | `::test_a_failure_serves_the_same_day_copy_and_is_remembered_for_ten_minutes` · `::test_an_empty_answer_is_neither_cached_nor_asked_every_cycle` · `::test_an_empty_answer_still_serves_the_same_day_copy` · `::test_success_clears_the_failure_memory` · `::test_another_cache_dir_does_not_inherit_the_failure` · `::test_no_copy_means_an_empty_spark_and_no_start_label` |
+| ③ 믿을 수 없는 사본·쓰기 | 못 읽음·dict 아님·옛 판·빈 값·숫자 아님·관측일 없음·값과 관측일 길이 불일치·빈 관측일 → 신선해도 다시 묻고, 막혀도 주지 않는다(#18·#331) · 쓰기는 통째로 갈아 끼운다(#379) — 실패해도 값은 화면에 가고 반쪽 사본·임시파일이 안 남고 조용하지 않다 · 같은 프로세스의 두 스레드가 동시에 써도 임시파일이 갈리고 이름에 **pid 도** 실린다(`Barrier` 로 둘 다 살려 둔 채 잰다 — 스레드 id 는 프로세스가 달라도 같을 수 있다) · 실패 로그에 키가 안 샌다(#416) · 키가 없으면 묻지 않는다 | `::test_a_copy_we_cannot_trust_is_not_served`(8) · `::test_a_failed_cache_write_is_not_fatal_and_leaves_no_debris` · `::test_two_threads_writing_the_same_copy_use_separate_temp_files` · `::test_the_failure_log_does_not_leak_the_key` · `::test_no_key_asks_nothing` |
+| ④ 화면 배선 | 수집기를 통째로 두 번 태운다(#20) — 첫 재생성은 FRED 카드마다 한 번, 두 번째(스냅샷 캐시 만료)는 **0번**이고 카드의 스파크·`… 대비` 라벨은 사본에서 그대로 | `::test_the_snapshot_rebuild_does_not_ask_fred_again` |
+| ⑤ 테스트 격리 | 스냅샷 경로 셋(`macro_snapshot._CACHE_DIR` · `market_overview._CACHE_DIR` · `fear_greed_client._CACHE`)이 테스트 중 홈 밖이다 — 선언을 소스에서 파생하는 기존 회귀는 **지운** 줄을 못 본다(선언과 적용이 같이 사라진다) | `::test_the_snapshot_caches_are_isolated_from_the_operator_home` · `tests/test_regression.py::…::test_production_disk_caches_are_redirected` |
+
+재현(§Pre-commit 9, 독립 리뷰 L4a 가 다시 쟀다): 이 절의 파일(22건)을 base(`af57db1`) 코드에 태우면 **수집 단계에서**
+에러다(매개변수가 새 상수 `_FRED_SPARK_CACHE_VER` 를 읽는다). 새 이름을 심(shim)으로 주면 19건 실패 · 3건 통과이고,
+실패 19건 중 13건은 새 헬퍼 이름이 없어 난 AttributeError 라 **동작 재현이 아니다**(12 × `_fred_spark_cache_file` ·
+1 × `_fred_ttl_h`) — 동작을 재현한 건 나머지 6건(캐시·TTL·실패 기억·재생성 E2E)이다. 통과한 3건은 반대 증거(다른
+디렉터리·키 가림·키 없음)라 옛 판에서도 참이다. ⚠️ 옛 문구 "첫 판 21건 … 16건 실패 … 통과 3건" 은 **합이 21이
+안 됐다** — 재현을 셀 땐 합과 **실패 사유**까지 볼 것(#45·#79).
+
+오염 실측: 테스트마다 `~/.tradingagents` 의 파일 mtime 을 비교하는 일회성 pytest 플러그인으로 세 트리를 돌렸다 —
+`tests/` 의 **14개 테스트가 9개 파일**을 썼고(`bot/tests`·`trade/tests` 는 0) 그중 하나는 바로 전 배치의 내
+테스트(`test_customs_trade_20260925.py` → `fear_greed.json` 실패 도장)였다. 스냅샷 경로 셋(빈 `snapshot.json` ·
+`yf_batch_snapshot.json` · `fear_greed.json`)을 루트 conftest 에서 격리했다 — 그런데 격리 뒤 `make test` 에서도
+홈 `snapshot.json` 이 또 써졌다: `runpy.run_module("bot.macro_snapshot")` 은 모듈을 **새 네임스페이스**로 다시
+실행해 리다이렉트가 안 닿는다(`TestFrozenValueAndTickerAlias20260908::test_macro_why_is_dispatched_and_reports_zero_as_failure`
+— HOME 을 임시 경로로 돌렸다). 두 조치 뒤 재실행에서 스냅샷 경로 쓰기는 0건이고, 남은 10개 테스트·6개 파일(가계부
+`budget.json` · 모의투자 `paper/*` · DART 호출 예산)과 '홈에 쓰면 실패' 가드는 후속 과제다. 독립 리뷰가 프로세스
+안 감사 훅으로 **2개를 더** 찾았다 — mtime 비교로는 안 보이는 삭제·생성 후 삭제다:
+`TestPaperTrading::test_snapshot_equity_dedupes_by_date` 가 운영 `paper/auto_audit.jsonl` 을 **지운다**(`pt.reset()` 이
+`_HOME/auto_audit.jsonl` 을 unlink — `_HOME` 이 안 갈린다) · `TestShareCountIdentity::test_dart_daily_cache_key_carries_the_parser_version`
+은 `cache/dart_get_share_totals_TESTCODE__v2_<날짜>.json` 을 만들었다 지운다. 그리고 `trade/tests` 는 운영 `~/.trade/`
+에 32번 쓴다(`run_ledger.json` · `.scan_notified.json` · `.scan_probe.json` · `dashboard/share/…`). 전부 후속 과제에 실었다. ⚠️ 첫 판은 진단
+출력을 **경로별로 중복을 걸러** 보여 작성자를 7개로 셌다 — 두 번째 작성자(`runpy` 테스트)가 그 필터에 가려졌다(#45).
+
+⚠️ 못 보는 축(#274): ~~헤드라인과 스파크는 같은 TTL 이라 같은 재생성에서 함께 넘어가지만, 한쪽만 실패하면 실패
+기억(10분) 동안 두 절반이 다른 기간을 말할 수 있다~~ — **틀린 주장이었다**(독립 리뷰 M2): 두 사본의 나이는 따로 돌고
+(다른 프로세스가 헤드라인 파일만 새로 받는다) 한쪽만 계속 실패하면 같은 날 사본이 **날짜가 바뀔 때까지** 산다. 아래
+'리뷰 반영' 절이 기간 대조로 고쳤다 · 캐시 날짜는 서버 로컬 날짜(헤드라인과 같은 규약)라 날짜가
+바뀐 직후 원천이 막히면 같은 날 사본이 없어 스파크가 빈다 · 실패 기억은 프로세스 메모리라 봇·대시보드가 각자
+한 번씩 묻는다 · 오염 진단은 `~/.tradingagents` 만 봤다(`~/.trade` 등은 안 쟀다) · `runpy` 처럼 모듈을 새로
+실행하는 테스트는 리다이렉트가 안 닿는다 — 지금은 그 테스트 하나를 HOME 으로 막았고, 구조적 그물은 후속 과제다.
+
+뮤테이션 27종(스파크 캐시 21 · 공용 TTL 3 · conftest 격리 3)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다.
+`runpy` 테스트의 HOME 격리는 테스트로 못박지 않았다 — 지우면 다시 홈에 쓸 뿐 어느 단언도 안 깨진다(구조적
+그물은 위 후속 과제의 '홈에 쓰면 실패' 가드다, #274).
+
+## #418 — `--history` 표기·계수: 기간 칸을 카드 표기로 · 같은 날 여러 사본을 하루로 (`tests/test_slow_cards_20260925.py` 2건 + 옛 1건 다시 씀 · 2026-09-26)
+
+2026-09-26 VM 출력(`macro_staleness_audit --history`)이 드러냈다. 국고채 10년은 매크로 카드(400일)와 유동성
+보드(950일)가 **조회 길이가 다른** ECOS 사본을 매일 하나씩 만들어 '캐시 62일치'(31일 구간)로 셌고, 같은 날 두
+사본의 최신 기간이 갈리면 `직전 기록` 이 같은 날이 돼 하한이 상한을 넘었다 — 규약+여유 **당일**에 처음 본 기간이
+'⚠️ 늦게 실렸다' 로 뒤집힌다(재현 테스트가 그대로 보였다). 그리고 FRED 월·분기 행은 원문(`2026-04-01`)이라
+옆의 '기간 종료 +N일'(분기 말 06-30 기준)을 표시된 기간으로 검산할 수 없었다(#33).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 기간 칸 = 카드 표기 | FRED 분기 `2026 Q2` · 월 `2026-07` · 일별 날짜 그대로 · ECOS 월 `2026-07` — 카드 헤드라인과 같은 함수(`_fmt_asof`, 분기는 `_as_quarter` 경유, #38) · 원문이 안 남는다 | `::test_history_labels_the_period_like_the_card` · `::test_history_reports_first_seen_against_the_cadence`(옛 원문 라벨 단언을 다시 썼다, #222) |
+| ② 날짜로 센다·같은 날은 하루로 | '캐시 N일치' 는 날짜 수 · 같은 날 여러 사본은 그날 본 **가장 새** 기간으로 합치고 `직전 기록` 은 앞선 날 · 한도 당일(+5)이 ✅ · 못 읽은 파일만 있는 날은 직전 기록이 되지 않는다 | `::test_history_counts_days_not_files_and_collapses_same_day_copies` |
+
+재현: 두 새 테스트 모두 수정 전 코드에서 실패했다(두 번째는 `20260915 … (기간 종료 +5일) ⚠️ 규약보다 최소 5일
+늦게 실렸다` 를 그대로 냈다). 진단 배너 `_PROBE_VER` 를 5 로 올렸다 — 옛 출력(`캐시 62일치`·원문 기간)과 새
+출력을 배너로 가른다(#21).
+
+뮤테이션 6종(같은 날 합치기 제거 · 파일 수로 셈 · 기간 칸 원문 · 분기 변환 제거 · 일별을 월로 · 같은 날 가장
+옛 기간)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다.
+
+## #419 — #417·#418 독립 리뷰 반영: 두 절반의 기간 대조 · 지연 리다이렉트 · 짧은 답 · 사본 정리 (`tests/test_fred_spark_cache_20260925.py` +14 · `tests/test_slow_cards_20260925.py` +3 · `tests/test_regression.py` +1 · 2026-09-25)
+
+독립 리뷰(af57db1..8179025 · ..10830ef): Blocking·High 없음, Medium 2 · Low 8 · 생존 뮤테이션 8(동등 1 포함).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 두 절반의 기간(M2) | 월간·분기 계열은 스파크를 헤드라인 관측일과 **대조**한다(`_spark_until` — 주기는 `CADENCE` 단일 출처): 헤드라인이 더 새 기간이면 TTL 안의 사본도 **다시 묻고** · 못 닿으면 **비운다**(옛 판의 실패 동작 — 칩도 없다) · 로그는 '옛 사본을 준다' 가 아니라 '낡아 비운다' · 실패 기억 창 안의 재생성도 섞지 않는다(리뷰 실측은 거기서 세 번 섞였다) · 스파크가 **앞서면** 헤드라인 기간까지 자른다 · 방금 받은 답도 뒤면 비우고 10분 동안 다시 묻지 않는다 · 일별 계열은 대조하지 않는다(헤드라인=일별 스팟 · 스파크=월평균) | `::test_a_spark_older_than_the_headline_is_asked_again_even_within_the_ttl` · `::test_a_stale_spark_is_dropped_rather_than_mixed_with_a_newer_headline` · `::test_a_spark_ahead_of_the_headline_is_cut_to_the_headline_period` · `::test_a_fresh_answer_still_behind_the_headline_is_dropped_and_not_asked_every_cycle` |
+| ② 짧은 답·칩(L1) | 짧은 답이 같은 날 더 긴 사본(같은 기간까지 닿는)을 덮지 않고 10분 동안 다시 묻지 않는다(#280) · 더 긴 사본이 없거나 낡았으면 짧은 답을 쓴다 · FRED 월간 칩은 **그린 점 수**(`N개월`, 옛 판은 늘 '12개월') · 그래서 칩이 '1개월' 이 되는 날에도 발표지표 카드는 %로 안 뒤집힌다(`pct_style` 은 칩 문자열이 아니라 **카드 종류** src yf 로, #34 — ECOS 칩도 같은 잠복 결함이었다) | `::test_a_short_answer_does_not_replace_a_longer_same_day_copy` · `::test_a_short_answer_that_is_newer_or_alone_is_used_and_counted` · `::test_a_one_point_spark_does_not_turn_an_indicator_card_into_a_percent_card` |
+| ③ 정리·견고함(L6·L2) | 어제 이전 사본을 쓰기 전에 지운다(다른 계열·길이·접두가 같은 계열·남의 임시파일은 안 건드린다) · `market_overview` 를 못 올려도 스냅샷이 선다(같은 TTL·실패 기억 없음·한 번 경고) · `_build` 에서 스파크 예외가 스냅샷을 죽이지 않는다 | `::test_old_day_copies_are_pruned_but_not_other_series_or_temp_files` · `::test_the_snapshot_survives_without_market_overview` · `::test_a_spark_exception_does_not_kill_the_snapshot` |
+| ④ 생존 뮤테이션(M25·M20·M30·O05·X04·X05) | 실패 기억보다 **신선한 사본이 먼저**(다른 프로세스가 방금 쓴 사본) · 임시파일 이름의 pid · 실패 기억 경로도 창 라벨을 준다 · 실패 기억 창 60~600초 · 읽기에 **넘기는 TTL** 이 헤드라인 TTL 과 정확히 같다(스파이) | `::test_a_fresh_copy_is_served_even_while_the_failure_is_remembered` · `::test_two_threads_writing_the_same_copy_use_separate_temp_files` · `::test_a_failure_serves_the_same_day_copy_and_is_remembered_for_ten_minutes` · `::test_the_failure_memory_is_short` · `::test_the_spark_reads_its_cache_with_exactly_the_headline_ttl` |
+| ⑤ `--why` 라인 나이(L3) | 평평한 FRED 카드를 스파크 사본 나이로 가른다(사본 없음 ❓ · TTL 안 ✅ · 넘김 ⚠️ rc 1) · 문턱은 **그 캐시의 TTL**(TTL 을 바꿔야 어느 쪽을 읽는지 갈린다) | `::test_why_measures_the_fred_line_age` |
+| ⑥ 루트 conftest(M1·L8) | 새 인터프리터에서 루트 conftest 를 실행하면 `bot`·`trade` 모듈이 **하나도** 안 올라오고, 이어 `bot/tests/conftest.py` 의 모의가 **전부** 선다 · 대상은 import 될 때 걸린다 · 임시 캐시 루트는 프로세스가 끝나면 지워진다 | `tests/test_regression.py::TestNoOutboundHttpInTests20260911::test_root_conftest_preloads_nothing_bot_tests_mock` · `::test_production_disk_caches_are_redirected`(import 뒤에 대조하게 다시 썼다, #222) |
+| ⑦ `--history` Low | 헤더 '캐시 N일치' 는 기간을 **읽은** 날만 · 못 읽은 날 수와 날짜로 합친 사본 수를 밝힌다 · 전부 못 읽었으면 ❓ · 기간 칸의 날짜 표기는 **카드 목록**(`_DAILY_CADENCE_KEYS`)이 정한다(두 목록을 일부러 갈라 배선을 잰다) | `tests/test_slow_cards_20260925.py::test_history_header_counts_only_days_it_could_read_and_says_what_it_merged` · `::test_history_period_label_follows_the_cards_own_daily_list` · `::test_history_passes_the_card_key_to_the_label` |
+
+L5: 전역 `os.replace` 를 가는 두 테스트가 **이 스파크 경로만** 붙잡게 했다(다른 테스트의 렌더 daemon 스레드가 깨진
+`replace` 를 밟거나 `Barrier` 에 끼지 않게). L7: 창 라벨을 모듈 전역(`_FRED_SPARK_START`)에서 값(`_SparkVals`)으로
+옮겼다 — list 라 호출부·직렬화·스텁이 그대로 산다. 시그니처에 `until=` 을 더해 `lambda sid, months=12:` 스텁 4개를
+`**kw` 로 열었고(#183), 배선 회귀의 소스 문자열 단언(`"_fred_monthly(sid)"`)을 AST 로 다시 썼다(#19).
+
+⚠️ 못 보는 축(#274): 스파크를 비운 **사유는 로그에만** 있다 — 카드엔 차트·칩이 없을 뿐 '왜' 를 말하는 칸이 없다
+(옛 판의 스파크 실패도 같았다 — #43 의 선재 부채). 매크로 가이드(ℹ️)에 한 줄을 더하려 했으나 그 가이드는 사용자가
+항목 수를 묶어 둔 자리다(2026-08-18 "설명이 계속 rolling 되는데 적절하지 않다" — `<li>` ≤ 4 회귀가 잡았다) · 일별·주간 계열은 대조하지 않는다 · `runpy` 처럼 로더의
+`exec_module` 을 안 거치는 실행은 지연 리다이렉트도 안 닿는다(그 테스트는 HOME 으로 막았다).
+
+뮤테이션 34종(conftest 4 · 스파크 23 · `--history` 6 · `pct_style` 판정 1)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다.
