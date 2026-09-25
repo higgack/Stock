@@ -275,6 +275,18 @@ def _redirect_disk_caches() -> list:
         # 관세청 수출입총괄 캐시(실수 #413) — 매크로 스냅샷 렌더가 부른다. 스텁으로 태운
         # 회귀가 성공 캐시를 운영 경로에 구우면 6시간 동안 카드가 가짜 값을 그린다.
         ("bot.customs_trade_client", "_CACHE_DIR", "customs_trade"),
+        # 매크로 스냅샷 경로 셋 — 2026-09-25 실측(테스트마다 `~/.tradingagents` 변화를 기록한
+        # 진단): `TestResearchStrategyTab` 이 **빈 스냅샷**을 운영 `snapshot.json` 에 구웠고
+        # (30초 동안 매크로 카드가 통째로 빈다), `TestFxPerDollar20260911` 이 `yf_batch_
+        # snapshot.json` 을, 스냅샷을 짓는 회귀가 `fear_greed.json` 에 **실패 도장**(5분 동안
+        # CNN 을 안 묻는다)을 남겼다. 그리고 FRED 스파크 캐시가 이 디렉터리(`fred_spark/`)에
+        # 생겼다(2차 리뷰 L6) — 스냅샷을 짓는 회귀는 대부분 `ms._CACHE_DIR` 을 테스트마다
+        # 갈아 끼우지만, 안 갈아 끼운 것이 운영 사본을 구우면 1시간 동안 가짜 스파크다.
+        # ⚠️ `runpy.run_module` 은 모듈을 새 네임스페이스로 다시 실행해 이 리다이렉트가 안
+        # 닿는다 — 그런 테스트는 HOME 을 스스로 돌려야 한다(#417 실측: `--why` 진입점 테스트).
+        ("bot.macro_snapshot", "_CACHE_DIR", "macro_snapshot"),
+        ("bot.market_overview", "_CACHE_DIR", "market_overview"),
+        ("bot.fear_greed_client", "_CACHE", "fear_greed.json"),
     )
     done = []
     for mod, attr, leaf in targets:

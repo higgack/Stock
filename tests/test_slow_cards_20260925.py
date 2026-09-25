@@ -180,11 +180,15 @@ def _fred_cache(tmp_path, monkeypatch):
     return mo, tmp_path / "mo" / "fred" / f"PCEPILFE_{date.today().isoformat()}.json"
 
 
-def test_monthly_headline_cache_is_short_because_the_spark_is_not_cached(tmp_path, monkeypatch):
-    """스파크(`_fred_monthly`)는 캐시가 없어 30초마다 FRED 를 부른다 — 헤드라인만 하루를
-    묵으면 공표일에 한 카드가 두 기간을 말한다(#33). 1시간 지난 같은 날 사본은 다시 묻는다."""
+def test_monthly_headline_cache_is_short_and_shared_with_the_spark(tmp_path, monkeypatch):
+    """헤드라인이 하루를 묵으면 공표일에 한 카드가 두 기간을 말한다(#33) — 그때 스파크
+    (`_fred_monthly`)는 캐시 없이 30초마다 새로 받았다. 2차 리뷰 L6 이후엔 스파크도 같은 TTL
+    함수(`_fred_ttl_h`)를 쓰므로 둘이 함께 넘어가고, 짧게 두는 이유는 **공표일 신선도**다
+    (옛 이름의 전제 '스파크는 캐시가 없다' 는 뒤집혔다 — #222 지우지 않고 다시 쓴다. 스파크
+    쪽 계약은 tests/test_fred_spark_cache_20260925.py). 1시간 지난 같은 날 사본은 다시 묻는다."""
     mo, f = _fred_cache(tmp_path, monkeypatch)
     assert mo._FRED_TTL_OTHER_H <= 1.0
+    assert mo._fred_ttl_h("PCEPILFE") == mo._FRED_TTL_OTHER_H
     f.parent.mkdir(parents=True)
     f.write_text(json.dumps({"value": 130.34, "time": "2026-06-01", "cv": mo._FRED_CACHE_VER}))
     old = time.time() - 2 * 3600

@@ -26281,10 +26281,12 @@ class TestFlowTrendDiagnosis20260818:
         assert {"DGS2", "DGS10", "DGS30"} <= _FRED_DAILY_SIDS
         assert _FRED_TTL_DAILY_H <= 2.0, "일별 시리즈 캐시가 너무 길다"
         # ⚠️ 옛 계약("월간·분기까지 짧게 하면 FRED 호출만 늘고 얻는 게 없다 — 12h 이상")은
-        # 2026-09-25 에 뒤집혔다(실수 #415): 같은 카드의 스파크(`_fred_monthly`)가 캐시 없이
-        # 30초마다 FRED 를 불러, 공표일엔 그래프가 새 달을 그리는데 헤드라인만 최대 하루
-        # 옛 달이었다. 호출 비용 논거도 스파크(시리즈당 시간 120회) 옆에선 0 이다.
-        # 짧아진 TTL 의 짝(FRED 장애 시 같은 날 사본)은 tests/test_slow_cards_20260925.py.
+        # 2026-09-25 에 뒤집혔다(실수 #415): 같은 카드의 스파크(`_fred_monthly`)가 그때 캐시
+        # 없이 30초마다 FRED 를 불러, 공표일엔 그래프가 새 달을 그리는데 헤드라인만 최대 하루
+        # 옛 달이었다. 이제 스파크도 같은 TTL 함수(`_fred_ttl_h`)를 쓰므로(2차 리뷰 L6) 둘은
+        # 함께 넘어가고, 1시간으로 두는 이유는 공표일 신선도다.
+        # 짧아진 TTL 의 짝(FRED 장애 시 같은 날 사본)은 tests/test_slow_cards_20260925.py ·
+        # 스파크 쪽은 tests/test_fred_spark_cache_20260925.py.
         assert _FRED_TTL_OTHER_H <= 1.0
 
     def test_treasury_client_refuses_a_mismatched_field(self, monkeypatch):
@@ -51136,10 +51138,16 @@ class TestFrozenValueAndTickerAlias20260908:
         assert "DX-Y.NYB" not in ms._MACRO_NAVER      # 같은 처방의 선행 사례
 
     def test_macro_why_is_dispatched_and_reports_zero_as_failure(
-            self, monkeypatch, capsys):
+            self, monkeypatch, capsys, tmp_path):
         import runpy
         import sys
         import bot.macro_snapshot as ms
+        # ⚠️ `runpy` 는 모듈을 **새 네임스페이스로** 다시 실행한다 — 루트 conftest 의 캐시
+        # 리다이렉트도 아래 스텁도 거기엔 안 닿아(바로 아래 테스트 주석의 실측) 실제 수집이
+        # 돌고 운영 `~/.tradingagents/cache/macro_snapshot/snapshot.json` 에 **빈 스냅샷**을
+        # 구웠다(2026-09-25 테스트별 홈 쓰기 실측, #417 — 30초 동안 매크로 카드가 빈다).
+        # 새 네임스페이스의 `_CACHE_DIR` 은 `Path.home()` 에서 오므로 HOME 을 돌린다.
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(ms, "fetch_macro_snapshot", lambda: {
             "domestic": [], "global": []})
         monkeypatch.setattr(sys, "argv", ["macro_snapshot", "없는키", "--why"])

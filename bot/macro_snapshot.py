@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -180,18 +181,80 @@ def _as_quarter(raw: str) -> str:
 # `_fred_monthly` 가 값만 돌려주는 계약이라(호출부 다수) 옆에 남긴다.
 _FRED_SPARK_START: dict[str, str] = {}
 
+# 스파크 디스크 캐시 판(#18·#21b) — 저장 모양(`vals`·`start`)이나 관측을 고르는 규칙이
+# 바뀌면 올린다. 안 올리면 코드를 고쳐도 같은 날 사본이 옛 모양으로 서빙된다.
+_FRED_SPARK_CACHE_VER = 1
+
+
+def _fred_spark_cache_file(series_id: str, freq: str, months: int) -> Path:
+    """스파크 캐시 파일 — **이 모듈 캐시 디렉터리**(`snapshot.json` 옆)에 둔다.
+
+    스냅샷을 짓는 회귀는 30초 스냅샷 캐시를 피하려고 이미 이 디렉터리를 테스트마다 갈아
+    끼운다 — 그래서 스파크 사본도 저절로 테스트마다 격리된다(#30 · 헤드라인 캐시 옆에 두면
+    같은 세션의 회귀가 서로의 사본을 물려받는다). 요청 주기·길이를 이름에 넣는다: 분기
+    판정(`_FRED_QUARTERLY`)이 바뀌거나 다른 길이를 물으면 옛 모양 사본을 주면 안 된다
+    (#61 결과를 바꾸는 인자는 전부 키). 헤드라인 캐시(`market_overview` 의 `fred/`)와 다른
+    디렉터리라 `macro_staleness_audit --history`(헤드라인 파일로 '처음 본 날'을 잰다)에 안 섞인다."""
+    return (_CACHE_DIR / "fred_spark"
+            / f"{series_id}_{freq}{months}_{date.today().isoformat()}.json")
+
+
+def _fred_spark_cache_read(f: Path, ttl_h: float) -> tuple[Optional[dict], Optional[dict]]:
+    """→ (TTL 안 사본, TTL 이 지난 **같은 날** 사본) — 헤드라인과 같은 규약이다. 판이 다르거나
+    모양이 틀리면 둘 다 None(못 읽은 사본을 값으로 쓰지 않는다, #18·#331)."""
+    try:
+        age_h = (time.time() - f.stat().st_mtime) / 3600
+        c = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:                       # 없음·못 읽음·깨진 바이트 = 사본 없음
+        return None, None
+    if not isinstance(c, dict):
+        return None, None
+    vals = c.get("vals")
+    if not (c.get("cv") == _FRED_SPARK_CACHE_VER and isinstance(vals, list) and vals
+            and all(isinstance(v, (int, float)) for v in vals)
+            and isinstance(c.get("start"), str)):
+        return None, None
+    return (c, None) if age_h < ttl_h else (None, c)
+
+
+def _fred_spark_use(series_id: str, doc: Optional[dict]) -> list[float]:
+    """사본 → 스파크 값 + 창 첫 관측 기록. 사본이 없으면 **기록도 비운다** — 앞선 실행의 창
+    라벨이 빈(또는 다른) 스파크 옆에 남으면 한 카드가 두 창을 말한다(#33)."""
+    if not doc:
+        _FRED_SPARK_START[series_id] = ""
+        return []
+    _FRED_SPARK_START[series_id] = doc["start"]
+    return [float(v) for v in doc["vals"]]
+
 
 def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
     """FRED observations, oldest→newest, last `months` values. 분기 series 는
-    frequency=q(monthly 요청 시 FRED 400)."""
+    frequency=q(monthly 요청 시 FRED 400).
+
+    헤드라인(`market_overview._fred_fetch_series`)과 **같은 캐시 규약**이다(2차 리뷰 L6):
+    TTL(`market_overview._fred_ttl_h` — 같은 함수) 안이면 사본을 주고, 지났으면 다시 묻고,
+    실패·빈 답이면 **같은 날 옛 사본**을 주며 그 계열을 10분 동안 다시 묻지 않는다(같은
+    `_fred_fail`, 키 = 캐시 파일 경로). 옛 판은 캐시가 없어 30초 재생성마다 FRED 카드 9장을
+    전부 새로 물었고(정상일 때 시리즈당 시간 120회), FRED 가 막히면 재생성마다 12초 × 9 를
+    줄지어 기다렸다. 같은 TTL 이라 한 카드의 헤드라인과 스파크는 같은 재생성에서 함께
+    넘어간다(#33 한 카드가 두 기간을 말하지 않게) — 못 보는 축: 한쪽만 실패하면 실패
+    기억(10분) 동안 두 절반이 갈릴 수 있다(#274)."""
     # ⚠️ `os.getenv` 로 직접 읽으면 `load_dotenv()` 를 부르는 봇 엔트리포인트
     # 밖(진단 스크립트·크론)에서 **키가 있는데도 빈 리스트**를 준다 —
     # 스파크라인만 조용히 사라진다(실수 #23). 공용 헬퍼로 통일.
     from bot.env_keys import env_key as _env_key
+    from bot import market_overview as _mo
     api_key = _env_key("FRED_API_KEY")
     if not api_key:
         return []
     freq = "q" if series_id in _FRED_QUARTERLY else "m"
+    cache_file = _fred_spark_cache_file(series_id, freq, months)
+    fresh, stale = _fred_spark_cache_read(cache_file, _mo._fred_ttl_h(series_id))
+    if fresh is not None:
+        return _fred_spark_use(series_id, fresh)
+    fail_key = str(cache_file)
+    if _mo._fred_recently_failed(fail_key):
+        return _fred_spark_use(series_id, stale)    # 10분 안에 실패했다 — 다시 묻지 않는다
     try:
         r = requests.get(
             "https://api.stlouisfed.org/fred/series/observations",
@@ -208,8 +271,11 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
         r.raise_for_status()
         obs = r.json().get("observations") or []
     except Exception as exc:
-        log.warning("macro: FRED %s monthly failed: %s", series_id, exc)
-        return []
+        _mo._fred_fail[fail_key] = time.monotonic()
+        # 예외 문구의 `api_key=` 는 `bot.env_keys` 레코드 팩토리가 가린다(#416)
+        log.warning("macro: FRED %s monthly failed: %s%s", series_id, exc,
+                    " — 같은 날 옛 사본을 준다" if stale else "")
+        return _fred_spark_use(series_id, stale)
     vals: list[float] = []
     dates: list[str] = []
     for o in obs:
@@ -223,13 +289,36 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
         dates.append(str(o.get("date") or ""))
         if len(vals) >= months:
             break
+    if not vals:
+        # 빈 답은 굽지 않고(#280) 30초마다 다시 묻지도 않는다 — 옛 판은 여기서 한 줄도 안
+        # 남기고 빈 스파크를 줬다(#12).
+        _mo._fred_fail[fail_key] = time.monotonic()
+        log.warning("macro: FRED %s monthly 빈 답(관측 %d행 중 값 0)%s", series_id, len(obs),
+                    " — 같은 날 옛 사본을 준다" if stale else "")
+        return _fred_spark_use(series_id, stale)
+    _mo._fred_fail.pop(fail_key, None)
     # ⚠️ 창의 **첫 관측 기간**을 함께 남긴다. 카드가 "12개월 전" 이라고
     # 적어 왔는데 이 창은 **최근 N개 관측**이라 실제로는 N−1개월 전이다
     # (2026-08-20 실측: 근원PCE 카드 '12개월 전 126.43' 은 11개월 전 값이라
     # 글로벌 스냅샷의 YoY 3.29% 와 계산이 안 맞았다). 라벨을 날짜로 바꿔
     # 검산 가능하게 한다 — vol_history 와 같은 처방(#29).
-    _FRED_SPARK_START[series_id] = dates[-1] if dates else ""
-    return list(reversed(vals))
+    doc = {"cv": _FRED_SPARK_CACHE_VER, "vals": list(reversed(vals)), "start": dates[-1]}
+    # 이름에 pid·스레드를 싣는다 — 대시보드는 요청마다 스레드라 같은 프로세스의 두 재생성이
+    # 같은 사본을 동시에 쓸 수 있다(pid 만이면 한쪽이 다른 쪽의 반쯤 쓴 파일을 옮긴다).
+    tmp = cache_file.with_name(
+        f"{cache_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        # 다른 프로세스(봇·대시보드)가 쓰다 만 파일을 읽지 않게 통째로 갈아 끼운다(#379)
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
+        os.replace(tmp, cache_file)
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        log.warning("macro: FRED %s 스파크 캐시를 못 썼다: %s", series_id, exc)
+    return _fred_spark_use(series_id, doc)
 
 
 def _fred_start_label(sid: str, quarterly: bool = False) -> str:
@@ -823,8 +912,11 @@ def _fetch_macro_naver_values(sids: list) -> dict:
 # ── Main ────────────────────────────────────────────────────────────
 def fetch_macro_snapshot() -> dict[str, Any]:
     """Assemble the full macro snapshot. 30초 disk cache (글로벌 스냅샷과
-    동일 주기) — FRED/ECOS 하위 시계열은 각자 12h 캐시(공식 통계라 일·월
-    단위 갱신). _periodic_market_refresh 가 30초마다 market.html 재생성.
+    동일 주기) — 하위 시계열은 각자 캐시한다: FRED 는 헤드라인·스파크 둘 다 1시간
+    (`market_overview._fred_ttl_h`, 실패하면 같은 날 사본 + 10분 실패 기억), ECOS 는
+    `bok_ecos_client` 의 날짜별 캐시. (옛 문구 '각자 12h' 는 사실이 아니었다 — 스파크는
+    캐시가 없었고 월간·분기 헤드라인은 24시간이었다, #55.) _periodic_market_refresh 가 30초마다
+    market.html 재생성.
 
     Returns {"domestic": [...], "global": [...], "charts": {...}, "ts": str}
     where each indicator is {key,label,unit,value,change,decimals,spark}.
