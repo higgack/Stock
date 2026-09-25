@@ -63,8 +63,10 @@ from trade.parser import parse_caption
 
 load_dotenv()
 
-# ⚠️ 이 형식은 `trade.bot_health` 가 저널을 읽는 계약이다(`name — message` 구분자) —
-# 바꾸면 회귀(test_bot_drop_log)가 그 파서로 태워 본다.
+# 로그 한 줄의 틀. ⚠️ `trade.bot_health` 는 이 틀이 아니라 **메시지 본문**(`ingested msg=`
+# · `dropped msg=` · `handler error update=` · `trade-bot starting —`)만 읽는다 — 그
+# 계약은 본문 쪽이고 회귀(test_bot_drop_log)가 그 본문을 bot_health 파서로 태워 본다.
+# watchdog(deploy/trade-watchdog.sh)도 본문('trade-bot starting' · 'getUpdates')만 센다.
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 
 
@@ -272,6 +274,19 @@ def _origin_matches(post: Message) -> bool:
     return False
 
 
+def _origin_fields(post) -> tuple:
+    """포워드 출처 → (종류, 채널 ID, 사용자명) — 버림 줄과 예외 줄이 같은 규약으로 적는다
+    (#38). 종류는 텔레그램 `forward_origin.type` · 옛 필드만 있으면 'legacy' · 포워드가
+    아니면(운영자가 직접 쓴 글·명령) 'none'. `trade.bot_health` 가 이 셋으로 릴레이 원천의
+    글인지 가른다."""
+    origin = getattr(post, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    if chat is None:
+        chat = getattr(post, "forward_from_chat", None)
+    return (getattr(origin, "type", None) or ("legacy" if chat is not None else "none"),
+            getattr(chat, "id", None), getattr(chat, "username", None))
+
+
 def _log_origin_drop(post: Message) -> None:
     """출처 게이트가 버린 글을 **사유와 함께** 한 줄 남긴다.
 
@@ -282,18 +297,10 @@ def _log_origin_drop(post: Message) -> None:
     여기서 버렸다' 를 가르지 못했다(실수 #406). 드물게만 일어나는 일이라
     건마다 적는다 — 운영자가 채널에 직접 쓴 글 정도다.
     """
-    origin = getattr(post, "forward_origin", None)
-    chat = getattr(origin, "chat", None) if origin else None
-    if chat is None:
-        chat = getattr(post, "forward_from_chat", None)
     log.info(
         "dropped msg=%s reason=origin origin_type=%s origin_chat=%s "
         "origin_username=%s allowed_origins=%s",
-        getattr(post, "message_id", None),
-        getattr(origin, "type", None) or ("legacy" if chat is not None else "none"),
-        getattr(chat, "id", None),
-        getattr(chat, "username", None),
-        sorted(SOURCE_ORIGINS),
+        getattr(post, "message_id", None), *_origin_fields(post), sorted(SOURCE_ORIGINS),
     )
 
 
@@ -1383,16 +1390,24 @@ async def _on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     `run_polling` 은 getUpdates 실패(409·네트워크)도 `update=None` 으로 여기 넘긴다 —
     그건 '폴링 오류' 로 따로 적는다(처방이 다르다, #82). 형식은 bot_health `_EXC_RE` 와
     짝이다(회귀가 이 함수를 태워 그 파서로 읽는다).
+    채널 글이면 **포워드 출처**도 버림 줄과 같은 규약으로 적는다(2차 독립 리뷰 H1) — 그래야
+    bot_health 가 '릴레이 포워드를 놓쳤다(❌)' 와 '채널에 직접 쓴 명령의 답장이 실패했다'
+    를 가른다. 수 대조(보냄 vs 받음)는 다른 글의 수신이 이 손실을 덮을 수 있어 이 줄이
+    손실의 직접 증거다.
     """
     err = getattr(ctx, "error", None)
     if update is None:
         log.error("polling error exc=%s: %s", type(err).__name__, err, exc_info=err)
         return
     post = getattr(update, "channel_post", None)
-    log.error("handler error update=%s msg=%s exc=%s: %s",
-              "channel_post" if post is not None else type(update).__name__,
-              getattr(post if post is not None else getattr(update, "effective_message", None),
-                      "message_id", None),
+    if post is not None:
+        log.error("handler error update=channel_post msg=%s origin_type=%s origin_chat=%s "
+                  "origin_username=%s exc=%s: %s",
+                  getattr(post, "message_id", None), *_origin_fields(post),
+                  type(err).__name__, err, exc_info=err)
+        return
+    log.error("handler error update=%s msg=%s exc=%s: %s", type(update).__name__,
+              getattr(getattr(update, "effective_message", None), "message_id", None),
               type(err).__name__, err, exc_info=err)
 
 

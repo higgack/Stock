@@ -123,8 +123,12 @@ cd ~/stock-trade && .venv/bin/python -m trade.bot_health
 ```
 
 같은 대조(릴레이가 보낸 수 ↔ 봇이 받은 수 — 받음은 기록 + 출처 게이트 버림)를
-`trade-bot-health.timer` 가 매시간 돌려, 못 받았거나 릴레이 원천의 글을 버렸으면 채널로
-알린다(BeOn 이 되포워드한 다른 채널 글의 버림은 알리지 않는다 — 게이트가 제 일을 한 것).
+`trade-bot-health.timer` 가 매시간 돌려, 못 받았거나 릴레이 원천의 글을 버렸거나 채널
+글을 처리하다 예외로 놓쳤으면(수신 줄 없는 번호 — 수와 무관한 직접 증거) 채널로 알린다
+(BeOn 이 되포워드한 다른 채널 글의 버림은 알리지 않는다 — 게이트가 제 일을 한 것). 같은
+사실은 한 번만 알린다 — 알린 사실을 `~/.trade/.health-markers/delivery-alerted.json` 에
+적고, 끊김이 이어지면 새로 빠진 포워드만 알린다. ⚠️ 수로 대조하므로 같은 창의 다른 글
+수신(운영자가 직접 포워드한 글 등)이 예외 없는 손실을 덮을 수 있다.
 
 ## One-time backfill — Telethon (`trade/scripts/backfill_beon.py`)
 

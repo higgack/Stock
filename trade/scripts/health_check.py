@@ -16,9 +16,14 @@ Runs from systemd timer (trade-bot-health.timer) hourly. Two signals:
   들어갔는데 32분 뒤 사람이 백필 dry-run 으로 알아챘다 — 두 저널을 나란히
   놓으면 기계가 알 수 있었다. 판정은 `trade.bot_health.delivery_check`
   단일 출처(#38). 판정 불가(저널 권한 등)는 경고 로그만 — '이상 없음' 으로
-  접지 않는다(#54). 받고 **릴레이 원천의** 글을 출처 게이트에서 버린 것도
-  알린다(inbox 에 안 들어가기는 마찬가지다). 같은 누락은 한 번만 보내되 다른
-  누락은 막지 않는다(누락마다 표식, 독립 리뷰 M4).
+  접지 않는다(#54). 받고 **릴레이 원천의** 글을 출처 게이트에서 버린 것과,
+  채널 글을 처리하다 예외로 놓친 글(수신 줄 없음 — 수 대조와 무관한 직접
+  증거, 2차 독립 리뷰 H1)도 알린다(inbox 에 안 들어가기는 마찬가지다).
+  같은 **사실**(포워드 사건·버림·예외)은 한 번만 알린다 — 알린 사실의 신원을
+  `delivery-alerted.json` 에 적고(2일 지나면 지운다) 다음 실행이 그걸 빼고
+  대조한다. 끊김이 이어지면 새로 빠진 포워드만 알린다(2차 독립 리뷰 L4 —
+  옛 판은 '창 안 첫 포워드' 로 표식을 만들어 매시간 표식이 바뀌었고 같은
+  포워드를 두 번씩 알렸다).
 
 Why no time-based dormancy: BeOn publishes only ~4 times a month,
 so the ~7-10 day silence between publication dates is normal
@@ -34,6 +39,7 @@ Usage:
     .venv/bin/python -m trade.scripts.health_check
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -198,46 +204,73 @@ def check_cycle_gap() -> None:
     _notify(msg)
 
 
-# 이 타이머 주기(1h)의 두 배 — 한 번 놓쳐도 다음 실행이 본다. 같은 누락이 두 번
-# 보이는 것은 누락마다 다른 표식이 막는다(`bot_health.gap_alert_key`).
+# 이 타이머 주기(1h)의 두 배 — 한 번 놓쳐도 다음 실행이 본다. 같은 사실을 두 번 알리는
+# 것은 알린 사실의 신원(`bot_health.fact_id`)을 적어 막는다.
 DELIVERY_WINDOW_S = 2 * 3600
-DELIVERY_ALERT_EVERY_S = 6 * 3600
+DELIVERY_ALERTED = "delivery-alerted.json"
+# 창(2h)을 한참 지난 사실은 다시 대조될 수 없다 — 그보다 오래된 기록은 지워 파일을 유계로.
+DELIVERY_ALERTED_KEEP_S = 2 * 86400
 
 
-def _prune_delivery_markers(keep_s: int = 2 * 86400) -> None:
-    """누락마다 표식이 하나씩 생기므로 오래된 것은 지운다(창을 한참 지난 누락은 다시
-    보일 수 없다). 못 지우면 경고만 — 표식 정리 실패가 알림을 막지 않는다."""
-    now = time.time()
-    for m in MARKER_DIR.glob("delivery-*"):
-        try:
-            if now - m.stat().st_mtime > keep_s:
-                m.unlink()
-        except OSError as e:
-            log.warning("delivery marker prune failed: %s", e)
+def _load_alerted(now: float | None = None) -> dict:
+    """알린 사실의 신원 → 알린 시각(epoch). 오래된 것은 뺀다. 못 읽으면 빈 기록 + 경고 —
+    기록 실패가 알림을 막지 않게 하되, 같은 사실을 다시 알릴 수 있다고 밝힌다(#43)."""
+    now = time.time() if now is None else now
+    p = MARKER_DIR / DELIVERY_ALERTED
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        log.warning("delivery_gap: 알림 기록을 못 읽었다(%s) — 이미 알린 사실을 다시 알릴 수 "
+                    "있다", e)
+        return {}
+    if not isinstance(data, dict):
+        log.warning("delivery_gap: 알림 기록 형식이 아니다(%s) — 이미 알린 사실을 다시 알릴 수 "
+                    "있다", type(data).__name__)
+        return {}
+    return {k: v for k, v in data.items()
+            if isinstance(v, (int, float)) and now - v <= DELIVERY_ALERTED_KEEP_S}
+
+
+def _save_alerted(seen: dict) -> None:
+    """원자적으로 쓴다(임시 파일 → rename) — 쓰다 만 파일을 다음 실행이 읽어 기록을
+    통째로 잃지 않게(#379). 못 쓰면 경고만."""
+    p = MARKER_DIR / DELIVERY_ALERTED
+    tmp = p.with_name(p.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(seen, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as e:
+        log.warning("delivery_gap: 알림 기록을 못 썼다(%s) — 같은 사실을 다음 실행이 다시 "
+                    "알릴 수 있다", e)
 
 
 def check_delivery_gap() -> None:
-    """릴레이가 포워드한 만큼 trade-bot 이 받았나 — 못 받았거나, 받고 릴레이 원천의
-    글을 출처 게이트에서 버렸으면 ⚠️ (실수 #406). 다른 출처의 버림(BeOn 이 되포워드한
-    남의 글)은 알리지 않는다 — 게이트가 제 일을 한 것이다(독립 리뷰 H2)."""
+    """릴레이가 포워드한 만큼 trade-bot 이 받았나 — 못 받았거나, 채널 글을 처리하다 예외로
+    놓쳤거나, 받고 릴레이 원천의 글을 출처 게이트에서 버렸으면 ⚠️ (실수 #406). 다른
+    출처의 버림(BeOn 이 되포워드한 남의 글)은 알리지 않는다 — 게이트가 제 일을 한
+    것이다(독립 리뷰 H2). 같은 사실은 한 번만(2차 독립 리뷰 L4)."""
     from trade import bot_health as bh
 
-    g = bh.delivery_check(DELIVERY_WINDOW_S)
-    if g["kind"] == "unknown":
-        log.warning("delivery_gap: 판정 불가 — %s", g.get("err"))
+    seen = _load_alerted()
+    g = bh.delivery_check(DELIVERY_WINDOW_S, seen=set(seen))
+    if g.get("err"):                                       # 저널을 못 읽었다 — 판정 불가(#54)
+        log.warning("delivery_gap: 판정 불가 — %s", g["err"])
         return
+    if g.get("undated"):
+        # 시각을 못 읽은 포워드는 대조에서 뺐다 — 예외·버림 알림은 그대로 본다(#54 센 수를 말한다)
+        log.warning("delivery_gap: 포워드 %d건의 시각을 못 읽어 대조에서 뺐다", g["undated"])
     if not bh.gap_needs_alert(g):
-        log.info("delivery_gap: %s (sent=%s got=%s dropped=%s)", g["kind"], g.get("sent"),
-                 g.get("got"), g.get("dropped"))
-        return
-    _prune_delivery_markers()
-    key = bh.gap_alert_key(g)
-    if not _alert_once_per_window(key, DELIVERY_ALERT_EVERY_S):
-        log.info("delivery_gap: %s already alerted, skipping", key)
+        log.info("delivery_gap: %s (sent=%s got=%s dropped=%s · 이미 알린 사실 %d건)",
+                 g["kind"], g.get("sent"), g.get("got"), g.get("dropped"), len(seen))
         return
     msg = bh.gap_alert_text(g)
     log.warning("delivery gap: %s", msg.replace("\n", " | "))
     _notify(msg)
+    now = time.time()
+    seen.update({i: now for i in g.get("ids") or []})
+    _save_alerted(seen)
 
 
 def main() -> int:

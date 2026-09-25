@@ -271,12 +271,20 @@ class ErrorHandlerTests(unittest.TestCase):
             raise OSError(28, "No space left on device")
         except OSError as exc:
             err = exc
-        recs = self._log(SimpleNamespace(channel_post=_post(msg_id=77)), err)
+        recs = self._log(SimpleNamespace(channel_post=_post(
+            msg_id=77, fwd_chat_id=_BADONION, fwd_username="Badonions")), err)
         self.assertEqual(len(recs), 1)
         self.assertIsNotNone(recs[0].exc_info)          # 트레이스백은 그대로 남긴다
         j = self.bh.journal_facts(_journal_lines(self.bot, recs))
-        self.assertEqual([(e["kind"], e["update"], e["msg"]) for e in j["exceptions"]],
-                         [("handler", "channel_post", 77)], j)
+        # 포워드 출처도 버림 줄과 같은 규약으로 실린다 — 릴레이 글인지 가른다(2차 리뷰 H1)
+        self.assertEqual([(e["kind"], e["update"], e["msg"], e["type"], e["chat"], e["user"])
+                          for e in j["exceptions"]],
+                         [("handler", "channel_post", 77, "channel", _BADONION, "Badonions")], j)
+        # 직접 쓴 글(포워드 아님)은 type=none — 릴레이 글이 아니다
+        recs2 = self._log(SimpleNamespace(channel_post=_post(msg_id=78)), err)
+        j2 = self.bh.journal_facts(_journal_lines(self.bot, recs2))
+        self.assertEqual([(e["type"], e["chat"], e["user"]) for e in j2["exceptions"]],
+                         [("none", None, "")], j2)
 
     def test_polling_error_is_not_called_a_handler_error(self):
         recs = self._log(None, RuntimeError("Conflict: terminated by other getUpdates request"))
@@ -291,11 +299,13 @@ class ErrorHandlerTests(unittest.TestCase):
                          [("handler", "SimpleNamespace", 5)], j)
 
     def test_a_lost_post_is_read_as_the_cause_not_as_telegram(self):
-        """E2E(순수 쪽): 봇이 찍은 예외 줄 → 저널 사실 → 대조 → 판정이 '예외로 놓쳤다'."""
+        """E2E(순수 쪽): 봇이 찍은 예외 줄 → 저널 사실 → 대조 → 판정이 '예외로 놓쳤다'.
+        릴레이 원천(나쁜양파)의 포워드라야 ❌ 다 — 출처를 봇이 실제로 찍은 줄에서 읽는다."""
         from datetime import timedelta
 
         bh = self.bh
-        recs = self._log(SimpleNamespace(channel_post=_post(msg_id=77)), OSError("disk"))
+        recs = self._log(SimpleNamespace(channel_post=_post(
+            msg_id=77, fwd_chat_id=_BADONION, fwd_username="Badonions")), OSError("disk"))
         j = bh.journal_facts(_journal_lines(self.bot, recs))
         now = datetime(2026, 9, 25, 8, 30, tzinfo=timezone(timedelta(hours=9)))
         fwd = [{"ts": now - timedelta(minutes=41), "n": 1, "who": "listen_badonion",
@@ -309,11 +319,12 @@ class ErrorHandlerTests(unittest.TestCase):
         f = {"now": now, "env": {"dest": _DEST, "inbox": "/x/inbox.jsonl"},
              "unit": {"kind": "running", "text": "살아 있다"}, "gap": gap,
              "tg": {"token": False}, "journal": j, "running": run,
-             "relays": {}, "inbox_expected": "/x/inbox.jsonl", "inbox": {}, "others": []}
+             "relays": {"Badonions": ["listen_badonion"]}, "inbox_expected": "/x/inbox.jsonl",
+             "inbox": {}, "others": []}
         f["journal"]["last_ok"] = now                     # 폴링은 정상 — 원인은 예외다
         _rc, lines = bh.verdict(f)
         out = "\n".join(lines)
-        self.assertIn("❌ 봇이 받은 채널 글 1건을 처리하다 예외로 놓쳤다", out)
+        self.assertIn("❌ 봇이 릴레이 원천의 채널 글 1건을 처리하다 예외로 놓쳤다(번호 77)", out)
         self.assertNotIn("텔레그램이 전달하지 않았다", out)
 
 
@@ -359,6 +370,15 @@ class TokenRedactionTests(unittest.TestCase):
         self.assertIn("Traceback", tb)
         self.assertNotIn(self.TOK, tb)
         self.assertNotIn(self.TOK.split(":")[1], tb)
+
+    def test_every_occurrence_of_the_token_is_masked(self):
+        """2차 리뷰 생존 뮤테이션 T07 — 한 줄에 토큰이 두 번 나오면(URL 과 예외 문구가 같이 찍힌
+        줄) 첫 번째만 가리는 변형이 통과했다. 전부 가려야 한다."""
+        rec = logging.LogRecord("httpx", logging.INFO, "x", 1, "a=%s b=%s", (self.TOK, self.TOK),
+                                None)
+        out = self.bot._TokenRedactFormatter(self.bot._LOG_FORMAT).format(rec)
+        self.assertEqual(out.count("BOT_TOKEN"), 2, out)
+        self.assertNotIn(self.TOK.split(":")[1], out)
 
     def test_the_formatter_does_not_mutate_the_shared_record(self):
         """필터와 달리 포매터는 레코드를 제자리에서 고치지 않는다 — 같은 레코드를 받는 다른

@@ -53,11 +53,11 @@ def _start(ts="2026-09-24T23:53:10", *, drop_log=True, pid=4242, inbox="/home/h/
 
 # ── 생산자 ↔ 소비자: 실제 로그 형식에서 픽스처를 만든다(#155) ─────────────────
 
-def _log_format(path: Path, head: str) -> str:
-    """소스의 `log.info("...", ...)` 첫 인자(문자열 연결 포함)를 AST 로 꺼낸다."""
+def _log_format(path: Path, head: str, level: str = "info") -> str:
+    """소스의 `log.<level>("...", ...)` 첫 인자(문자열 연결 포함)를 AST 로 꺼낸다."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "info"
+        if (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == level
                 and node.args):
             try:
                 fmt = ast.literal_eval(node.args[0])
@@ -426,7 +426,7 @@ def test_unexplained_gap_says_which_branch_is_left():
     (옛 판 메모는 그 ❓ 가 대신한다, #395)."""
     f = _good()
     f["gap"] = {"kind": "total", "sent": 27, "got": 0, "first": NOW - timedelta(minutes=40),
-                "who": ["backfill_badonion"], "after_last": 0}
+                "who": ["backfill_badonion"]}
     f["running"] = bh.parse_start_line(_start(drop_log=False))
     rc, out = _v(f)
     assert rc == 1
@@ -567,22 +567,48 @@ def hc(tmp_path, monkeypatch):
     return hc
 
 
-def test_health_check_alerts_once_on_a_gap(hc, monkeypatch):
-    g = {"kind": "total", "sent": 27, "got": 0, "first": NOW, "who": ["backfill_badonion"],
-         "after_last": 0, "err": ""}
+def _drive(monkeypatch, *, bot, relay, clock=None):
+    """health_check 가 부르는 `delivery_check` 를 **진짜 함수**로 두고 저널만 가짜로 — 알림
+    기록(seen) 배선까지 태운다(옛 판은 `delivery_check` 를 통째로 갈아끼워 표식 키를 줄여도
+    통과했다 — 2차 리뷰 생존 뮤테이션 B21·B22·H01). `bot`·`relay` 는 부를 때 읽는다(테스트가
+    실행 사이에 줄을 더할 수 있다). 부른 창을 돌려준다."""
+    real = bh.delivery_check
     windows = []
-    monkeypatch.setattr(bh, "delivery_check", lambda window: windows.append(window) or dict(g))
+
+    def read(units, since):
+        lo = (clock or [NOW])[0] - timedelta(seconds=int(since.split()[0]))
+        src = relay if units == bh.RELAY_UNITS else bot
+        return [ln for ln in src if bh._ts(ln) >= lo], "", ""
+
+    def check(window, **kw):
+        windows.append(window)
+        return real(window, now=(clock or [NOW])[0], read=read, **kw)
+    monkeypatch.setattr(bh, "delivery_check", check)
+    return windows
+
+
+def test_health_check_alerts_once_on_a_gap(hc, monkeypatch):
+    """같은 누락은 한 번만 — 알린 사실의 신원(`fact_id`)을 기록해 다음 실행이 빼고 대조한다
+    (2차 독립 리뷰 L4). 기록은 파일로 — 실행은 매시간 새 프로세스다."""
+    fwd = _jl("2026-09-25T07:49:09", "done: forwarded 27 of 27 candidate messages "
+              "(skipped_units=0)", logger="backfill_badonion", pid=99)
+    windows = _drive(monkeypatch, bot=[_poll("2026-09-25T08:29:50")], relay=[fwd])
     hc.check_delivery_gap()
     hc.check_delivery_gap()
     assert len(hc._sent) == 1, hc._sent                    # 같은 누락은 한 번만
     assert "27건" in hc._sent[0] and "python -m trade.bot_health" in hc._sent[0]
+    assert "한 건도 못 받았습니다" in hc._sent[0]
     assert windows == [hc.DELIVERY_WINDOW_S] * 2
+    saved = json.loads((hc.MARKER_DIR / hc.DELIVERY_ALERTED).read_text(encoding="utf-8"))
+    want = bh.fact_id("fwd", {"who": "backfill_badonion", "pid": 99, "n": 27,
+                              "ts": datetime(2026, 9, 25, 7, 49, 9, tzinfo=_KST)})
+    assert list(saved) == [want], saved
 
 
 @pytest.mark.parametrize("kind", ["ok", "none", "unknown"])
 def test_health_check_is_quiet_unless_a_gap(hc, monkeypatch, caplog, kind):
     monkeypatch.setattr(bh, "delivery_check",
-                        lambda since: {"kind": kind, "sent": 0, "got": 0, "err": "권한"})
+                        lambda since, **kw: {"kind": kind, "sent": 0, "got": 0, "err": "권한"})
     with caplog.at_level(logging.INFO, logger="health-check"):
         hc.check_delivery_gap()
     assert hc._sent == []
@@ -596,7 +622,7 @@ def test_health_check_main_runs_both_signals_and_fails_loudly(hc, monkeypatch, c
     ran = []
     monkeypatch.setattr(hc, "check_cycle_gap", lambda: ran.append("cycle"))
 
-    def boom(since):
+    def boom(since, **kw):
         raise RuntimeError("journal exploded")
     monkeypatch.setattr(bh, "delivery_check", boom)
     with caplog.at_level(logging.WARNING, logger="health-check"):
@@ -609,8 +635,8 @@ def test_health_check_main_runs_both_signals_and_fails_loudly(hc, monkeypatch, c
         raise RuntimeError("store exploded")
     monkeypatch.setattr(hc, "check_cycle_gap", cycle_boom)
     monkeypatch.setattr(bh, "delivery_check",
-                        lambda since: ran.append("delivery") or {"kind": "none", "sent": 0,
-                                                                 "got": 0, "err": ""})
+                        lambda since, **kw: ran.append("delivery") or {"kind": "none", "sent": 0,
+                                                                       "got": 0, "err": ""})
     assert hc.main() == 1
     assert ran == ["cycle", "delivery"]
     monkeypatch.setattr(hc, "check_cycle_gap", lambda: None)
@@ -742,7 +768,7 @@ def test_unexplained_gap_with_unmeasured_conditions_says_measure_first():
     f = _good()
     f["tg"] = {"token": False}
     f["gap"] = {"kind": "total", "sent": 3, "got": 0, "first": NOW - timedelta(minutes=40),
-                "who": ["listen_badonion"], "after_last": 0}
+                "who": ["listen_badonion"]}
     rc, out = _v(f)
     assert rc == 1 and "원인을 짚지 못했다 — 위 ❓" in out
     assert "위 조건은 전부 맞" not in out
@@ -783,12 +809,41 @@ def test_relay_drop_is_recognised_by_inbox_id_even_when_telegram_is_unreachable(
     assert rc == 1 and "❌ 봇이 릴레이 포워드 1건을" in out, out
 
 
-def test_split_by_start():
+def test_split_at_restart_boundary_measured_start_guess_and_moved_events():
+    """2차 독립 리뷰 M2·V04 — 옛 `split_by_start`(끝으로만 가르고 수신은 재시작 뒤부터)는
+    재시작을 걸친 실행의 옛 프로세스 몫을 버려 멀쩡한 실행을 누락으로 오보했다. 지금 계약:
+    ① 끝이 재시작과 **같은** 시각이면 지금 몫(경계 포함 — 생존 뮤테이션 V04 `>` 가 통과했다)
+    ② 잰 시작(같은 PID 접속 줄)·리스너 여유가 재시작 전이면 수신을 거기부터 센다(nb 당김)
+    ③ 당긴 창에 끝이 걸린 옛 사건은 지금 몫으로 옮긴다 ④ 백필 끝에서 30분 **짐작한** 시작은
+    경계를 넘지 않는다(옛 사건을 끌어들여 재시작 전 누락이 지금 누락으로 둔갑한다)
+    ⑤ 재시작을 모르면 가르지 않는다."""
     t = NOW - timedelta(hours=2)
-    fwd = [_fwd(t - timedelta(minutes=1), 3), _fwd(t + timedelta(minutes=1), 2), _fwd(None, 1)]
-    cur, old = bh.split_by_start(fwd, t)
+    at = _fwd(t, 2)                                     # 리스너 · 끝 == 재시작
+    before = _fwd(t - timedelta(minutes=10), 3)
+    und = _fwd(None, 1)
+    cur, old, nb, st = bh.split_at_restart([before, at, und], t)
     assert [x["n"] for x in cur] == [2, 1] and [x["n"] for x in old] == [3]
-    assert bh.split_by_start(fwd, None) == (fwd, [])     # 시작을 모르면 가르지 않는다
+    assert nb == t - timedelta(seconds=bh.LISTEN_SLACK_S) and st == [at]
+    run = {**_fwd(t + timedelta(minutes=1), 27, done=True, who="backfill_badonion"),
+           "start": t - timedelta(minutes=1)}
+    cur2, old2, nb2, st2 = bh.split_at_restart([before, run], t)
+    assert nb2 == t - timedelta(minutes=1) and st2 == [run] and old2 == [before]
+    near = {**_fwd(t - timedelta(seconds=20), 1), "start": t - timedelta(seconds=50)}
+    cur3, old3, nb3, st3 = bh.split_at_restart([near, run], t)
+    assert old3 == [] and nb3 == t - timedelta(minutes=1)
+    assert any(x is near for x in cur3) and any(x is near for x in st3)
+    # 짐작한 시작의 옛 사건도 잰 사건이 당긴 창에 끝이 걸리면 옮겨 오고, 재시작 전부터 센
+    # 사건으로 밝힌다(끝이 재시작 전이다 — 짐작한 시작만 보면 빠진다, 생존 뮤테이션 N17)
+    g_old = _fwd(t - timedelta(seconds=30), 2, done=True, who="backfill_beon")
+    cur5, old5, nb5, st5 = bh.split_at_restart([g_old, run], t)
+    assert old5 == [] and any(x is g_old for x in cur5) and any(x is g_old for x in st5)
+    guess = {**_fwd(t + timedelta(minutes=5), 27, done=True, who="backfill_badonion"),
+             "start": t - timedelta(minutes=25), "guessed": True}
+    cur4, old4, nb4, st4 = bh.split_at_restart([before, guess], t)
+    assert nb4 == t and old4 == [before] and st4 == []
+    bare = _fwd(t + timedelta(minutes=5), 27, done=True)         # 시작 칸 없는 백필 = 짐작
+    assert bh.split_at_restart([before, bare], t)[2] == t
+    assert bh.split_at_restart([before, at], None) == ([before, at], [], None, [])
 
 
 def test_losses_before_the_running_process_are_a_note_not_the_verdict():
@@ -853,11 +908,11 @@ def test_gate_drops_are_received_not_lost():
     drops = [{"ts": t0 + timedelta(seconds=2), "relay": False},
              {"ts": t0 + timedelta(seconds=3), "relay": False}]
     g = bh.delivery_gap(fw, ing, NOW, dropped=drops)
-    assert (g["kind"], g["got"], g["dropped"], g["relay_dropped"]) == ("ok", 1, 2, 0), g
-    assert not bh.gap_needs_alert(g)
-    # 릴레이 원천의 글을 버렸으면 받았어도 알린다 — inbox 에 안 들어가기는 마찬가지다
+    assert (g["kind"], g["got"], g["dropped"]) == ("ok", 1, 2), g
+    # 릴레이 원천의 글을 버린 것도 받음이다(수 대조) — 그걸 알리는 것은 버림 줄에서 따로
+    # 세는 판정·매시간 알림의 일이다(`test_delivery_check_classifies_relay_drops…`)
     g2 = bh.delivery_gap(fw, ing, NOW, dropped=[{**drops[0], "relay": True}, drops[1]])
-    assert g2["kind"] == "ok" and g2["relay_dropped"] == 1 and bh.gap_needs_alert(g2)
+    assert (g2["kind"], g2["dropped"]) == ("ok", 2)
     # 대조 창 앞의 버림으로 지금 누락을 가리지 않는다
     old = [{"ts": t0 - timedelta(hours=1), "relay": False}] * 2
     g3 = bh.delivery_gap(fw, ing, NOW, dropped=old)
@@ -898,28 +953,30 @@ def test_third_party_origin_drops_through_collect_are_not_a_gap(tmp_path):
 
 
 def test_partial_gap_is_a_red_symptom_with_the_numbers():
-    """생존 뮤테이션 N02(판정이 partial 을 무시)·M02(after_last=0) — 일부 누락도 ❌ 이고,
-    받은 수·빠진 수·마지막 포워드 뒤 수신을 숫자로 적는다."""
+    """생존 뮤테이션 N02(판정이 partial 을 무시) — 일부 누락도 ❌ 이고, 받은 수·빠진 수를
+    숫자로 적는다. 옛 판의 '마지막 포워드 뒤 수신 N건' 은 뺐다 — 백필 'done' 줄은 실행 **끝**에
+    찍혀 그 실행의 수신은 전부 그 앞이라 구조적으로 0 이었고, 멀쩡한 실행에도 '뒤로 0건' 을
+    적어 오해를 샀다(2차 독립 리뷰 L8)."""
     t0 = NOW - timedelta(minutes=40)
     ing = [t0 + timedelta(seconds=1), t0 + timedelta(seconds=90), t0 + timedelta(seconds=91)]
     g = bh.delivery_gap([_fwd(t0, 3), _fwd(t0 + timedelta(seconds=60), 2)], ing, NOW)
-    assert (g["kind"], g["got"], g["after_last"]) == ("partial", 3, 2), g
+    assert (g["kind"], g["got"]) == ("partial", 3), g
+    assert "after_last" not in g
     f = _good()
     f["gap"] = g
     rc, out = _v(f)
     red = [ln for ln in out.splitlines() if ln.startswith("❌ 릴레이가 5건을 포워드했는데")]
     assert rc == 1 and red, out
     assert "봇이 받은 것은 3건이다" in red[0] and "2건은 수신·버림 어느 줄에도 없다" in red[0]
-    assert "마지막 포워드 뒤 수신 2건" in red[0], red[0]
+    assert "마지막 포워드 뒤" not in out, out
 
 
 def test_unexplained_partial_with_third_party_drops_does_not_claim_no_drops():
     """H2 — 버림이 있었는데 '버림 기록도 없는데' 라고 쓰면 거짓이다. 일부 누락은 '텔레그램이
     전부 안 줬다' 가 아니다. 짐작한 시작(창 밖에서 시작한 백필)이면 그렇다고 밝힌다."""
     f = _good()
-    f["gap"] = {"kind": "partial", "sent": 5, "got": 1, "dropped": 2, "relay_dropped": 0,
-                "first": NOW - timedelta(minutes=40), "who": ["listen_beon"],
-                "after_last": 0, "guessed": False}
+    f["gap"] = {"kind": "partial", "sent": 5, "got": 1, "dropped": 2,
+                "first": NOW - timedelta(minutes=40), "who": ["listen_beon"], "guessed": False}
     _rc, out = _v(f)
     assert "2건이 수신·버림·예외 어느 줄에도 없다(받은 3건 중 2건은 출처 게이트가 버린" in out
     assert "버림·예외 기록도 없는데" not in out and "버림 기록도 없는데" not in out
@@ -1051,20 +1108,36 @@ def test_delivery_check_reads_the_bot_journal_earlier_than_the_relay_window():
 
 
 def test_collect_reads_the_bot_journal_with_the_widened_window():
-    asked = {}
+    """봇 저널은 **두 번** 읽는다 — 판정은 사용자가 준 창, 수신은 RUN_SLACK_S 앞부터(2차 독립
+    리뷰 L5: 옛 판은 넓힌 창 하나로 판정까지 해 사용자가 창으로 뺀 사건이 ❌ 가 됐다).
+    넓혀 읽기가 실패하면 같은 창으로 세고 **그렇다고** 밝힌다."""
+    asked = []
 
     def read(units, since):
-        asked[units] = since
+        asked.append((units, since))
         return [], "", "rotated"
-    f = bh.collect("86400 seconds ago", now=NOW, env={"token": "", "dest": _DEST, "src": {},
-                                                     "err": "", "inbox": ""},
-                   facts_fn=lambda: {"ok": True, "s_MainPID": "0"}, read=read,
-                   start_fn=lambda pid: (None, ""), tg_fn=lambda *a: {"token": False},
-                   procs_fn=lambda own: [])
-    assert asked[(bh._SERVICE,)] == f"{86400 + bh.RUN_SLACK_S} seconds ago"
-    assert asked[bh.RELAY_UNITS] == "86400 seconds ago"
+
+    def run(read_fn):
+        return bh.collect("86400 seconds ago", now=NOW,
+                          env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
+                          facts_fn=lambda: {"ok": True, "s_MainPID": "0"}, read=read_fn,
+                          start_fn=lambda pid: (None, ""), tg_fn=lambda *a: {"token": False},
+                          procs_fn=lambda own: [])
+    f = run(read)
+    bot_reads = [s for u, s in asked if u == (bh._SERVICE,)]
+    assert bot_reads == ["86400 seconds ago", f"{86400 + bh.RUN_SLACK_S} seconds ago"], asked
+    assert [s for u, s in asked if u == bh.RELAY_UNITS] == ["86400 seconds ago"]
     head = bh.render(f, "86400 seconds ago")[2]
-    assert "봇 저널은 수신을 세려고 30분 앞부터" in head, head
+    assert "판정은 이 창 · 봇 수신은 30분 앞부터 센다" in head, head
+
+    def read_wide_fails(units, since):
+        if units == (bh._SERVICE,) and since != "86400 seconds ago":
+            return [], "권한 없음", "denied"
+        return [], "", "rotated"
+    f2 = run(read_wide_fails)
+    assert f2["journal"] is not None and not f2["bot_since_widened"]
+    head2 = bh.render(f2, "86400 seconds ago")[2]
+    assert "넓혀 읽지 못해 수신도 이 창으로 센다 — 권한 없음" in head2, head2
 
 
 def test_delivery_check_classifies_relay_drops_by_name_and_by_journal_id():
@@ -1081,50 +1154,82 @@ def test_delivery_check_classifies_relay_drops_by_name_and_by_journal_id():
             (relay_lines if u == bh.RELAY_UNITS else bot_lines), "", ""))
     third = [_drop("2026-09-25T07:49:10", i, -100555, "awake_plus") for i in (1, 2, 3)]
     g = check(third, [fwd])
-    assert (g["kind"], g["dropped"], g["relay_dropped"]) == ("ok", 3, 0) and not bh.gap_needs_alert(g)
+    assert (g["kind"], g["dropped"], len(g["relay_drops"])) == ("ok", 3, 0)
+    assert not bh.gap_needs_alert(g)
     by_name = [_drop("2026-09-25T07:49:10", i, -100999, "Badonions") for i in (1, 2, 3)]
-    assert check(by_name, [fwd])["relay_dropped"] == 3
+    assert len(check(by_name, [fwd])["relay_drops"]) == 3
     renamed = [_drop("2026-09-25T07:49:10", i, _BAD, "NewName") for i in (1, 2, 3)]
-    assert check(renamed, [fwd])["relay_dropped"] == 0          # ID 를 모르면 못 알아본다
+    assert check(renamed, [fwd])["relay_drops"] == []          # ID 를 모르면 못 알아본다
     g4 = check(renamed, [src, fwd])
-    assert g4["relay_dropped"] == 3 and bh.gap_needs_alert(g4)
+    assert len(g4["relay_drops"]) == 3 and bh.gap_needs_alert(g4)
+    assert [d["msg"] for d in g4["new_drops"]] == [1, 2, 3]
+    # 이미 알린 버림은 다시 알리지 않는다(사실마다 신원, 2차 독립 리뷰 L4)
+    g5 = bh.delivery_check(7200, now=NOW, seen=set(g4["ids"]), read=lambda u, s: (
+        ([src, fwd] if u == bh.RELAY_UNITS else renamed), "", ""))
+    assert g5["new_drops"] == [] and not bh.gap_needs_alert(g5)
+
+
+def _exc(ts, msg, *, user="Badonions", chat=_BAD, otype="channel", pid=4242) -> str:
+    """봇의 에러 핸들러가 찍는 채널 글 예외 줄 — 형식은 **소스에서** 꺼낸다(#155)."""
+    fmt = _log_format(_REPO / "trade" / "bot.py", "handler error update=channel_post", "error")
+    return _jl(ts, fmt % (msg, otype, chat, user, "OSError", "[Errno 28] No space left on device"),
+               pid=pid).replace("[INFO]", "[ERROR]")
 
 
 def test_handler_exceptions_in_the_gap_window_are_the_cause():
-    """M2 — 받은 채널 글을 처리하다 예외로 끝난 번호(수신 줄 없음)는 '텔레그램이 안 줬다'
-    가 아니라 원인(❌)이다. 기록된 뒤의 예외·대조 밖의 예외는 메모. 어느 업데이트였는지
-    안 적힌 옛 판 예외(PTB 기본 문구)는 원인을 못 짚은 갈래에서 '표본부터' 로 말한다."""
+    """(옛 이름 그대로 — 계약은 2차 독립 리뷰 H1 로 넓어졌다.) 받은 채널 글을 처리하다 예외로
+    끝나 수신 줄이 없는 번호는 손실의 **직접 증거**다 — 수 대조(gap)와 **무관하게** 판정한다.
+    옛 판은 누락이 보일 때만 ❌ 로 읽어, 같은 창의 다른 글 수신·버림이 그 손실을 덮으면 ✅ 에
+    '빠진 것이 없다' 메모를 달았다(리뷰 재현 s2·s5). 지금: 릴레이 원천 ❌ · 출처를 모름(출처를
+    적지 않는 판) ❓ · 직접 쓴 글·다른 출처 ⚠️ · 번호가 기록됐으면(기록 뒤 단계) ⚠️. 어느
+    업데이트였는지 안 적힌 옛 판 예외(PTB 기본 문구)는 원인을 못 짚은 갈래가 '표본부터' 로
+    말한다(텔레그램 탓으로 단정하지 않는다)."""
     t0 = NOW - timedelta(minutes=40)
-    exc = _jl("2026-09-25T07:50:05", "handler error update=channel_post msg=77 exc=OSError: "
-              "[Errno 28] No space left on device").replace("[INFO]", "[ERROR]")
+    exc = _exc("2026-09-25T07:50:05", 77)
     f = _good()
     f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), exc])
     f["gap"] = bh.delivery_gap([_fwd(t0, 1)], f["journal"]["ingested"], NOW)
     rc, out = _v(f)
-    assert rc == 1 and "❌ 봇이 받은 채널 글 1건을 처리하다 예외로 놓쳤다" in out, out
+    assert rc == 1 and "❌ 봇이 릴레이 원천의 채널 글 1건을 처리하다 예외로 놓쳤다(번호 77)" in out, out
     assert "텔레그램이 전달하지 않았다" not in out
-    # 같은 번호가 기록됐으면(기록 뒤 단계의 예외) 원인이 아니다 — 메모
+    # 수 대조가 ok 여도 ❌ 다 — 남의 글 버림이 받음으로 세어져 손실을 덮은 경우(재현 s5)
+    other = _drop("2026-09-25T07:50:06", 78, -100555, "SomeNews")
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), exc, other])
+    f["gap"] = bh.delivery_gap([_fwd(t0, 1)], f["journal"]["ingested"], NOW,
+                               dropped=bh.forward_drops(f["journal"]["drops_origin"], ["Badonions"]))
+    assert f["gap"]["kind"] == "ok", f["gap"]
+    rc1, out1 = _v(f)
+    assert rc1 == 1 and "예외로 놓쳤다(번호 77)" in out1 and "✅" not in out1, out1
+    # 출처를 적지 않는 판이 찍은 줄 — 릴레이 글인지 모른다: ❓(✅ 도 ❌ 도 아니다, #165)
+    old_fmt = _jl("2026-09-25T07:50:05", "handler error update=channel_post msg=77 exc=OSError: "
+                  "x").replace("[INFO]", "[ERROR]")
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), old_fmt])
+    f["gap"] = {"kind": "none"}
+    rc2, out2 = _v(f)
+    assert rc2 == 2 and "❓ 봇이 채널 글 1건을 처리하다 예외로 놓쳤는데(번호 77" in out2, out2
+    # 릴레이 원천이 아닌 글(채널에 직접 쓴 명령 등) — 릴레이 데이터가 아니다: ⚠️
+    cmd = _exc("2026-09-25T07:50:05", 77, otype="none", chat=None, user=None)
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), cmd])
+    rc3, out3 = _v(f)
+    assert rc3 == 0 and "⚠️ 릴레이 원천이 아닌 채널 글 1건" in out3, out3
+    # 같은 번호가 기록됐으면(기록 뒤 단계의 예외) 손실이 아니다 — 누락(2건 중 1건)이 있어도
+    # 그 예외를 원인으로 읽으면 안 된다. 번호 대조를 지우면 여기서 거짓 ❌ 가 난다.
     ok = _jl("2026-09-25T07:50:04", "ingested msg=77 mg=- caption=1 photo=-")
     f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), ok, exc])
-    f["gap"] = bh.delivery_gap([_fwd(t0, 1)], f["journal"]["ingested"], NOW)
-    rc2, out2 = _v(f)
-    assert rc2 == 0 and "⚠️ 채널 글을 처리하다 예외가 1번 났다" in out2, out2
-    # 누락은 있는데(2건 중 1건) 예외 난 번호는 **기록됐다** — 그 예외를 누락의 원인으로
-    # 읽으면 안 된다(기록 뒤 단계였다). 번호 대조를 지우면 여기서 거짓 ❌ 가 난다.
     f["gap"] = bh.delivery_gap([_fwd(t0, 2)], f["journal"]["ingested"], NOW)
     assert f["gap"]["kind"] == "partial"
-    _rc, out2b = _v(f)
-    assert "예외로 놓쳤다" not in out2b and "⚠️ 채널 글을 처리하다 예외가 1번 났다" in out2b
-    # 표식 없는 옛 판 예외 — 원인을 못 짚은 갈래가 그걸 말한다(텔레그램 탓으로 단정하지 않는다)
+    _rc4, out4 = _v(f)
+    assert "예외로 놓쳤" not in out4 and "그 번호는 전부 수신 줄이 있다" in out4, out4
+    # 표식 없는 옛 판 예외 — 원인을 못 짚은 갈래가 그걸 말한다
     ptb = _jl("2026-09-25T07:50:05", "No error handlers are registered, logging exception.",
               logger="telegram.ext.Application").replace("[INFO]", "[ERROR]")
     f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), ptb])
     f["gap"] = bh.delivery_gap([_fwd(t0, 1)], f["journal"]["ingested"], NOW)
-    _rc3, out3 = _v(f)
-    assert "PTB 예외가 1번 찍혔다" in out3 and "텔레그램이 전달하지 않았다" not in out3, out3
+    _rc5, out5 = _v(f)
+    assert "PTB 예외가 1번 찍혔다" in out5 and "텔레그램이 전달하지 않았다" not in out5, out5
     f["running"] = bh.parse_start_line(_start(drop_log=False))
-    _rc4, out4 = _v(f)
-    assert "옛 판이라" in out4 and "PTB 예외가 1번 찍혔다" in out4, out4
+    _rc6, out6 = _v(f)
+    assert "옛 판이라" in out6 and "PTB 예외가 1번 찍혔다" in out6, out6
 
 
 def test_journal_facts_reads_exception_kinds_and_ingested_ids():
@@ -1198,6 +1303,9 @@ def test_no_trade_code_recommends_systemctl_status_for_the_bot_unit():
     pat = _re.compile(r"systemctl\s+status\b(?:\s+-\S+)*\s+trade-bot(?:\.service)?(?![\w.-])")
     # `journalctl` 로 trade-bot(또는 자리표시 `<unit>`)의 원문을 권하려면 가림을 같이 줘야 한다
     jpat = _re.compile(r"journalctl\b[^`\n]*-u\s+(?:trade-bot(?:\.service)?(?![\w.-])|<unit>)")
+    # 가림 = 명령에 붙은 '토큰 모양을 지우는 sed'. 낱말 'sed' 가 아무 데나 있으면 통과시키던
+    # 옛 판은 'used'·'based' 같은 낱말에 속았다(2차 리뷰 생존 뮤테이션 KF02)
+    mask = _re.compile(r"\|\s*sed\s+-E\s+'s/\[0-9\]\{8,10\}:")
     hits, scanned = [], 0
     for p in [*sorted((_REPO / "trade").rglob("*.py")), _REPO / "bot" / "daily_kr_flow.py"]:
         if "tests" in p.parts:
@@ -1215,7 +1323,8 @@ def test_no_trade_code_recommends_systemctl_status_for_the_bot_unit():
             if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
                     and id(node) not in docs):
                 continue
-            if pat.search(node.value) or (jpat.search(node.value) and "sed" not in node.value):
+            if pat.search(node.value) or (jpat.search(node.value)
+                                          and not mask.search(node.value)):
                 hits.append(f"{p.relative_to(_REPO)}:{node.lineno}")
     assert scanned > 50, scanned                          # 대조 0건은 통과가 아니다(#54)
     assert not hits, hits
@@ -1224,6 +1333,9 @@ def test_no_trade_code_recommends_systemctl_status_for_the_bot_unit():
     assert not pat.search("systemctl status trade-bot-beon-listener")
     assert jpat.search("판정 불가(`sudo journalctl -u <unit> -n 50` 로 확인)")
     assert not jpat.search("journalctl -u trade-bot-jpx-codes")
+    assert not mask.search("(`sudo journalctl -u <unit> -n 50` 로 확인 — often used)")
+    assert mask.search("`sudo journalctl -u <unit> -n 50 | sed -E "
+                       "'s/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'`")
 
 
 def test_relay_units_match_the_deploy_units_that_run_relay_scripts():
@@ -1373,44 +1485,369 @@ def test_restart_count_note_when_the_bot_keeps_starting():
 
 def test_health_check_alerts_a_new_gap_even_right_after_another(hc, monkeypatch):
     """M4 — 옛 판은 표식 하나('delivery-gap')로 6시간을 막아 그 사이 **다른** 누락이
-    조용했다. 누락마다 표식이다. 같은 누락은 여전히 한 번만."""
-    t1 = NOW - timedelta(minutes=40)
-    gaps = [{"kind": "total", "sent": 27, "got": 0, "dropped": 0, "relay_dropped": 0,
-             "first": t1, "who": ["backfill_badonion"], "after_last": 0, "err": ""},
-            {"kind": "partial", "sent": 3, "got": 1, "dropped": 0, "relay_dropped": 0,
-             "first": t1 + timedelta(minutes=20), "who": ["listen_beon"], "after_last": 0,
-             "err": ""}]
-    it = iter([gaps[0], gaps[0], gaps[1]])
-    monkeypatch.setattr(bh, "delivery_check", lambda window: dict(next(it)))
-    for _ in range(3):
-        hc.check_delivery_gap()
+    조용했다. 2차 리뷰: 그 다음 판의 키(창 안 첫 포워드 + 릴레이 이름)를 '릴레이 이름만' 으로
+    줄여도 이 테스트가 두 **다른** 릴레이만 써서 통과했다(생존 뮤테이션 B21). 이제 사실마다
+    신원이고 **같은 릴레이**의 두 누락으로 잰다. 같은 누락은 여전히 한 번만."""
+    relay = [_jl("2026-09-25T07:49:09", "forwarded 2 msg(s): [1, 2]", logger="listen_badonion",
+                 pid=55)]
+    bot = [_poll("2026-09-25T08:29:50")]
+    _drive(monkeypatch, bot=bot, relay=relay)
+    hc.check_delivery_gap()                                # 첫 누락 → 알림
+    hc.check_delivery_gap()                                # 같은 누락 → 조용
+    relay.append(_jl("2026-09-25T08:10:00", "forwarded 3 msg(s): [3, 4, 5]",
+                     logger="listen_badonion", pid=55))
+    bot.append(_jl("2026-09-25T08:10:01", "ingested msg=90 mg=- caption=1 photo=-"))
+    hc.check_delivery_gap()                                # 같은 릴레이의 새 누락 → 알림
     assert len(hc._sent) == 2, hc._sent
-    assert "1건만 받았습니다" in hc._sent[1]
-    assert bh.gap_alert_key(gaps[0]) != bh.gap_alert_key(gaps[1])
+    assert "2건을 비공개 채널로" in hc._sent[0] and "한 건도 못 받았습니다" in hc._sent[0]
+    assert "3건을 비공개 채널로" in hc._sent[1] and "1건만 받았습니다" in hc._sent[1], hc._sent[1]
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 2, hc._sent
 
 
 def test_health_check_alerts_relay_gate_drops_but_not_third_party(hc, monkeypatch):
-    base = {"kind": "ok", "sent": 3, "got": 0, "dropped": 3, "first": NOW, "who": ["listen_beon"],
-            "after_last": 0, "err": ""}
-    monkeypatch.setattr(bh, "delivery_check", lambda window: {**base, "relay_dropped": 0})
+    """H2 — 남의 글 버림(BeOn 이 되포워드한 AWAKE)은 알리지 않고, 릴레이 원천 글의 버림은
+    알린다(한 번). 받음(버림 포함)이 다 차면 '수신 누락' 이 아니다."""
+    fwd = _jl("2026-09-25T07:49:09", "forwarded 3 msg(s): [1, 2, 3]", logger="listen_beon", pid=55)
+    third = [_drop("2026-09-25T07:49:10", i, -100555, "awake_plus") for i in (1, 2, 3)]
+    bot = [_poll("2026-09-25T08:29:50"), *third]
+    _drive(monkeypatch, bot=bot, relay=[fwd])
     hc.check_delivery_gap()
     assert hc._sent == []
-    monkeypatch.setattr(bh, "delivery_check", lambda window: {**base, "relay_dropped": 2})
+    bot[1:] = [_drop("2026-09-25T07:49:10", i, -100999, "BeOn_BeClear") for i in (1, 2)] + [third[2]]
     hc.check_delivery_gap()
-    assert len(hc._sent) == 1 and "출처 게이트 버림" in hc._sent[0]
-    assert "2건은 봇이 출처 게이트에서 버렸습니다" in hc._sent[0]
+    assert len(hc._sent) == 1 and "출처 게이트 버림" in hc._sent[0], hc._sent
+    assert "포워드 <b>2건을 출처 게이트에서 버렸습니다</b>" in hc._sent[0], hc._sent[0]
+    assert "수신 누락" not in hc._sent[0]
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1                              # 같은 버림은 한 번만
 
 
-def test_health_check_prunes_old_delivery_markers_only(hc):
-    import os
+def test_health_check_alert_record_prunes_and_survives_garbage(hc, monkeypatch, caplog):
+    """알린 사실의 기록(`delivery-alerted.json`) — 2일 지난 신원은 읽을 때 빼고 다음 쓰기에서
+    사라진다(파일 유계 — 옛 표식 정리의 자리. 2차 리뷰 생존 뮤테이션 H01: 정리 호출을 지워도
+    통과했다). 못 읽으면 빈 기록 + 경고(알림을 막지 않되 다시 알릴 수 있다고 밝힌다). 쓰기는
+    원자적 — 임시 파일이 남지 않는다."""
     import time as _t
-    old = hc.MARKER_DIR / "delivery-gap-1-old"
-    fresh = hc.MARKER_DIR / "delivery-gap-2-new"
-    other = hc.MARKER_DIR / "cycle-gap-2026-09-01"
-    for m in (old, fresh, other):
-        m.touch()
-    past = _t.time() - 3 * 86400
-    os.utime(old, (past, past))
-    os.utime(other, (past, past))
-    hc._prune_delivery_markers()
-    assert not old.exists() and fresh.exists() and other.exists()
+    now = _t.time()
+    p = hc.MARKER_DIR / hc.DELIVERY_ALERTED
+    p.write_text(json.dumps({"fwd:old": now - 3 * 86400, "fwd:new": now - 3600, "bad": "x"}),
+                 encoding="utf-8")
+    assert hc._load_alerted(now) == {"fwd:new": now - 3600}
+    fwd = _jl("2026-09-25T07:49:09", "forwarded 1 msg(s): [1]", logger="listen_badonion", pid=55)
+    _drive(monkeypatch, bot=[_poll("2026-09-25T08:29:50")], relay=[fwd])
+    hc.check_delivery_gap()
+    saved = json.loads(p.read_text(encoding="utf-8"))
+    assert set(saved) - {"fwd:new"} and "fwd:old" not in saved and "bad" not in saved, saved
+    assert len(saved) == 2 and "fwd:new" in saved, saved
+    assert not list(hc.MARKER_DIR.glob("*.tmp"))
+    with caplog.at_level(logging.WARNING, logger="health-check"):
+        p.write_text("{not json", encoding="utf-8")
+        assert hc._load_alerted() == {}
+        p.write_text("[1, 2]", encoding="utf-8")
+        assert hc._load_alerted() == {}
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("알림 기록을 못 읽었다" in m for m in msgs), msgs
+    assert any("알림 기록 형식이 아니다" in m for m in msgs), msgs
+
+
+# ── 2차 독립 리뷰(6b005d9..e5b528a) 반영 ─────────────────────────────────
+# H1 예외로 놓친 글 = 직접 증거 · M2 재시작을 걸친 실행 · L4 사실마다 알림 · L5 판정 창 ·
+# L6 재시작 전 예외 메모 · 생존 뮤테이션(B07·B12·B13) — 리뷰 재현 스크립트 s1~s5 를 이식했다.
+
+def test_exception_line_from_the_bot_source_parses_with_its_origin():
+    """생산자 = 소비자(#155) — 에러 핸들러의 채널 글 예외 줄 형식을 **소스에서** 꺼내 채워
+    진단 파서로 읽는다. 출처 칸이 버림 줄과 같은 규약으로 읽혀야 릴레이 글인지 가른다(2차
+    독립 리뷰 H1). 채널 글이 아닌 업데이트의 줄엔 출처 칸이 없다(모름 = None)."""
+    bot_py = _REPO / "trade" / "bot.py"
+    fmt = _log_format(bot_py, "handler error update=channel_post", "error")
+    e = bh.journal_facts([_jl("2026-09-25T08:00:00", fmt % (77, "channel", _BAD, "Badonions",
+                                                           "OSError", "disk"))])["exceptions"][0]
+    assert (e["kind"], e["update"], e["msg"], e["type"], e["chat"], e["user"]) == (
+        "handler", "channel_post", 77, "channel", _BAD, "Badonions"), e
+    d = bh.journal_facts([_jl("2026-09-25T08:00:00", fmt % (78, "none", None, None, "OSError",
+                                                           "disk"))])["exceptions"][0]
+    assert (d["type"], d["chat"], d["user"]) == ("none", None, ""), d
+    other = _log_format(bot_py, "handler error update=%s", "error")
+    o = bh.journal_facts([_jl("2026-09-25T08:00:00", other % ("Update", 5, "ValueError", "x"))]
+                         )["exceptions"][0]
+    assert (o["update"], o["msg"], o["type"]) == ("Update", 5, None), o
+    lost = bh.lost_posts([e, d, o], set(), ["Badonions"])
+    assert [(x["msg"], x["relay"]) for x in lost] == [(77, True), (78, False)], lost
+
+
+def test_dm_exception_is_not_a_lost_channel_post():
+    """2차 리뷰 생존 뮤테이션 B12 — 채널 글이 아닌 업데이트(봇 DM 의 /watch 등)의 예외는 채널
+    글 번호와 대조할 수 없다. 그걸 '예외로 놓친 채널 글' 로 읽으면 없는 손실을 만든다."""
+    fmt = _log_format(_REPO / "trade" / "bot.py", "handler error update=%s", "error")
+    dm = _jl("2026-09-25T07:50:05", fmt % ("Update", 5, "ValueError", "x")).replace("[INFO]",
+                                                                                "[ERROR]")
+    f = _good()
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), dm])
+    rc, out = _v(f)
+    assert rc == 0 and "예외로 놓쳤" not in out and "예외가 1번" not in out, out
+    assert bh.lost_posts(f["journal"]["exceptions"], set()) == []
+
+
+def test_unlabeled_exception_outside_the_gap_window_is_not_blamed():
+    """2차 리뷰 생존 뮤테이션 B13 — 어느 업데이트였는지 안 적힌 옛 판 예외(PTB 기본 문구)는
+    대조 창(가장 이른 포워드의 시작) **안**의 것만 이 누락의 후보로 말한다. 창 밖 예외를
+    끌어오면 무관한 사건을 원인처럼 가리키고 '텔레그램이 안 줬다' 갈래를 지운다."""
+    t0 = NOW - timedelta(minutes=40)
+    ptb = _jl("2026-09-25T06:00:00", "No error handlers are registered, logging exception.",
+              logger="telegram.ext.Application").replace("[INFO]", "[ERROR]")
+    f = _good()
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), ptb])
+    f["gap"] = bh.delivery_gap([_fwd(t0, 1)], f["journal"]["ingested"], NOW)
+    _rc, out = _v(f)
+    assert "PTB 예외" not in out and "텔레그램이 전달하지 않았다" in out, out
+
+
+def test_delivery_gap_counts_from_the_events_own_start():
+    """2차 리뷰 생존 뮤테이션 B07 — 사건이 스스로 아는 시작(같은 PID 접속 줄)을 안 쓰고 종류별
+    짐작(백필 끝 − 30분)으로 세면, 30분보다 긴 실행의 앞쪽 수신을 못 세어 멀쩡한 실행을
+    누락으로 오보한다(BeOn 대량 회수는 더 길다)."""
+    done = NOW - timedelta(minutes=10)
+    run = {**_fwd(done, 3, done=True, who="backfill_beon"), "start": done - timedelta(minutes=45)}
+    assert bh.event_start(run) == done - timedelta(minutes=45)
+    assert bh.delivery_gap([run], [done - timedelta(minutes=44)] * 3, NOW)["kind"] == "ok"
+
+
+def test_backfill_straddling_a_restart_counts_both_processes():
+    """2차 독립 리뷰 M2(재현 s1) — 백필이 07:40:00 에 접속해 07:41:30 에 끝났고 그 사이 배포가
+    봇을 재시작했다(07:40:50). 옛 프로세스가 10건, 새 프로세스가 17건을 받아 27건이 전부 inbox
+    에 있는데, 옛 판은 재시작 **뒤** 수신만 세어 '10건은 어느 줄에도 없다' + '텔레그램이 일부를
+    전달하지 않았다' 를 찍었다(같은 데이터로 매시간 알림은 ok — 두 도구가 갈렸다)."""
+    src, _ = _relay_line("backfill_badonion", "source(marked)=", (_BAD, _DEST),
+                         ts="2026-09-25T07:40:00", pid=99)
+    done, _ = _relay_line("backfill_badonion", "done: forwarded", (27, 27, 0),
+                          ts="2026-09-25T07:41:30", pid=99)
+    bot = [_start(ts="2026-09-25T06:00:00", pid=1111), _poll("2026-09-25T07:39:50", pid=1111)]
+    bot += [_jl(f"2026-09-25T07:40:{5 + i:02d}", f"ingested msg={i} mg=- caption=5 photo=-",
+                pid=1111) for i in range(10)]
+    bot.append(_start(ts="2026-09-25T07:40:50", pid=4242))
+    bot += [_jl(f"2026-09-25T07:41:{i - 5:02d}", f"ingested msg={i} mg=- caption=5 photo=-")
+            for i in range(10, 27)]
+    bot.append(_poll("2026-09-25T08:29:50"))
+    f, _ = _collect(bot, [src, done])
+    g = f["gap"]
+    assert (g["kind"], g["sent"], g["got"], g["straddle"]) == ("ok", 27, 27, 1), g
+    assert f["gap_before"]["kind"] == "none"
+    f["tg"] = _good()["tg"]
+    rc, out = _v(f)
+    assert rc == 0, out
+    r5 = [ln for ln in bh.render(f, "x") if ln.startswith("⑤")][0]
+    assert "재시작 전부터 센 포워드 1건 포함" in r5, r5
+    hourly = bh.delivery_check(7200, now=NOW, read=lambda u, s: (
+        ([src, done] if u == bh.RELAY_UNITS else bot), "", ""))
+    assert hourly["kind"] == "ok"                           # 두 도구가 같은 말을 한다
+    # 대조군: 옛 프로세스 몫이 정말 빠졌으면 걸친 실행의 시작부터 세도 모자라다 — ❌ 이고,
+    # 그렇게 셌다고 밝힌다
+    lost_old = [ln for ln in bot if not ("python[1111]" in ln and "ingested" in ln)]
+    f2, _ = _collect(lost_old, [src, done])
+    assert (f2["gap"]["kind"], f2["gap"]["got"]) == ("partial", 17), f2["gap"]
+    f2["tg"] = _good()["tg"]
+    rc2, out2 = _v(f2)
+    assert rc2 == 1 and "재시작 전부터 센 포워드 1건 포함" in out2, out2
+
+
+def test_a_masked_loss_is_red_and_alerted_once():
+    """2차 독립 리뷰 H1(재현 s2·s5) — 릴레이 글 77 이 예외로 사라졌는데 같은 창에 남의 글 버림이
+    있어 수 대조는 ok 였고, 옛 판은 ✅ + '빠진 것이 없다' 메모 · 매시간 알림 없음이었다. 그 줄
+    자체가 증거다 — ❌ 이고 알린다(한 번). 직접 쓴 글의 예외는 알리지 않는다."""
+    relay = [_jl("2026-09-25T08:20:03", "forwarded 2 msg(s): [5, 6]", logger="listen_badonion",
+                 pid=55)]
+    bot = [_start(ts="2026-09-25T06:00:00"),
+           _exc("2026-09-25T08:20:01", 77),
+           _jl("2026-09-25T08:20:02", "ingested msg=78 mg=- caption=5 photo=-"),
+           _drop("2026-09-25T08:21:00", 79, -100555, "SomeNews"),
+           _poll("2026-09-25T08:29:50")]
+    f, _ = _collect(bot, relay)
+    assert f["gap"]["kind"] == "ok", f["gap"]              # 수는 덮였다
+    f["tg"] = _good()["tg"]
+    rc, out = _v(f)
+    assert rc == 1 and "❌ 봇이 릴레이 원천의 채널 글 1건을 처리하다 예외로 놓쳤다(번호 77)" in out, out
+    assert "✅" not in out and "빠진 것이 없다" not in out
+
+    def check(lines, seen=()):
+        return bh.delivery_check(7200, now=NOW, seen=seen, read=lambda u, s: (
+            (relay if u == bh.RELAY_UNITS else lines), "", ""))
+    g = check(bot)
+    assert g["kind"] == "ok" and [e["msg"] for e in g["new_lost"]] == [77], g
+    assert bh.gap_needs_alert(g)
+    text = bh.gap_alert_text(g)
+    assert "처리 중 예외로 놓친 글" in text and "수신 누락" not in text, text
+    assert "<b>1건을 처리하다 예외로 놓쳤습니다</b>(번호 77" in text, text
+    assert not bh.gap_needs_alert(check(bot, set(g["ids"])))
+    cmd = [_exc("2026-09-25T08:20:01", 77, otype="none", chat=None, user=None)
+           if "msg=77" in ln else ln for ln in bot]
+    g3 = check(cmd)
+    assert g3["lost"] == [] and not bh.gap_needs_alert(g3), g3
+    # 출처를 적지 않는 판이 찍은 줄은 알린다 — 릴레이 글이 아니라고 단정할 수 없다(#165)
+    unk = [_jl("2026-09-25T08:20:01", "handler error update=channel_post msg=77 exc=OSError: "
+               "x").replace("[INFO]", "[ERROR]") if "msg=77" in ln else ln for ln in bot]
+    g4 = check(unk)
+    assert [e["relay"] for e in g4["new_lost"]] == [None] and bh.gap_needs_alert(g4)
+    assert "그중 1건은 출처를 모릅니다" in bh.gap_alert_text(g4)
+
+
+def test_a_sustained_outage_alerts_each_forward_exactly_once(hc, monkeypatch):
+    """2차 독립 리뷰 L4(재현 s3) — 봇이 아무것도 못 받는 동안 리스너가 10분마다 포워드했다.
+    옛 판의 표식(창 안 첫 포워드)은 매시간 바뀌어 한 포워드가 두 번씩 알림에 실렸다('같은
+    누락은 한 번' 과 모순, 12시간 12통). 사실마다 신원이면 각 포워드는 **정확히 한 알림**에만
+    실리고, 새로 빠진 포워드는 매번 알린다(다른 누락은 막지 않는다)."""
+    t0 = datetime(2026, 9, 25, 0, 0, tzinfo=_KST)
+    fmt = "%Y-%m-%dT%H:%M:%S"
+    relay = [_jl((t0 + timedelta(minutes=10 * i)).strftime(fmt), "forwarded 1 msg(s): [1]",
+                 logger="listen_badonion", pid=55) for i in range(6 * 8)]
+    bot = [_poll((t0 + timedelta(minutes=i)).strftime(fmt)) for i in range(60 * 8)]
+    clock = [t0]
+    _drive(monkeypatch, bot=bot, relay=relay, clock=clock)
+    per_run = []
+    for h in range(2, 8):
+        clock[0] = t0 + timedelta(hours=h, minutes=5)
+        before = set(hc._load_alerted())
+        hc.check_delivery_gap()
+        per_run.append(set(hc._load_alerted()) - before)
+    assert len(hc._sent) == 6, hc._sent
+    ids = [i for run in per_run for i in run]
+    assert len(ids) == len(set(ids)) == 12 + 5 * 6, (len(ids), len(set(ids)))
+    assert all(i.startswith("fwd:listen_badonion:55:") for i in ids)
+
+
+def test_judgment_uses_the_since_window_and_receipts_use_the_wide_one():
+    """2차 독립 리뷰 L5(재현 s4) — 사용자가 --since 08:00 으로 07:45 의 알려진 사건(409)을
+    빼고 봤는데, 옛 판은 봇 저널을 07:30 부터 읽은 그 넓은 창으로 **판정**까지 해 같은
+    프로세스의 07:45 409 가 '지금' 의 ❌ 가 됐다. 판정은 창 안의 줄로, 넓힌 저널은 수신
+    대조에만 — 예외 직전의 기록 줄이 창 앞에 있으면 그 번호는 기록된 것이다."""
+    bot_all = [_start(ts="2026-09-25T06:00:00"),
+               _poll("2026-09-25T07:45:00", "409 Conflict"),
+               _poll("2026-09-25T07:45:10", "409 Conflict"),
+               _jl("2026-09-25T07:59:59", "ingested msg=77 mg=- caption=1 photo=-"),
+               _exc("2026-09-25T08:00:01", 77),
+               _poll("2026-09-25T08:29:50")]
+    asked = []
+
+    def read(units, since):
+        asked.append((units, since))
+        if units != (bh._SERVICE,):
+            return [], "없다", "rotated"
+        form = "%Y-%m-%d %H:%M:%S" if since.count(":") == 2 else "%Y-%m-%d %H:%M"
+        lo = datetime.strptime(since, form).replace(tzinfo=_KST)
+        return [ln for ln in bot_all if bh._ts(ln) >= lo], "", ""
+    f = bh.collect("2026-09-25 08:00", now=NOW,
+                   env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
+                   facts_fn=lambda: {"ok": True, "s_LoadState": "loaded", "s_ActiveState": "active",
+                                     "s_SubState": "running", "s_MainPID": "4242",
+                                     "s_NRestarts": "0"},
+                   read=read, start_fn=lambda pid: (bh.parse_start_line(bot_all[0]), ""),
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+    assert [s for u, s in asked if u == (bh._SERVICE,)] == ["2026-09-25 08:00",
+                                                          "2026-09-25 07:30:00"], asked
+    f["tg"] = _good()["tg"]
+    rc, out = _v(f)
+    assert "409" not in out, out
+    assert "예외로 놓쳤" not in out and "그 번호는 전부 수신 줄이 있다" in out, out
+    assert rc == 0, out
+
+
+def test_losses_to_exceptions_before_the_restart_are_a_note():
+    """2차 독립 리뷰 L6 — 독스트링은 '재시작 전 프로세스의 예외로 놓친 릴레이 글은 사실 메모로
+    말한다' 고 했는데 그 메모가 없었다(예외는 지금 프로세스 줄만 봤다). 옛 프로세스가 놓친 글은
+    그때 inbox 에 안 들어갔다 — 지금 판정(❌)은 아니지만 말한다. 대조군: 지금 프로세스면 ❌."""
+    old = [_start(ts="2026-09-25T06:00:00", pid=1111), _exc("2026-09-25T06:30:00", 55, pid=1111)]
+    new = [_start(ts="2026-09-25T08:00:00", pid=4242), _poll("2026-09-25T08:29:50")]
+    f, _ = _collect(old + new)
+    f["tg"] = _good()["tg"]
+    rc, out = _v(f)
+    assert rc == 0, out
+    assert "⚠️ 재시작 전 프로세스가 채널 글 1건을 처리하다 예외로 놓쳤다(번호 55)" in out, out
+    f2, _ = _collect(new + [_exc("2026-09-25T08:10:00", 55)])
+    f2["tg"] = _good()["tg"]
+    rc2, out2 = _v(f2)
+    assert rc2 == 1 and "재시작 전" not in out2 and "예외로 놓쳤다(번호 55)" in out2, out2
+
+
+def test_hourly_marks_forwards_only_when_the_alert_is_about_them():
+    """2차 독립 리뷰 L4 의 설계점 — 알림이 **버림** 때문에 나갔는데 그 창의 포워드 사건까지
+    '알림' 으로 적으면, 아직 기다리는 새 포워드의 수신이 잠시 덮은 누락이 영영 안 알려진다.
+    ① 08:30 — E(2건: 77 은 텔레그램이 안 줌 · 78 수신)·F(1건: 릴레이 글, 출처 게이트가 버림)는
+    대조 대상, G(1건: 79 수신)는 아직 기다리는 중. 받음 3 ≥ 보냄 3(G 의 79 가 덮었다) → 누락
+    없음, 버림만 알린다. ② 08:40 — G 도 대조 대상이 되면 보냄 4 · 받음 3 → 누락을 알린다.
+    포워드 사건을 ①에서 '알렸다' 로 적으면 ②는 G 하나만 대조해 조용하다."""
+    relay = [_jl("2026-09-25T08:20:03", "forwarded 2 msg(s): [5, 6]", logger="listen_badonion",
+                 pid=55),
+             _jl("2026-09-25T08:24:59", "forwarded 1 msg(s): [7]", logger="listen_badonion",
+                 pid=55),
+             _jl("2026-09-25T08:29:00", "forwarded 1 msg(s): [8]", logger="listen_badonion",
+                 pid=55)]
+    bot = [_jl("2026-09-25T08:20:02", "ingested msg=78 mg=- caption=5 photo=-"),
+           _drop("2026-09-25T08:25:00", 80, _BAD, "Badonions"),
+           _jl("2026-09-25T08:29:01", "ingested msg=79 mg=- caption=5 photo=-"),
+           _poll("2026-09-25T08:39:50")]
+
+    def check(now, seen):
+        return bh.delivery_check(7200, now=now, seen=seen, read=lambda u, s: (
+            (relay if u == bh.RELAY_UNITS else bot), "", ""))
+    g1 = check(NOW, set())
+    assert g1["fresh"]["kind"] == "ok" and [d["msg"] for d in g1["new_drops"]] == [80], g1
+    assert g1["ids"] and all(i.startswith("drop:") for i in g1["ids"]), g1["ids"]
+    g2 = check(NOW + timedelta(minutes=10), set(g1["ids"]))
+    assert (g2["fresh"]["kind"], g2["fresh"]["sent"]) == ("partial", 4), g2["fresh"]
+    assert bh.gap_needs_alert(g2) and g2["new_drops"] == []
+    assert "3건만 받았습니다" in bh.gap_alert_text(g2)
+
+
+def test_hourly_alerts_only_facts_inside_its_window():
+    """매시간 알림은 봇 저널을 수신을 세려고 30분 **앞**부터 읽는다 — 그 앞 30분의 예외·버림은
+    직전 실행의 창이다(거기서 이미 알렸거나 알릴 일이 아니었다). 창 안의 것만 알린다."""
+    early = [_exc("2026-09-25T06:10:00", 70), _drop("2026-09-25T06:11:00", 71, _BAD, "Badonions")]
+    late = [_exc("2026-09-25T07:10:00", 72), _drop("2026-09-25T07:11:00", 73, _BAD, "Badonions")]
+    g = bh.delivery_check(7200, now=NOW, read=lambda u, s: (
+        ([] if u == bh.RELAY_UNITS else early + late), "", ""))
+    assert [e["msg"] for e in g["lost"]] == [72] and [d["msg"] for d in g["relay_drops"]] == [73]
+    assert bh.gap_needs_alert(g)
+
+
+def test_health_check_undated_forwards_do_not_swallow_other_alerts(hc, monkeypatch, caplog):
+    """시각을 못 읽은 포워드가 있어 대조가 판정 불가(kind=unknown)여도 **저널은 읽혔다** —
+    예외로 놓친 글·릴레이 버림 알림은 그대로 나간다. 일찍 돌아가는 것은 저널을 못 읽었을
+    때(err)뿐이다. 시각을 못 읽은 수는 경고로 말한다(#54)."""
+    g = {"kind": "unknown", "sent": 0, "got": 0, "undated": 2, "err": "",
+         "fresh": {"kind": "none"}, "new_drops": [], "ids": ["lost:77:1"],
+         "new_lost": [{"msg": 77, "ts": NOW, "relay": True}]}
+    monkeypatch.setattr(bh, "delivery_check", lambda window, **kw: dict(g))
+    with caplog.at_level(logging.WARNING, logger="health-check"):
+        hc.check_delivery_gap()
+    assert len(hc._sent) == 1 and "예외로 놓쳤습니다" in hc._sent[0], hc._sent
+    assert any("2건의 시각을 못 읽어" in r.getMessage() for r in caplog.records)
+    assert json.loads((hc.MARKER_DIR / hc.DELIVERY_ALERTED).read_text(encoding="utf-8")).keys() == {
+        "lost:77:1"}
+
+
+def test_collect_counts_receipts_before_since_for_a_run_that_ended_inside_it():
+    """독립 리뷰 M1 의 진단판 — 2차 리뷰 L5 로 봇 저널을 두 번 읽게 되자, 수신 대조가 좁은
+    판정 창을 써도 멀쩡한 테스트만 있었다(생존 뮤테이션 N20: 두 번의 읽기가 같은 줄을 돌려주는
+    가짜라 눈이 멀었다). --since 08:00 직후에 끝난 백필(접속 줄은 창 밖)의 수신 3건은 07:59 에
+    있다 — 넓힌 저널로 세야 ok 다."""
+    relay_all = [_jl("2026-09-25T08:00:30", "done: forwarded 3 of 3 candidate messages "
+                     "(skipped_units=0)", logger="backfill_badonion", pid=99)]
+    bot_all = [_start(ts="2026-09-25T06:00:00"),
+               *[_jl(f"2026-09-25T07:59:3{i}", f"ingested msg={i} mg=- caption=5 photo=-")
+                 for i in range(3)],
+               _poll("2026-09-25T08:29:50")]
+
+    def read(units, since):
+        form = "%Y-%m-%d %H:%M:%S" if since.count(":") == 2 else "%Y-%m-%d %H:%M"
+        lo = datetime.strptime(since, form).replace(tzinfo=_KST)
+        src = relay_all if units == bh.RELAY_UNITS else bot_all
+        return [ln for ln in src if bh._ts(ln) >= lo], "", ""
+    f = bh.collect("2026-09-25 08:00", now=NOW,
+                   env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
+                   facts_fn=lambda: {"ok": True, "s_LoadState": "loaded", "s_ActiveState": "active",
+                                     "s_SubState": "running", "s_MainPID": "4242",
+                                     "s_NRestarts": "0"},
+                   read=read, start_fn=lambda pid: (bh.parse_start_line(bot_all[0]), ""),
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+    assert f["journal"]["ingested"] == []                  # 판정 창엔 수신 줄이 없다
+    assert (f["gap"]["kind"], f["gap"]["got"], f["gap"]["guessed"]) == ("ok", 3, True), f["gap"]
