@@ -1471,6 +1471,49 @@ def test_main_returns_the_verdict_rc(monkeypatch, capsys):
     capsys.readouterr()
 
 
+def test_old_build_is_undecidable_even_without_a_gap(monkeypatch, capsys):
+    """실수 #409 — 옛 판은 게이트 버림을 적지 않아 이 진단이 '받고 버렸나 / 아예 안 왔나' 를
+    못 가른다. 증상이 없을 때 그걸 ⚠️ 메모(rc 0)로 두면 배포 직후 `bot_health && 다시 포워드`
+    가 봇이 새 판으로 재시작되기 **전**에 다시 포워드를 흘려, 그 글이 증거 없이 또 사라진다
+    — 판정 불가(❓, rc 2)여야 셸의 `&&` 가 멈춘다. 같은 사실의 새 판은 ✅ · rc 0 이다(반대
+    증거, #25). 셸이 보는 것은 `main` 의 종료코드라 거기까지 태운다(#20)."""
+    f = _good()
+    f["running"] = bh.parse_start_line(_start(drop_log=False))
+    rc, out = _v(f)
+    assert rc == 2, out
+    assert "❓ 실행 중인 봇은 게이트 버림을 저널에 적지 않는 옛 판이다" in out, out
+    assert "✅" not in out and "⚠️" not in out and out.count("옛 판") == 1, out
+    f["running"] = bh.parse_start_line(_start(drop_log=True))
+    rc_new, out_new = _v(f)
+    assert rc_new == 0 and out_new.startswith("✅") and "옛 판" not in out_new, out_new
+    base = _good()
+    base.update(facts={}, journal_err="", forwards=[],
+                env={"dest": _DEST, "src": {}, "err": "", "inbox": "/home/h/.trade/inbox.jsonl"})
+    for drop_log, want in ((False, 2), (True, 0)):
+        g = {**base, "running": bh.parse_start_line(_start(drop_log=drop_log))}
+        monkeypatch.setattr(bh, "collect", lambda since, g=g: g)
+        assert bh.main([]) == want, drop_log
+    capsys.readouterr()
+
+
+def test_old_build_with_a_gap_and_another_unknown_keeps_both(monkeypatch):
+    """#409 의 짝 — 옛 판 ❓ 는 증상 갈래가 더 구체적인 한 줄로 **대신**하지만(#395), 그건
+    다른 못 잰 조건이 없을 때만이다. 다른 ❓ 가 있으면 '원인을 짚지 못했다 — 그것부터' 가
+    먼저고 옛 판 ❓ 도 그대로 남는다(둘 다 사실이다). 옛 판 ❓ 를 '다른 못 잰 조건' 으로
+    세면 옛 판 하나만으로 구체적인 문장이 사라진다(위 `test_unexplained_gap_says_which_branch_is_left`)."""
+    f = _good()
+    f["gap"] = {"kind": "total", "sent": 27, "got": 0, "first": NOW - timedelta(minutes=40),
+                "who": ["backfill_badonion"]}
+    f["running"] = bh.parse_start_line(_start(drop_log=False))
+    f["tg"]["member"] = {"ok": False, "err": "timeout", "code": None}
+    rc, out = _v(f)
+    assert rc == 1, out                          # 증상은 ❌ 다
+    assert "❓ 관리자 여부를 못 물었다(timeout)" in out, out
+    assert "❓ 원인을 짚지 못했다 — 위 ❓ 의 못 잰 조건이 남아 있으니 그것부터 잴 것" in out, out
+    assert "❓ 실행 중인 봇은 게이트 버림을 저널에 적지 않는 옛 판이다" in out, out
+    assert "옛 판이라 '받고 버렸나 / 아예 안 왔나'" not in out, out
+
+
 def test_restart_count_note_when_the_bot_keeps_starting():
     """Low — 한 스냅샷의 상태만 보면 재시작 루프를 놓친다. 창 안 시작 횟수로 말한다."""
     f = _good()

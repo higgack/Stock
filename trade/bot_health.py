@@ -25,7 +25,10 @@
 판정은 **지금 도는 프로세스(MainPID)의 줄**로 한다 — 재시작 전 프로세스의 409·
 버림·예외로 놓친 릴레이 글은 옛 판·옛 설정의 일이라 지금 상태의 증거가 아니다(사실
 메모로 따로 말한다, 독립 리뷰 H1). 판정은 `--since` 창 안의 줄로만 한다 — 봇 저널을
-그보다 앞에서 읽는 것은 **수신을 셀 때만**이다(2차 독립 리뷰 L5).
+그보다 앞에서 읽는 것은 **수신을 셀 때만**이다(2차 독립 리뷰 L5). 지금 도는 봇이 버림을
+적지 않는 **옛 판**이면 증상이 없어도 ❓(rc 2)다 — 이 진단이 가르려는 '받고 버렸나 /
+아예 안 왔나' 를 그 저널은 말하지 않는다. 그래서 배포 직후 `이 명령 && 다시 포워드` 는
+봇이 새 판으로 재시작되기 전엔 다시 포워드를 내보내지 않는다(실수 #409).
 
 채널 글을 처리하다 예외로 끝나 수신 줄이 없는 번호는 손실의 **직접 증거**다 — 그
 글의 포워드 출처가 릴레이 원천이면 수 대조와 무관하게 ❌ 다(2차 독립 리뷰 H1). 수
@@ -564,8 +567,13 @@ def inbox_facts(path: Path, now: datetime) -> dict:
     return f
 
 
-_OLD_BUILD_NOTE = ("실행 중인 봇은 게이트 버림을 저널에 적지 않는 옛 판이다 — 위의 '버림 0건' 은 "
-                   "버리지 않았다는 증거가 아니다(이 수정이 배포돼 봇이 재시작되면 적힌다)")
+# 옛 판은 ❓(판정 불가)다 — ⚠️ 메모(rc 0)로 두면 배포 직후 `bot_health && 다시 포워드` 가
+# 봇이 새 판으로 재시작되기 **전**에 다시 포워드를 흘려, 그 글이 증거 없이 또 사라진다
+# (실수 #409). 이 진단이 가르려는 것이 바로 '받고 버렸나 / 아예 안 왔나' 다.
+_OLD_BUILD_UNK = ("실행 중인 봇은 게이트 버림을 저널에 적지 않는 옛 판이다 — 위의 '버림 0건' 은 "
+                  "버리지 않았다는 증거가 아니라 '받고 버렸나 / 아예 안 왔나' 를 가를 수 없다. "
+                  "이 수정이 배포돼 봇이 재시작되면 사라진다 — 다시 포워드하는 것은 그 뒤에"
+                  "(이 명령을 `&&` 로 앞에 두면 그때까지 막힌다)")
 
 
 def verdict(f: dict) -> tuple[int, list[str]]:
@@ -863,7 +871,7 @@ def verdict(f: dict) -> tuple[int, list[str]]:
             bad.append(f"봇은 {run['inbox']} 에 쓰는데 백필·이 진단은 {expected} 를 읽는다 "
                        "— TRADE_DATA_DIR 이 갈렸다")
         if not run["drop_log"]:
-            notes.append(_OLD_BUILD_NOTE)
+            unk.append(_OLD_BUILD_UNK)
 
     ib = f.get("inbox") or {}
     if ib and not ib.get("exists"):
@@ -875,7 +883,9 @@ def verdict(f: dict) -> tuple[int, list[str]]:
         notes.append(f"텔레그램에 봇이 아직 안 가져간 업데이트 {pend}건 — 폴링 중이면 곧 "
                      "빠진다(계속 남으면 봇이 못 가져가는 것)")
 
-    if symptom and not bad and unk:
+    # 옛 판 ❓ 는 아래 증상 갈래가 더 구체적인 한 줄로 대신한다 — '다른 못 잰 조건' 에 넣지 않는다.
+    other_unk = [u for u in unk if u != _OLD_BUILD_UNK]
+    if symptom and not bad and other_unk:
         # 못 잰 조건이 남아 있으면 '다 맞는다' 고 말할 수 없다(#165) — 그것부터.
         unk.append("원인을 짚지 못했다 — 위 ❓ 의 못 잰 조건이 남아 있으니 그것부터 잴 것")
     elif symptom and not bad:
@@ -891,7 +901,7 @@ def verdict(f: dict) -> tuple[int, list[str]]:
                        "적지 않는 옛 판이라 '받고 버렸나 / 아예 안 왔나' 를 저널이 말하지 않는다."
                        + exc + " 이 수정을 배포한 뒤(봇 재시작) 다시 포워드하면 버림 줄이나 "
                        "수신 줄이 답한다")
-            notes.remove(_OLD_BUILD_NOTE)     # 같은 사실을 두 줄로 말하지 않는다(#395)
+            unk.remove(_OLD_BUILD_UNK)        # 같은 사실을 두 줄로 말하지 않는다(#395)
         elif unlabeled:
             unk.append(f"위 조건은 전부 맞는데 {missing}건이 수신·버림 어느 줄에도 없다 —"
                        + exc)

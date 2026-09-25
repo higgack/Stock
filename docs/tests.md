@@ -1942,7 +1942,7 @@ VM 실측(2026-09-24): 운영 `.backfill-venv`(telethon 1.36.0 = 세션 DB v7)�
 고정판이 **아니면서** 핫 저널이 남은 세션을 여는 조합은 이 가드가 못 막는다 — 그 조합은
 재지 않았다(핀이 깔렸는지 안 재는 것과 같은 축이다).
 
-## #406 — '수신 0건' 은 두 갈래다: 봇이 못 받았나, 받고 버렸나 (`trade/tests/test_bot_health.py` 111건 · `trade/tests/test_bot_drop_log.py` 17건 · 2026-09-25)
+## #406 — '수신 0건' 은 두 갈래다: 봇이 못 받았나, 받고 버렸나 (`trade/tests/test_bot_health.py` 113건 · `trade/tests/test_bot_drop_log.py` 17건 · 2026-09-25)
 
 VM 실측(2026-09-25): 40일 회수가 `forwarded 27 of 27` 인데 32분 뒤에도 inbox 는 그대로였고
 trade-bot 저널의 `ingested` 는 0 이었다. 채널·출처 게이트가 로그 없이 버려 그 0 은 '못
@@ -1971,7 +1971,7 @@ trade-bot 저널의 `ingested` 는 0 이었다. 채널·출처 게이트가 로�
 | ⑬ 창 경계(리뷰 M1) | 백필의 수신은 같은 PID 의 접속 줄(`source(marked)=`)부터 센다 — 그 줄이 창 밖이면 짐작하고 표시한다 · 리스너는 포워드 시각 − 30초 · 매시간 경로는 봇 저널을 30분 앞부터 읽는다(리뷰 재현: 창 첫머리에 끝난 실행을 누락으로 알렸다) · 진단은 봇 저널을 **두 번** 읽는다 — 판정은 사용자의 `--since` 창, 수신 대조는 30분 앞부터(2차 리뷰 L5 재현: 창으로 뺀 07:45 의 409 가 '지금' 의 ❌ 가 됐다 · 모르는 꼴이나 넓혀 읽기 실패는 같은 창으로 세고 머리말에 밝힌다) · 매시간 알림도 예외·버림은 **창 안**의 것만 · 봇 수신을 실제로 센다(리뷰 N01) | `::test_relay_run_start_comes_from_the_same_pid_connect_line` · `::test_delivery_check_reads_the_bot_journal_earlier_than_the_relay_window` · `::test_widen_since_moves_back_only_forms_it_understands` · `::test_collect_reads_the_bot_journal_with_the_widened_window` · `::test_judgment_uses_the_since_window_and_receipts_use_the_wide_one` · `::test_collect_counts_receipts_before_since_for_a_run_that_ended_inside_it` · `::test_hourly_alerts_only_facts_inside_its_window` |
 | ⑭ 처리 중 예외(리뷰 M2 · 2차 H1) | 봇 에러 핸들러가 핸들러 예외(업데이트 종류·메시지 번호·**포워드 출처** — 버림 줄과 같은 규약)와 폴링 오류를 한 줄 표식으로 가르고 트레이스백을 남긴다 — 그 줄 형식을 **소스에서** 꺼내 진단 파서로 읽는다 · 수신 줄이 없는 번호의 예외는 손실의 **직접 증거** — 수 대조(gap)와 **무관하게** 릴레이 원천 ❌ · 출처를 적지 않는 판 ❓ · 직접 쓴 글·다른 출처 ⚠️(2차 리뷰 재현: 남의 글 버림·기다리는 새 포워드의 수신이 덮어 ✅ 에 '빠진 것이 없다' 메모 · 매시간 무음) · 기록된 번호의 예외는 메모 · 채널 글이 아닌 업데이트(DM)의 예외는 대조 밖(B12) · 표식 없는 옛 판 예외는 **대조 창 안**의 것만 원인을 못 짚은 갈래에서 '표본부터'(B13) | `test_bot_drop_log.py::ErrorHandlerTests` · `test_bot_health.py::test_handler_exceptions_in_the_gap_window_are_the_cause` · `::test_journal_facts_reads_exception_kinds_and_ingested_ids` · `::test_exception_line_from_the_bot_source_parses_with_its_origin` · `::test_a_masked_loss_is_red_and_alerted_once` · `::test_dm_exception_is_not_a_lost_channel_post` · `::test_unlabeled_exception_outside_the_gap_window_is_not_blamed` |
 | ⑮ 비밀값(리뷰 M3) | 봇 로그의 토큰을 **포매터**에서 가린다(메시지·URL 객체 인자·트레이스백 — 필터와 달리 공유 레코드를 안 바꾼다) · 가린 뒤에도 watchdog 이 세는 'getUpdates' 와 진단의 폴링 파서는 산다 · **별도 프로세스**로 import 해 운영의 루트 핸들러가 가리는 그것인지 잰다 · 잡히지 않은 예외(토큰 거절 문구)도 진입점이 받아 같은 포매터로 · ⑦ 명령줄은 가린 **뒤** 자른다(토큰이 자르는 경계에 걸친 픽스처 — 첫 판은 잘린 조각이 6자라 눈멀었다) · 인터프리터가 실행하는 명령만 봇으로 센다(`vim trade/bot.py` 등은 아니다) · 한 줄에 토큰이 둘이면 둘 다 가린다(2차 리뷰 T07) · `systemctl status trade-bot` 권고 금지(디렉터리 전수 · 독스트링 제외) · `journalctl` 권고엔 **토큰 모양을 지우는 sed** 가 붙어 있어야 한다(낱말 'sed' 를 부분문자열로 찾던 옛 검사는 'used' 에 속았다 — 2차 리뷰 KF02) | `test_bot_drop_log.py::TokenRedactionTests` · `::EntrypointTests` · `test_bot_health.py::test_other_bot_processes_scrubs_before_truncating_and_needs_an_interpreter` · `::test_other_bot_processes_ignores_itself_and_siblings` · `::test_no_trade_code_recommends_systemctl_status_for_the_bot_unit` |
-| ⑯ rc | `main` 이 판정의 rc(1·2)를 그대로 돌려준다 — 늘 0 이면 셸 `&&` 가 ❌·❓ 에서도 재포워드를 돌린다 | `::test_main_returns_the_verdict_rc` · `::test_main_prints_every_section_and_returns_the_verdict_rc` |
+| ⑯ rc | `main` 이 판정의 rc(1·2)를 그대로 돌려준다 — 늘 0 이면 셸 `&&` 가 ❌·❓ 에서도 재포워드를 돌린다 · 버림을 적지 않는 **옛 판**이 돌면 증상이 없어도 ❓(rc 2) — ⚠️ 메모(rc 0)였을 땐 배포 직후 `bot_health && 백필` 이 재시작 **전** 옛 봇에 다시 포워드를 흘렸다(실수 #409) · 같은 사실의 새 판은 ✅ rc 0(반대 증거) · `main` 종료코드까지 태운다 · 증상이 있으면 옛 판 ❓ 는 더 구체적인 한 줄이 대신하되(#395) 다른 ❓ 가 있으면 둘 다 남는다 | `::test_main_returns_the_verdict_rc` · `::test_main_prints_every_section_and_returns_the_verdict_rc` · `::test_old_build_is_undecidable_even_without_a_gap` · `::test_old_build_with_a_gap_and_another_unknown_keeps_both` |
 | ⑰ 알림은 사실마다 한 번(2차 리뷰 L4) | 알린 사실(포워드 사건·버림·예외로 놓친 글)의 신원을 `delivery-alerted.json` 에 적고 다음 실행은 **아직 안 알린 사건만으로** 다시 대조한다 — 끊김이 이어지면 새로 빠진 포워드만 알리고 각 포워드는 **정확히 한 알림**에만 실린다(리뷰 재현: 옛 표식은 창 안 첫 포워드라 매시간 바뀌어 포워드마다 두 통) · 포워드 사건은 **누락을 알렸을 때만** 적는다(버림 때문에 나간 알림에 같이 적으면 기다리는 새 포워드의 수신이 잠시 덮은 누락이 영영 안 알려진다) · 2일 지난 기록은 읽을 때 빼고 다음 쓰기에서 사라진다 · 쓰기는 원자적 · 못 읽으면 빈 기록 + 경고 | `::test_a_sustained_outage_alerts_each_forward_exactly_once` · `::test_hourly_marks_forwards_only_when_the_alert_is_about_them` · `::test_health_check_alert_record_prunes_and_survives_garbage` · `::test_delivery_check_classifies_relay_drops_by_name_and_by_journal_id` |
 
 뮤테이션(이번 라운드 68종 — 리뷰가 남긴 생존 13종의 재현 포함): 67종이 잡혔다. 첫 실행에서
@@ -1989,6 +1989,12 @@ trade-bot 저널의 `ingested` 는 0 이었다. 채널·출처 게이트가 로�
 픽스처를 더해 셋 다 잡았다(50/50). 리뷰 표의 P01(`-c` 를 플래그로)은 동등 변형이고, T08
 (`_LOG_FORMAT` 구분자)은 주석이 없는 계약을 주장하던 것이라 주석을 고쳐 해당 없음이 됐다 —
 진단은 메시지 본문만 읽는다.
+
+#409 반영분 뮤테이션(7종 — 옛 판을 다시 메모로 · 증상 갈래의 '다른 못 잰 조건' 에 옛 판을
+넣기/아예 안 보기 · 대신한 뒤 안 지우기 · `main` 이 ❓ 를 0 으로 · 옛 판 판정 끄기 · 시작 줄
+표식 무시): 7종 전부 잡혔다. 새 테스트 둘은 고치기 **전** 코드에서 실패함을 먼저 확인했다
+(§Pre-commit 9). 그 전엔 증상이 없는 옛 판을 재는 테스트가 **하나도 없었다** — 증상이 있는
+옛 판만 쟀다(#20·#291).
 
 ⚠️ **못 보는 축**(#274): 텔레그램 쪽 사실(웹훅·수신 종류·관리자·원천 사용자명)은 **가짜
 응답 위**에서만 잰다 — 실물 Bot API 는 VM 에서 첫 실행이 잰다. 손으로 돌린 백필은 저널에
