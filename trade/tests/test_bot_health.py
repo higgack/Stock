@@ -44,9 +44,13 @@ def _poll(ts: str, code: str = "200 OK", pid: int = 4242) -> str:
                    f'"HTTP/1.1 {code}"', logger="httpx", pid=pid)
 
 
-def _start(ts="2026-09-24T23:53:10", *, drop_log=True, pid=4242, inbox="/home/h/.trade/inbox.jsonl",
+def _start(ts="2026-09-24T23:53:10", *, drop_log=True, vouch=True, pid=4242,
+           inbox="/home/h/.trade/inbox.jsonl",
            allowed=f"{{{_DEST}}}", origin="{'badonions', 'beon_beclear'}") -> str:
-    tail = " drop_log=on" if drop_log else ""
+    """봇 시작 줄. 기본은 **지금 판**(버림 기록 + 재게시 보증, 실수 #406·#411).
+    `vouch=False` = 버림은 적지만 보증을 모르는 판(2026-09-25 80c0e6c) · `drop_log=False`
+    = 둘 다 없는 더 옛 판."""
+    tail = (" drop_log=on" + (" relay_vouch=on" if vouch else "")) if drop_log else ""
     return _jl(ts, f"trade-bot starting — inbox={inbox} media=/home/h/.trade/media "
                    f"allowed={allowed} origin={origin} concurrency=8{tail}", pid=pid)
 
@@ -80,6 +84,7 @@ def test_start_line_parser_reads_the_real_bot_format():
     assert p["allowed"] == {_DEST}
     assert p["origin"] == {"badonions", "beon_beclear"}
     assert p["drop_log"] is True                 # 이 판은 버림을 적는다는 표식
+    assert p["vouch"] is True                    # 재게시 보증을 받는 판이라는 표식(#411)
     assert p["pid"] == 4242 and p["ts"] is not None
     # 탐색 모드(목록 없음) 는 '전부 받는다' 로 읽혀야 한다 — 판정 불가가 아니다
     msg2 = fmt % (Path("/x/inbox.jsonl"), Path("/x/media"), "<discovery>", "<any>", 8)
@@ -561,6 +566,9 @@ def test_find_start_line_reads_the_head_and_terminates():
 def hc(tmp_path, monkeypatch):
     from trade.scripts import health_check as hc
     monkeypatch.setattr(hc, "MARKER_DIR", tmp_path)        # 운영 ~/.trade 를 안 건드린다(#30)
+    # 재게시 보증 기록도 데이터 디렉터리에서 읽는다(실수 #411) — 운영 파일을 읽으면 운영자가
+    # 재게시 글을 포워드하는 순간 무관한 테스트의 판정이 바뀐다(#373·#30).
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
     sent = []
     # 전달됐다고 답한다 — 기록은 전달된 알림만 한다(3차 독립 리뷰 M4). 실패는 따로 잰다.
     monkeypatch.setattr(hc, "_notify", lambda msg: sent.append(msg) or True)
@@ -1172,10 +1180,12 @@ def test_delivery_check_classifies_relay_drops_by_name_and_by_journal_id():
     assert g5["new_drops"] == [] and not bh.gap_needs_alert(g5)
 
 
-def _exc(ts, msg, *, user="Badonions", chat=_BAD, otype="channel", pid=4242) -> str:
-    """봇의 에러 핸들러가 찍는 채널 글 예외 줄 — 형식은 **소스에서** 꺼낸다(#155)."""
+def _exc(ts, msg, *, user="Badonions", chat=_BAD, otype="channel", pid=4242, omsg=4242) -> str:
+    """봇의 에러 핸들러가 찍는 채널 글 예외 줄 — 형식은 **소스에서** 꺼낸다(#155). `omsg` =
+    원래 채널의 글번호(실수 #411 판부터 찍힌다 — 보증 대조의 열쇠)."""
     fmt = _log_format(_REPO / "trade" / "bot.py", "handler error update=channel_post", "error")
-    return _jl(ts, fmt % (msg, otype, chat, user, "OSError", "[Errno 28] No space left on device"),
+    return _jl(ts, fmt % (msg, otype, chat, user, omsg, "OSError",
+                          "[Errno 28] No space left on device"),
                pid=pid).replace("[INFO]", "[ERROR]")
 
 
@@ -1608,12 +1618,13 @@ def test_exception_line_from_the_bot_source_parses_with_its_origin():
     bot_py = _REPO / "trade" / "bot.py"
     fmt = _log_format(bot_py, "handler error update=channel_post", "error")
     e = bh.journal_facts([_jl("2026-09-25T08:00:00", fmt % (77, "channel", _BAD, "Badonions",
+                                                           4242, "OSError", "disk"))]
+                         )["exceptions"][0]
+    assert (e["kind"], e["update"], e["msg"], e["type"], e["chat"], e["user"], e["omsg"]) == (
+        "handler", "channel_post", 77, "channel", _BAD, "Badonions", 4242), e
+    d = bh.journal_facts([_jl("2026-09-25T08:00:00", fmt % (78, "none", None, None, None,
                                                            "OSError", "disk"))])["exceptions"][0]
-    assert (e["kind"], e["update"], e["msg"], e["type"], e["chat"], e["user"]) == (
-        "handler", "channel_post", 77, "channel", _BAD, "Badonions"), e
-    d = bh.journal_facts([_jl("2026-09-25T08:00:00", fmt % (78, "none", None, None, "OSError",
-                                                           "disk"))])["exceptions"][0]
-    assert (d["type"], d["chat"], d["user"]) == ("none", None, ""), d
+    assert (d["type"], d["chat"], d["user"], d["omsg"]) == ("none", None, "", None), d
     other = _log_format(bot_py, "handler error update=%s", "error")
     o = bh.journal_facts([_jl("2026-09-25T08:00:00", other % ("Update", 5, "ValueError", "x"))]
                          )["exceptions"][0]
@@ -1915,7 +1926,13 @@ def test_other_origin_drops_are_not_called_benign_and_say_how_to_tell():
     텔레그램이 원래 출처를 달아 BeOn 의 AWAKE 되포워드와 같은 모양으로 온다 — 여기선 둘을 못
     가른다(#165). 판정은 그대로 ⚠️(rc 0 — BeOn 되포워드마다 ❌·❓ 면 `bot_health && 백필`
     이 늘 막히고 진짜 ❌ 를 가린다, #260), 대신 메모가 단정을 빼고 가르는 명령을 건넨다.
-    반대 증거: 직접 쓴 글만이면 '제 일' 이라 말해도 참이다(데이터가 아니다)."""
+    반대 증거: 직접 쓴 글만이면 '제 일' 이라 말해도 참이다(데이터가 아니다).
+
+    ⚠️ 처방이 바뀌었다(실수 #411, #222 — 지우지 않고 다시 썼다). 옛 판은 "그 출처를 .env
+    TRADE_SOURCE_ORIGIN 에 더하라" 고 했는데, 채널을 통째로 허용하면 BeOn 이 **같은 채널**의
+    무관 글을 되포워드할 때 그것까지 받고, 나쁜양파가 다음에 다른 채널을 재게시하면 같은
+    유실이 반복된다. 지금 처방은 '보증하는 판의 릴레이로 다시 포워드' 다 — 그 권고가 남아
+    있으면 운영자가 옛 처방대로 .env 를 넓힌다."""
     f = _good()
     f["journal"] = bh.journal_facts([
         _poll("2026-09-25T08:29:50"),
@@ -1927,7 +1944,8 @@ def test_other_origin_drops_are_not_called_benign_and_say_how_to_tell():
     assert note.startswith("⚠️"), note
     assert "여기서 못 가른다" in note and "재게시" in note, note
     assert bh.FIND_CMD in note and "to-forward" in note, note
-    assert "TRADE_SOURCE_ORIGIN" in note, note
+    assert "보증" in note and "다시 포워드" in note, note
+    assert "TRADE_SOURCE_ORIGIN" not in note, note       # 옛 처방(채널 통째 허용)을 권하지 않는다
     # 옛 판의 단정 — 다른 출처가 섞이면 '제 일' 은 **조건부**로만 나온다
     assert "게이트가 제 일을 한 것이다" not in note, note
     # 반대 증거: 직접 쓴 글만 — 거기엔 가를 것이 없다
@@ -2102,3 +2120,380 @@ def test_pre_restart_exceptions_of_other_origin_posts_are_not_called_lost_relay_
     f2["tg"] = _good()["tg"]
     _rc2, out2 = _v(f2)
     assert "재시작 전 프로세스가 채널 글 1건을 처리하다 예외로 놓쳤다(번호 55)" in out2, out2
+
+
+# ── 재게시 보증(실수 #411) ────────────────────────────────────────────────
+# 나쁜양파가 다른 채널에서 퍼 온 글은 원래 출처로 와서 봇의 출처 목록에 안 걸린다. 릴레이가
+# 포워드 **전에** 그 글을 보증하고 봇이 받는다. 진단은 (a) 봇 로그의 새 칸(원래 글번호·보증
+# 대조 결과·채널 제목)을 소스의 실제 형식으로 읽고 (b) 보증 **뒤의** 버림을 ❌ 로, 보증 **전의**
+# 버림을 받았는지와 함께 ⚠️ 로 가르며 (c) 보증을 모르는 옛 판 봇이면 ❓ 로 `&&` 를 막는다.
+_REPOST = -1009990000001        # 합성 — 운영 재게시 채널 ID 를 쓰지 않는다(#393)
+_REPOST2 = -1009990000002       # 합성 — 같은 글번호를 가진 다른 재게시 채널
+
+
+def _bot_line(ts: str, head: str, args, level: str = "info") -> str:
+    """봇 소스의 **실제** 형식(`log.<level>("…")`)을 채운 저널 줄(#155 — 생산자 = 소비자)."""
+    fmt = _log_format(_REPO / "trade" / "bot.py", head, level)
+    return _jl(ts, fmt % args)
+
+
+def _vdrop(ts: str, msg: int, omsg: int, *, chat=_REPOST, vouch="miss", title="퍼온 채널",
+           pid: int = 4242) -> str:
+    fmt = _log_format(_REPO / "trade" / "bot.py", "dropped msg=")
+    return _jl(ts, fmt % (msg, "channel", chat, None, omsg, ["badonions", "beon_beclear"],
+                          vouch, title), pid=pid)
+
+
+def _vaccept(ts: str, msg: int, omsg: int, *, chat=_REPOST, title="퍼온 채널") -> str:
+    fmt = _log_format(_REPO / "trade" / "bot.py", "accepted msg=")
+    return _jl(ts, fmt % (msg, chat, omsg, title))
+
+
+def _vouched(*pairs, at=datetime(2026, 9, 25, 7, 0, tzinfo=_KST)) -> dict:
+    return {(c, m): {"at": at, "by": "backfill", "title": "퍼온 채널"} for c, m in pairs}
+
+
+def test_drop_and_accept_lines_from_the_bot_source_parse_every_new_field():
+    """버림 줄의 새 칸 — 원래 글번호(보증 대조의 열쇠) · 보증 대조 결과 · 채널 제목 — 을 봇
+    소스의 형식 그대로 채워 읽는다. 제목은 사람이 붙인 자유 문자열이라 따옴표·가짜 칸이 섞여도
+    뒤틀리지 않아야 한다(줄 끝 repr 로 둔 이유). 옛 줄은 그 칸이 None 이다(지어내지 않는다)."""
+    tricky = "퍼온 '채널' vouch=hit origin_msg=1"
+    j = bh.journal_facts([
+        _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable", title=tricky),
+        _vdrop("2026-09-25T08:00:01", 6, 4243, title=None),
+        _vaccept("2026-09-25T08:00:02", 7, 4244),
+        _drop("2026-09-25T08:00:03", 8, -100555, "old_build"),
+    ])
+    got = [(d["msg"], d["chat"], d["omsg"], d["vouch"], d["title"]) for d in j["drops_origin"]]
+    assert got == [(5, _REPOST, 4242, "unreadable", tricky), (6, _REPOST, 4243, "miss", None),
+                   (8, -100555, None, None, None)], got
+    assert [(a["msg"], a["chat"], a["omsg"], a["title"]) for a in j["vouch_accepts"]] == [
+        (7, _REPOST, 4244, "퍼온 채널")]
+    assert len(j["ingested"]) == 0                 # 보증 수용 줄은 수신 줄이 아니다(따로 센다)
+
+
+def test_a_channel_title_cannot_become_another_journal_fact():
+    """제목은 **남(채널 주인)이 쓴** 글이다 — 그 안의 `ingested msg=…`·정상 폴링 문구·수용 줄
+    문구가 다른 사실로 읽히면 버림이 사라지고 없는 수신·폴링·보증 수용이 생긴다(독립 리뷰
+    #411 L2 실측). 분류는 봇이 쓴 칸까지만 본다 — 수용 줄의 제목에 버림 줄 문구가 들어
+    있어도, 예외 줄의 예외 문구에 수신 줄 문구가 들어 있어도 같다. 제목 자체는 그대로 읽는다."""
+    fake_ingest = "x ingested msg=999 y"
+    fake_poll = 'x /getUpdates "HTTP/1.1 200 OK" y'
+    fake_accept = f"accepted msg=7 reason=relay_vouch origin_chat={_REPOST} origin_msg=5"
+    fake_drop = (f" dropped msg=8 reason=origin origin_type=channel origin_chat={_REPOST} "
+                 "origin_username=None origin_msg=6")
+    exc_fmt = _log_format(_REPO / "trade" / "bot.py", "handler error update=channel_post", "error")
+    exc = _jl("2026-09-25T08:00:04", exc_fmt % (77, "channel", _BAD, "Badonions", 4242,
+                                                 "ValueError", "caption ingested msg=55"))
+    j = bh.journal_facts([
+        _vdrop("2026-09-25T08:00:00", 1, 101, title=fake_ingest),
+        _vdrop("2026-09-25T08:00:01", 2, 102, title=fake_poll),
+        _vdrop("2026-09-25T08:00:02", 3, 103, title=fake_accept),
+        _vaccept("2026-09-25T08:00:03", 4, 104, title=fake_drop),
+        exc,
+    ])
+    assert [(d["msg"], d["title"]) for d in j["drops_origin"]] == [
+        (1, fake_ingest), (2, fake_poll), (3, fake_accept)], j["drops_origin"]
+    assert j["ingested_ids"] == set() and j["ingested"] == [], j["ingested_ids"]
+    assert j["polls"] == {} and j["last_ok"] is None, j["polls"]
+    assert [(a["msg"], a["omsg"], a["title"]) for a in j["vouch_accepts"]] == [(4, 104, fake_drop)]
+    assert [(e["msg"], e["chat"]) for e in j["exceptions"]] == [(77, _BAD)], j["exceptions"]
+
+
+def test_vouch_order_is_by_time_with_the_journals_one_second_grain():
+    """보증 **전의** 버림과 **뒤의** 버림은 뜻이 반대다 — 앞은 보증하기 전의 판이 포워드한
+    것(다시 포워드하면 받는다), 뒤는 보증 경로가 깨진 것(❌). 저널 시각은 초로 잘려 같은 초
+    안의 보증은 '전' 이다(보증은 포워드보다 늘 먼저다). 모르면 None(#165)."""
+    at = datetime(2026, 9, 25, 7, 0, 0, 500000, tzinfo=_KST)
+    v = {(_REPOST, 1): {"at": at}}
+    d = {"chat": _REPOST, "omsg": 1}
+    assert bh.vouch_order({**d, "ts": at.replace(microsecond=0)}, v) == "before"
+    assert bh.vouch_order({**d, "ts": at + timedelta(seconds=5)}, v) == "before"
+    assert bh.vouch_order({**d, "ts": at - timedelta(seconds=2)}, v) == "after"
+    assert bh.vouch_order({**d, "omsg": None, "ts": at}, v) is None
+    assert bh.vouch_order({**d, "ts": None}, v) is None
+    assert bh.vouch_order({**d, "ts": at}, {(_REPOST, 1): {"at": None}}) is None
+    assert bh.vouch_order({**d, "ts": at}, {}) is None
+    assert bh.vouch_order({**d, "omsg": 2, "ts": at}, v) is None
+    # 릴레이 글 판정: 보증 **뒤의** 버림만 릴레이 글이다 — 원천 이름·ID 와 같은 자리
+    assert bh.relay_origin({**d, "type": "channel", "user": "", "ts": at}, (), (), v) is True
+    assert bh.relay_origin({**d, "type": "channel", "user": "",
+                            "ts": at - timedelta(seconds=2)}, (), (), v) is False
+    fd = bh.forward_drops([{**d, "type": "channel", "user": "", "ts": at}], (), (), v)
+    assert [(x["relay"], x["why"], x["vouched"]) for x in fd] == [(True, "vouch", "before")]
+    fn = bh.forward_drops([{**d, "type": "channel", "user": "Badonions", "ts": at}],
+                          ["Badonions"], (), v)
+    assert fn[0]["why"] == "name"                  # 원천 이름이 먼저다 — 처방이 .env 쪽이다
+
+
+def _vf(pairs=None, err="", exists=True, path="/home/h/.trade/relay_origins.json") -> dict:
+    return {"path": path, "exists": exists, "pairs": pairs or {}, "err": err}
+
+
+def test_a_drop_after_the_vouch_is_red_with_the_bots_own_reason():
+    """보증이 글보다 먼저였는데 봇이 버렸다 = 보증 경로가 깨졌다(봇이 기록을 못 읽음 · 데이터
+    디렉터리가 갈림). 원천 이름 버림과 처방이 다르다(#82) — .env 를 권하지 않는다."""
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242)))
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"),
+                                     _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable")])
+    rc, out = _v(f)
+    assert rc == 1, out
+    line = _note_with(out, "보증한** 재게시 글 1건")
+    assert line.startswith("❌") and "vouch=unreadable" in line, line
+    assert "TRADE_SOURCE_ORIGIN" not in line and "데이터 디렉터리" in line, line
+    assert "릴레이 포워드 1건을 **출처 게이트**에서 버렸다" not in out     # 원천 이름 갈래가 아니다
+    # 같은 버림이라도 보증이 없으면 ❌ 가 아니다 — 판정할 수 없는 다른 출처 메모다
+    f["vouch"] = _vf()
+    rc2, out2 = _v(f)
+    assert rc2 == 0 and "보증한** 재게시 글" not in out2, out2
+
+
+def test_a_vouched_drop_that_came_back_later_is_a_note_not_red():
+    """보증 뒤에 버렸어도 **그 뒤** 같은 원래 글을 보증으로 받았으면 손실이 아니다 — ❌ 로 두면
+    원인을 고치고 다시 포워드해 받았는데도 그 줄이 창에서 빠질 때까지 `bot_health && 다시
+    포워드` 가 막힌다(독립 리뷰 #411 L5). 한 번 깨졌던 사실은 메모로 남긴다(#43). 다른 글을
+    받은 것은 이 글의 회복이 아니고, 같은 초의 수용 줄은 순서를 모른다 — 받았다고 단정하지
+    않는다(#165)."""
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242), (_REPOST, 4243)))
+    drop = _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable")
+
+    def with_accept(ts, omsg):
+        f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"), drop,
+                                         _vaccept(ts, 9, omsg)])
+        return _v(f)
+    rc, out = with_accept("2026-09-25T08:20:00", 4242)
+    assert rc == 0, out
+    note = _note_with(out, "보증 뒤에 버렸다가 그 뒤 보증으로 받았다")
+    assert note.startswith("⚠️") and "vouch=unreadable" in note, note
+    assert "보증한** 재게시 글" not in out, out
+    rc2, out2 = with_accept("2026-09-25T08:20:00", 4243)          # 다른 글을 받았다
+    assert rc2 == 1 and "보증한** 재게시 글 1건" in out2, out2
+    rc3, out3 = with_accept("2026-09-25T08:00:00", 4242)          # 같은 초 — 순서를 모른다
+    assert rc3 == 1 and "보증한** 재게시 글 1건" in out3, out3
+
+
+def test_an_accept_of_the_same_number_in_another_channel_does_not_heal():
+    """글번호는 채널마다 따로 센다 — 다른 재게시 채널의 같은 번호를 받은 것은 이 글의 회복이
+    아니다. 회복으로 치면 손실이 메모(rc 0)가 되고 매시간 알림에서도 빠진다(배포 전 독립 리뷰
+    L5: `vouch_recovered` 의 채널 대조를 지우는 뮤테이션이 살아남았다)."""
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242), (_REPOST2, 4242)))
+    f["journal"] = bh.journal_facts([
+        _start(), _poll("2026-09-25T08:29:50"),
+        _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+        _vaccept("2026-09-25T08:20:00", 9, 4242, chat=_REPOST2)])
+    rc, out = _v(f)
+    assert rc == 1 and "보증한** 재게시 글 1건" in out, out
+    assert "보증 뒤에 버렸다가 그 뒤 보증으로 받았다" not in out, out
+
+
+def test_a_healed_drop_now_does_not_hide_the_previous_process_relay_drop():
+    """지금 프로세스의 **치유된** 보증 버림(메모)이 재시작 전 프로세스의 릴레이 버림 메모를
+    가렸다 — 옛 게이트가 치유분까지 센 목록을 봤다(배포 전 독립 리뷰 L3, 이 델타가 만든 회귀).
+    치유된 버림은 ❌ 가 아니므로 옛 메모를 막을 이유가 없다. 그리고 그 메모의 건수는 재시작
+    전 몫만 센다(창 전체를 세면 지금 프로세스의 버림이 섞인다)."""
+    old = [_start(ts="2026-09-25T06:00:00", pid=1111),
+           _drop("2026-09-25T06:20:00", 9, _BAD, "Badonions", pid=1111)]
+    new = [_start(ts="2026-09-25T07:50:00", pid=4242), _poll("2026-09-25T08:29:50"),
+           _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+           _vaccept("2026-09-25T08:20:00", 11, 4242)]
+    f, _ = _collect(old + new)
+    assert f["journal_cur"] is not None and f["running"]["pid"] == 4242
+    f["tg"] = _good()["tg"]
+    f["vouch"] = _vf(_vouched((_REPOST, 4242)))
+    rc, out = _v(f)
+    assert rc == 0, out
+    assert _note_with(out, "보증 뒤에 버렸다가 그 뒤 보증으로 받았다"), out
+    assert "⚠️ 재시작 전 프로세스가 릴레이 포워드 1건을 출처 게이트에서" in out, out
+
+
+def test_a_drop_before_the_vouch_is_a_note_that_says_whether_it_came_back():
+    """버린 **뒤에** 보증됐다 = 버릴 땐 보증이 없었다(보증하기 전의 판이 포워드했거나 다른 릴레이가
+    되포워드했다 — 진단은 둘을 못 가르므로 원인을 단정하지 않는다, 독립 리뷰 #411 I12 · #165).
+    받았는지는 봇의 보증 수용 줄이 말한다 — 받았으면 그렇다고, 아니면 볼 곳을."""
+    late = datetime(2026, 9, 25, 8, 10, tzinfo=_KST)
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242), (_REPOST, 4243), at=late))
+    f["journal"] = bh.journal_facts([
+        _start(), _poll("2026-09-25T08:29:50"),
+        _vdrop("2026-09-25T08:00:00", 5, 4242), _vdrop("2026-09-25T08:00:01", 6, 4243),
+        _vaccept("2026-09-25T08:10:05", 9, 4242)])
+    rc, out = _v(f)
+    assert rc == 0, out
+    note = _note_with(out, "버린 **뒤에** 릴레이가 보증한 재게시 글")
+    assert note.startswith("⚠️") and "그중 2건" in note and "받은 줄이 1건" in note, note
+    assert "나머지 1건은 아직 받은 줄이 없다" in note and bh.FIND_CMD in note, note
+    assert "버릴 땐 보증이 없었다 — 보증하기 전의 판이나 다른 릴레이가" in note, note
+    assert "(보증하기 전의 판이 포워드했다)" not in note, note       # 한 원인으로 단정하지 않는다
+    # 보증 없는 다른 출처가 없으니 '여기서 못 가른다' 는 안 붙는다(할 말이 없는 갈래)
+    assert "보증 없는 다른 출처 포워드는 여기서 못 가른다" not in note, note
+
+
+def test_a_bot_that_does_not_know_vouches_blocks_the_reforward_chain():
+    """버림은 적지만 보증을 모르는 판(2026-09-25 80c0e6c) — 다시 포워드해도 재게시 글을 또
+    버린다. ❓(rc 2)라 `bot_health && 다시 포워드` 가 봇 재시작 전엔 흐르지 않는다(#409). 더
+    옛 판(버림도 안 적음)은 그 ❓ 하나만 — 같은 사실을 두 줄로 말하지 않는다(#395)."""
+    f = _good()
+    f["running"] = bh.parse_start_line(_start(vouch=False))
+    rc, out = _v(f)
+    assert rc == 2 and bh._OLD_VOUCH_UNK in out, out
+    f["running"] = bh.parse_start_line(_start(drop_log=False))
+    rc2, out2 = _v(f)
+    assert rc2 == 2 and bh._OLD_BUILD_UNK in out2 and bh._OLD_VOUCH_UNK not in out2, out2
+
+
+def test_the_deployed_bot_lets_the_reforward_chain_through(tmp_path):
+    """배포 **직후**(보증을 아는 새 판 봇 · 다시 포워드하기 전)엔 `bot_health && 다시 포워드`
+    가 흘러야 한다 — 창 안에 옛 프로세스가 버린 재게시 27건이 그대로 있어도. 그 옛 버림을
+    ❌·❓ 로 올리면 사슬이 영영 막힌다: 그 글은 다시 포워드해야 돌아오는데, 다시 포워드는 이
+    명령이 0 을 내야 나간다(#409 의 반대편 — 막아야 할 때만 막는다). 옛 버림은 사실 메모로
+    남는다(#41). 2026-09-25 운영 절차(배포 → `bot_health && 백필 --since`)를 그대로 태운다."""
+    inbox = tmp_path / "inbox.jsonl"
+    inbox.write_text("{}\n", encoding="utf-8")
+    old = _start(ts="2026-09-25T07:40:00", pid=1111, vouch=False, inbox=str(inbox))
+    fwd = _jl("2026-09-25T07:49:09", "done: forwarded 27 of 27 candidate messages "
+              "(skipped_units=0)", logger="backfill_badonion", pid=99)
+    drops = [_drop("2026-09-25T07:49:%02d" % (10 + i), 900 + i, _REPOST, "None", pid=1111)
+             for i in range(27)]
+    new = _start(ts="2026-09-25T08:10:00", pid=4242, inbox=str(inbox))
+    f, _ = _collect([old, *drops, new, _poll("2026-09-25T08:29:50")], [fwd], tmp=tmp_path)
+    f["tg"] = _good()["tg"]
+    rc, out = _v(f)
+    assert rc == 0, out
+    assert f"다른 출처 포워드 27: {_REPOST}" in _note_with(out, "출처 게이트가"), out
+    # 대조군: 같은 창인데 옛 판이 아직 돈다(배포 전) — 그때는 ❓(rc 2)로 막는다
+    facts = {"ok": True, "s_LoadState": "loaded", "s_ActiveState": "active",
+             "s_SubState": "running", "s_MainPID": "1111", "s_NRestarts": "0"}
+    f2, _ = _collect([old, *drops, _poll("2026-09-25T08:29:50", pid=1111)], [fwd],
+                     tmp=tmp_path, facts=facts)
+    f2["tg"] = _good()["tg"]
+    rc2, out2 = _v(f2)
+    assert rc2 == 2 and bh._OLD_VOUCH_UNK in out2, out2
+
+
+def test_an_unreadable_vouch_record_is_a_note_not_a_block():
+    """못 읽은 보증 기록은 ⚠️ 다 — ❓ 로 막으면 그 기록을 새로 쓸 다음 보증(= 다시 포워드)을
+    `&&` 가 막는다. 무엇을 못 하는지(재게시 버림을 알아보기)와 경로를 말한다(#82)."""
+    f = _good()
+    f["vouch"] = _vf(err="형식 오류(JSONDecodeError)")
+    rc, out = _v(f)
+    assert rc == 0, out
+    note = _note_with(out, "재게시 보증 기록을 못 읽었다")
+    assert note.startswith("⚠️") and "형식 오류" in note and "relay_origins.json" in note, note
+
+
+def test_render_names_the_vouch_state_and_the_accepted_count():
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 1), (_REPOST, 2), (-1009990000002, 3)))
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"),
+                                     _vaccept("2026-09-25T08:00:00", 9, 1)])
+    out = "\n".join(bh.render(f, "x"))
+    assert "재게시 보증 받음" in _note_with(out, "③ 실행 중 설정")
+    assert "보증 수용 1건" in _note_with(out, "④ 저널")
+    vline = _note_with(out, "재게시 보증 기록 ")
+    assert "채널 2개 · 글 3건" in vline and f"{_REPOST}('퍼온 채널') 2건" in vline, vline
+    f["running"] = bh.parse_start_line(_start(vouch=False))
+    f["vouch"] = _vf(exists=False)
+    out2 = "\n".join(bh.render(f, "x"))
+    assert "재게시 보증 모름(옛 판)" in out2
+    assert "없음(아직 재게시 글을 보증한 적 없다" in _note_with(out2, "재게시 보증 기록 ")
+    f["vouch"] = _vf(err="빈 파일")
+    assert "못 읽음(빈 파일)" in _note_with("\n".join(bh.render(f, "x")), "재게시 보증 기록 ")
+
+
+def test_collect_reads_the_vouch_record_where_the_bot_does(tmp_path):
+    """진단은 봇과 **같은 데이터 디렉터리**의 기록을 **같은 함수**로 읽는다(#35) — 그리고 수
+    대조의 버림 분류에도 넘긴다(보증 뒤의 버림 = 릴레이 글)."""
+    from trade import relay_origins as ro
+    ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=ro.path_in(tmp_path),
+             now=datetime(2026, 9, 25, 7, 0, tzinfo=_KST))
+    f, _ = _collect([_start(), _poll("2026-09-25T08:29:50"),
+                     _vdrop("2026-09-25T08:00:00", 5, 4242)], tmp=tmp_path)
+    assert f["vouch"]["path"] == str(ro.path_in(tmp_path)) and f["vouch"]["err"] == ""
+    assert set(f["vouch"]["pairs"]) == {(_REPOST, 4242)}
+    rc, out = _v(f)
+    assert rc == 1 and "보증한** 재게시 글 1건" in out, out
+
+
+def test_the_hourly_check_alerts_a_dropped_vouched_repost_with_its_own_advice(
+        hc, monkeypatch):
+    """매시간 알림도 보증 뒤의 버림을 알린다 — `health_check` 가 봇과 같은 데이터 디렉터리의
+    기록을 넘긴다(배선은 진짜 `delivery_check` 로 태운다). 처방은 .env 가 아니다(#82). 기록이
+    없으면 같은 버림은 보증 없는 다른 출처라 알리지 않는다(#260)."""
+    from trade import relay_origins as ro
+    drop = _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="miss")
+    _drive(monkeypatch, bot=[_poll("2026-09-25T08:29:50"), drop], relay=[])
+    hc.check_delivery_gap()
+    assert hc._sent == [], hc._sent
+    ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=ro.path_in(hc.DATA_DIR),
+             now=datetime(2026, 9, 25, 7, 0, tzinfo=_KST))
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1, hc._sent
+    assert "보증한</b> 재게시 글 <b>1건을 출처 게이트에서 버렸습니다</b>" in hc._sent[0], hc._sent[0]
+    assert "TRADE_SOURCE_ORIGIN" not in hc._sent[0]
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1                              # 같은 버림은 한 번만
+
+
+def test_the_hourly_check_skips_a_vouched_drop_that_came_back(hc, monkeypatch):
+    """매시간 알림도 같은 규칙이다(#38) — 보증 뒤의 버림이라도 그 뒤 같은 원래 글을 받았으면
+    알릴 손실이 아니다(독립 리뷰 #411 L5). 대조군: 받은 줄이 없으면 알린다."""
+    from trade import relay_origins as ro
+    ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=ro.path_in(hc.DATA_DIR),
+             now=datetime(2026, 9, 25, 7, 0, tzinfo=_KST))
+    bot = [_poll("2026-09-25T08:29:50"), _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+           _vaccept("2026-09-25T08:20:00", 9, 4242)]
+    _drive(monkeypatch, bot=bot, relay=[])           # `_drive` 는 부를 때 줄을 읽는다
+    hc.check_delivery_gap()
+    assert hc._sent == [], hc._sent
+    del bot[-1]                                      # 대조군: 받은 줄이 없다 → 알린다
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1, hc._sent
+
+
+def test_the_hourly_check_does_not_heal_with_another_channels_same_number(hc, monkeypatch):
+    """매시간 알림도 같은 규칙이다(#38) — 다른 재게시 채널의 같은 글번호를 받은 줄은 이 글의
+    회복이 아니다(배포 전 독립 리뷰 L5)."""
+    from trade import relay_origins as ro
+    ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=ro.path_in(hc.DATA_DIR),
+             now=datetime(2026, 9, 25, 7, 0, tzinfo=_KST))
+    bot = [_poll("2026-09-25T08:29:50"), _vdrop("2026-09-25T08:00:00", 5, 4242, vouch="unreadable"),
+           _vaccept("2026-09-25T08:20:00", 9, 4242, chat=_REPOST2)]
+    _drive(monkeypatch, bot=bot, relay=[])
+    hc.check_delivery_gap()
+    assert len(hc._sent) == 1, hc._sent
+
+
+def test_the_hourly_check_says_when_it_cannot_read_the_vouch_record(hc, monkeypatch, caplog):
+    """보증 기록을 못 읽으면 **그 갈래만** 못 본다는 사실을 남기고 나머지 대조는 그대로 한다
+    (#54 — 판정 불가를 '이상 없음' 으로 접지 않는다). 독립 리뷰 #411 에서 이 경고를 지워도
+    전부 통과했다(뮤테이션 HC2)."""
+    from trade import relay_origins as ro
+    rec = ro.path_in(hc.DATA_DIR)
+    rec.parent.mkdir(parents=True, exist_ok=True)
+    rec.write_text("{broken", encoding="utf-8")
+    _drive(monkeypatch, bot=[_poll("2026-09-25T08:29:50"), _exc("2026-09-25T08:00:05", 77)],
+           relay=[])
+    with caplog.at_level(logging.WARNING):
+        hc.check_delivery_gap()
+    warn = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("재게시 보증 기록을 못 읽었다" in m and "형식 오류" in m for m in warn), warn
+    assert len(hc._sent) == 1, hc._sent          # 나머지 대조(예외로 놓친 글)는 그대로 알린다
+
+
+def test_an_exception_on_a_vouched_repost_is_a_lost_relay_post():
+    """재게시 글을 처리하다 예외로 놓치면(수신 줄 없음) 릴레이 글의 손실이다 — 원천 이름이
+    아니어도 보증이 그 글을 릴레이 것으로 알아본다(버림과 **같은 규칙**, #38 — 헬퍼만 재면
+    예외 쪽 배선을 떼어도 통과했다: 뮤테이션 H2). 보증이 없으면 다른 출처 글이라 메모다."""
+    f = _good()
+    f["vouch"] = _vf(_vouched((_REPOST, 4242)))
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"),
+                                     _exc("2026-09-25T08:00:05", 77, user="None", chat=_REPOST)])
+    rc, out = _v(f)
+    assert rc == 1, out
+    assert "❌ 봇이 릴레이 원천의 채널 글 1건을 처리하다 예외로 놓쳤다(번호 77)" in out, out
+    f["vouch"] = _vf()
+    rc2, out2 = _v(f)
+    assert rc2 == 0 and "릴레이 원천이 아닌 채널 글 1건" in out2, out2

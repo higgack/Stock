@@ -243,7 +243,7 @@
 | nav 순서가 새 소스를 **형제 옆**에 놓는다(레지스트리 파생) | ✅ 자동 | `…::test_registry_places_the_new_source_next_to_its_sibling` |
 | 모든 소스가 **캡션 문법**을 밝힌다 — 안 밝히면 형제 계약 밖(#370·#24·#54) | ✅ 자동 | `…::test_every_source_declares_its_caption_grammar` |
 | 상관 4지표 계약의 **대상 집합이 조용히 줄지 않는다**(하한 리터럴, #66) | ✅ 자동 | `…::test_the_corr_contract_scope_cannot_silently_shrink` |
-| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` |
+| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) — 트리는 **커밋될 파일**(git 추적 + add 전 새 파일, 무시 목록 밖)에서 센다: 디스크 전체를 훑던 옛 판은 무시된 서브에이전트 worktree(`.claude/worktrees/…`, 레포 사본)를 게이트 밖 트리로 세 리뷰가 도는 동안 거짓 빨간불이었다(#412) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` · `…::test_the_gate_scope_is_what_git_would_commit`(임시 저장소 — 무시·가상환경·최상위 파일은 빼고 추적·add 전 새 트리는 센다 · 하위 트리는 상위가 덮는다 — 단 **'/' 경계로만**(형제 접두 `tests_e2e` 는 `tests` 에 안 접힌다) · `.py` 가 아닌 `test_*` 는 트리가 아니다 · 임시 저장소의 git 은 바깥 `GIT_*` 환경을 물려받지 않는다(훅·`rebase --exec` 가 넘긴 인덱스를 고치지 않는다 — 흉내 낸 바깥 인덱스가 안 생기는지 잰다) · 뮤테이션 9종 전부 잡힘) |
 
 ### 거래량 상위 보드 + KRX/NXT 세션 창 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrVolumeAndSessions20260916`
@@ -2034,8 +2034,51 @@ Low 로는 원자적 쓰기·번호 상한·재시작 전 예외 필터가 무�
 
 | 축 | 계약 | 테스트 |
 |---|---|---|
-| 범위 | **임시 저장소**에서: 추적 파일 + add 전 새 파일은 보고 · 무시 목록 · 최상위·하위 가상환경의 새 파일은 안 본다 · 가상환경이라도 추적 중이면 본다(반대 증거, #25) — 레포 트리엔 안 쓴다(#365) | `::test_scope_is_what_would_be_committed` |
+| 범위 | **임시 저장소**에서: 추적 파일 + add 전 새 파일은 보고 · 무시 목록 · 최상위·하위 가상환경의 새 파일은 안 본다 · 가상환경이라도 추적 중이면 본다(반대 증거, #25) — 레포 트리엔 안 쓴다(#365) · 임시 저장소의 git 은 바깥 `GIT_*` 환경을 물려받지 않는다(배포 전 독립 리뷰 L2 — 훅이 넘긴 인덱스를 고쳤다) | `::test_scope_is_what_would_be_committed` |
 
 뮤테이션 5종(추적만 · 가상환경 안 뺌 · 무시 목록 안 따름 · 추적 파일까지 가상환경으로 뺌 ·
 최상위만 가상환경 판정)이 전부 잡혔다 — 마지막 것은 첫 픽스처(최상위 가상환경뿐)에서 살아남아
 하위 가상환경 픽스처를 더했다(#91c).
+
+## #411 — 재게시 글은 원래 출처로 온다: 릴레이가 그 글을 보증한다 (`trade/tests/test_relay_origins.py` 34건 · `test_listen_badonion_vouch.py` 9건 · `test_backfill_badonion_sync.py` +9 · `test_bot_drop_log.py` +5 · `test_bot_health.py` +18 · 2026-09-25 배포 전 독립 리뷰까지 반영한 뒤 실측)
+
+VM 실측(2026-09-25 `trade.bot_health`): 봇은 40일 회수 27건을 **다 받았고** 출처 게이트가
+`다른 출처 포워드 27: -1003901069327` 로 버렸다 — 나쁜양파가 다른 채널에서 퍼 온 글이라
+텔레그램이 원래 출처를 달았다(#406 이 심은 버림 줄이 답했다). 채널을 `.env` 에 더하지 않고
+릴레이가 포워드 **전에** (원래 채널, 원래 글번호)를 `trade/relay_origins.py` 에 적고 봇이 그 짝만
+받는다 — 채널 단위로 열면 BeOn 이 같은 채널의 무관 글을 되포워드할 때 그것까지 받는다.
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 보증 기록 | 없으면 정상(사유 "") · 빈 파일·깨진 JSON·비UTF-8·목록 뿌리·`chats` 없음·모르는 판·디렉터리 자리는 **안 던지고** 사유를 돌려준다(#331 — 봇 게이트가 부른다) · 못 읽은 항목만 빼고 나머지는 살려 그 수를 말한다 · 시간대 없는 시각은 None · 처음 보증한 시각·릴레이를 지킨다(진단이 '보증 **뒤의** 버림' 을 가르는 기준) · 제목은 채널 단위 · 안 바뀌면 안 쓴다(쓰기 횟수로 잰다 — inode 는 지우고 다시 만든 파일이 같은 번호를 받아 눈이 멀었다, 뮤테이션 R2) · 보증할 것이 없으면 디렉터리도 안 만든다 · `KEEP_DAYS` 지난 보증은 쓸 때 걷어낸다(경계는 남긴다) · 못 읽은 파일 위에 쓰면 경고하고 새로 쓴다 · 쓰기 실패는 **던진다**(부르는 쪽이 포워드하지 않는다) · 원자적 교체(교체가 실패하면 원본 그대로 · **임시 파일도 안 남는다**) · 임시 파일 이름에 PID · **락을 잡은 뒤에** 다시 읽어 합친다(락 순간에 다른 쓰기가 끝난 상태를 결정적으로 만든다 — 시간·스레드 금지, #128) · 실제 프로세스 둘이 30건씩 번갈아 써도 60건 · 락을 못 걸면 진행하되 경고 · 락 대기는 **상한**이 있다(쥔 채 멈춘 프로세스가 리스너 이벤트 루프를 세우면 안 된다 — 스레드로 돌려 끝나는지 잰다) · 깊게 중첩된 JSON(`RecursionError`)도 안 던지고 형식 오류다 · **일시적 읽기 실패·모르는 판이면 덮어쓰지 않고 던진다**(옛 판은 EIO 한 번에 봇이 아직 안 받은 보증을 지웠다 — 깨진 기록만 새로 쓴다) · 판은 **구조보다 먼저** 본다(`chats` 가 없는 새 판을 '깨졌다' 로 읽어 덮어쓰지 않는다) · 판 표시(`v`)가 **없는** 파일은 우리가 쓴 적 없는 모양이라 깨진 것으로 새로 쓴다(모르는 판으로 두면 보증이 영영 막힌다) | `test_relay_origins.py` 전부 |
+| ② 재게시 판정 | `fwd_from.from_id` 가 **채널**이고 `channel_post` 가 있을 때만 — 원천 채널 자신의 글은 보증할 것이 없고 개인 계정·출처를 숨긴 포워드·번호 없는 포워드는 센다 · 키는 **부르는 쪽의** `get_peer_id`(백필 중복 제거 키와 같은 함수, #38) · 그 함수가 못 읽으면 지어내지 않고 센다 · 제목 조회가 던져도 안 죽는다 | `::test_repost_pairs_takes_only_channel_origins_and_counts_the_rest` · `::test_repost_pairs_uses_the_callers_peer_id` · `::test_a_title_lookup_that_raises_is_not_fatal` |
+| ③ 백필 배선 | 가짜 클라이언트의 포워드가 불리는 **순간** 보증 기록에 그 글이 있다(앨범은 멤버 전부) · 원천 채널 자신의 글은 파일을 안 만든다 · dry-run 은 보증도 안 쓴다(#264) — 대신 `to-forward`·`find` 줄이 원래 출처를 말한다 · 보증을 못 쓰면 그 유닛만 포워드하지 않고 알림이 삭제·포워드 실패와 **갈라** 센다(#82) · 둘이 섞여도 각자 센다 · 사람이 연 창의 연속 실패 중단 사유가 보증 실패를 이름으로 대되 **그 연속 구간 안의** 것만 센다(보증 실패만 이어졌으면 '포워드 실패' 라 부르지 않는다 · 사이의 성공이 구간을 끊는다) · 보증할 수 없는 포워드는 옛 동작 그대로 포워드하고 봇이 버린다고 적는다 | `test_backfill_badonion_sync.py::test_a_repost_is_vouched_before_it_is_forwarded` · `::test_an_album_vouches_every_repost_member_before_the_one_forward` · `::test_a_native_post_writes_no_vouch` · `::test_a_dry_run_names_the_repost_origin_but_vouches_nothing` · `::test_a_repost_that_cannot_be_vouched_is_not_forwarded` · `::test_a_forward_failure_and_a_vouch_failure_are_counted_apart` · `::test_consecutive_vouch_failures_abort_and_name_the_cause` · `::test_the_abort_reason_counts_only_the_vouch_failures_in_the_streak` · `::test_an_unvouchable_forward_is_named_and_forwarded_as_before` |
+| ④ 리스너 배선 | 리스너를 **실제 이벤트로** 태운다(가짜 클라이언트가 핸들러를 받아 두고 글을 흘린다) — 단일·앨범 모두 포워드 순간 보증돼 있다 · 원천 글은 보증 없이 · 무관한 재게시는 보증도 포워드도 안 한다 · 보증을 못 쓰면 큐에 안 넣고 알리며(같은 사유는 **전달이 확인되면** 프로세스당 한 번 — 건마다는 로그 · 못 간 알림은 '알렸다' 로 적지 않고 `_VOUCH_ALERT_RETRY_S` 뒤 같은 사유가 다시 나면 다시 알린다 · 전달은 텔레그램 응답의 `ok` 로 잰다, `curl -s` 는 429 에도 종료코드 0) 같은 흐름의 다른 글은 간다 · 보증할 수 없는 포워드는 옛 동작 · 리스너 재시작 트리거(`deploy/trade-auto-update.sh`)가 리스너의 `trade.*` import **폐포 전부**를 덮는다(소스에서 폐포를 따라가 잰다 — 진입점이 실행하는 **위 패키지의 `__init__.py`** 포함 · 옛 트리거 `listen_badonion.py` 만으로 되돌리면 실패함을 확인 · 폐포 밖 파일·NOAH 쪽으론 재시작하지 않는다) | `test_listen_badonion_vouch.py` 전부 |
+| ⑤ 봇 게이트 | 핸들러를 태운다 — 보증된 그 글은 받고 `accepted … reason=relay_vouch` 줄을 남긴다 · **같은 채널의 다른 글**은 버린다(글 단위 — 채널 단위로 열리는 변형을 잡는다) · 못 읽은 기록이면 버리고 건마다 `vouch=unreadable`, 사유 경고는 한 번 · 목록·BeOn 머리글로 받는 글은 파일을 안 읽고 원래 채널이 없는 글은 `vouch=n/a` · 시작 줄에 `relay_vouch=on` · 버림 줄은 원래 글번호·`vouch=`·줄 끝 `origin_title` 을 싣는다 · 봇 데이터 디렉터리는 테스트 임시 경로(운영 `~/.trade` 를 안 읽는다, #373) | `test_bot_drop_log.py::RelayVouchGateTests` · `::OriginDropLogTests` |
+| ⑥ 생산자↔소비자 | 버림·수신 줄을 봇 소스의 **실제 형식**으로 채워 진단이 읽는다 — 제목에 따옴표·가짜 칸(`vouch=…`)이 섞여도 안 뒤틀린다 · **분류는 봇이 쓴 칸까지만** 본다 — 채널 제목(남이 쓴 글)에 수신 줄·정상 폴링·수용 줄·버림 줄 문구가, 예외 문구에 수신 줄 문구가 들어 있어도 다른 사실이 되지 않는다 · 옛 줄은 새 칸이 None · 봇이 실제로 찍은 레코드를 실제 포매터로(보증 수용 줄 포함) · 예외 줄도 원래 글번호를 싣는다 | `test_bot_health.py::test_drop_and_accept_lines_from_the_bot_source_parse_every_new_field` · `::test_a_channel_title_cannot_become_another_journal_fact` · `test_bot_drop_log.py::DropLogIsReadByBotHealthTests` · `::ErrorHandlerTests` · `test_bot_health.py::test_exception_line_from_the_bot_source_parses_with_its_origin` |
+| ⑦ 진단 판정 | 보증 **뒤의** 버림 = ❌(처방: 보증 기록·데이터 디렉터리 — .env 아님) — 단 **그 뒤** 같은 원래 글의 수용 줄이 있으면 받은 것이라 메모(같은 초·다른 글은 회복이 아니다 — 안 풀면 고친 뒤에도 `&&` 가 막힌다) · 보증 **전의** 버림 = ⚠️(보증 수용 줄로 다시 받았는지까지 · 누가 포워드했는지는 단정하지 않는다) · 저널 시각은 초로 잘린다(같은 초는 '전') · 모르면 None · 원천 이름 버림이 먼저 · 보증을 모르는 판 봇은 ❓(rc 2 — `&&` 를 막는다) · 더 옛 판은 그 ❓ 하나만 · 못 읽은 보증 기록은 ⚠️(❓ 면 그 기록을 새로 쓸 재포워드를 막는다) · ③ 에 보증 받음/모름 · ④ 에 보증 수용 수 · 보증 기록 한 줄 · 수집기가 봇과 같은 디렉터리에서 같은 함수로 읽는다(#35) · 다른 출처 메모는 옛 처방(.env 에 채널 더하기)을 권하지 않는다 | `test_bot_health.py::test_vouch_order_is_by_time_with_the_journals_one_second_grain` · `::test_a_drop_after_the_vouch_is_red_with_the_bots_own_reason` · `::test_a_vouched_drop_that_came_back_later_is_a_note_not_red` · `::test_an_accept_of_the_same_number_in_another_channel_does_not_heal`(글번호는 채널마다 따로 — 다른 채널의 같은 번호는 회복이 아니다) · `::test_a_healed_drop_now_does_not_hide_the_previous_process_relay_drop`(치유된 버림은 ❌ 가 아니므로 재시작 전 프로세스의 릴레이 버림 메모를 가리지 않고, 그 메모는 재시작 전 몫만 센다) · `::test_a_drop_before_the_vouch_is_a_note_that_says_whether_it_came_back` · `::test_a_bot_that_does_not_know_vouches_blocks_the_reforward_chain` · `::test_an_unreadable_vouch_record_is_a_note_not_a_block` · `::test_render_names_the_vouch_state_and_the_accepted_count` · `::test_collect_reads_the_vouch_record_where_the_bot_does` · `::test_other_origin_drops_are_not_called_benign_and_say_how_to_tell` · `::test_start_line_parser_reads_the_real_bot_format` · `::test_an_exception_on_a_vouched_repost_is_a_lost_relay_post`(보증된 재게시 글을 예외로 놓치면 버림과 **같은 규칙**으로 릴레이 글의 손실 ❌) · `::test_the_deployed_bot_lets_the_reforward_chain_through`(배포 **직후**엔 옛 프로세스가 버린 27건이 창에 있어도 rc 0 — 막으면 그 글을 돌려받을 재포워드가 영영 안 나간다 · 대조군: 옛 판이 돌면 rc 2) |
+| ⑧ 매시간 알림 | `health_check` 가 봇과 같은 데이터 디렉터리의 보증 기록을 넘긴다 — 보증 뒤의 버림은 알리고(처방 .env 아님), 기록이 없으면 같은 버림은 무음(#260) · 그 뒤 같은 원래 글을 받았으면 안 알린다(판정과 같은 규칙) · 기록을 못 읽으면 그렇다고 경고하고 나머지 대조는 그대로 한다 · 한 번만 · 테스트는 `DATA_DIR` 을 임시로(운영 기록을 읽으면 무관한 판정이 바뀐다, #373) | `test_bot_health.py::test_the_hourly_check_alerts_a_dropped_vouched_repost_with_its_own_advice` · `::test_the_hourly_check_skips_a_vouched_drop_that_came_back` · `::test_the_hourly_check_does_not_heal_with_another_channels_same_number` · `::test_the_hourly_check_says_when_it_cannot_read_the_vouch_record` |
+
+⚠️ 못 보는 축(#274): 원래 출처가 **개인 계정**이거나 원문이 출처를 숨기면 채널 글번호가
+없어 보증하지 못한다(릴레이가 세고 봇은 계속 버린다) · 봇과 릴레이가 **다른 호스트**로 갈리면
+봇도 봇 호스트의 진단도 기록을 못 봐 '보증 없는 다른 출처' ⚠️ 메모로만 남는다(알림 없음 — 지원하는
+배치가 아니다: 백필의 중복 제거도 같은 호스트의 inbox 를 읽는다. 같은 호스트에서 봇만 다른 데이터
+디렉터리를 쓰면 ③ 의 inbox 경로 불일치 ❌ 가 잡는다 — 독립 리뷰 #411 L4 가 옛 문구의 '❌ 로 말한다'를
+반증했다) · 보증하기 **전의** 판이 포워드한
+재게시 글의 버림은 매시간 알림에 안 잡힌다(보증 없는 다른 출처와 같은 모양이다 — 진단 메모가
+가르는 명령을 건넨다).
+
+뮤테이션 41종(보증 기록 R 9 · 백필 B 7 · 리스너 L 6 · 봇 게이트 G 7 · 진단 H 12) 첫 실행에서
+40종이 잡혔고 둘이 **겨냥한 테스트를 비껴갔다**: R2(안 바뀌어도 늘 쓴다)는 inode 비교가 눈이
+멀어 **살았고**(→ 쓰기 횟수), H2(예외 쪽이 보증을 무시)는 헬퍼 테스트만 잡아 판정 배선이
+무가드였다(→ 판정 수준 테스트). 둘 다 고친 뒤 다시 돌려 겨냥한 테스트가 잡음을 확인했다(#91).
+따로 둘: 재시작 트리거를 옛 규칙으로 되돌리면 폐포 테스트가 실패하고, 다른 출처 버림을 릴레이
+글로 세는 변형은 배포 직후 사슬 테스트가 잡는다.
+
+**독립 리뷰(80c0e6c..26d8b7c, 사본 worktree)**: Blocking·High 없음 · Low 7건 전부 반영(위 표의 굵은
+항목) · 리뷰 뮤테이션 48종 중 생존 2종(HC2 매시간 기록 못 읽음 경고 · RO7 임시 파일 PID)은 테스트를
+더해 잡았다. 반영분 뮤테이션 — `bot_health` 8종(꼬리 안 뗌 · exc 꼬리 안 뗌 · 회복 판정 늘 거짓 · 같은
+초도 회복 · 글번호 안 봄 · 매시간/판정에서 회복 안 거름 · 회복 메모 없음) · `relay_origins` 7종
+(`RecursionError` 못 잡음 · 읽기 실패·모르는 판도 덮어씀 · 임시 파일 안 치움 · PID 없음 · 락 무한 대기 ·
+상한 무시)이 전부 잡혔다. 재시작 규칙은 폐포보다 넓다(`trade/*.py` — 지난 한 달 base 커밋 66개 실측:
+옛 규칙 1회 → 새 규칙 15회, 9일) — 재시작은 몇 초라 그 사이 올라온 글은 주기 sync 가 회수한다.

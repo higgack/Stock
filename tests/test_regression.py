@@ -66368,6 +66368,33 @@ class TestKoreaCompanyFlowBoards20260916:
         assert items == {"차량용 AP·프로세서"}, items
         assert f.PARSE_VER >= 1
 
+    @staticmethod
+    def _test_trees(root) -> list:
+        """테스트 트리(`test_*.py` 가 든 디렉터리)의 **최상위들** — 레포에 **실릴 수
+        있는** 파일로 잰다: 추적 파일 + add 전 새 파일(무시 목록 밖). 시크릿 스캐너와
+        같은 범위다(#407 '가드의 범위는 커밋될 것').
+
+        ⚠️ 옛 판은 디스크 전체를 훑었다(`root.glob("*/**/test_*.py")` — pathlib 은
+        숨은 디렉터리도 판다). 그래서 무시된 **임시 체크아웃** — 서브에이전트
+        `isolation: worktree` 가 리뷰·뮤테이션을 돌리는 `.claude/worktrees/…`(레포
+        사본 전체) — 이 '게이트 밖 트리' 로 잡혀, 리뷰가 도는 동안 `make test` 가
+        거짓 빨간불이었다(2026-09-25 실측). 커밋될 수 없는 것은 게이트의 일이 아니다.
+        `-z` 로 받는다 — 비ASCII 경로를 git 이 따옴표로 감싸도 안 뒤틀리게."""
+        import subprocess as _sp
+        from pathlib import PurePosixPath as _PP
+        out = _sp.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+                       "--exclude-standard"], capture_output=True, text=True,
+                      check=True).stdout.split("\0")
+        trees = sorted({
+            _PP(r).parent.as_posix() for r in out
+            if r and _PP(r).name.startswith("test_") and r.endswith(".py")
+            and len(_PP(r).parts) >= 2          # 옛 `*/**/` — 레포 최상위의 파일은 트리가 아니다
+            and ".venv" not in _PP(r).parts and "site-packages" not in _PP(r).parts
+        })
+        # 한 트리 안의 하위 디렉터리는 그 트리가 덮는다 — 최상위만 남긴다.
+        return [t for t in trees
+                if not any(t != o and t.startswith(o + "/") for o in trees)]
+
     def test_every_test_tree_is_inside_the_commit_gate(self):
         """게이트 밖 트리의 계약은 **없는 것과 같다**(#24·#54). 2026-09-16
         실측: `trade/tests` 1,227건이 게이트 밖이라 레지스트리 계약 4건이
@@ -66376,16 +66403,7 @@ class TestKoreaCompanyFlowBoards20260916:
         import re as _re
         from pathlib import Path as _P
         root = _P(__file__).resolve().parents[1]
-        trees = sorted({
-            f.parent.relative_to(root).as_posix()
-            for f in root.glob("*/**/test_*.py")
-            if ".venv" not in f.parts and "site-packages" not in f.parts
-        })
-        # 한 트리 안의 하위 디렉터리는 그 트리가 덮는다 — 최상위만 남긴다.
-        roots = []
-        for t in trees:
-            if not any(t != o and t.startswith(o + "/") for o in trees):
-                roots.append(t)
+        roots = self._test_trees(root)
         assert roots, "테스트 트리를 하나도 못 찾았다(대조 0건 = 실패, #54)"
         mk = (root / "Makefile").read_text(encoding="utf-8")
         body = mk.split("\ntest:", 1)[1].split("\n\n", 1)[0]
@@ -66407,6 +66425,45 @@ class TestKoreaCompanyFlowBoards20260916:
         assert not stale, f"사라진 트리를 아직 면제하고 있다: {stale}"
         missing = [t for t in roots if t not in covered and t not in exempt]
         assert not missing, f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})"
+
+    def test_the_gate_scope_is_what_git_would_commit(self, tmp_path, monkeypatch):
+        """트리 열거가 **무시된 경로는 빼고** 추적·새 파일은 센다 — 임시 저장소에서
+        잰다(레포 트리에 파일을 심지 않는다, #328). 옛 판(디스크 전체)은 무시된
+        `.claude/worktrees/…` 사본을 게이트 밖 트리로 셌다(2026-09-25 — 리뷰가 도는
+        동안 `make test` 거짓 빨간불). 반대 증거를 같이 둔다(#25): 새 트리가 **add
+        전**이어도 잡혀야 게이트 밖 트리를 막는 원래 일을 한다. 형제 접두 트리
+        (`tests_e2e`)는 `tests` 에 접히지 않고, `.py` 가 아닌 `test_*` 는 트리가 아니다
+        (배포 전 독립 리뷰 L6 — '/' 경계·접미 필터를 지우는 뮤테이션이 살아남았다)."""
+        import os
+        import subprocess as _sp
+        # 임시 저장소의 git 은 바깥 git 환경을 물려받지 않는다 — 훅·`rebase --exec` 가
+        # 절대경로 GIT_INDEX_FILE/GIT_DIR 를 넘기면 `git add` 가 **바깥 레포의 인덱스**를
+        # 고친다(배포 전 독립 리뷰 L2 실측: 바깥 인덱스의 .gitignore 가 바뀌었는데 통과했다).
+        # 훅이 넘긴 바깥 인덱스를 흉내 낸다 — 정리를 지우면 `git add` 가 이 파일을 만든다.
+        outer = tmp_path.parent / f"{tmp_path.name}-outer-index"
+        monkeypatch.setenv("GIT_INDEX_FILE", str(outer))
+        for k in [k for k in os.environ if k.startswith("GIT_")]:
+            monkeypatch.delenv(k)
+
+        def git(*a):
+            _sp.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+        git("init", "-q")
+        for rel in ("tests/test_a.py", "tests/deep/test_g.py", "pkg/tests/sub/test_b.py",
+                    "new/test_c.py", "test_top.py", ".claude/worktrees/w/tests/test_d.py",
+                    ".venv/lib/x/tests/test_e.py", "venvish/site-packages/y/test_f.py",
+                    "tests_e2e/test_h.py", "notes/test_plan.md"):
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("def test_x():\n    pass\n", encoding="utf-8")
+        (tmp_path / ".gitignore").write_text(".claude/worktrees/\n", encoding="utf-8")
+        git("add", ".gitignore", "tests/test_a.py", "tests/deep/test_g.py",
+            "pkg/tests/sub/test_b.py")
+        roots = self._test_trees(tmp_path)
+        # 추적(tests — 그 아래 tests/deep 은 덮인다 · pkg/tests/sub) + add 전 새 트리(new ·
+        # tests_e2e — 이름이 `tests` 로 시작해도 그 아래가 아니다). 무시된 worktree 사본 ·
+        # 가상환경 · 레포 최상위 파일 · `.py` 가 아닌 파일은 뺀다.
+        assert roots == ["new", "pkg/tests/sub", "tests", "tests_e2e"], roots
+        assert not outer.exists(), "임시 저장소의 git 이 바깥 인덱스를 고쳤다"
 
     def test_every_source_declares_its_caption_grammar(self):
         """문법 축이 비면 그 소스는 **어느 형제 계약에도 안 걸린다**(#24·#54).

@@ -1504,3 +1504,200 @@ def test_a_disconnect_error_does_not_swallow_the_deferred_note(
     assert _run(backfill, monkeypatch) == 0
     assert backfill._test_notes and "(1/" in backfill._test_notes[-1]
     assert "disconnect 실패" in caplog.text
+
+
+# ── 재게시 글 보증(실수 #411) ─────────────────────────────────────────────
+# 나쁜양파가 다른 채널에서 퍼 온 글은 텔레그램이 **원래 출처**를 달아 보내 봇의 출처
+# 게이트가 버렸다(2026-09-25 27건). 백필은 포워드 **전에** 그 글을 보증해야 한다 — 가짜
+# 클라이언트의 포워드가 불리는 순간 기록에 이미 있는지로 순서를 잰다(#20 헬퍼만 재면
+# 배선을 떼는 변형이 통과한다).
+_REPOST = -1009990000001        # 합성 — 운영 재게시 채널 ID 를 쓰지 않는다(#393)
+
+
+def _repost(mid, text, when, *, post=4242, chat=_REPOST, title=None, grouped_id=None):
+    """나쁜양파가 다른 채널에서 퍼 온 글 — `fwd_from.from_id` 가 **채널**이다."""
+    m = _Msg(mid, text, when, grouped_id=grouped_id)
+    m.fwd_from = types.SimpleNamespace(
+        from_id=types.SimpleNamespace(channel_id=abs(chat) - 10 ** 12, id=chat),
+        channel_post=post)
+    m.forward = (types.SimpleNamespace(chat=types.SimpleNamespace(title=title))
+                 if title else None)
+    return m
+
+
+def _vouch_path(mod):
+    from trade import relay_origins as ro
+    return ro.path_in(mod._test_inbox.parent)
+
+
+def _spy_forward(monkeypatch, mod) -> list:
+    """포워드가 불리는 **순간**의 보증 기록을 남긴다 — 보증이 포워드보다 먼저인가."""
+    from trade import relay_origins as ro
+    seen: list = []
+    real = _Client.forward_messages
+
+    async def spy(self, dest, ids, from_peer=None):
+        seen.append((list(ids), set(ro.load(_vouch_path(mod))[0])))
+        return await real(self, dest, ids, from_peer=from_peer)
+    monkeypatch.setattr(_Client, "forward_messages", spy)
+    return seen
+
+
+def _since_recent():
+    return _ago(3).date().isoformat()
+
+
+def test_a_repost_is_vouched_before_it_is_forwarded(backfill, monkeypatch, caplog):
+    """보증이 포워드보다 **먼저** 파일에 있어야 봇이 받는 순간 찾는다. 기록은 백필이 적은
+    것이고(`by`), dry-run 이 미리 말한 원래 출처가 `to-forward` 줄에 있다."""
+    from trade import relay_origins as ro
+    _Client.messages = [_repost(501, _KRI, _ago(1), title="퍼온채널")]
+    seen = _spy_forward(monkeypatch, backfill)
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 0
+    assert _Client.instances[-1].forwarded == [[501]]
+    assert seen == [([501], {(_REPOST, 4242)})], seen
+    got = ro.load(_vouch_path(backfill))[0][(_REPOST, 4242)]
+    assert (got["by"], got["title"]) == ("backfill", "퍼온채널"), got
+    line = next(ln for ln in caplog.text.splitlines() if "to-forward unit" in ln)
+    assert f"재게시 원래 출처 {_REPOST}('퍼온채널') 글 1건" in line, line
+    assert "vouched repost msgs=[501]" in caplog.text
+
+
+def test_an_album_vouches_every_repost_member_before_the_one_forward(
+        backfill, monkeypatch):
+    """앨범은 한 번에 포워드한다 — 멤버마다 원래 글번호가 다르고, 봇은 멤버를 한 장씩
+    받는다. 한 멤버라도 빠지면 그 사진이 버려진다."""
+    t = _ago(1)
+    _Client.messages = [_repost(501, _KRI, t, post=10, grouped_id=7),
+                        _repost(502, "", t + timedelta(seconds=1), post=11, grouped_id=7)]
+    seen = _spy_forward(monkeypatch, backfill)
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 0
+    assert seen == [([501, 502], {(_REPOST, 10), (_REPOST, 11)})], seen
+
+
+def test_a_native_post_writes_no_vouch(backfill, monkeypatch):
+    """원천 채널 자신의 글은 봇이 사용자명으로 받는다 — 보증할 것이 없고 파일도 안 만든다."""
+    _Client.messages = [_Msg(501, _KRI, _ago(1))]
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 0
+    assert _Client.instances[-1].forwarded == [[501]]
+    assert not _vouch_path(backfill).exists()
+
+
+def test_a_dry_run_names_the_repost_origin_but_vouches_nothing(
+        backfill, monkeypatch, caplog):
+    """진단은 운영 상태를 바꾸지 않는다(#264) — 보증도 쓰기다. 대신 어느 유닛이 보증을
+    타는지 미리 말한다(실제 실행 뒤 봇의 `accepted … reason=relay_vouch` 와 대조된다)."""
+    _Client.messages = [_repost(501, _KRI, _ago(1), title="퍼온채널")]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run", "--since", _since_recent()) == 0
+    assert not _vouch_path(backfill).exists()
+    line = next(ln for ln in caplog.text.splitlines() if "to-forward unit" in ln)
+    assert f"재게시 원래 출처 {_REPOST}('퍼온채널')" in line, line
+    caplog.clear()
+    assert _run(backfill, monkeypatch, "--dry-run", "--since", _since_recent(),
+                "--find", "텔레칩스") == 0
+    found = [ln for ln in caplog.text.splitlines() if "find to-forward unit" in ln]
+    assert found and "재게시 원래 출처" in found[0], caplog.text
+    assert not _vouch_path(backfill).exists()
+
+
+def test_a_repost_that_cannot_be_vouched_is_not_forwarded(backfill, monkeypatch, caplog):
+    """보증을 못 쓰면 **포워드하지 않는다** — 포워드하면 봇이 버리고 inbox 에 없으니 다음
+    틱이 또 포워드해 또 버린다. 같은 실행의 다른 유닛은 그대로 가고, 알림은 그 수와
+    사유를 삭제된 글과 **갈라** 말한다(#82 — 처방이 다르다: 데이터 디렉터리 쓰기)."""
+    from trade import relay_origins as ro
+
+    def boom(*a, **k):
+        raise PermissionError("쓰기 권한 없음(테스트)")
+    monkeypatch.setattr(ro, "vouch", boom)
+    _Client.messages = [_repost(501, _KRI, _ago(1)), _Msg(502, _KRI2, _ago(1))]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 0
+    assert _Client.instances[-1].forwarded == [[502]]
+    note = backfill._test_notes[-1]
+    assert "재게시 출처 보증을 못 써 포워드하지 않은 unit 1건" in note, note
+    assert "쓰기 권한 없음(테스트)" in note and "데이터 디렉터리" in note, note
+    assert "포워드 실패로 스킵된" not in note, note            # 삭제된 글을 찾으러 보내지 않는다
+    assert "재게시 출처 보증 실패 msgs=[501]" in caplog.text
+
+
+def test_a_forward_failure_and_a_vouch_failure_are_counted_apart(backfill, monkeypatch):
+    """둘이 같은 실행에 섞여도 각자 센다 — 합계를 한 줄에 몰면 한쪽 처방이 사라진다."""
+    from trade import relay_origins as ro
+
+    def boom(*a, **k):
+        raise OSError("디스크 가득(테스트)")
+    monkeypatch.setattr(ro, "vouch", boom)
+    _Client.messages = [_repost(501, _KRI, _ago(1)), _Msg(502, _KRI2, _ago(1)),
+                        _Msg(503, _KRI2.replace("합성회사", "다른회사"), _ago(1))]
+    _Client.fail_forward_ids = {502}
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 0
+    note = backfill._test_notes[-1]
+    assert "포워드 실패로 스킵된 unit 1건" in note, note
+    assert "재게시 출처 보증을 못 써 포워드하지 않은 unit 1건" in note, note
+
+
+def test_consecutive_vouch_failures_abort_and_name_the_cause(backfill, monkeypatch):
+    """사람이 연 창에서 연속 실패는 체계적 장애라 멈춘다 — 그 중단 사유가 '세션·권한·
+    네트워크' 로만 적히면 보증 기록 쓰기(데이터 디렉터리)를 못 찾는다. 보증 실패**만** 이어진
+    구간은 '포워드 실패' 라 부르지 않는다 — 그 유닛들은 포워드를 시도하지도 않았다(독립 리뷰
+    #411 L1)."""
+    from trade import relay_origins as ro
+
+    def boom(*a, **k):
+        raise OSError("읽기 전용 파일 시스템(테스트)")
+    monkeypatch.setattr(ro, "vouch", boom)
+    n = backfill.MAX_CONSECUTIVE_FAILURES
+    _Client.messages = [_repost(501 + i, _KRI, _ago(1) + timedelta(seconds=i), post=10 + i)
+                        for i in range(n)]
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 1
+    assert _Client.instances[-1].forwarded == []
+    note = backfill._test_notes[-1]
+    assert "백필 중단" in note and f"{n} consecutive failures — 전부 재게시 출처 보증 실패" in note, note
+    assert "session/permission/network" not in note, note      # 포워드 실패로 부르지 않는다
+    assert "읽기 전용 파일 시스템" in note and "데이터 디렉터리" in note, note
+
+
+def test_the_abort_reason_counts_only_the_vouch_failures_in_the_streak(backfill, monkeypatch):
+    """중단 사유의 '그중 보증 실패' 는 **연속 구간 안의** 것만 센다 — 옛 판은 실행 전체의 수를
+    적어, 앞서 보증이 몇 번 실패했을 뿐인 세션 장애(포워드 연속 실패)를 데이터 디렉터리로
+    보냈다(독립 리뷰 #411 L1 실측: 보증 실패 3 → 성공 1 → 포워드 실패 5 가 '그중 보증 실패
+    3건' 으로 적혔다). 사이의 성공이 구간을 끊는다."""
+    from trade import relay_origins as ro
+
+    def boom(*a, **k):
+        raise OSError("디스크 가득(테스트)")
+    monkeypatch.setattr(ro, "vouch", boom)
+    n = backfill.MAX_CONSECUTIVE_FAILURES
+    k = min(3, n - 1)                                  # 구간 앞의 보증 실패(혼자선 안 멈춘다)
+    t = _ago(1)
+    early = [_repost(501 + i, _KRI, t + timedelta(seconds=i), post=10 + i) for i in range(k)]
+    good = [_Msg(530, _KRI2, t + timedelta(seconds=20))]
+    bad = [_Msg(540 + i, _KRI2.replace("합성회사", f"회사{i}"), t + timedelta(seconds=30 + i))
+           for i in range(n)]
+    _Client.messages = early + good + bad
+    _Client.fail_forward_ids = {m.id for m in bad}
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 1
+    note = backfill._test_notes[-1]
+    assert "백필 중단" in note and f"{n} consecutive forward failures" in note, note
+    assert "재게시 출처 보증 실패" not in note, note
+    assert [ids for ids in _Client.instances[-1].forwarded] == [[530]], \
+        _Client.instances[-1].forwarded
+
+
+def test_an_unvouchable_forward_is_named_and_forwarded_as_before(
+        backfill, monkeypatch, caplog):
+    """원래 출처가 개인 계정(채널 글 번호 없음)이면 보증할 수 없다 — 막지 않고(옛 동작
+    그대로 포워드) 센다: 봇이 버린다는 사실을 줄이 말한다(`relay_origins` 못 보는 축)."""
+    m = _Msg(501, _KRI, _ago(1))
+    m.fwd_from = types.SimpleNamespace(from_id=types.SimpleNamespace(user_id=5, id=5),
+                                       channel_post=None)
+    _Client.messages = [m]
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--since", _since_recent()) == 0
+    assert _Client.instances[-1].forwarded == [[501]]
+    assert not _vouch_path(backfill).exists()
+    line = next(ln for ln in caplog.text.splitlines() if "to-forward unit" in ln)
+    assert "보증 못 하는 포워드 1건(봇이 버린다)" in line, line
+    assert "보증할 수 없다" in caplog.text

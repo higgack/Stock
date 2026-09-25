@@ -18,10 +18,13 @@ python-telegram-bot 이 없으면 통째로 건너뛴다(형제 test_bot_origin 
 """
 
 import asyncio
+import json
 import logging
 import os
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -35,6 +38,16 @@ except Exception:  # 형제와 같은 이유 — 네이티브 확장이 깨진 �
 
 _DEST = -1003715527602          # 운영 비공개 채널(백필·리스너의 dest)
 _BADONION = -1003322526960      # 나쁜양파 원 채널
+_REPOST = -1009990000001        # 나쁜양파가 퍼 오는 다른 채널 — 합성(#393 실재 ID 를 쓰지 않는다)
+
+
+def _tmp_inbox_dir(case) -> Path:
+    """봇의 데이터 디렉터리를 임시로 — 출처 게이트가 재게시 보증 기록(`relay_origins.json`)을
+    거기서 읽는다(실수 #411). 운영 `~/.trade` 를 읽으면 운영자가 재게시 글을 포워드하는
+    순간 무관한 테스트의 판정이 바뀐다(#373·#30)."""
+    d = tempfile.TemporaryDirectory(prefix="trade-bot-test-")
+    case.addCleanup(d.cleanup)
+    return Path(d.name)
 
 
 def _post(*, chat_id=_DEST, fwd_chat_id=None, fwd_username=None,
@@ -75,6 +88,7 @@ class OriginDropLogTests(unittest.TestCase):
             mock.patch.object(bot, "SOURCE_ORIGINS", {"badonions", "beon_beclear"}),
             mock.patch.object(bot, "_DROPPED_CHANNELS", set()),
             mock.patch.object(bot, "_notify_watchers", mock.AsyncMock()),
+            mock.patch.object(bot, "INBOX_DIR", _tmp_inbox_dir(self)),
         ]
         for p in self._p:
             p.start()
@@ -93,6 +107,11 @@ class OriginDropLogTests(unittest.TestCase):
         self.assertIn("origin_chat=-1009999", drops[0])
         self.assertIn("origin_username=SomeOther", drops[0])
         self.assertIn("allowed_origins=['badonions', 'beon_beclear']", drops[0])
+        # 원래 글번호·보증 대조 결과·채널 제목 — 이 한 줄로 '어느 채널의 어느 글이고 왜
+        # 못 받았나' 가 갈린다(실수 #411·#356). 제목은 줄 끝에 repr 로.
+        self.assertIn("origin_msg=4242 ", drops[0])
+        self.assertIn(" vouch=miss ", drops[0])
+        self.assertTrue(drops[0].endswith("origin_title='src'"), drops[0])
 
     def test_non_forward_post_is_logged_as_origin_none(self):
         """운영자가 채널에 직접 쓴 글 — 출처가 아예 없다. 'none' 으로 갈라 적는다."""
@@ -173,16 +192,20 @@ class DropLogIsReadByBotHealthTests(unittest.TestCase):
             mock.patch.object(bot, "_DROPPED_CHANNELS", set()),
             mock.patch.object(bot, "_notify_watchers", mock.AsyncMock()),
             mock.patch.object(bot, "_append_jsonl"),
+            mock.patch.object(bot, "INBOX_DIR", _tmp_inbox_dir(self)),
         ]
         for p in patches:
             p.start()
         self.addCleanup(lambda: [p.stop() for p in patches])
+        from trade import relay_origins as ro
+        ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="backfill", path=ro.path_in(bot.INBOX_DIR))
         with self.assertLogs("trade-bot", level="INFO") as cm:
             _run(bot, _post(fwd_chat_id=-1009999, fwd_username="Other", msg_id=1))
             _run(bot, _post(chat_id=-100111, fwd_chat_id=_BADONION,
                             fwd_username="Badonions", msg_id=2))
             _run(bot, _post(fwd_chat_id=_BADONION, fwd_username="Badonions",
                             msg_id=3, text="x"))
+            _run(bot, _post(fwd_chat_id=_REPOST, msg_id=4, text="y"))       # 보증된 재게시
         # 봇의 **실제** 포매터로 — 손으로 적은 형식은 형식이 바뀌어도 축복한다(#155·#91b)
         fmt = bot._TokenRedactFormatter(bot._LOG_FORMAT)
         lines = ["2026-09-25T07:49:12+0900 telegram-bot-usc python[4242]: " + fmt.format(r)
@@ -190,12 +213,112 @@ class DropLogIsReadByBotHealthTests(unittest.TestCase):
         j = bot_health.journal_facts(lines)
         self.assertEqual(len(j["drops_origin"]), 1, lines)
         self.assertEqual(len(j["drops_channel"]), 1, lines)
-        self.assertEqual(len(j["ingested"]), 1, lines)
+        self.assertEqual(len(j["ingested"]), 2, lines)
         # 필드까지 읽혀야 판정이 '릴레이 버림' 과 '정상 버림' 을 가른다(#82)
-        self.assertEqual((j["drops_origin"][0]["type"], j["drops_origin"][0]["chat"],
-                          j["drops_origin"][0]["user"]), ("channel", -1009999, "Other"))
+        d = j["drops_origin"][0]
+        self.assertEqual((d["type"], d["chat"], d["user"], d["omsg"], d["vouch"], d["title"]),
+                         ("channel", -1009999, "Other", 4242, "miss", "src"), d)
+        # 보증으로 받은 재게시 글 — 그 경로가 일했다는 긍정 증거를 진단이 센다(#411)
+        self.assertEqual([(a["msg"], a["chat"], a["omsg"], a["title"])
+                          for a in j["vouch_accepts"]], [(4, _REPOST, 4242, "src")], lines)
         self.assertEqual(j["drops_channel"][0]["chat"], -100111)
         self.assertIsNotNone(j["ingested"][0])       # 시각까지 읽혀야 대조에 쓴다
+
+
+@unittest.skipUnless(_HAVE_TELEGRAM, "python-telegram-bot not installed")
+class RelayVouchGateTests(unittest.TestCase):
+    """실수 #411 — 나쁜양파가 다른 채널에서 퍼 온 글은 텔레그램이 **원래 출처**를 달아 보내
+    출처 목록에 안 걸린다(2026-09-25 27건을 여기서 버렸다). 릴레이가 포워드 전에 보증한
+    **그 글**(원래 채널, 원래 글번호)만 받는다 — 채널 단위로 열면 BeOn 이 같은 채널의 무관
+    글을 되포워드할 때 그것까지 받는다. 핸들러를 실제로 태운다(#20)."""
+
+    def setUp(self):
+        from trade import bot
+        from trade import relay_origins as ro
+        self.bot, self.ro = bot, ro
+        self._p = [
+            mock.patch.object(bot, "CHANNEL_CHAT_IDS", {_DEST}),
+            mock.patch.object(bot, "SOURCE_ORIGINS", {"badonions", "beon_beclear"}),
+            mock.patch.object(bot, "_DROPPED_CHANNELS", set()),
+            mock.patch.object(bot, "_VOUCH_WARNED", set()),
+            mock.patch.object(bot, "_notify_watchers", mock.AsyncMock()),
+            mock.patch.object(bot, "INBOX_DIR", _tmp_inbox_dir(self)),
+        ]
+        for p in self._p:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._p])
+        self.vpath = ro.path_in(bot.INBOX_DIR)
+
+    def _handle(self, post):
+        with mock.patch.object(self.bot, "_append_jsonl") as app, \
+                self.assertLogs("trade-bot", level="INFO") as cm:
+            _run(self.bot, post)
+        return app, [r.getMessage() for r in cm.records]
+
+    def test_a_vouched_repost_is_accepted_and_says_so(self):
+        self.ro.vouch({(_REPOST, 4242): "퍼온 채널"}, by="listener", path=self.vpath)
+        app, lines = self._handle(_post(fwd_chat_id=_REPOST, text="**🇰🇷 8월 수입 한국**"))
+        app.assert_called_once()
+        rec = app.call_args.args[0]
+        self.assertEqual((rec["forward_origin_chat_id"], rec["forward_origin_message_id"]),
+                         (_REPOST, 4242))
+        self.assertFalse([ln for ln in lines if ln.startswith("dropped")], lines)
+        self.assertIn(f"accepted msg=77 reason=relay_vouch origin_chat={_REPOST} "
+                      "origin_msg=4242 origin_title='src'", lines)
+
+    def test_a_vouch_for_another_post_of_the_same_channel_does_not_open_the_gate(self):
+        """보증은 **글 단위**다 — 같은 채널의 다른 글(BeOn 이 되포워드한 무관 글일 수 있다)은
+        여전히 버린다. 채널 단위로 열리는 변형을 잡는다."""
+        self.ro.vouch({(_REPOST, 1): None}, by="listener", path=self.vpath)
+        app, lines = self._handle(_post(fwd_chat_id=_REPOST, text="무관 글"))
+        app.assert_not_called()
+        drop = [ln for ln in lines if ln.startswith("dropped msg=77 reason=origin")]
+        self.assertEqual(len(drop), 1, lines)
+        self.assertIn(" vouch=miss ", drop[0])
+
+    def test_an_unreadable_record_drops_says_so_on_every_line_and_warns_once(self):
+        """못 읽은 보증은 받지 않는다(확인 못 한 글을 받으면 게이트가 없는 것과 같다) — 건마다
+        `vouch=unreadable` 이 말하고, 사유 경고는 프로세스당 사유마다 한 번이다."""
+        self.vpath.parent.mkdir(parents=True, exist_ok=True)
+        self.vpath.write_text("{broken", encoding="utf-8")
+        with mock.patch.object(self.bot, "_append_jsonl") as app, \
+                self.assertLogs("trade-bot", level="INFO") as cm:
+            _run(self.bot, _post(fwd_chat_id=_REPOST, msg_id=1))
+            _run(self.bot, _post(fwd_chat_id=_REPOST, msg_id=2))
+        app.assert_not_called()
+        lines = [r.getMessage() for r in cm.records]
+        drops = [ln for ln in lines if ln.startswith("dropped msg=")]
+        self.assertEqual(len(drops), 2, lines)
+        self.assertTrue(all(" vouch=unreadable " in ln for ln in drops), drops)
+        warns = [r for r in cm.records if r.levelno == logging.WARNING]
+        self.assertEqual(len(warns), 1, lines)
+        self.assertIn("형식 오류", warns[0].getMessage())
+
+    def test_the_record_is_only_read_for_posts_the_list_would_drop(self):
+        """평소 수신(목록에 있는 원천·BeOn 머리글)은 파일을 안 읽는다 — 게이트가 모든 글에
+        디스크를 읽게 되면 사진 수백 장 버스트마다 쓸데없는 I/O 다. 직접 쓴 글처럼 원래
+        채널이 없는 글은 대조할 것이 없어 `n/a` 로 버린다(파일을 안 연다)."""
+        with mock.patch.object(self.ro, "load", wraps=self.ro.load) as spy:
+            app, _ = self._handle(_post(fwd_chat_id=_BADONION, fwd_username="Badonions"))
+            app.assert_called_once()
+            self._handle(_post(text="BeOn - 비온 인사이트 전달"))
+            self.assertEqual(spy.call_count, 0)
+            _app, lines = self._handle(_post(text="그냥 메모"))
+            self.assertEqual(spy.call_count, 0)
+        drop = [ln for ln in lines if ln.startswith("dropped msg=")]
+        self.assertTrue(drop and " vouch=n/a " in drop[0], lines)
+
+    def test_the_start_line_announces_the_vouch_aware_build(self):
+        """`trade.bot_health` 는 이 표식이 없으면 ❓(rc 2)다 — 배포 직후 `bot_health && 다시
+        포워드` 가 봇 재시작 전에 흘러가지 않는 이유다(실수 #411·#409)."""
+        import ast
+        src = Path(self.bot.__file__).read_text(encoding="utf-8")
+        fmts = [ast.literal_eval(n.args[0]) for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "info"
+                and n.args and isinstance(n.args[0], (ast.Constant, ast.BinOp))
+                and "trade-bot starting" in str(ast.literal_eval(n.args[0]))]
+        self.assertEqual(len(fmts), 1, fmts)
+        self.assertIn(" relay_vouch=on", fmts[0])
 
 
 @unittest.skipUnless(_HAVE_TELEGRAM, "python-telegram-bot not installed")
@@ -277,9 +400,10 @@ class ErrorHandlerTests(unittest.TestCase):
         self.assertIsNotNone(recs[0].exc_info)          # 트레이스백은 그대로 남긴다
         j = self.bh.journal_facts(_journal_lines(self.bot, recs))
         # 포워드 출처도 버림 줄과 같은 규약으로 실린다 — 릴레이 글인지 가른다(2차 리뷰 H1)
-        self.assertEqual([(e["kind"], e["update"], e["msg"], e["type"], e["chat"], e["user"])
-                          for e in j["exceptions"]],
-                         [("handler", "channel_post", 77, "channel", _BADONION, "Badonions")], j)
+        self.assertEqual([(e["kind"], e["update"], e["msg"], e["type"], e["chat"], e["user"],
+                           e["omsg"]) for e in j["exceptions"]],
+                         [("handler", "channel_post", 77, "channel", _BADONION, "Badonions",
+                           4242)], j)
         # 직접 쓴 글(포워드 아님)은 type=none — 릴레이 글이 아니다
         recs2 = self._log(SimpleNamespace(channel_post=_post(msg_id=78)), err)
         j2 = self.bh.journal_facts(_journal_lines(self.bot, recs2))

@@ -19,6 +19,8 @@ Runs from systemd timer (trade-bot-health.timer) hourly. Two signals:
   접지 않는다(#54). 받고 **릴레이 원천의** 글을 출처 게이트에서 버린 것과,
   채널 글을 처리하다 예외로 놓친 글(수신 줄 없음 — 수 대조와 무관한 직접
   증거, 2차 독립 리뷰 H1)도 알린다(inbox 에 안 들어가기는 마찬가지다).
+  릴레이가 **보증한** 재게시 글(`trade.relay_origins`, 실수 #411)을 보증 뒤에
+  버린 것도 릴레이 원천 글의 버림으로 알린다.
   같은 **사실**(포워드 사건·버림·예외)은 한 번만 알린다 — 알린 사실의 신원을
   `delivery-alerted.json` 에 적고(2일 지나면 지운다) 다음 실행이 그걸 빼고
   대조한다. 끊김이 이어지면 새로 빠진 포워드만 알린다(2차 독립 리뷰 L4 —
@@ -267,9 +269,17 @@ def check_delivery_gap() -> None:
     (2차 독립 리뷰 L4) — 기록은 알림이 **전달된 뒤에만** 한다(3차 독립 리뷰 M4: 전달 실패를
     '알렸다' 로 적으면 그 사실은 영영 안 알려진다)."""
     from trade import bot_health as bh
+    from trade import relay_origins as ro
 
     seen = _load_alerted()
-    g = bh.delivery_check(DELIVERY_WINDOW_S, seen=set(seen))
+    # 재게시 보증 기록(실수 #411) — 보증된 재게시 글을 봇이 보증 뒤에 버렸으면 알린다. 못
+    # 읽으면 그 갈래만 못 본다는 사실을 남기고 나머지 대조는 그대로 한다(#54 — 판정 불가를
+    # '이상 없음' 으로 접지 않는다).
+    vouched, verr = ro.load(ro.path_in(DATA_DIR))
+    if verr:
+        log.warning("delivery_gap: 재게시 보증 기록을 못 읽었다(%s) — 보증된 재게시 글의 버림은 "
+                    "이번 대조에서 못 알아본다", verr)
+    g = bh.delivery_check(DELIVERY_WINDOW_S, seen=set(seen), vouched=vouched)
     if g.get("err"):                                       # 저널을 못 읽었다 — 판정 불가(#54)
         log.warning("delivery_gap: 판정 불가 — %s", g["err"])
         return
