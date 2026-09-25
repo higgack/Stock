@@ -186,11 +186,26 @@ BeOn(<code>t.me/BeOn_BeClear</code>) 수출입 알림 자동 수집·정리 — 
 """
 
 
+# 거절한 채널은 프로세스당 한 번만 적는다 — 봇이 관리자인 다른 채널이
+# 바쁘면 저널이 그 채널 줄로 덮여 watchdog·진단이 읽을 줄을 밀어낸다.
+_DROPPED_CHANNELS: set[int] = set()
+
+
 def _allowed_channel(chat_id: int) -> bool:
     if not CHANNEL_CHAT_IDS:
         log.info("TRADE_CHANNEL_CHAT_IDS not set — channel chat ID is %s", chat_id)
         return True
-    return chat_id in CHANNEL_CHAT_IDS
+    if chat_id in CHANNEL_CHAT_IDS:
+        return True
+    # ⚠️ 조용히 버리면 릴레이는 '포워드 N/N 성공' 을 찍는데 inbox 는 한 줄도
+    # 안 늘고, 그 둘을 가를 흔적이 저널에 없다(2026-09-25 40일 회수 27건 ·
+    # 실수 #406 · #12 silent-fail 금지). `trade.bot_health` 가 이 줄을 센다.
+    if chat_id not in _DROPPED_CHANNELS:
+        _DROPPED_CHANNELS.add(chat_id)
+        log.info("dropped channel=%s reason=channel allowed=%s "
+                 "(이 채널의 글은 계속 버린다 — 프로세스당 1회만 기록)",
+                 chat_id, sorted(CHANNEL_CHAT_IDS))
+    return False
 
 
 def _origin_matches(post: Message) -> bool:
@@ -204,6 +219,8 @@ def _origin_matches(post: Message) -> bool:
     non-BeOn origin silently fails here and never reaches inbox.jsonl
     (no log line — this is exactly how the Badonion pipeline's forwards
     disappeared despite Telethon reporting them forwarded successfully).
+    A False here is now logged by the caller (`_log_origin_drop`, #406) —
+    this function stays a pure predicate so the tests can call it bare.
     """
     if not SOURCE_ORIGINS:
         return True
@@ -227,6 +244,31 @@ def _origin_matches(post: Message) -> bool:
         return True
 
     return False
+
+
+def _log_origin_drop(post: Message) -> None:
+    """출처 게이트가 버린 글을 **사유와 함께** 한 줄 남긴다.
+
+    ⚠️ 왜 있나. 이 게이트는 2026-07-11 에 한 번 나쁜양파 포워드 68건을
+    조용히 버렸고(test_bot_origin 독스트링), 그때 출처 목록만 넓히고 **버림
+    자체는 계속 조용히** 뒀다. 2026-09-25 40일 회수 27건이 inbox 에 안 들어
+    갔을 때 저널에 'ingested' 가 0 이었는데, 그 0 은 '못 받았다' 와 '받고
+    여기서 버렸다' 를 가르지 못했다(실수 #406). 드물게만 일어나는 일이라
+    건마다 적는다 — 운영자가 채널에 직접 쓴 글 정도다.
+    """
+    origin = getattr(post, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    if chat is None:
+        chat = getattr(post, "forward_from_chat", None)
+    log.info(
+        "dropped msg=%s reason=origin origin_type=%s origin_chat=%s "
+        "origin_username=%s allowed_origins=%s",
+        getattr(post, "message_id", None),
+        getattr(origin, "type", None) or ("legacy" if chat is not None else "none"),
+        getattr(chat, "id", None),
+        getattr(chat, "username", None),
+        sorted(SOURCE_ORIGINS),
+    )
 
 
 def _serialize(post: Message) -> dict:
@@ -404,6 +446,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if not _origin_matches(post):
+        _log_origin_drop(post)
         return
 
     record = _serialize(post)
@@ -1330,15 +1373,25 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_beon_skip_callback, pattern=r"^beon_skip:"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
+    # `drop_log=on` 은 이 프로세스가 게이트 버림을 저널에 적는 판이라는 표식이다
+    # — `trade.bot_health` 는 이게 없으면 '버림 0건' 을 증거로 쓰지 않는다(옛 판은
+    # 버려도 아무것도 안 적었다, 실수 #406). 앞부분 "trade-bot starting" 은
+    # watchdog 가 grep 하므로 바꾸지 말 것(deploy/trade-watchdog.sh).
     log.info(
-        "trade-bot starting — inbox=%s media=%s allowed=%s origin=%s concurrency=%d",
+        "trade-bot starting — inbox=%s media=%s allowed=%s origin=%s concurrency=%d "
+        "drop_log=on",
         INBOX_PATH,
         MEDIA_ROOT,
         CHANNEL_CHAT_IDS or "<discovery>",
         SOURCE_ORIGINS or "<any>",
         DOWNLOAD_CONCURRENCY,
     )
-    app.run_polling()
+    # ⚠️ allowed_updates 를 비워 두면 텔레그램은 **마지막으로 누군가 설정한 값**을
+    # 계속 쓴다(Bot API getUpdates 문서). 어느 클라이언트든 같은 토큰으로
+    # channel_post 를 뺀 목록을 한 번 보내면 이 봇은 재시작해도 채널 글을 영영
+    # 못 받는다 — 폴링은 200 이라 watchdog 도 못 잡는다. 매 시작에 명시해
+    # 재시작이 그 상태를 풀게 한다(NOAH `bot/telegram_bot.py` 와 같은 규약, #38).
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":

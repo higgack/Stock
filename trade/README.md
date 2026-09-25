@@ -100,7 +100,7 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 1. Add the bot as an **admin** of the destination private channel
    (regular members don't receive channel posts via Bot API).
 2. With `TRADE_CHANNEL_CHAT_IDS=` empty, post any message in the channel.
-3. `journalctl -u trade-bot -n 20` will show `channel chat ID is -100...`.
+3. `journalctl -u trade-bot -n 20 | grep 'channel chat ID'` will show `channel chat ID is -100...` (grep 으로 거르는 이유: 다른 줄엔 봇 토큰이 평문이다).
 4. Set `TRADE_CHANNEL_CHAT_IDS=-100...` in `.env`, `systemctl restart trade-bot`.
 
 ## Verifying ingestion
@@ -108,8 +108,21 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 ```bash
 tail -f ~/.trade/inbox.jsonl                # one line per message
 ls ~/.trade/media/$(date -I)/                # downloaded photos for today
-journalctl -u trade-bot -f                   # live log
+# live log — ⚠️ getUpdates 줄에 봇 토큰이 평문이다(httpx 가 URL 을 찍는다).
+# 출력을 어디 붙여 넣을 거면 가릴 것:
+journalctl -u trade-bot -f | sed -u -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'
 ```
+
+포워드했는데 inbox 에 안 들어오면(실수 #406) 봇이 못 받았는지 · 받고 버렸는지 ·
+어디서 막혔는지(미가동·409·웹훅·수신 종류·관리자·게이트·inbox 경로)를 한 번에
+가른다 — 읽기 전용이고 getUpdates 를 부르지 않으며 토큰을 찍지 않는다:
+
+```bash
+cd ~/stock-trade && .venv/bin/python -m trade.bot_health
+```
+
+같은 대조(릴레이가 보낸 수 ↔ 봇이 받은 수)를 `trade-bot-health.timer` 가 매시간 돌려
+못 받았으면 채널로 알린다.
 
 ## One-time backfill — Telethon (`trade/scripts/backfill_beon.py`)
 
@@ -175,7 +188,7 @@ rm -rf .backfill-venv .backfill-session*
 While it runs, watch ingestion in another terminal:
 ```bash
 tail -f ~/.trade/inbox.jsonl
-journalctl -u trade-bot -f
+journalctl -u trade-bot -f | sed -u -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'   # 토큰 가림
 ```
 
 If a ⏸ Telegram alert arrives mid-run:

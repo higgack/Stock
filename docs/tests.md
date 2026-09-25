@@ -1933,3 +1933,33 @@ VM 실측(2026-09-24): 운영 `.backfill-venv`(telethon 1.36.0 = 세션 DB v7)�
 운영 세션을 여전히 경고하고 연다(운영을 멈추지 않는다). 그래서 운영 venv 의 telethon 이
 고정판이 **아니면서** 핫 저널이 남은 세션을 여는 조합은 이 가드가 못 막는다 — 그 조합은
 재지 않았다(핀이 깔렸는지 안 재는 것과 같은 축이다).
+
+## #406 — '수신 0건' 은 두 갈래다: 봇이 못 받았나, 받고 버렸나 (`trade/tests/test_bot_health.py` 65건 · `trade/tests/test_bot_drop_log.py` 7건 · 2026-09-25)
+
+VM 실측(2026-09-25): 40일 회수가 `forwarded 27 of 27` 인데 32분 뒤에도 inbox 는 그대로였고
+trade-bot 저널의 `ingested` 는 0 이었다. 채널·출처 게이트가 로그 없이 버려 그 0 은 '못
+받았다' 와 '받고 버렸다' 를 가르지 못했다(원인은 아직 안 쟀다 — 운영 봇이 옛 판이다).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 버림 기록 | 출처 게이트는 건마다 사유(origin 종류·chat·username·허용 목록), 채널 게이트는 채널마다 한 번 · **핸들러를 태워** 잰다(헬퍼만 재면 배선을 떼도 통과, #20) · 받은 글은 버림으로 안 적는다(반대 증거) · 진단 파서가 그 줄의 **필드**(종류·chat·username)까지 읽는다 | `test_bot_drop_log.py::OriginDropLogTests` · `::ChannelDropLogTests` |
+| ② 생산자↔소비자 | 봇이 **실제로 찍은 레코드**를 봇의 logging 형식으로 저널 줄로 만들어 진단 파서에 태운다 · 봇 시작 줄·릴레이 넷의 포워드 줄은 **소스의 log.info 형식**을 AST 로 꺼내 채운다(리터럴 픽스처는 형식 변경을 축복한다, #19·#155) | `test_bot_drop_log.py::DropLogIsReadByBotHealthTests` · `test_bot_health.py::test_start_line_parser_reads_the_real_bot_format` · `::test_relay_forward_parser_reads_every_real_relay_format` |
+| ③ 수신 종류 | `run_polling` 이 allowed_updates 를 **명시**한다(비워 두면 마지막 설정이 남는다) — `main()` 을 가짜 Application 으로 태워 인자를 본다 | `test_bot_drop_log.py::AllowedUpdatesTests` |
+| ④ 대조 | 보낸 만큼 받았나: ok · total · partial · 기다릴 만큼 안 지남 · 시각 못 읽음(판정 불가) · 백필 `done` 줄은 실행 **끝** 시각이라 그 앞 수신도 센다 · 리스너는 봇이 몇 초 먼저 받을 수 있다 | `test_bot_health.py::test_delivery_gap_branches` · `::test_delivery_gap_counts_ingest_before_a_backfill_done_line` |
+| ⑤ 판정 | 원인마다 ❌ 한 줄(미가동·401·웹훅·수신 종류·관리자·409·폴링 멈춤·릴레이 목적지의 채널 버림·릴레이 포워드의 출처 버림(사용자명이 바뀌어도 **ID** 로 알아본다 — inbox 가 배운 ID·getChat ID)·허용 채널·출처 목록·inbox 경로·원천 사용자명 변경) · 못 잰 것은 ❓(rc 2, ✅ 안 찍음) · 원인 없이 증상만 있으면 남은 갈래를 말하고 옛 판 메모는 한 번만 · 못 잰 조건이 남았으면 '다 맞는다' 대신 '그것부터 잴 것' · **정상 버림**(다른 채널 글·직접 쓴 글·릴레이 아닌 포워드)은 ⚠️ 사실 메모지 ❌ 가 아니다(#260) · getMe 가 못 닿았으면 원천 조회 실패를 줄마다 되풀이하지 않는다 · root 로 돌리면 inbox 경로를 대조하지 않는다(HOME 이 다르다) | `::test_each_cause_is_a_red_line` · `::test_what_we_could_not_measure_is_not_green` · `::test_unexplained_gap_says_which_branch_is_left` · `::test_all_good_is_green` · `::test_benign_drops_are_notes_not_failures` · `::test_unexplained_gap_with_unmeasured_conditions_says_measure_first` · `::test_source_checks_are_skipped_when_telegram_is_unreachable` · `::test_running_as_root_does_not_compare_inbox_paths` · `::test_relay_drop_is_recognised_by_inbox_id_even_when_telegram_is_unreachable` |
+| ⑥ 읽기 전용·비밀값 | getUpdates 거부 · 오류 문구의 토큰 제거 · 웹훅 URL 은 호스트만 · 텔레그램엔 목록 안 메서드만 · 저널 실패 문구도 가린다 | `::test_tg_call_refuses_get_updates` · `::test_tg_call_scrubs_the_token_from_errors` · `::test_webhook_url_path_never_reaches_the_output` · `::test_telegram_facts_asks_only_read_only_methods` · `::test_read_journal_names_each_branch` |
+| ⑦ 수집 배선 | 시작 줄은 **지금 PID** 의 것(창 안에 없으면 `_PID=` 로 찾는다) · 읽히는데 0줄 = 빈 사실(살아 있으면 폴링 0회 ❌) · 권한 없음 = 판정 불가 · 두 저널을 대조해 gap 을 싣는다 · 릴레이 저널을 못 읽으면 판정 불가 | `::test_collect_uses_the_running_pid_start_line_and_falls_back_to_pid_lookup` · `::test_collect_rotated_journal_is_an_empty_fact_not_unreadable` · `::test_collect_wires_the_gap_from_both_journals` · `::test_delivery_check_relay_journal_unreadable_is_unknown` |
+| ⑧ 매시간 알림 | 누락이면 한 번만 알린다(표식) · ok·none·unknown 은 무음(unknown 은 경고 로그) · 한 신호가 던져도 다른 신호는 돈다(양쪽 방향) — 대신 트레이스백을 남기고 rc 1 로 끝나 유닛 실패로 보인다 · 매시간 경로는 저널 둘만 읽는다(텔레그램·파일 안 건드림) | `::test_health_check_alerts_once_on_a_gap` · `::test_health_check_is_quiet_unless_a_gap` · `::test_health_check_main_runs_both_signals_and_fails_loudly` · `::test_delivery_check_reads_journals_only` |
+| ⑨ 릴레이 전수 | 릴레이 목록은 `SOURCE_USERNAME` 에서 — `forward_messages` 를 **호출**하는 스크립트는 전부 그 상수를 둔다(디렉터리 전수, #24 · 독스트링의 이름은 호출이 아니다) | `::test_every_forwarding_script_declares_source_username` |
+| ⑩ 리스너 판정 일반화 | 유닛 이름은 인자에서(옛 판은 BeOn 리스너 이름을 박아 뒀다) · `systemctl status` 를 권하지 않는다(저널 꼬리에 토큰) · 세션 없는 유닛의 exit 78 은 재인증이 아니다 · `systemd_facts(extra=…)` | `::test_listener_verdict_for_trade_bot_names_the_right_unit` · `::test_exit_78_is_not_reauth_for_a_unit_without_a_session` · `::test_systemd_facts_extra_properties` |
+
+뮤테이션 46종(판정·대조·배선·봇 로그·수신 종류·리스너 판정·`systemd_facts`·버림 분류·
+매시간 루프) 중 45종이 잡혔다. 살아남은 하나(출처 버림 분류의 `type != "none"` 조건)는 **도달할 수 없는
+조건**이었다 — 직접 쓴 글은 chat·username 이 없어 릴레이 이름·ID 와 맞을 수 없다. 그래서
+가드를 지웠다(#291). 백업은 green 이 된 뒤 떴고 복원은 md5 로 확인했다(#358).
+
+⚠️ **못 보는 축**(#274): 텔레그램 쪽 사실(웹훅·수신 종류·관리자·원천 사용자명)은 **가짜
+응답 위**에서만 잰다 — 실물 Bot API 는 VM 에서 첫 실행이 잰다. 손으로 돌린 백필은 저널에
+안 남아 대조에 안 잡힌다(systemd 유닛 실행만 센다). 30분보다 긴 백필 실행은 앞부분 수신을
+못 세어 '일부 누락' 으로 과대보고할 수 있다(그래서 수를 같이 적는다). 운영 봇이 옛 판이면
+게이트 버림은 저널에 안 남는다 — 진단이 그 사실을 말한다.

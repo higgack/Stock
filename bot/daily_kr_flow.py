@@ -905,7 +905,8 @@ _TIMER_CMDS = (f"`systemctl status {_TIMER_UNIT}` · "
 
 
 def systemd_facts(timer: str | None = _TIMER_UNIT,
-                  service: str = _SERVICE_UNIT) -> dict:
+                  service: str = _SERVICE_UNIT, *,
+                  extra: tuple[str, ...] = ()) -> dict:
     """systemd 에 **물어서** 타이머 상태를 재 온다(읽기 전용).
 
     도장(`feed_health`)이 없다는 사실만으로 '타이머가 안 돌았을 수 있다' 고
@@ -929,8 +930,12 @@ def systemd_facts(timer: str | None = _TIMER_UNIT,
     # 그 경우 서비스만 묻는다. 없는 유닛을 물으면 rc!=0 이 나서 판정 불가로
     # 떨어지고, 그건 '멈췄다'와 구별되지 않는다(#82·#54).
     # 그리고 리스너 판정엔 `LoadState` 가 필요하다(설치 안 됨 ↔ 멈춤).
+    # `extra` 는 서비스 쪽에 더 물을 속성(`MainPID`·`NRestarts` 등, `s_` 접두로
+    # 실린다) — trade-bot 진단이 '지금 도는 프로세스의 시작 줄' 을 찾는 데 쓴다
+    # (`trade.bot_health`, 실수 #406). 기본값이면 예전과 같은 질의다.
     _pairs = [(service, ("LoadState", "ActiveState", "SubState",
-                         "ExecMainStartTimestamp", "ExecMainStatus", "Result"))]
+                         "ExecMainStartTimestamp", "ExecMainStatus", "Result",
+                         *extra))]
     if timer:
         _pairs.insert(0, (timer, ("LoadState", "ActiveState", "SubState",
                                   "LastTriggerUSec", "NextElapseUSecRealtime")))

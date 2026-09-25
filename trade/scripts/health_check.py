@@ -1,6 +1,6 @@
 """Periodic event-based health check for the trade-bot pipeline.
 
-Runs from systemd timer (trade-bot-health.timer) hourly. Sole signal:
+Runs from systemd timer (trade-bot-health.timer) hourly. Two signals:
 
   Cycle gap: today's KST date is past an expected BeOn publication
   date (11일·21일 잠정 / 익월 1일 잠정 / 익월 15일 확정) by more
@@ -8,6 +8,15 @@ Runs from systemd timer (trade-bot-health.timer) hourly. Sole signal:
   period_kind landed in the store within ±2 days of that date.
   → posts a ⚠️ Telegram alert listing the missing publications,
   de-duplicated per-day so the same gap doesn't re-fire hourly.
+
+  Delivery gap (실수 #406, 2026-09-25): a relay unit (listener/sync)
+  logged "forwarded N" into the private channel, but trade-bot's journal
+  shows fewer than N `ingested` lines after it → ⚠️ alert pointing at
+  `python -m trade.bot_health`. 그날 27건 포워드가 inbox 에 한 건도 안
+  들어갔는데 32분 뒤 사람이 백필 dry-run 으로 알아챘다 — 두 저널을 나란히
+  놓으면 기계가 알 수 있었다. 판정은 `trade.bot_health.delivery_check`
+  단일 출처(#38). 판정 불가(저널 권한 등)는 경고 로그만 — '이상 없음' 으로
+  접지 않는다(#54). 같은 누락은 6시간에 한 번만 보낸다.
 
 Why no time-based dormancy: BeOn publishes only ~4 times a month,
 so the ~7-10 day silence between publication dates is normal
@@ -187,9 +196,43 @@ def check_cycle_gap() -> None:
     _notify(msg)
 
 
+# 이 타이머 주기(1h)의 두 배 — 한 번 놓쳐도 다음 실행이 본다. 같은 누락이 두 번
+# 보이는 것은 표식이 막는다.
+DELIVERY_WINDOW_S = 2 * 3600
+DELIVERY_ALERT_EVERY_S = 6 * 3600
+
+
+def check_delivery_gap() -> None:
+    """릴레이가 포워드한 만큼 trade-bot 이 받았나 — 못 받았으면 ⚠️ (실수 #406)."""
+    from trade import bot_health as bh
+
+    g = bh.delivery_check(since=f"{DELIVERY_WINDOW_S} seconds ago")
+    if g["kind"] == "unknown":
+        log.warning("delivery_gap: 판정 불가 — %s", g.get("err"))
+        return
+    if g["kind"] not in ("total", "partial"):
+        log.info("delivery_gap: %s (sent=%s got=%s)", g["kind"], g.get("sent"), g.get("got"))
+        return
+    if not _alert_once_per_window("delivery-gap", DELIVERY_ALERT_EVERY_S):
+        log.info("delivery_gap: alert already sent within %ds, skipping",
+                 DELIVERY_ALERT_EVERY_S)
+        return
+    msg = bh.gap_alert_text(g)
+    log.warning("delivery gap: %s", msg.replace("\n", " | "))
+    _notify(msg)
+
+
 def main() -> int:
-    check_cycle_gap()
-    return 0
+    # 한 신호의 실패가 다른 신호를 지우지 않게 둘 다 돌리되, 조용하지는 않게 —
+    # 트레이스백을 남기고 rc 1 로 끝내 유닛 실패로 보이게 한다(#12).
+    rc = 0
+    for check in (check_cycle_gap, check_delivery_gap):
+        try:
+            check()
+        except Exception:                                      # noqa: BLE001
+            log.exception("%s failed", check.__name__)
+            rc = 1
+    return rc
 
 
 if __name__ == "__main__":
