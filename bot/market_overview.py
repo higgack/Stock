@@ -633,7 +633,14 @@ def _treasury_augmentable() -> frozenset[str]:
 # 무엇을 당길 수 있는지는 그쪽이 안다(#86 상태는 아는 쪽에 묻는다).
 _TREASURY_SIDS = set(_treasury_augmentable())
 _FRED_TTL_DAILY_H = 1.0
-_FRED_TTL_OTHER_H = 24.0
+# 월간·분기 헤드라인도 1시간이다(실수 #415 — 옛 판 24시간). 옛 근거는 "짧게 하면 FRED
+# 호출만 늘고 얻는 게 없다" 였는데 **틀렸다**: 같은 카드의 스파크(`macro_snapshot.
+# _fred_monthly`)는 캐시 없이 30초마다 FRED 를 부르므로, 공표일(근원PCE·GDP·CPI…)엔
+# 그래프가 새 달을 그리는데 헤드라인·기준 라벨은 날짜 롤까지 최대 하루 옛 달을 말했다(#33
+# 한 카드가 두 기간을 말한다). 호출 비용도 스파크(시리즈당 시간 120회)에 비하면 1시간 1회는
+# 반올림 오차다. 일별 집합(`_FRED_DAILY_SIDS`)은 남긴다 — 이 값을 다시 늘리는 날 그 집합이
+# 일별 시리즈를 짧게 지키는 유일한 선이다.
+_FRED_TTL_OTHER_H = 1.0
 # ⚠️ **캐시는 코드 배포로 안 바뀐다**(실수 #18 의 캐시판). #909 로 국채금리를
 # 재무부 원천으로 당겼는데, VM 감사(2026-08-18)에서 여전히 08-14 가 나왔다 —
 # 39분 전 배포 전 코드가 쓴 사본이 TTL 안이라 그대로 서빙됐다. TTL 이 지나면
@@ -643,6 +650,23 @@ _FRED_TTL_OTHER_H = 24.0
 #   v3 = T10Y2Y(장단기금리차)도 재무부 파생으로 보강 + 일별 TTL 대상 포함
 #        (2026-09-14 — 안 올리면 오늘 이미 구운 24h 사본이 그대로 서빙된다)
 _FRED_CACHE_VER = 3
+
+
+# FRED 실패는 **짧게만** 믿는다(리뷰 M6 · #303·#161). 헤드라인 TTL 을 1시간으로 줄이자
+# (#415) 원천이 막힌 동안엔 30초 재생성마다 시리즈별 10초 타임아웃을 줄지어 기다리게 됐다
+# (매크로 5 + 글로벌 3 ≈ 80초 — 옛 24시간 캐시에선 0). 실패한 계열은 10분 동안 다시 묻지
+# 않고 같은 날 사본(없으면 None)을 준다. 메모리 전용이라 재시작하면 다시 묻는다.
+# ⚠️ 이건 **헤드라인** 절반이다 — 같은 카드의 스파크(`macro_snapshot._fred_monthly`)는 캐시·
+# 실패 기억 없이 12초 상한으로 매번 묻는다(이 배치 이전부터, 2차 리뷰 L6 — 따로 다룬다).
+# 키는 **그 캐시 파일 경로**다 — 캐시와 같은 단위(디렉터리·계열·날짜)로 기억해야, 캐시
+# 디렉터리를 갈아 끼운 다른 실행(테스트 포함)이 남의 실패를 물려받지 않는다(#30).
+_FRED_FAIL_TTL_S = 600
+_fred_fail: dict[str, float] = {}
+
+
+def _fred_recently_failed(key: str) -> bool:
+    t = _fred_fail.get(key)
+    return t is not None and time.monotonic() - t < _FRED_FAIL_TTL_S
 
 
 def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
@@ -657,15 +681,23 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     cache_file = cache_dir / f"{series_id}_{today_str}.json"
     _ttl = (_FRED_TTL_DAILY_H if series_id in _FRED_DAILY_SIDS
             else _FRED_TTL_OTHER_H)
+    # TTL 이 지난 **같은 날** 사본 — FRED 가 막히면 빈 값 대신 이걸 준다(#394 낡은 값이 빈
+    # 값보다 낫다). TTL 을 1시간으로 줄이며(#415) 원천 장애 한 시간에 카드가 통째로
+    # 빠지지 않게 하는 짝이다. 관측일(`time`)을 그대로 싣고 가므로 화면의 기준 라벨은 사실이다.
+    _stale: Optional[dict] = None
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < _ttl:
-                _c = json.loads(cache_file.read_text())
-                if _c.get("cv") == _FRED_CACHE_VER:
+            _c = json.loads(cache_file.read_text())
+            if _c.get("cv") == _FRED_CACHE_VER:
+                if age_h < _ttl:
                     return _c
+                _stale = _c
         except Exception:
             pass
+    _fail_key = str(cache_file)
+    if _fred_recently_failed(_fail_key):
+        return _stale                    # 10분 안에 실패했다 — 다시 묻지 않는다(M6)
 
     start = (date.today() - timedelta(days=lookback_days)).isoformat()
     url = (
@@ -678,8 +710,11 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
     except Exception as exc:
-        log.warning("fred: fetch %s failed: %s", series_id, exc)
-        return None
+        _fred_fail[_fail_key] = time.monotonic()
+        # 예외 문구엔 `api_key=` 가 든 URL 이 실린다 — `bot.env_keys` 레코드 팩토리가 가린다(#416)
+        log.warning("fred: fetch %s failed: %s%s", series_id, exc,
+                    " — 같은 날 옛 사본을 준다" if _stale else "")
+        return _stale
 
     clean = []
     for row in obs:
@@ -691,7 +726,9 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         except ValueError:
             continue
     if not clean:
-        return None
+        _fred_fail[_fail_key] = time.monotonic()     # 빈 답도 30초마다 다시 묻지 않는다
+        return _stale
+    _fred_fail.pop(_fail_key, None)
 
     latest_date, latest_val = clean[0]
     prev_val = clean[1][1] if len(clean) >= 2 else None
@@ -735,15 +772,25 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     today_str = date.today().isoformat()
     cache_file = cache_dir / f"{series_id}_yoy_{today_str}.json"
+    # 헤드라인(`_fred_fetch_series`)과 **같은 TTL·같은 날 사본 규약**이다(리뷰 M3 · #38) — 이
+    # 경로만 24시간으로 남아, 공표일에 매크로 CPI·근원PCE 카드는 한 시간 안에 새 달로 넘어가는데
+    # 같은 화면의 글로벌 '(YoY)' 행은 날짜가 바뀔 때까지 옛 달을 말했다(#33).
+    _ttl = (_FRED_TTL_DAILY_H if series_id in _FRED_DAILY_SIDS
+            else _FRED_TTL_OTHER_H)
+    _fail_key = str(cache_file)
+    _stale: Optional[dict] = None
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 24:
-                _c = json.loads(cache_file.read_text())
-                if _c.get("cv") == _FRED_CACHE_VER:
+            _c = json.loads(cache_file.read_text())
+            if _c.get("cv") == _FRED_CACHE_VER:
+                if age_h < _ttl:
                     return _c
+                _stale = _c
         except Exception:
             pass
+    if _fred_recently_failed(_fail_key):
+        return _stale
 
     start = (date.today() - timedelta(days=_FRED_YOY_WINDOW_DAYS)).isoformat()
     url = (
@@ -755,8 +802,13 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
-    except Exception:
-        return None
+    except Exception as exc:
+        _fred_fail[_fail_key] = time.monotonic()
+        # 옛 판은 여기서 한 줄도 안 남기고 None 을 줬다(#12) — 예외 문구의 `api_key=` 는
+        # `bot.env_keys` 레코드 팩토리가 가린다(#416)
+        log.warning("fred: YoY fetch %s failed: %s%s", series_id, exc,
+                    " — 같은 날 옛 사본을 준다" if _stale else "")
+        return _stale
 
     clean = []
     for row in obs:
@@ -768,7 +820,9 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         except ValueError:
             continue
     if len(clean) < 2:
-        return None
+        _fred_fail[_fail_key] = time.monotonic()
+        return _stale
+    _fred_fail.pop(_fail_key, None)
 
     latest_date, latest_val = clean[0]
     # Find value ~12 months ago

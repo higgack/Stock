@@ -928,6 +928,11 @@ class DartClient:
         else:
             self.api_key = (os.getenv("DART_API_KEY")
                             or _dart_key_from_env_file() or "").strip()
+        # 이 키는 `env_key` 를 안 거친다(자체 .env 폴백 · 빈 문자열='키 없음' 규약) — 가림
+        # 목록에 **직접** 올린다. 안 올리면 `crtfc_key=` 가 든 예외 URL 이 실패 로그로 그대로
+        # 샌다(실수 #416 · 2차 리뷰 M1).
+        from bot.env_keys import remember_secret
+        remember_secret(self.api_key)
         self._corp_code_map: dict[str, str] | None = None  # stock_code → corp_code
         # normalized name → list of {name, stock_code, corp_code} entries.
         # One normalized key can map to multiple companies when a search

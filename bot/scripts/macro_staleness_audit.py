@@ -8,14 +8,23 @@
 
     cd ~/stock && .venv/bin/python -m bot.scripts.macro_staleness_audit
 
+`--history` = 카드 계열마다 **우리 캐시가 새 기간을 처음 본 날**(관측기간 종료 +N일)을
+공표 규약과 나란히 찍는다 — "원천이 늦게 싣나, 우리가 늦게 받나" 의 답이다(실수 #413·
+#415: 한국 수출은 이 측정으로 ECOS 재게시가 +34일임을 알았다). 캐시 파일만 읽는다
+(네트워크 0).
+
 읽기 전용 · LLM 0 · ₩0.
 """
 from __future__ import annotations
 
+import json
+import re
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Optional
 
-_PROBE_VER = 2
+_PROBE_VER = 4
 
 
 def _p(*a):
@@ -198,6 +207,34 @@ def empty_diag(src: str, sid: str, window_start: str = "") -> tuple[str, str]:
                        f"우리가 고칠 게 없다")
 
 
+def customs_fallback_line(cs: dict) -> str:
+    """관세청 카드가 **관세청을 못 써 폴백했으면** 그 한 줄(순수), 아니면 "".
+
+    폴백은 조용하면 안 된다(#42a) — 화면엔 'ECOS(관세청 …)' 로 뜨지만 결산은 ❌·⚠️ 만
+    올린다(#303). 갈래로 기호를 가른다(#82·#260): 원천이 잠깐 막힌 것(조회 실패 —
+    타임아웃·429·5xx·한도)은 기다리면 풀리니 ⚠️, 키·경로·응답 형식·단위 불일치·행 없음은
+    **우리가 고칠 것**이라 ❌. 줄이 혼자서 행동 가능하게 사유 원문을 같이 싣는다(#356).
+    ⚠️ ECOS 까지 비었으면 **카드가 화면에서 빠진다** — 갈래와 무관하게 ❌ 한 줄로,
+    관세청 사유를 같이 싣는다. 폴백 줄과 '관측 없음' 줄을 따로 내면 한 카드가 결산에서
+    두 번 세어진다(#45·#250)."""
+    if not cs:
+        return ""
+    if cs.get("src") == "관세청":
+        # 관세청으로 그렸지만 **단위를 못 잰 채**다(ECOS 와 겹치는 달이 없음) — 조용하면 단위가
+        # 바뀐 날 1000배 틀린 값이 ✅ 로 통과한다(리뷰 M1 · #54). ECOS 가 비었거나 뒤처진 탓이라
+        # 기다리면 풀린다 — ⚠️.
+        if "verified" in cs and cs.get("verified") is None:
+            return (f"⚠️ 관세청 값을 ECOS 대조 없이 그렸다 — {str(cs.get('check') or '')[:200]}"
+                    " (ECOS 가 돌아오면 다음 수집에서 대조된다)")
+        return ""
+    why = str(cs.get("why") or "못 받음")
+    detail = str(cs.get("detail") or "")[:200]
+    if not cs.get("points"):
+        return f"❌ 관측 없음 — 관세청({why}: {detail})·ECOS 둘 다 행이 없다"
+    mark = "⚠️" if why == "조회 실패" else "❌"
+    return f"{mark} 관세청 원천을 못 써 ECOS 로 그렸다 — {why}: {detail}"
+
+
 def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
     """감사가 훑는 행 — (표면, 라벨, "src:id", 경로, 창 일수). 순수에 가깝게.
 
@@ -212,7 +249,7 @@ def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
     seen: set[tuple[str, str]] = set()
     for surface, defs in (("Macro/국내", ms.DOMESTIC), ("Macro/글로벌", ms.GLOBAL)):
         for _k, label, _u, src, sid, _d in defs:
-            if src in ("fred", "fred_yoy", "ecos") and (src, sid) not in seen:
+            if src in ("fred", "fred_yoy", "ecos", "customs") and (src, sid) not in seen:
                 seen.add((src, sid))
                 rows.append((surface, label, f"{src}:{sid}", "spot", 400))
     for label, sid, _u, lb in mo.FRED_INDICATORS:
@@ -222,7 +259,153 @@ def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
     return rows
 
 
-def main() -> int:
+_ECOS_FILE = re.compile(r"^series_v\d+_(?P<key>.+)_\d+_(?P<d>\d{4}-\d{2}-\d{2})\.json$")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def first_seen(daily: list[tuple[str, str]], freq: str) -> list[tuple[str, str, str]]:
+    """[(파일 날짜 YYYY-MM-DD, 그날 본 최신 기간 원문)] → [(기간, 처음 본 날, 직전 기록 날)](순수).
+
+    날짜순으로 훑어 **최신 기간이 새로 바뀐 날**만 남긴다. `직전 기록 날` 은 그 기간이 아직
+    없던 마지막 파일의 날짜다 — 원천은 그 다음 날부터 처음 본 날 사이 어딘가에서 실었다.
+    기록의 첫 파일에 이미 있던 기간은 그 전에 실렸을 수 있어 직전 기록이 '' 다(#54 모르는
+    것을 사실처럼 적지 않는다). 못 읽은 파일은 '없었다' 는 증거가 아니라 건너뛴다.
+    기간 비교는 공표 규약과 같은 함수(`parse_period_end`)로 한다(#38)."""
+    from bot.macro_cadence import parse_period_end
+    out: list[tuple[str, str, str]] = []
+    best: Optional[date] = None
+    prev = ""
+    for d, raw in sorted(daily):
+        end = parse_period_end(raw, freq)
+        if end is None:
+            continue
+        if best is None or end > best:
+            out.append((raw, d, prev))          # 첫 기록이면 prev 는 아직 '' 다
+            best = end
+        prev = d
+    return out
+
+
+def _history_daily(src: str, sid: str, ecos_dir: Path, fred_dir: Path) -> list[tuple[str, str]]:
+    """캐시 파일들 → [(파일 날짜, 그날 본 최신 기간)]. 못 읽는 파일은 건너뛴다(#331)."""
+    rows: list[tuple[str, str]] = []
+    if src in ("ecos", "customs"):
+        for f in ecos_dir.glob("series_v*.json"):
+            m = _ECOS_FILE.match(f.name)
+            if not m or m.group("key") != sid:
+                continue
+            try:
+                pts = json.loads(f.read_text(encoding="utf-8"))
+                last = max(str(t) for t, _v in pts) if pts else ""
+            except Exception:                                  # noqa: BLE001
+                continue
+            if last:
+                rows.append((m.group("d"), last))
+    elif src in ("fred", "fred_yoy"):
+        # 파일명은 `{sid}_{YYYY-MM-DD}.json`(`market_overview._fred_fetch_series`) — glob 의
+        # `_` 가 다른 계열(`DGS1` vs `DGS10_…`)을 이미 막으므로, 남는 일은 가운데가 **날짜인지**
+        # 보는 것이다(날짜가 아니면 뒤의 기간 계산이 깨진다).
+        for f in fred_dir.glob(f"{sid}_*.json"):
+            d = f.name[len(sid) + 1:-len(".json")]
+            if not _DATE.fullmatch(d):
+                continue
+            try:
+                t = str((json.loads(f.read_text(encoding="utf-8")) or {}).get("time") or "")
+            except Exception:                                  # noqa: BLE001
+                continue
+            if t:
+                rows.append((d, t))
+    return rows
+
+
+def history_lines(ms, **kw) -> list[str]:
+    """`history_report` 의 줄만."""
+    return history_report(ms, **kw)[0]
+
+
+def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Path] = None,
+                   keep: int = 4) -> tuple[list[str], int, int]:
+    """카드 계열마다 새 기간을 **처음 본 날**과 공표 규약을 나란히(`--history`)
+    → (줄, 기록을 잰 계열 수, 대상 계열 수).
+
+    원천이 새 기간을 실은 날 ≈ 우리 캐시가 그걸 처음 담은 날(하루 오차 — 캐시 파일은 날짜별
+    마지막 수집본이다). 규약보다 늦으면 '원천이 늦게 싣는다' 이고, 규약 안인데 화면이 늦으면
+    우리 캐시·렌더 쪽이다(#82 갈래). 관세청 계열은 캐시가 날짜별로 안 남아 **ECOS 대조본**의
+    기록을 싣는다 — 라벨이 그렇다고 밝힌다(#34)."""
+    from bot.macro_cadence import CADENCE, GRACE_DAYS, parse_period_end
+    if ecos_dir is None:
+        from bot.bok_ecos_client import _CACHE_DIR as ecos_dir
+    if fred_dir is None:
+        from bot.market_overview import _CACHE_DIR as _mo_dir
+        fred_dir = _mo_dir / "fred"
+    out: list[str] = []
+    measured = total = 0
+    for defs in (ms.DOMESTIC, ms.GLOBAL):
+        for _k, label, _u, src, sid, _d in defs:
+            if src not in ("fred", "fred_yoy", "ecos", "customs"):
+                continue
+            total += 1
+            spec = CADENCE.get(sid)
+            name = f"{src}:{sid}" + (" · ECOS 대조본" if src == "customs" else "")
+            daily = _history_daily(src, sid, Path(ecos_dir), Path(fred_dir))
+            if not spec:
+                out.append(f"  {label:<14} {name:<30} ❓ 공표 규약 없음 — 대조 불가")
+                continue
+            if not daily:
+                out.append(f"  {label:<14} {name:<30} ❓ 캐시 기록 없음 — 첫 등장을 잴 재료가 없다")
+                continue
+            freq, lag, why = spec
+            if freq == "E":
+                out.append(f"  {label:<14} {name:<30} ⚪ 이벤트성({why}) — 첫 등장 판정 안 함")
+                continue
+            days = sorted(d for d, _r in daily)
+            measured += 1
+            out.append(f"  {label:<14} {name:<30} 캐시 {len(daily)}일치 {days[0]}~{days[-1]}"
+                       f" · 규약 +{lag}일({why})")
+            limit = lag + GRACE_DAYS
+            for raw, d, prev in first_seen(daily, freq)[-keep:]:
+                end = parse_period_end(raw, freq)
+                hi = (date.fromisoformat(d) - end).days          # 늦어도 이날엔 있었다
+                gap = ""
+                if not prev:
+                    verdict = "❓ 기록 시작 전부터 있었다 — 처음 실린 날은 모른다"
+                else:
+                    lo = (date.fromisoformat(prev) - end).days + 1   # 빨라도 직전 기록 다음 날
+                    if (date.fromisoformat(d) - date.fromisoformat(prev)).days > 1:
+                        gap = f" · 직전 기록 {prev}(사이가 비어 그 안 어디서 실렸는지 모른다)"
+                    if lo > limit and src == "customs":
+                        # 이 행은 ECOS **대조본**이다 — 카드는 관세청이라 이 지연을 안 탄다(리뷰 L13).
+                        # 경고 글자를 붙이면 카드가 늦다고 읽힌다(#34).
+                        verdict = (f"ECOS 재게시가 규약보다 최소 {lo - lag}일 늦다 "
+                                   "(카드 원천 관세청은 이 지연을 안 탄다)")
+                    elif lo > limit:
+                        verdict = f"⚠️ 규약보다 최소 {lo - lag}일 늦게 실렸다"
+                    elif hi <= limit:
+                        verdict = "✅ 규약 안"
+                    else:
+                        verdict = "❓ 기록 사이가 비어 규약 안인지 못 가른다"
+                out.append(f"      {raw:<12} 처음 본 날 {d} (기간 종료 +{hi}일){gap}  {verdict}")
+    return out, measured, total
+
+
+def history() -> int:
+    """→ rc 0 한 계열이라도 기록을 쟀다 · 1 잰 계열 0(대조 0건은 통과가 아니다, #54)."""
+    from bot import macro_snapshot as ms
+    _p(f"macro_staleness_audit --history v{_PROBE_VER} · 캐시 첫 등장(우리가 처음 받은 날) "
+       f"— 네트워크 0 · 하루 오차(캐시는 날짜별 마지막 수집본)")
+    lines, measured, total = history_report(ms)
+    for ln in lines:
+        _p(ln)
+    _p(f"── 기록을 잰 계열 {measured}/{total}개")
+    if not measured:
+        _p("  ❓ 잰 계열이 0 — 캐시 기록이 없다(대조 0건은 통과가 아니다, #54)")
+        return 1
+    return 0
+
+
+def main(argv: Optional[list] = None) -> int:
+    if "--history" in (argv or []):
+        return history()
     from bot.macro_cadence import (CADENCE, GRACE_DAYS, _CADENCE_VER, judge)
     from bot.env_keys import env_source
     from bot import macro_snapshot as ms
@@ -233,9 +416,11 @@ def main() -> int:
        f"grace {GRACE_DAYS}일 · 기준 {today} (KST)")
     _keysrc = {"fred": env_source("FRED_API_KEY"),
                "fred_yoy": env_source("FRED_API_KEY"),
-               "ecos": env_source("BOK_ECOS_API_KEY")}
+               "ecos": env_source("BOK_ECOS_API_KEY"),
+               "customs": env_source("DATA_GO_KR_API_KEY")}
     _p(f"키: FRED_API_KEY={_keysrc['fred']} · "
-       f"BOK_ECOS_API_KEY={_keysrc['ecos']}")
+       f"BOK_ECOS_API_KEY={_keysrc['ecos']} · "
+       f"DATA_GO_KR_API_KEY={_keysrc['customs']}")
     _p("")
 
     # 화면에 실제로 뜨는 발표지표만(실시간 가격 카드 src='yf' 는 대상 아님).
@@ -243,15 +428,34 @@ def main() -> int:
 
     late: list[str] = []
     src_lag: list[str] = []
+    # 기다리면 풀리는 상태(관세청 조회 실패 · ECOS 대조 불가) — '원천 공표 지연' 과 처방은 같아도
+    # 사실이 다르다: 원천은 실었는데 **우리가 잠깐 못 받았다**(리뷰 L5 · #34·#292)
+    wait: list[str] = []
     unknown: list[str] = []
     for surface, label, key, mode, lb in rows:
         src, sid = key.split(":", 1)
         raw = ""
         win_start = ""
+        fell_back = False          # 관세청 카드가 ECOS 로 폴백 — 그 탓의 지연은 한 번만 센다
         try:
             if src == "ecos":
                 pts = ms._ecos_series(sid)
                 raw = pts[-1][0] if pts else ""
+            elif src == "customs":
+                # 화면과 **같은 함수**(관세청 → ECOS 대조 → 폴백)로 묻는다(#35·#176).
+                _cs = ms._customs_series(sid)
+                pts = _cs.get("points") or []
+                raw = pts[-1][0] if pts else ""
+                key += f" ·{_cs.get('src') or '원천 없음'}"
+                _fb = customs_fallback_line(_cs)
+                if _fb:
+                    _p(f"  {label:<18} {key:<28} {_fb}")
+                    (wait if _fb.startswith("⚠️") else late).append(
+                        f"{label}(관세청 {_cs.get('why') or '단위 미대조'})")
+                    if not pts:
+                        continue       # 카드가 빠졌다 — 위 한 줄이 이미 셌다(#45)
+                    # 관세청으로 그렸다면(단위 미대조 줄) 폴백이 아니다 — 지연 판정은 따로 센다
+                    fell_back = _cs.get("src") != "관세청"
             else:
                 # ⚠️ 화면이 쓰는 그 선택기로 묻는다 — 옛 판은 전 행을
                 # `_fred_fetch_series(sid, 400)` 로 물어 **YoY 카드**(730일
@@ -304,6 +508,10 @@ def main() -> int:
         elif j["expected"] is None or j["actual"] is None:
             verdict = "❌ 관측 라벨 판독 실패"
             late.append(f"{label}(라벨 {raw})")
+        elif j["stale"] and fell_back:
+            # 폴백한 원천(ECOS)이 뒤처진 것은 위 폴백 줄과 **같은 원인**이다 — 두 번 세면
+            # 결산의 ❌ 가 두 배가 된다(#45·#250). 판정 글자 없이 사실만 적는다.
+            verdict = f"뒤처짐(기대 {j['expected']}) — 위 폴백 탓, 따로 세지 않는다"
         elif j["stale"]:
             bucket, verdict = stale_verdict(j)
             (src_lag if bucket == "src_lag" else late).append(
@@ -319,7 +527,7 @@ def main() -> int:
     _treasury_status(mo)
     _p("")
     _p(f"── 요약: 대상 {len(rows)}개 · 지연 의심 {len(late)}개 · "
-       f"원천 공표 지연 {len(src_lag)}개 · 규약 없음 {len(unknown)}개")
+       f"원천 공표 지연 {len(src_lag)}개 · 일시 상태 {len(wait)}개 · 규약 없음 {len(unknown)}개")
     # ⚠️ **요약이 항목을 다시 나열하면 같은 결함이 두 번 세어진다.** 위 표가
     # 이미 지연 항목마다 ❌ 한 줄씩 찍는데 여기서 또 찍어, sweep 의 '❌ N건'
     # 이 정확히 두 배가 됐다(2026-08-26 실측: 실제 2건 → 4건, #45 같은
@@ -329,15 +537,20 @@ def main() -> int:
         _p(f"   ⚪ {s}")
     if src_lag:
         # ⚠️ 사실은 위 표가 이미 폭까지 말했다(#41) — 여기선 **처방**만.
-        _p("   (⚠️ 원천 공표 지연은 우리가 고칠 게 없다 — 원천이 실으면 "
+        # 처방 줄엔 판정 글자를 안 쓴다 — sweep 이 같은 사실을 한 번 더 센다(#289 · 2차 리뷰 L7)
+        _p("   (원천 공표 지연은 우리가 고칠 게 없다 — 원천이 실으면 "
            "다음 수집에서 자동 반영된다)")
+    if wait:
+        # 판정 글자 없이 처방만(글자가 있으면 sweep 이 같은 결함을 한 번 더 센다, #289)
+        _p("   (일시 상태 = 관세청 조회가 잠깐 막혔거나 대조할 ECOS 가 비었다 — 다음 수집에서 "
+           "다시 잰다)")
     if late or unknown:
         # ⚠️ "판정 불가"를 "정상"으로 요약하지 않는다 — 그게 오보의 씨앗이다.
         _p("   (⚪ 는 판정을 못 한 것이지 정상이 아니다)")
-    elif not src_lag:
+    elif not src_lag and not wait:
         _p("   전부 통상 공표 일정 안쪽 — 늦게 보이는 건 원천 공표지연이다.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

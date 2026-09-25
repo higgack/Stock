@@ -17385,6 +17385,7 @@ def _render_market_card(title: str, items: list, yf: dict) -> str:
 def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
     """Render the FRED indicators card."""
     from bot.macro_snapshot import _fmt_asof   # 기준월 포맷 공유(사용자 2026-06-24)
+    from bot.macro_snapshot import _FRED_QUARTERLY, _as_quarter   # 분기 규칙 한 벌(리뷰 M2)
     # 일별 series(국채금리) — macro_snapshot._DAILY_CADENCE_KEYS 와 같은 목적.
     # 2026-08-02 macro_snapshot fix(full=True 로 월 잘림 없이 정확한 날짜)가
     # 이 카드엔 안 옮겨져 있었다(2026-08-03 사용자 스크린샷 — 미국채 2/10/30년이
@@ -17428,7 +17429,12 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         # 기준월 라벨 — 헤드라인이 어느 관측월 값인지(FRED 발표지표, 사용자 2026-06-24).
         # 일별 series 는 월 잘림 없이 정확한 날짜(macro_snapshot 과 동일 규칙).
         _full = item.get("series_id") in _DAILY_SIDS
-        _asof = _fmt_asof(d.get("time", ""), full=_full)
+        # 분기 계열은 분기로 — FRED 는 분기를 **분기 첫날**로 찍어 와 월로 자르면 미국 GDP 가
+        # '(2026-04)' 가 된다. 같은 화면의 매크로 카드는 '2026 Q2' 라 두 표면이 한 값을 다른
+        # 기간으로 말했다(리뷰 M2 · #38 — 규칙은 `macro_snapshot` 한 벌을 쓴다).
+        _t = d.get("time", "")
+        _asof = _fmt_asof(_as_quarter(_t) if item.get("series_id") in _FRED_QUARTERLY else _t,
+                          full=_full)
         # 국채금리는 FRED 보다 하루 빠른 **미 재무부** 값으로 대체될 수 있다.
         # 원천은 밝히되 **툴팁**으로 — 라벨 옆에 글자를 더 붙이면 300px 카드가
         # 두 줄로 접혀 옆 카드와 행 높이가 어긋난다(사용자 2026-08-18).
@@ -17827,8 +17833,11 @@ def _macro_fmt_change(change, dec: int) -> str:
     if change is None:
         return '<span class="mc" style="color:var(--muted)">—</span>'
     r = round(change, dec if dec > 0 else 2)
-    if r == 0:        # 전월(직전 데이터점) 대비 변화 0 — '12개월 전과 같다' 오해 방지
-        return '<span class="mc" style="color:var(--muted)">전월 동일</span>'
+    if r == 0:
+        # ⚠️ 이 칩은 **그린 기간 전체**(첫 점→끝 점) 변화다(2026-08-01 헤드라인 개편 뒤) —
+        # '전월 동일' 은 재지 않은 비교를 말했고, 분기 카드(12분기)에선 더 틀렸다(리뷰 L11).
+        # 기준점(… 대비 값)은 바로 아래 보조줄이 적는다.
+        return '<span class="mc" style="color:var(--muted)">변동 없음</span>'
     up = change > 0
     color = "var(--pos)" if up else "var(--neg)"
     arrow = "▲" if up else "▼"
@@ -18493,9 +18502,13 @@ def _render_macro_snapshot(macro: dict) -> str:
   <details class="macro-note" style="font-size:11px;color:var(--muted);margin:-2px 0 8px">
     <summary style="cursor:pointer;list-style:none">ℹ️ 기준 날짜·<b>⚠ 지연</b> 배지 읽는 법</summary>
     <ul style="margin:6px 0 0 16px;padding:0;line-height:1.7">
-      <li><b>기준 YYYY-MM</b> = 그 통계의 최신 <b>공표치</b>. 발표지표는 공표 일정상
-          지연이 정상입니다(통관 수출입·물가 ≈ 1개월 · 국제수지 ≈ 2개월 · GDP 분기).</li>
-      <li><b>(N개월 전)</b> = 오늘 기준 경과. 경과만으론 정상인지 알 수 없어, 지표마다
+      <li><b>기준 YYYY-MM</b> = 그 통계의 최신 <b>공표치</b>(분기 지표는 <b>YYYY Qn</b>).
+          발표지표는 공표 일정상 지연이 정상입니다(통관 수출입 ≈ 익월 1일 잠정·중순 확정 ·
+          물가 ≈ 1개월 · 국제수지 ≈ 2개월 · GDP 분기). 한국 수출·수입은 <b>관세청</b> 통관
+          집계 — 확정(익월 15일 전후) 전의 지난달은 <b>관세청 잠정</b>으로 적고, 못 받으면
+          ECOS 재게시분(확정치·약 한 달 늦음)으로 그리고 <b>ECOS(관세청 …)</b> 로 적습니다.
+          단위를 ECOS 와 겹치는 달로 대조하지 못한 날은 <b>ECOS 대조 못 함</b> 이 붙습니다.</li>
+      <li><b>(N개월 전)</b> = 오늘 기준 경과(분기 지표는 분기 말부터). 경과만으론 정상인지 알 수 없어, 지표마다
           <b>통상 공표 일정</b>을 등록해두고 그보다 뒤처진 카드에만 <b>⚠ 지연</b>을 붙입니다.
           <b>배지가 없으면 그 지표 기준으로는 최신</b>입니다.</li>
       <li>지수·원자재·코인·환율은 <b>실시간 현재가</b>라 관측 기간이 없습니다 — 대신

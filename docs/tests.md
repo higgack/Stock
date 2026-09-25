@@ -2082,3 +2082,113 @@ VM 실측(2026-09-25 `trade.bot_health`): 봇은 40일 회수 27건을 **다 받
 (`RecursionError` 못 잡음 · 읽기 실패·모르는 판도 덮어씀 · 임시 파일 안 치움 · PID 없음 · 락 무한 대기 ·
 상한 무시)이 전부 잡혔다. 재시작 규칙은 폐포보다 넓다(`trade/*.py` — 지난 한 달 base 커밋 66개 실측:
 옛 규칙 1회 → 새 규칙 15회, 9일) — 재시작은 몇 초라 그 사이 올라온 글은 주기 sync 가 회수한다.
+
+## #413 — 한국 수출·수입 카드 원천을 관세청으로 (`tests/test_customs_trade_20260925.py` 69건 — 16건은 #416 절 · 2026-09-25)
+
+카드의 공표 규약은 '관세청 통관 확정 익월 15일 전후' 인데 원천은 그 확정치를 **재게시**하는
+ECOS(901Y118)였다. VM 캐시 30개를 날짜별로 잰 결과 ECOS 는 7월분을 2026-09-03(관측월 종료
++34일)에야 실어 매달 열흘가량 ⚠ 지연이 떴다(사용자 "관세청으로 바꿔줘 원천을"). 원천을
+`bot/customs_trade_client.py`(data.go.kr 15102108 `getNewtradeList`)로 옮기고 ECOS 는 **계열 통째**
+폴백이다. 같은 날 카드의 '12개월 전' 이 실제로는 11개월 전(스파크라인 첫 관측)이었던 것도
+기간 라벨(`period_start_asof`)로 바꿨다 — ECOS 카드 전부 같이(#38).
+처음엔 경로 대소문자·조회기간 상한·쪽 크기를 재지 못해 형제 선례로 좁혔는데, 같은 날 VM 프로브가
+답했다(실수 #415): 경로는 `Newtrade`(대문자) 하나 — 소문자는 **HTTP 400 + resultCode 12** · 조회기간은
+**1년 이내**(13개월 창 → 200 + resultCode 99 '조회기간은 1년이내') · body 엔 `items` 뿐(쪽 크기 칸 없음)
+· 금액은 USD 원값 · **진행 중인 달도 부분 누계로 준다**(그래서 지난달분이 익월 1일부터 오고, 확정인
+익월 15일 전후까지는 **잠정**이다 — 카드가 `관세청 잠정` 으로 적는다). 그 결과 경로 사다리를 걷어내고
+(죽은 후보 삭제), 비-200 본문의 결과코드로 갈래를 정하고, 99 를 일시 오류에서 뺐다.
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 파싱 | 달 모양(`YYYY.MM`·`YYYY-MM`·`YYYYMM`)만 받고 '총계' 등은 건너뛴다 · 오류 봉투 **두 벌**(서비스 `resultCode` · 게이트웨이 `cmmMsgHeader`, #352) · 결과코드가 갈래를 정한다 — 03(NODATA)은 오류가 아니라 **빈 창**, 22(한도)·05(시간초과)는 기다리면 풀리고(조회 실패), 10·11·30 은 우리가 고칠 것(응답 오류, #82) · XML·JSON 둘 다 | `::test_norm_ym_takes_only_month_shapes` · `::test_parse_reads_fields_and_skips_non_month_rows` · `::test_parse_names_both_error_envelopes` · `::test_result_codes_split_no_data_transient_and_ours` · `::test_parse_accepts_json_with_either_item_shape` |
+| ② 수집기 | 창은 6개월씩('총계' 까지 7행 — data.go.kr 기본 쪽 크기에 안 잘린다, #280 · 실측 상한 1년 안) · 경로는 실측한 **하나**(`Newtrade`) — 소문자 후보는 되살아나지 않는다(#222 옛 사다리 계약을 다시 썼다) · 창마다 한 번, 키를 싣는다 · 한 창이 실패하면 멈춘다 · HTTP 429·5xx 는 조회 실패, 4xx 는 응답 오류 — 단 **본문에 결과코드가 있으면 그 코드가 갈래를 정한다**(실측 400 + 12 → '경로 없음', 원천 문장과 물은 경로를 싣는다, #82·#352) · 99('조회기간 1년이내')는 기다려도 안 풀리는 **우리 것**(응답 오류, #260 거꾸로) · 404 면 물은 경로 이름 · 당월은 버린다(#40 — 실측 부분 누계 숫자 그대로 끼워도 달 단위로 한 번 센다) · **금액 0 인 달은 미확정**이라 값이 아니고 버린 수를 센다(전부 0 이면 '행 없음' + 그 사유) · 한 칸만 0 이면 그 카드에서만 빠진다 · 03 을 받은 창이 있어도 앞 창들의 값은 산다 · 키가 없으면 원천을 부르지 않는다 · 사유에서 키를 가린다(§Secrets) · 여러 줄 오류 본문은 **한 줄로** 접는다(결산은 ❌ 줄 하나만 올린다, #356) · 실패는 10분만 기억하고 `--check` 는 기억을 건너뛴다 · 성공은 6시간 캐시, `--check` 는 읽지도 쓰지도 않는다(#264) · 깨진 캐시는 미스(#331) | `::test_windows_split_into_chunks_that_fit_a_default_page` · `::test_only_the_measured_path_is_asked` · `::test_every_window_asks_the_one_path_with_the_key` · `::test_a_failed_window_stops_the_run` · `::test_status_kinds_split_transient_from_ours` · `::test_a_no_service_code_is_path_missing_whatever_the_status` · `::test_status_reason_reads_the_body_code` · `::test_a_result_code_outside_the_header_still_decides` · `::test_code_99_is_ours_not_a_wait` · `::test_a_404_names_the_path` · `::test_only_complete_months_inside_the_window_are_kept` · `::test_the_measured_current_month_row_is_dropped` · `::test_zero_prefilled_unconfirmed_months_are_not_values` · `::test_a_zero_in_one_field_is_not_a_value_for_that_card` · `::test_a_no_data_window_is_empty_not_a_failure` · `::test_missing_key_never_calls_the_source` · `::test_a_multiline_error_body_becomes_one_line` · `::test_the_key_never_appears_in_a_failure_reason` · `::test_a_failure_is_remembered_briefly_but_check_bypasses_it` · `::test_success_is_cached_and_check_neither_reads_nor_writes_it` · `::test_a_broken_cache_file_is_a_miss_not_a_crash` |
+| ③ 카드 계열 | 겹치는 달 비 중앙값으로 단위를 검산(3-상태 — 겹치는 달이 없으면 판정 불가지 불일치가 아니다, #54) · 일치하면 관세청 · 못 쟀으면 관세청을 쓰되 `verified=None` 으로 **못 쟀다고** 남긴다 · 1000배 어긋나면 **ECOS 계열 통째**(#240·#139) · 원천 실패는 갈래를 적어 폴백 · 결과코드 22 는 '조회 실패' 갈래 · 둘 다 비면 빈 계열 + 사유 · 관세청 모듈이 던지고 ECOS 도 비면 원천 칸을 비운다('ECOS 로 그렸다' 는 거짓) | `::test_cross_check_three_states` · `::test_card_uses_customs_when_ecos_agrees` · `::test_a_unit_mismatch_falls_back_to_the_whole_ecos_series` · `::test_a_source_failure_falls_back_and_says_which_kind` · `::test_customs_is_used_when_ecos_cannot_check_it` · `::test_a_transient_result_code_is_a_wait_not_ours` · `::test_both_sources_empty_is_an_empty_series_with_a_reason` · `::test_customs_series_exception_path_names_no_source_when_ecos_is_empty` |
+| ④ 화면 배선 | 수집기를 통째로 태운다(#20) — 값·기준(`YYYY-MM · 관세청`)·시작 기간·지연 배지 없음 · 폴백하면 기준 줄이 `ECOS(관세청 응답 오류)` 로 말한다 · ECOS 카드(경상수지 등)도 시작 기간을 싣는다 · 렌더가 `2025-09 대비` 를 찍고 '12개월 전' 을 안 찍는다 · 확정 공표일(익월 15일) 당일까지의 최신 달은 `관세청 잠정`(해를 넘기는 12월 포함 · ECOS 폴백엔 안 붙는다) — 날짜를 고정해 두 갈래를 다 태운다(#42) | `::test_macro_card_draws_customs_with_its_start_period` · `::test_macro_card_says_when_it_fell_back_to_ecos` · `::test_every_ecos_card_names_its_start_period_too` · `::test_the_card_prints_the_start_period_not_twelve_months_ago` · `::test_provisional_until_the_confirm_day` · `::test_card_note_says_provisional_only_for_customs` · `::test_macro_card_marks_the_provisional_month` |
+| ⑤ 감사 | 화면과 같은 함수(`ms._customs_series`)로 묻는다(#35) · 폴백 줄은 갈래로 기호를 가른다(조회 실패 ⚠️ · 나머지 ❌, #260) · 폴백한 원천의 지연은 폴백과 같은 원인이라 **한 번만** 센다(#45·#250) · 두 원천 다 비어 카드가 빠지면 갈래와 무관하게 ❌ **한 줄**에 관세청 사유를 싣고 ⚪ 줄을 덧붙이지 않는다 · 감사 행에 관세청 카드가 들어 있다 | `::test_fallback_line_marks_transient_and_ours_apart` · `::test_audit_rows_include_the_customs_cards` · `::test_a_fallback_and_its_staleness_count_once` · `::test_an_empty_card_is_counted_once_even_when_the_cause_is_transient` |
+| ⑥ 진단 CLI | `--check` 를 진입점으로 태운다(#252) — 코드 지문·인터프리터 배너 · 두 계열 원천 · rc(0 관세청 · 1 폴백) · 창마다 받은 달 행 수와 **빠진 달 이름**(쪽 잘림인지 미확정인지는 읽는 쪽이 가른다) · 단위를 못 잰 채 관세청을 쓰면 ✅ 가 아니라 ❓ 단위 미대조 · 키를 안 찍는다 · 운영 캐시를 안 쓴다 · 최신 달이 확정 전이면 카드와 같은 판정으로 '잠정' 이라 적는다(날짜 고정, #35) | `::test_check_cli_reports_the_source_and_exits_by_it` · `::test_check_cli_says_when_the_latest_month_is_provisional` |
+
+⚠️ 못 보는 축(#274): 픽스처는 VM 프로브가 **파싱해서 찍은 칸**을 재현한 것이다(원문 바이트는 없다 —
+소문자 경로의 400 본문이 서비스 봉투였는지 게이트웨이 봉투였는지 몰라 둘 다 재현한다). 6개월 창이
+잘리지 않는지 · 지난달분이 익월 1일 몇 시부터 온전한지는 VM 의 `--check` 출력이 답한다. 단위가 틀리면 ECOS 대조가 막아 카드는 ECOS 로 남고
+`단위 불일치` 로 말한다(조용히 틀린 값을 올리지 않는다). 매크로 스냅샷은 30초 주기 갱신 루프가
+부르므로 캐시가 빈 주기엔 그 루프가 관세청 창 3개를 차례로 기다린다 —
+요청마다 상한 10초, 성공은 6시간 캐시, 실패는 첫 실패에서 멈추고 10분 기억한다.
+
+뮤테이션 29종(경로 사다리 · 당월 · 단위 불일치 수용 · 0 달 유지 · 칸별 0 · 03 오류화 · 22 비일시화 ·
+시작 기간 배선 · 빈 카드 continue · 폴백 지연 이중 계수 · 예외 경로 원천 칸 · 진단의 캐시 쓰기 · 키
+가림 · 게이트웨이 봉투 · 429/5xx · 실패 기억 · 창 크기 · 빠진 달 출력 · 빈 카드 줄 · 기준 줄 원천 ·
+경로 순서 · 허용 오차 · 미확정 계수 · 미대조를 ✅ 로 · 사유 한 줄 · 12 사다리 · 12 를 일반 오류로 ·
+verified 늘 참 · 시도한 경로 이름)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다. 키 가림
+뮤테이션은 사유를 한 줄로 접으며 앵커가 바뀌어 하네스가 '건너뜀'으로 스스로 말했고, 새 앵커로
+다시 겨냥해 잡혔다(#267 그 자리를 실제로 쳤나).
+
+## #415 — '느린 카드' 5종 점검: 분기 표기 · FRED 헤드라인 캐시 · 첫 등장 기록 (`tests/test_slow_cards_20260925.py` 22건 — 7건은 #416 절 · 2026-09-25)
+
+사용자가 경상수지·외환보유액·한국 GDP·미국 근원PCE·미국 GDP 를 '느린 것들' 로 짚었다. 공표 규약
+(`macro_cadence`)으로 재면 다섯 다 **뒤처지지 않았다**(2026-09-25 판정 뒤짐 0) — 느려 보인 원인은
+표시였다: 미국 GDP 가 분기인데 FRED 관측일(분기 **첫날** 2026-04-01)을 월로 잘라 '기준 2026-04
+(5개월 전)' · '2023-07 대비' 로 적었고(같은 화면의 한국 GDP 는 '2026 Q2 (3개월 전)', #38), 분기 카드
+칩이 '12개월' 이었다(12분기다). 그리고 FRED 월간·분기 헤드라인 캐시가 24시간이라, 30초마다 새로
+받는 스파크와 공표일에 다른 기간을 말했다(#33). '원천이 늦게 싣나, 우리가 늦게 받나' 는 반복되는
+질문이라(#413 에서 한 번, 이번에 또) `macro_staleness_audit --history` 로 제품에 심었다(#252).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 분기 판정·라벨 | FRED 분기 관측일 → `YYYYQn`(못 읽으면 원문 그대로) · 분기 판정의 단일 출처는 공표 규약(`CADENCE` freq Q, #38·#24) · 경과는 분기 **말**부터(첫날로 세면 늘 2개월 부풀려진다 — 오늘이 언제든) | `::test_as_quarter_reads_fred_quarter_start_dates` · `::test_quarterly_ids_come_from_the_cadence_table` · `::test_the_quarter_label_counts_lag_from_quarter_end` |
+| ② 화면 배선 | 수집기를 통째로 태운다(#20) — 미국 GDP 가 `2026 Q2` · 분기 말 경과 · `2023 Q3 대비` · `12분기` · 창 첫 분기의 값 · FRED 에 분기를 **분기 주기로** 묻는다(월로 물으면 400) · 한국 GDP(ECOS)도 같은 칩 · 반대 증거로 월간 카드(근원PCE)는 `12개월`·`YYYY-MM` 그대로(#25) · 렌더가 칩·`… 대비`·`(3개월 전)` 을 찍는다 | `::test_us_gdp_card_speaks_in_quarters` · `::test_korea_gdp_card_gets_the_same_quarter_chip` · `::test_monthly_cards_keep_their_month_labels` · `::test_the_card_renders_the_quarter_chip_and_start` |
+| ③ FRED 헤드라인 캐시 | 월간·분기도 1시간(옛 24시간 — 스파크는 캐시 없이 30초마다 부른다) · 1시간 지난 같은 날 사본은 다시 묻고 새 사본은 재사용 · FRED 가 막히거나 빈 응답이면 **같은 날 사본**을 준다(#394 — TTL 을 줄이는 짝) · 옛 버전 사본은 안 믿는다(#18) | `::test_monthly_headline_cache_is_short_because_the_spark_is_not_cached` · `::test_fred_failure_serves_the_same_day_copy_not_nothing` · `tests/test_regression.py::…::test_daily_rate_series_are_not_cached_for_a_day`(옛 계약 `≥12h` 를 다시 썼다, #222) |
+| ④ `--history` | 새 기간을 **처음 본 날**만 남기고 · 기록 시작 전부터 있던 기간은 '모른다'(#54) · 못 읽은 파일은 '없었다' 의 증거가 아니다 · 규약 +유예 안이면 ✅, 빨라도 늦으면 ⚠️(최소 N일), 기록이 비어 못 가르면 ❓(#165) · 이름이 겹치는 다른 계열 파일(`PCEPILFE2`·`kr_gdp_extra`)이 안 섞인다 · 이벤트성은 판정 안 함 · 관세청 카드는 **ECOS 대조본** 기록이라고 밝힌다(#34) · 매일 감사(`main([])`)는 이걸 안 돌린다(사람이 부르는 플래그, #283) · 진입점이 인자를 넘긴다(#252 — 서브프로세스로 태운다) · rc 는 기록을 잰 계열이 하나라도 있으면 0, 0개면 1(대조 0건은 통과가 아니다, #54) · 끝줄이 `기록을 잰 계열 M/N개` 를 센다 | `::test_first_seen_marks_what_it_cannot_know` · `::test_history_reports_first_seen_against_the_cadence` · `::test_history_does_not_claim_across_a_gap` · `::test_history_is_a_flag_and_the_daily_sweep_does_not_run_it` · `::test_history_cli_entrypoint_passes_argv` · `::test_history_rc_is_zero_once_anything_was_measured` |
+
+⚠️ 못 보는 축(#274): 캐시 파일 날짜는 서버 로컬 날짜이고 내용은 **그날 마지막 수집본**이라 첫 등장은
+하루 오차가 있다. ECOS 한국 GDP 가 국제비교 표(902Y015)라 한은 속보보다 늦게 실리는지는 이 도구의
+VM 출력이 답한다 — 재기 전에는 원천을 바꾸지 않는다(#151·#345).
+
+뮤테이션 29종(관세청 9 · 매크로 스냅샷 6 · FRED 캐시 4 · `--history` 10)이 전부 겨냥한 테스트에
+잡혔고 복원 md5 가 일치했다. 처음엔 하나(FRED 캐시 파일명 정규식을 느슨하게)가 살아남았다 —
+glob 의 `{sid}_` 가 이미 다른 계열을 막아 정규식이 따로 가르는 경우가 없었다(#291 발화 경로 없는
+가드). 이름을 구조로 잘라 가운데가 날짜인지만 보게 하고, 날짜가 아닌 이름(`PCEPILFE_backup.json`)
+픽스처로 그 검사가 실제로 발화하게 했다.
+
+## #416 — 배포 전 독립 리뷰 반영: 비밀값 로그 가림 · 달 누락 · 단위 미대조 · 형제 화면 (`tests/test_log_redaction_20260925.py` 17건 + 관세청 16건 + 느린 카드 7건 · 2026-09-25)
+
+`2a0b3da..217aace` 독립 리뷰가 High 1 · Medium 6 · Low 13 을 냈다(Blocking 0). High 는 비밀값이었다 —
+관세청 클라이언트는 **사유 문자열**에서 키를 지웠지만 httpx 가 매 요청 URL 을 INFO 로 찍어
+(`HTTP Request: GET …?serviceKey=…`) 6시간마다 봇 저널로 갔고, 옛 테스트는 사유만 재서 통과했다(#54).
+FRED(`raise_for_status` 예외 문구의 URL 속 `api_key=`)·ECOS(경로 속 키)도 같았다. 키를 건네는 단일
+헬퍼(`bot.env_keys.env_key`)가 값을 기억하고 **레코드 팩토리 하나**가 모든 로그 레코드에서 가린다 —
+로거마다 필터를 다는 목록은 다음 클라이언트를 못 잡는다(#24). 로그 레벨은 안 건드린다(#2 watchdog).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 비밀값 로그 가림(H1·L12) | `env_key` 가 건넨 값(16자 이상)을 두 반환 경로(환경·`.env`) 모두 기억 · 모든 로거의 메시지에서 원문·퍼센트 인코딩(대·소문자)·`quote` 모양을 가림 · httpx 가 **스스로 찍는** 요청 줄을 전송 계층 스텁으로 실제 경로로 태우고 그 줄이 실제로 찍혔음도 본다(#20·#54) · 이미 인코딩된 키(`%`)는 URL 에 그대로 실려 그대로 가려진다 · 트레이스백(`log.exception`)도 · FRED 실패 로그 배선 · 비밀값 없는 레코드는 `msg`·`args` 까지 그대로(가림이 다른 로깅을 안 바꾼다) · 16자 미만은 기억 안 함 · 팩토리는 한 겹 | `tests/test_log_redaction_20260925.py` 첫 10건 |
+| ② 관세청 클라이언트(M1·M4·M5·L1~L3·L6·L7) | 본문은 **자르기 전에** 가린다 — 키가 160·60자 경계에 걸쳐도, 다른 인코딩으로 되읊은 `serviceKey=` 가 5자만 남아도(#350) · **가운데·앞이 빈 계열은 완전본이 아니다** — 굽지 않고 `달 누락` 으로 ECOS 통째 폴백, 꼬리(아직 안 나온 최신 달)만 빈 건 정상(#280·#25) · ECOS 와 대조 못 한 날 카드가 `· ECOS 대조 못 함`, 대조된 날은 안 붙는다(#54·#25) · `SCALE`(USD→억$)·`RATIO_TOL`(3% — 5% 거부·2% 수용)을 리터럴로(#66) · `_http_get` 의 파라미터 이름·창·인코딩 키 분기 · 관세청 모듈의 예외는 `내부 오류`(❌, 옛 `조회 실패` 계약을 다시 썼다 #222) · 카드가 빠질 때 두 원천 이름 · 폴백 경고는 (계열, 갈래)마다 한 번 | `tests/test_customs_trade_20260925.py::test_the_body_is_masked_before_it_is_cut` · `::test_a_hole_in_the_middle_is_not_a_complete_series` · `::test_a_leading_hole_is_a_hole_too` · `::test_the_card_says_when_the_unit_was_not_cross_checked` · `::test_scale_is_usd_to_eok_literally` · `::test_the_ratio_tolerance_is_three_percent` · `::test_http_get_sends_the_window_and_the_key` · `::test_customs_series_exception_path_names_no_source_when_ecos_is_empty` · `::test_drop_reason_names_both_sources_for_customs` · `::test_the_fallback_warning_is_said_once_per_kind` · `::test_cadence_stale_covers_customs_like_ecos` |
+| ③ 감사 버킷(M1·L5) | 단위 미대조는 ⚠️ 줄 · **일시 상태** 버킷(관세청 조회 실패·ECOS 대조 불가 — '원천 공표 지연' 과 다른 사실, #34·#292) · 폴백이 아니므로 관세청 계열의 지연은 따로 ❌ 로 센다(#45) · 처방 줄엔 판정 글자가 없다(#289) | `::test_fallback_line_marks_transient_and_ours_apart` · `::test_an_unchecked_unit_is_a_wait_and_the_staleness_still_counts` · `::test_a_transient_fallback_is_a_wait_not_a_publication_delay` |
+| ④ 형제 화면·FRED(M2·M3·M6·L9·L11·L13·L7) | 글로벌 스냅샷 '핵심 지표' 도 분기 계열을 `2026 Q2` 로(한 픽스처에서 두 표면이 같은 말, #38) · YoY 경로도 헤드라인과 같은 TTL·같은 날 사본·실패 기억이고 실패가 조용하지 않다(#12) · FRED 실패는 10분 기억 — 만료되면 다시 묻고 성공하면 지운다(#178), 기억은 **캐시 파일** 단위라 다른 캐시 디렉터리는 남의 실패를 안 물려받는다(#30) · ECOS·관세청 칩은 그린 점 수(`7개월`) · 헤드라인 칩 0 은 `변동 없음`('전월 동일' 은 재지 않은 비교였다) · `--history` 의 관세청 행은 ECOS 재게시 지연을 경고 글자 없이 · 규약+유예 **당일**은 규약 안(`hi <= limit`) | `tests/test_slow_cards_20260925.py::test_the_global_fred_card_speaks_in_quarters_too` · `::test_the_yoy_path_shares_the_ttl_the_stale_copy_and_the_memory` · `::test_a_fred_failure_is_remembered_briefly` · `::test_the_ecos_chip_counts_what_was_drawn` · `::test_a_zero_span_change_says_no_change_not_previous_month` · `::test_history_reports_first_seen_against_the_cadence` · `::test_the_history_boundary_is_inclusive` |
+
+**2차 독립 리뷰(`217aace..ef33923`)** — Blocking·High 0 · Medium 3 · Low 9 · 생존 뮤테이션 9종. 반영:
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ⑤ 가림의 구멍(M1·M2·L1·L2·L3) | `DartClient` 가 자체 규약(자체 .env 폴백·빈 문자열='키 없음')으로 읽은 키를 `remember_secret` 으로 등록 — 안 하면 `crtfc_key=` 가 든 예외 URL 이 샌다(환경·인자 두 경로) · **실제 키 길이**(ECOS 20자 영숫자·FRED 32자 hex)와 경계(15 안 기억·16 기억) — 80자 픽스처만으론 하한을 21·33 으로 올려도 통과했다 · 인코딩 키의 풀린 모양 · 한 레코드에 여러 번 나온 키 전부 · `stack_info` · 동시 등록에 락(배리어로 **동시에** 출발시켜야 락을 지운 변형이 잡힌다 — 첫 판은 차례로 띄워 경합이 안 생겼다, #91c) · 포맷이 깨진 호출이 `Arguments: (…)` 로 stderr 에 찍는 인자도 가림 | `tests/test_log_redaction_20260925.py::test_realistic_key_lengths_are_hidden_and_the_threshold_is_sixteen` · `::test_the_decoded_form_of_an_encoded_key_is_hidden` · `::test_every_occurrence_in_one_record_is_hidden` · `::test_stack_info_is_hidden` · `::test_concurrent_remembers_do_not_lose_a_key` · `::test_a_malformed_log_call_does_not_print_the_key_to_stderr` · `::test_dart_client_registers_the_key_it_reads_itself` |
+| ⑥ 관세청·감사·FRED(M3·L3·L4·L7) | 다른 대·소문자 인코딩으로 되읊은 `serviceKey=` 는 사유 전체의 패턴 가림만 막는다 · 빈 달은 **카드(계열)마다** — 수입만 빈 가운데 달도 `달 누락` · `--check` 는 갈래 이름이 머리(`② ❌ 달 누락 —`, '행 없음' 이 아니다) · 원천 공표 지연 처방 줄에 판정 글자가 없다(결산은 ⚠️ 를 **글자 수**로 센다, #289) · 빈 FRED 답도 기억(헤드라인·YoY) · YoY 성공은 자기 기억을 지운다 | `tests/test_customs_trade_20260925.py::test_the_param_pattern_is_masked_in_reasons_too` · `::test_a_hole_in_one_card_only_is_still_a_hole` · `::test_check_names_the_hole_kind_not_no_rows` · `::test_the_publication_delay_note_carries_no_countable_glyph` · `tests/test_slow_cards_20260925.py::test_an_empty_fred_answer_is_remembered_and_a_yoy_success_clears_it` |
+
+⚠️ 못 보는 축(#274): 16자 미만 비밀값(짧은 비밀번호 — 흔한 글자를 가리는 오탐의 대가) · `print()` 출력
+(진단은 `redact()` 를 거치면 같은 규칙이 된다) · 로깅을 거치지 않는 stderr 트레이스백(잡히지 않은 예외를
+`sys.excepthook`·`http.server` 가 직접 찍는 것) · `env_key` 로도 `remember_secret` 으로도 등록되지 않은
+값(텔레그램 토큰은 `telegram_bot._TokenRedactFilter` 가 가린다) · 원천·라이브러리가 **다른 대·소문자**
+인코딩으로 다시 찍은 키(소문자 hex 로 저장된 인코딩 키를 requests 가 대문자로 바꾸는 경우 등 — data.go.kr
+키는 대문자라 드물다) · `sys.modules` 에서 지우고 다시 import 한 `bot.env_keys`(설치된 팩토리는 옛 모듈을
+읽는다 — 테스트에서만 생긴다) · 이 레포 밖 프로세스(`trade/` 는 urllib 이라 요청 URL 을 INFO 로 안 찍고
+자체 가림 헬퍼가 있다). FRED **스파크**(`macro_snapshot._fred_monthly`)는 캐시·실패 기억 없이 매번 12초
+상한으로 묻는다 — 이 배치 이전부터라 따로 다룬다(헤드라인 절반만 이번에 고쳤다). 관세청 지난달분이 익월
+1일 몇 시부터 온전한지는 여전히 `--check` 가 잰다(리뷰 L10 — 재기 전엔 TTL 을 안 바꾼다, #307).
+
+뮤테이션 40종(가림 10 · 관세청 11 · 매크로 스냅샷 5 · 대시보드 2 · FRED 7 · 감사 5 — 리뷰 때 살아남은 10종
+포함)이 전부 **겨냥한 테스트**에 잡혔고 복원 md5 가 일치했다. 2차 반영분 15종(락·하한 21/33·풀린 모양·
+첫 등장만·stack_info·깨진 포맷·DART 등록·계열별 빈 달·`--check` 라벨·사유 패턴·처방 줄 글자·빈 답 기억
+×2·YoY 기억 지우기)도 전부 잡혔다 — 락 제거만 첫 판 테스트를 통과해 배리어로 고쳤고, 락 없이 5번 돌려
+5번 다 실패함을 확인했다. 두 가림 층(자르기 전 · 사유 전체)이 겹쳐
+한 층만 끄면 다른 층이 대신 막았으므로, 되읊은 조각이 5자만 남는 모양(뒤 층은 8자 이상만 본다)으로
+앞 층만 막는 자리를 만들었다(#91c). 실패 기억 테스트는 캐시 디렉터리를 **바꿔서** 재야 '계열 이름으로
+기억' 변형이 잡힌다.
+
