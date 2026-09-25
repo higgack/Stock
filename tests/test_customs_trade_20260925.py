@@ -63,7 +63,6 @@ def _window_fetch(calls, *, status=200, path_ok=None, extra_months=()):
 def cti(tmp_path, monkeypatch):
     monkeypatch.setattr(ct, "_CACHE_DIR", tmp_path / "customs")
     monkeypatch.setattr(ct, "_fail", {})
-    monkeypatch.setattr(ct, "_good_path", None)
     monkeypatch.setattr(ct, "_warned", set())
     monkeypatch.setenv("DATA_GO_KR_API_KEY", _KEY)
     return ct
@@ -71,8 +70,12 @@ def cti(tmp_path, monkeypatch):
 
 # ── 순수 헬퍼 ────────────────────────────────────────────────────────────
 def test_windows_split_into_chunks_that_fit_a_default_page():
-    """한 창은 6개월 — '총계' 행까지 7행이라 data.go.kr 기본 쪽 크기(10)에 안 잘린다(#280)."""
+    """한 창은 6개월 — '총계' 행까지 7행이라 data.go.kr 기본 쪽 크기(10)에 안 잘린다(#280).
+    그리고 원천 상한 **1년 이내**(2026-09-25 실측: 13개월 창 → resultCode 99) 안이다."""
     assert ct.CHUNK_MONTHS <= 9, "기본 쪽 크기 10행 안에 '총계' 까지 들어가야 한다"
+    end = ct.ym_shift(ct._kst_today().strftime("%Y%m"), -1)
+    for s_, e_ in ct.windows(ct.ym_shift(end, -(ct.MONTHS - 1)), end):
+        assert ct.month_count(s_, e_) <= 12, (s_, e_)             # 실측 상한(13개월 거절)
     assert ct.windows("202508", "202608", size=6) == [
         ("202508", "202601"), ("202602", "202607"), ("202608", "202608")]
     assert ct.windows("202601", "202612", size=12) == [("202601", "202612")]
@@ -145,27 +148,43 @@ def test_cross_check_three_states():
 
 
 # ── 수집기 ───────────────────────────────────────────────────────────────
-def test_capitalised_path_is_asked_first():
-    """형제 선례(`trade/customs.py` — 같은 GW 계열 `Itemtrade`)가 대문자다. 이 서비스는 재지
-    않아 사다리로 두되(소문자도 남긴다), 선례 쪽을 먼저 물어 404 한 번을 아낀다."""
-    from trade.customs import ENDPOINT
-    assert ENDPOINT.split("/1220000/")[1][0].isupper()            # 선례가 여전히 대문자인가
-    assert ct.PATHS[0][0].isupper() and ct.PATHS[0].lower() in [p.lower() for p in ct.PATHS[1:]]
+# 실측(2026-09-25 VM) 모양 — 프로브는 파싱된 칸만 찍어 원문 바이트는 없다. 소문자 경로의
+# HTTP 400 본문은 `.//resultCode` 가 12 를, 메시지 칸이 아래 한국어를 담았다. 그 두 칸이
+# 서비스 봉투(header)였는지 게이트웨이 봉투(cmmMsgHeader)였는지는 못 가르므로 **둘 다**
+# 재현한다(#155 원천이 보내는 모양대로 — 모르는 부분은 모른다고 적고 둘 다 받는다).
+_NO_SVC_MSG = "해당 오픈API 서비스가 없거나 폐기됨"
+_NO_SVC_HEADER = _xml([], code="12", msg=_NO_SVC_MSG).replace("<body><items></items></body>", "")
+_NO_SVC_GATEWAY = ("<OpenAPI_ServiceResponse><cmmMsgHeader><errMsg>SERVICE ERROR</errMsg>"
+                   f"<returnAuthMsg>{_NO_SVC_MSG}</returnAuthMsg>"
+                   "<returnReasonCode>12</returnReasonCode></cmmMsgHeader></OpenAPI_ServiceResponse>")
+_YEAR_LIMIT_MSG = "시작과 종료의 조회기간은 1년이내 기간만 가능합니다."
 
 
-def test_path_ladder_moves_on_only_after_a_404(cti):
+def test_only_the_measured_path_is_asked(cti):
+    """경로는 하나다 — 2026-09-25 실측: `Newtrade`(대문자) 200/00 · 소문자 `newtrade` 는
+    HTTP 400 + resultCode 12. 옛 판은 재기 전이라 두 후보의 사다리였다(#345) — 쟀으므로
+    죽은 후보는 지운다(§작업 원칙). 계약이 바뀐 옛 테스트(대문자 먼저·사다리)는 이것으로
+    다시 쓴다(#222)."""
+    assert cti.PATH == "Newtrade/getNewtradeList"
+    assert not hasattr(cti, "PATHS"), "죽은 경로 후보가 되살아났다"
     calls: list = []
-    rows, info = cti.monthly_totals(fetch=_window_fetch(calls, path_ok=cti.PATHS[1]))
-    assert info["path"] == cti.PATHS[1] and len(rows) == cti.MONTHS
-    # 첫 창만 두 경로를 묻고, 찾은 뒤엔 그 경로만(#61 순손실 요청 금지)
-    nwin = len(cti.windows(*info["window"]))
-    assert nwin >= 2, "창이 하나면 '찾은 뒤엔 그 경로만' 을 못 잰다"
-    assert [c[0] for c in calls] == [cti.PATHS[0]] + [cti.PATHS[1]] * nwin, calls
-    assert all(c[3] == _KEY for c in calls)
+    rows, info = cti.monthly_totals(fetch=_window_fetch(calls))
+    assert rows and info["path"] == cti.PATH
+    assert {c[0] for c in calls} == {cti.PATH}, calls
+    assert not any(c[0].startswith("newtrade") for c in calls)
 
 
-def test_an_auth_error_is_not_retried_on_another_path(cti):
-    """인증 오류는 경로를 바꿔도 같은 답이다 — 더 묻지 않는다(#82·#279)."""
+def test_every_window_asks_the_one_path_with_the_key(cti):
+    calls: list = []
+    rows, info = cti.monthly_totals(fetch=_window_fetch(calls))
+    wins = cti.windows(*info["window"])
+    assert len(wins) >= 2, "창이 하나면 '창마다 한 번' 을 못 잰다"
+    assert [(c[1], c[2]) for c in calls] == wins, calls
+    assert all(c[3] == _KEY for c in calls) and len(rows) == cti.MONTHS
+
+
+def test_a_failed_window_stops_the_run(cti):
+    """다른 창도 같은 경로·키라 같은 답이다 — 더 묻지 않는다(#82·#279)."""
     calls: list = []
     rows, info = cti.monthly_totals(fetch=_window_fetch(calls, status=401))
     assert rows == [] and info["kind"] == "응답 오류" and len(calls) == 1, calls
@@ -179,30 +198,94 @@ def test_status_kinds_split_transient_from_ours(cti, status, kind):
     assert rows == [] and info["kind"] == kind, info
 
 
-def test_a_no_service_code_on_200_moves_the_ladder_like_a_404(cti):
-    """틀린 경로에 게이트웨이가 404 대신 200 + 12(NO_OPENAPI_SERVICE)로 답해도 다음 후보를
-    묻는다(재지 않았다 — 둘 다 받는다). 끝까지 없으면 '경로 없음' 으로 시도한 경로를 댄다."""
-    gw12 = ("<OpenAPI_ServiceResponse><cmmMsgHeader><errMsg>SERVICE ERROR</errMsg>"
-            "<returnAuthMsg>NO_OPENAPI_SERVICE_ERROR</returnAuthMsg>"
-            "<returnReasonCode>12</returnReasonCode></cmmMsgHeader></OpenAPI_ServiceResponse>")
-    ok = _window_fetch([])
+@pytest.mark.parametrize("status, body", [(400, _NO_SVC_HEADER), (400, _NO_SVC_GATEWAY),
+                                          (200, _NO_SVC_HEADER), (200, _NO_SVC_GATEWAY)])
+def test_a_no_service_code_is_path_missing_whatever_the_status(cti, status, body):
+    """없는 경로는 404 가 아니라 **HTTP 400 + resultCode 12** 로 왔다(실측). 상태만 보면
+    '파라미터 오류' 로 읽히고 원천이 적어 보낸 문장이 버려진다 — 본문의 코드가 갈래를
+    정하고 사유는 원천의 문장과 우리가 물은 경로를 같이 싣는다(#82·#352)."""
     calls: list = []
 
     def fetch(path, s, e, key):
         calls.append(path)
-        return (200, gw12) if path == cti.PATHS[0] else ok(path, s, e, key)
+        return status, body
     rows, info = cti.monthly_totals(fetch=fetch, use_cache=False)
-    assert info["path"] == cti.PATHS[1] and len(rows) == cti.MONTHS, info
-    cti._good_path = None
-    rows, info = cti.monthly_totals(fetch=lambda p, s, e, k: (200, gw12), use_cache=False)
     assert rows == [] and info["kind"] == "경로 없음", info
-    assert all(p in info["why"] for p in cti.PATHS) and "NO_OPENAPI_SERVICE" in info["why"]
+    assert _NO_SVC_MSG in info["why"] and "12" in info["why"] and cti.PATH in info["why"], info
+    assert len(calls) == 1
 
 
-def test_all_paths_404_names_the_paths(cti):
+def test_status_reason_reads_the_body_code():
+    """순수 판정 — 코드가 있으면 코드가, 없으면 상태가 갈래를 정한다."""
+    kind, why = ct.status_reason(400, _NO_SVC_HEADER)
+    assert kind == "경로 없음" and why.startswith("HTTP 400 — resultCode=12") and ct.PATH in why
+    kind, why = ct.status_reason(429, _xml([], code="22", msg="LIMITED"))
+    assert kind == "조회 실패" and "resultCode=22" in why                 # 코드가 이긴다
+    assert ct.status_reason(404, "<html>Not Found</html>") == (
+        "경로 없음", f"HTTP 404 — 경로 {ct.PATH}")
+    assert ct.status_reason(503, "<html>x</html>")[0] == "조회 실패"
+    assert ct.status_reason(400, "<html>bad</html>") == ("응답 오류", "HTTP 400 — <html>bad</html>")
+    # 코드가 정상(00)이거나 NODATA(03)면 코드가 할 말이 없다 — 상태로 판정한다
+    assert ct.status_reason(500, _xml([], code="00"))[0] == "조회 실패"
+    assert ct.status_reason(403, _xml([], code="03", msg="NODATA"))[0] == "응답 오류"
+
+
+def test_a_result_code_outside_the_header_still_decides(cti):
+    """VM 프로브는 `.//resultCode`(문서 어디든)로 코드를 읽었다 — header 밑이라고 가정하면
+    다른 모양의 오류 본문이 '행 없음' 으로 둔갑한다(#352). 모양을 몰라 둘 다 받는다."""
+    loose = ('<?xml version="1.0" encoding="UTF-8"?><response>'
+             f"<resultCode>12</resultCode><resultMsg>{_NO_SVC_MSG}</resultMsg></response>")
+    rows, err, kind = ct.parse(loose)
+    assert rows == [] and kind == "경로 없음" and _NO_SVC_MSG in err
+    assert ct.status_reason(400, loose)[0] == "경로 없음"
+
+
+def test_check_cli_says_when_the_latest_month_is_provisional(cti, monkeypatch):
+    """진단도 카드와 **같은 판정**(`provisional`)을 댄다(#35) — 날짜를 고정해 두 갈래를 다 본다."""
+    from datetime import date
+    monkeypatch.setattr(cti, "_ecos_points", _ecos_same)
+    monkeypatch.setattr(cti, "_http_get", _window_fetch([]))
+    for pinned, want in (((2026, 10, 3), True), ((2026, 10, 16), False)):
+        monkeypatch.setattr(cti, "_kst_today", lambda d=pinned: date(*d))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            assert cti._main(["--check"]) == 0
+        out = buf.getvalue()
+        assert ("202609 는 잠정(확정 익월 15일 전후)" in out) is want, out
+
+
+def test_code_99_is_ours_not_a_wait(cti, monkeypatch):
+    """99 는 공통 규약상 '기타 에러'지만 이 서비스는 **요청 검증 오류**에 쓴다(실측: 13개월
+    창 → 아래 문장). 일시 오류로 세면 감사가 우리가 고칠 창 크기를 ⚠️(기다림)로 덮는다
+    (#260 을 거꾸로 — 옛 판이 그랬다)."""
+    rows, err, kind = ct.parse(_xml([], code="99", msg=_YEAR_LIMIT_MSG))
+    assert rows == [] and kind == "응답 오류" and _YEAR_LIMIT_MSG in err
+    assert "99" not in ct._TRANSIENT_CODES
+    monkeypatch.setattr(cti, "_http_get",
+                        lambda p, s, e, k: (200, _xml([], code="99", msg=_YEAR_LIMIT_MSG)))
+    cs = cti.card_series("export_amt", ecos=_ecos_same)
+    assert cs["src"] == "ECOS" and cs["why"] == "응답 오류" and "1년이내" in cs["detail"]
+
+
+def test_a_404_names_the_path(cti):
     rows, info = cti.monthly_totals(fetch=_window_fetch([], path_ok="nowhere"))
-    assert info["kind"] == "경로 없음"
-    assert all(p in info["why"] for p in cti.PATHS), info["why"]
+    assert info["kind"] == "경로 없음" and cti.PATH in info["why"], info["why"]
+
+
+def test_the_measured_current_month_row_is_dropped(cti):
+    """실측: 진행 중인 달도 값을 준다(2026-09-25 에 9월분 934억$ — 부분 누계). 우리는 당월을
+    묻지 않지만 원천이 끼워 보내도 창 밖이라 버리고 센다(#40·#45). 금액은 실측 숫자 그대로."""
+    cur = cti._kst_today().strftime("%Y%m")
+    base = _window_fetch([])
+
+    def fetch(path, s, e, key):
+        st, body = base(path, s, e, key)
+        extra = (f"<item><balPayments>32479099181</balPayments><expDlr>93402261770</expDlr>"
+                 f"<impDlr>60923162589</impDlr><year>{cur[:4]}.{cur[4:]}</year></item>")
+        return st, body.replace("</items>", extra + "</items>")
+    rows, info = cti.monthly_totals(fetch=fetch, use_cache=False)
+    # 창마다 끼워 보내도 **달** 로 세므로 한 번이다(행은 달로 모인다)
+    assert all(r["ym"] != cur for r in rows) and info["dropped"] == 1, info
 
 
 def test_only_complete_months_inside_the_window_are_kept(cti):
@@ -425,13 +508,56 @@ def test_macro_card_draws_customs_with_its_start_period(cti, tmp_path, monkeypat
     end = ct.ym_shift(ct._kst_today().strftime("%Y%m"), -1)
     start = ct.ym_shift(end, -11)
     assert exp["value"] == pytest.approx(_usd(end) * ct.SCALE)
-    assert exp["asof"] == f"{end[:4]}-{end[4:]} · 관세청", exp["asof"]
+    # 익월 15일까지는 '잠정' 이 붙는다 — 시계에서 파생(#249 날짜 리터럴은 시한폭탄). 잠정
+    # 판정 자체는 아래 날짜를 고정한 테스트들이 잰다.
+    tail = " 잠정" if ct.provisional(end) else ""
+    assert exp["asof"] == f"{end[:4]}-{end[4:]} · 관세청{tail}", exp["asof"]
     # 스파크라인 12점의 **첫 달** — '12개월 전' 어림이 아니다(실수 #413)
     assert exp["period_start_asof"] == f"{start[:4]}-{start[4:]}"
     assert exp["period_start"] == pytest.approx(round(_usd(start) * ct.SCALE, 0))
     assert exp["asof_stale"] is False
     imp = rows["kr_import"]
     assert imp["value"] == pytest.approx(_usd(end) * 0.8 * ct.SCALE)
+
+
+def test_provisional_until_the_confirm_day():
+    """관세청은 지난달분을 익월 1일부터 준다(실측 — 진행 중인 달까지 누계로 준다). 확정은
+    익월 15일 전후라 그날까지는 **잠정**이다. 연말은 해를 넘긴다."""
+    from datetime import date
+    assert ct.CONFIRM_DAY == 15
+    assert ct.provisional("202608", date(2026, 9, 1)) is True
+    assert ct.provisional("202608", date(2026, 9, 15)) is True     # 공표 당일은 잠정 쪽으로
+    assert ct.provisional("202608", date(2026, 9, 16)) is False
+    assert ct.provisional("202612", date(2027, 1, 15)) is True
+    assert ct.provisional("202612", date(2027, 1, 16)) is False
+    assert ct.provisional("202607", date(2026, 9, 1)) is False     # 두 달 전은 이미 확정
+    for bad in ("", "2026", "202613", None):
+        assert ct.provisional(bad, date(2026, 9, 1)) is False, bad
+
+
+def test_card_note_says_provisional_only_for_customs():
+    """잠정을 말하지 않으면 한 달 빨리 보여 주는 대가로 잠정치를 확정치처럼 내건다(#34·#375).
+    ECOS 는 확정치만 싣는다 — 폴백 표기엔 '잠정' 이 붙지 않는다."""
+    from datetime import date
+    import bot.macro_snapshot as ms
+    cs = {"src": "관세청", "points": [("202607", 1.0), ("202608", 2.0)]}
+    assert ms._customs_note(cs, date(2026, 9, 10)) == " · 관세청 잠정"
+    assert ms._customs_note(cs, date(2026, 9, 16)) == " · 관세청"
+    eco = {"src": "ECOS", "points": [("202608", 2.0)], "why": "조회 실패"}
+    assert ms._customs_note(eco, date(2026, 9, 10)) == " · ECOS(관세청 조회 실패)"
+    assert ms._customs_note({"src": "관세청", "points": []}, date(2026, 9, 10)) == " · 관세청"
+
+
+@pytest.mark.parametrize("pinned, tail", [((2026, 10, 3), " 잠정"), ((2026, 10, 16), "")])
+def test_macro_card_marks_the_provisional_month(cti, tmp_path, monkeypatch, pinned, tail):
+    """배선 — 수집기를 통째로 태워 카드의 기준 줄에 실리는지 본다(#20). 날짜를 고정한다(#42
+    오늘이 어느 쪽이냐에 따라 한 갈래만 타는 테스트는 다른 갈래를 못 잰다)."""
+    from datetime import date
+    monkeypatch.setattr(cti, "_kst_today", lambda: date(*pinned))
+    monkeypatch.setattr(cti, "_http_get", _window_fetch([]))
+    rows = _snapshot(tmp_path, monkeypatch, _ecos_all)
+    assert rows["kr_export"]["asof"] == f"2026-09 · 관세청{tail}", rows["kr_export"]["asof"]
+    assert rows["kr_import"]["asof"] == f"2026-09 · 관세청{tail}"
 
 
 def test_customs_series_exception_path_names_no_source_when_ecos_is_empty(monkeypatch):

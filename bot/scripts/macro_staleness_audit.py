@@ -8,14 +8,23 @@
 
     cd ~/stock && .venv/bin/python -m bot.scripts.macro_staleness_audit
 
+`--history` = 카드 계열마다 **우리 캐시가 새 기간을 처음 본 날**(관측기간 종료 +N일)을
+공표 규약과 나란히 찍는다 — "원천이 늦게 싣나, 우리가 늦게 받나" 의 답이다(실수 #413·
+#415: 한국 수출은 이 측정으로 ECOS 재게시가 +34일임을 알았다). 캐시 파일만 읽는다
+(네트워크 0).
+
 읽기 전용 · LLM 0 · ₩0.
 """
 from __future__ import annotations
 
+import json
+import re
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Optional
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 
 def _p(*a):
@@ -242,7 +251,148 @@ def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
     return rows
 
 
-def main() -> int:
+_ECOS_FILE = re.compile(r"^series_v\d+_(?P<key>.+)_\d+_(?P<d>\d{4}-\d{2}-\d{2})\.json$")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def first_seen(daily: list[tuple[str, str]], freq: str) -> list[tuple[str, str, str]]:
+    """[(파일 날짜 YYYY-MM-DD, 그날 본 최신 기간 원문)] → [(기간, 처음 본 날, 직전 기록 날)](순수).
+
+    날짜순으로 훑어 **최신 기간이 새로 바뀐 날**만 남긴다. `직전 기록 날` 은 그 기간이 아직
+    없던 마지막 파일의 날짜다 — 원천은 그 다음 날부터 처음 본 날 사이 어딘가에서 실었다.
+    기록의 첫 파일에 이미 있던 기간은 그 전에 실렸을 수 있어 직전 기록이 '' 다(#54 모르는
+    것을 사실처럼 적지 않는다). 못 읽은 파일은 '없었다' 는 증거가 아니라 건너뛴다.
+    기간 비교는 공표 규약과 같은 함수(`parse_period_end`)로 한다(#38)."""
+    from bot.macro_cadence import parse_period_end
+    out: list[tuple[str, str, str]] = []
+    best: Optional[date] = None
+    prev = ""
+    for d, raw in sorted(daily):
+        end = parse_period_end(raw, freq)
+        if end is None:
+            continue
+        if best is None or end > best:
+            out.append((raw, d, prev))          # 첫 기록이면 prev 는 아직 '' 다
+            best = end
+        prev = d
+    return out
+
+
+def _history_daily(src: str, sid: str, ecos_dir: Path, fred_dir: Path) -> list[tuple[str, str]]:
+    """캐시 파일들 → [(파일 날짜, 그날 본 최신 기간)]. 못 읽는 파일은 건너뛴다(#331)."""
+    rows: list[tuple[str, str]] = []
+    if src in ("ecos", "customs"):
+        for f in ecos_dir.glob("series_v*.json"):
+            m = _ECOS_FILE.match(f.name)
+            if not m or m.group("key") != sid:
+                continue
+            try:
+                pts = json.loads(f.read_text(encoding="utf-8"))
+                last = max(str(t) for t, _v in pts) if pts else ""
+            except Exception:                                  # noqa: BLE001
+                continue
+            if last:
+                rows.append((m.group("d"), last))
+    elif src in ("fred", "fred_yoy"):
+        # 파일명은 `{sid}_{YYYY-MM-DD}.json`(`market_overview._fred_fetch_series`) — glob 의
+        # `_` 가 다른 계열(`DGS1` vs `DGS10_…`)을 이미 막으므로, 남는 일은 가운데가 **날짜인지**
+        # 보는 것이다(날짜가 아니면 뒤의 기간 계산이 깨진다).
+        for f in fred_dir.glob(f"{sid}_*.json"):
+            d = f.name[len(sid) + 1:-len(".json")]
+            if not _DATE.fullmatch(d):
+                continue
+            try:
+                t = str((json.loads(f.read_text(encoding="utf-8")) or {}).get("time") or "")
+            except Exception:                                  # noqa: BLE001
+                continue
+            if t:
+                rows.append((d, t))
+    return rows
+
+
+def history_lines(ms, **kw) -> list[str]:
+    """`history_report` 의 줄만."""
+    return history_report(ms, **kw)[0]
+
+
+def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Path] = None,
+                   keep: int = 4) -> tuple[list[str], int, int]:
+    """카드 계열마다 새 기간을 **처음 본 날**과 공표 규약을 나란히(`--history`)
+    → (줄, 기록을 잰 계열 수, 대상 계열 수).
+
+    원천이 새 기간을 실은 날 ≈ 우리 캐시가 그걸 처음 담은 날(하루 오차 — 캐시 파일은 날짜별
+    마지막 수집본이다). 규약보다 늦으면 '원천이 늦게 싣는다' 이고, 규약 안인데 화면이 늦으면
+    우리 캐시·렌더 쪽이다(#82 갈래). 관세청 계열은 캐시가 날짜별로 안 남아 **ECOS 대조본**의
+    기록을 싣는다 — 라벨이 그렇다고 밝힌다(#34)."""
+    from bot.macro_cadence import CADENCE, GRACE_DAYS, parse_period_end
+    if ecos_dir is None:
+        from bot.bok_ecos_client import _CACHE_DIR as ecos_dir
+    if fred_dir is None:
+        from bot.market_overview import _CACHE_DIR as _mo_dir
+        fred_dir = _mo_dir / "fred"
+    out: list[str] = []
+    measured = total = 0
+    for defs in (ms.DOMESTIC, ms.GLOBAL):
+        for _k, label, _u, src, sid, _d in defs:
+            if src not in ("fred", "fred_yoy", "ecos", "customs"):
+                continue
+            total += 1
+            spec = CADENCE.get(sid)
+            name = f"{src}:{sid}" + (" · ECOS 대조본" if src == "customs" else "")
+            daily = _history_daily(src, sid, Path(ecos_dir), Path(fred_dir))
+            if not spec:
+                out.append(f"  {label:<14} {name:<30} ❓ 공표 규약 없음 — 대조 불가")
+                continue
+            if not daily:
+                out.append(f"  {label:<14} {name:<30} ❓ 캐시 기록 없음 — 첫 등장을 잴 재료가 없다")
+                continue
+            freq, lag, why = spec
+            if freq == "E":
+                out.append(f"  {label:<14} {name:<30} ⚪ 이벤트성({why}) — 첫 등장 판정 안 함")
+                continue
+            days = sorted(d for d, _r in daily)
+            measured += 1
+            out.append(f"  {label:<14} {name:<30} 캐시 {len(daily)}일치 {days[0]}~{days[-1]}"
+                       f" · 규약 +{lag}일({why})")
+            limit = lag + GRACE_DAYS
+            for raw, d, prev in first_seen(daily, freq)[-keep:]:
+                end = parse_period_end(raw, freq)
+                hi = (date.fromisoformat(d) - end).days          # 늦어도 이날엔 있었다
+                gap = ""
+                if not prev:
+                    verdict = "❓ 기록 시작 전부터 있었다 — 처음 실린 날은 모른다"
+                else:
+                    lo = (date.fromisoformat(prev) - end).days + 1   # 빨라도 직전 기록 다음 날
+                    if (date.fromisoformat(d) - date.fromisoformat(prev)).days > 1:
+                        gap = f" · 직전 기록 {prev}(사이가 비어 그 안 어디서 실렸는지 모른다)"
+                    if lo > limit:
+                        verdict = f"⚠️ 규약보다 최소 {lo - lag}일 늦게 실렸다"
+                    elif hi <= limit:
+                        verdict = "✅ 규약 안"
+                    else:
+                        verdict = "❓ 기록 사이가 비어 규약 안인지 못 가른다"
+                out.append(f"      {raw:<12} 처음 본 날 {d} (기간 종료 +{hi}일){gap}  {verdict}")
+    return out, measured, total
+
+
+def history() -> int:
+    """→ rc 0 한 계열이라도 기록을 쟀다 · 1 잰 계열 0(대조 0건은 통과가 아니다, #54)."""
+    from bot import macro_snapshot as ms
+    _p(f"macro_staleness_audit --history v{_PROBE_VER} · 캐시 첫 등장(우리가 처음 받은 날) "
+       f"— 네트워크 0 · 하루 오차(캐시는 날짜별 마지막 수집본)")
+    lines, measured, total = history_report(ms)
+    for ln in lines:
+        _p(ln)
+    _p(f"── 기록을 잰 계열 {measured}/{total}개")
+    if not measured:
+        _p("  ❓ 잰 계열이 0 — 캐시 기록이 없다(대조 0건은 통과가 아니다, #54)")
+        return 1
+    return 0
+
+
+def main(argv: Optional[list] = None) -> int:
+    if "--history" in (argv or []):
+        return history()
     from bot.macro_cadence import (CADENCE, GRACE_DAYS, _CADENCE_VER, judge)
     from bot.env_keys import env_source
     from bot import macro_snapshot as ms
@@ -381,4 +531,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

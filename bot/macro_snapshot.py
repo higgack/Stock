@@ -136,15 +136,43 @@ _ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote_valsrc367_customs413").encode()
+     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote_valsrc367_customs413_qtr415").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
 
 
-# FRED 분기 series — monthly aggregation(frequency=m) 요청 시 400(upsample 불가,
-# 사용자 2026-06-23 GDP 400). 네이티브 분기로 요청. (월간 series 는 'm' 유지.)
-_FRED_QUARTERLY = {"A191RL1Q225SBEA"}
+# 분기 계열 — 공표 규약(`macro_cadence.CADENCE` 의 freq "Q")이 단일 출처다(#38). 옛 판은
+# FRED 요청 주기용 목록을 손으로 따로 들고 있었고(#24), 기준 라벨·스파크 칩은 분기인지 아예
+# 안 물었다 — 그래서 미국 GDP 카드가 '기준 2026-04 (5개월 전)' · '2023-07 대비' · '12개월'
+# 을 적었다(실수 #415 — 같은 화면의 한국 GDP 는 '2026 Q2 (3개월 전)').
+# FRED 분기 series 는 monthly aggregation(frequency=m) 요청 시 400(upsample 불가, 사용자
+# 2026-06-23 GDP 400) — 네이티브 분기로 요청한다. 표에 ECOS 키(kr_gdp)가 섞여도 FRED 에
+# 그 이름을 묻는 일은 없어 무해하다.
+def _quarterly_ids() -> frozenset[str]:
+    from bot.macro_cadence import CADENCE
+    return frozenset(sid for sid, spec in CADENCE.items() if spec[0] == "Q")
+
+
+_FRED_QUARTERLY = _quarterly_ids()
+
+
+def _as_quarter(raw: str) -> str:
+    """관측일 'YYYY-MM-DD'(·'YYYY-MM') → 기간 라벨 원문 'YYYYQn'(순수).
+
+    FRED 는 분기 관측을 **분기 첫날**로 찍어 온다(2026-04-01 = 2026년 2분기). 그대로 월로
+    자르면 '2026-04' 가 되고 경과는 분기 말(6월)이 아니라 4월부터 세어 두 달 부풀려진다.
+    못 읽으면 원문 그대로 돌려준다(판독 불가를 지어내지 않는다)."""
+    s = (raw or "").strip()
+    if len(s) < 7 or s[4] != "-":
+        return s
+    try:
+        y, m = int(s[:4]), int(s[5:7])
+    except ValueError:
+        return s
+    if not 1 <= m <= 12:
+        return s
+    return f"{y}Q{(m - 1) // 3 + 1}"
 
 
 # ── FRED monthly fetch ──────────────────────────────────────────────
@@ -202,6 +230,13 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
     # 검산 가능하게 한다 — vol_history 와 같은 처방(#29).
     _FRED_SPARK_START[series_id] = dates[-1] if dates else ""
     return list(reversed(vals))
+
+
+def _fred_start_label(sid: str, quarterly: bool = False) -> str:
+    """FRED 스파크 창의 첫 관측 → 카드의 '… 대비' 라벨(순수에 가깝게 — 창 기록만 읽는다).
+    분기 계열은 'YYYY Qn'(첫날 날짜를 월로 자르면 '2023-07' 이 된다, 실수 #415)."""
+    start = _FRED_SPARK_START.get(sid, "")
+    return _fmt_asof(_as_quarter(start)) if quarterly else start[:7]
 
 
 # ── yfinance monthly batch ──────────────────────────────────────────
@@ -676,11 +711,17 @@ def _customs_series(key: str) -> dict:
                 "detail": f"{type(exc).__name__}: {exc}"}
 
 
-def _customs_note(cs: dict) -> str:
+def _customs_note(cs: dict, today: Optional[date] = None) -> str:
     """카드 기준 줄 뒤에 붙일 원천 표기(순수) — 관세청이면 그렇다고, ECOS 로 폴백했으면
-    **그 사실과 갈래**를(#43·#136 조용한 원천 교체 금지 · 규칙 10b)."""
+    **그 사실과 갈래**를(#43·#136 조용한 원천 교체 금지 · 규칙 10b).
+
+    ⚠️ 관세청은 지난달분을 **익월 1일부터** 준다(2026-09-25 실측 — 진행 중인 달까지 누계로
+    준다). 확정치는 익월 15일 전후라 그 전의 최신 값은 **잠정**이다 — 그걸 말하지 않으면 한
+    달 빨리 보여 주는 대가로 잠정치를 확정치처럼 내건다(#34·#375). ECOS 는 확정치만 싣는다."""
     if cs.get("src") == "관세청":
-        return " · 관세청"
+        pts = cs.get("points") or []
+        from bot.customs_trade_client import provisional
+        return " · 관세청" + (" 잠정" if pts and provisional(pts[-1][0], today) else "")
     if cs.get("src") == "ECOS":
         return f" · ECOS(관세청 {cs.get('why') or '못 받음'})"
     return ""
@@ -871,6 +912,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             # 값이 **실제로 어느 캐시에서 왔나** — 분기 이름이 아니라 값으로
             # 정한다(같은 분기 안에서도 네이버 값/히스토리 폴백이 갈린다).
             _val_tag = ""
+            _qtr = sid in _FRED_QUARTERLY   # 분기 계열 — 라벨·칩을 분기로(실수 #415)
             if src == "yf":
                 # 현재값 = 네이버 우선(카드 안 사라짐). 네이버 매핑이 없거나
                 # 실패한 sid 는 아래에서 **일봉 1개월 배치 → 월간 꼬리** 순으로
@@ -968,6 +1010,10 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     value = chart_spark[-1]
                     if len(chart_spark) >= 2:
                         change = chart_spark[-1] - chart_spark[-2]
+                if _qtr:
+                    # FRED 분기 관측일은 분기 **첫날**이다 — 기간 라벨로 바꿔야 ECOS 분기
+                    # (YYYYQn)와 같은 규약으로 표기·경과·지연 판정을 받는다(실수 #415)
+                    asof_raw = _as_quarter(asof_raw)
                 spark_dir = _spark_dir(card_spark, -2)  # 직전 월 대비(추세 색)
             elif src in ("ecos", "customs"):
                 if src == "customs":
@@ -986,6 +1032,10 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     card_spark = chart_spark
                     _ps_period = _fmt_asof(_mb[0][0]) if _mb else ""
                 spark_dir = _spark_dir(card_spark, -2)
+            if _qtr and card_spark:
+                # 12점이 12**분기**(3년)다 — '12개월' 칩은 창을 네 배 짧게 말했다(실수 #415).
+                # 개수는 실제로 그린 점에서 센다(#29 요청이 아니라 데이터 폭으로).
+                spark_span = f"{len(card_spark)}분기"
             if value is None:
                 # 카드는 그리지 않되(옛 동작) **왜 빠졌는지 남긴다** — 그냥
                 # `continue` 하면 사용자 눈에 '기능이 삭제된 것' 으로 보인다.
@@ -1037,7 +1087,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # ⚠️ ECOS·관세청 카드도 날짜를 싣는다 — 2026-09-25 까지 FRED 만 실어
                 # 한국 수출 카드가 '12개월 전 583억$' 라고 적었는데 그건 11개월 전
                 # (2025-08) 값이라 ▲407 이 전년동월 대비로 읽혔다(실수 #413).
-                "period_start_asof": (_FRED_SPARK_START.get(sid, "")[:7]
+                "period_start_asof": (_fred_start_label(sid, _qtr)
                                       if src == "fred" else _ps_period),
                 "period_change": period_change,
                 "period_change_pct": period_change_pct,

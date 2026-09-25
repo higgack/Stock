@@ -26280,8 +26280,12 @@ class TestFlowTrendDiagnosis20260818:
                                          _FRED_TTL_OTHER_H)
         assert {"DGS2", "DGS10", "DGS30"} <= _FRED_DAILY_SIDS
         assert _FRED_TTL_DAILY_H <= 2.0, "일별 시리즈 캐시가 너무 길다"
-        # 월간·분기 지표까지 짧게 하면 FRED 호출만 늘고 얻는 게 없다.
-        assert _FRED_TTL_OTHER_H >= 12.0
+        # ⚠️ 옛 계약("월간·분기까지 짧게 하면 FRED 호출만 늘고 얻는 게 없다 — 12h 이상")은
+        # 2026-09-25 에 뒤집혔다(실수 #415): 같은 카드의 스파크(`_fred_monthly`)가 캐시 없이
+        # 30초마다 FRED 를 불러, 공표일엔 그래프가 새 달을 그리는데 헤드라인만 최대 하루
+        # 옛 달이었다. 호출 비용 논거도 스파크(시리즈당 시간 120회) 옆에선 0 이다.
+        # 짧아진 TTL 의 짝(FRED 장애 시 같은 날 사본)은 tests/test_slow_cards_20260925.py.
+        assert _FRED_TTL_OTHER_H <= 1.0
 
     def test_treasury_client_refuses_a_mismatched_field(self, monkeypatch):
         """⚠️ 재무부 XML 태그를 잘못 집으면(2년물 자리에 1개월물) 화면에

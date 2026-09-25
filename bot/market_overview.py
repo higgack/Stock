@@ -633,7 +633,14 @@ def _treasury_augmentable() -> frozenset[str]:
 # 무엇을 당길 수 있는지는 그쪽이 안다(#86 상태는 아는 쪽에 묻는다).
 _TREASURY_SIDS = set(_treasury_augmentable())
 _FRED_TTL_DAILY_H = 1.0
-_FRED_TTL_OTHER_H = 24.0
+# 월간·분기 헤드라인도 1시간이다(실수 #415 — 옛 판 24시간). 옛 근거는 "짧게 하면 FRED
+# 호출만 늘고 얻는 게 없다" 였는데 **틀렸다**: 같은 카드의 스파크(`macro_snapshot.
+# _fred_monthly`)는 캐시 없이 30초마다 FRED 를 부르므로, 공표일(근원PCE·GDP·CPI…)엔
+# 그래프가 새 달을 그리는데 헤드라인·기준 라벨은 날짜 롤까지 최대 하루 옛 달을 말했다(#33
+# 한 카드가 두 기간을 말한다). 호출 비용도 스파크(시리즈당 시간 120회)에 비하면 1시간 1회는
+# 반올림 오차다. 일별 집합(`_FRED_DAILY_SIDS`)은 남긴다 — 이 값을 다시 늘리는 날 그 집합이
+# 일별 시리즈를 짧게 지키는 유일한 선이다.
+_FRED_TTL_OTHER_H = 1.0
 # ⚠️ **캐시는 코드 배포로 안 바뀐다**(실수 #18 의 캐시판). #909 로 국채금리를
 # 재무부 원천으로 당겼는데, VM 감사(2026-08-18)에서 여전히 08-14 가 나왔다 —
 # 39분 전 배포 전 코드가 쓴 사본이 TTL 안이라 그대로 서빙됐다. TTL 이 지나면
@@ -657,13 +664,18 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     cache_file = cache_dir / f"{series_id}_{today_str}.json"
     _ttl = (_FRED_TTL_DAILY_H if series_id in _FRED_DAILY_SIDS
             else _FRED_TTL_OTHER_H)
+    # TTL 이 지난 **같은 날** 사본 — FRED 가 막히면 빈 값 대신 이걸 준다(#394 낡은 값이 빈
+    # 값보다 낫다). TTL 을 1시간으로 줄이며(#415) 원천 장애 한 시간에 카드가 통째로
+    # 빠지지 않게 하는 짝이다. 관측일(`time`)을 그대로 싣고 가므로 화면의 기준 라벨은 사실이다.
+    _stale: Optional[dict] = None
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < _ttl:
-                _c = json.loads(cache_file.read_text())
-                if _c.get("cv") == _FRED_CACHE_VER:
+            _c = json.loads(cache_file.read_text())
+            if _c.get("cv") == _FRED_CACHE_VER:
+                if age_h < _ttl:
                     return _c
+                _stale = _c
         except Exception:
             pass
 
@@ -678,8 +690,9 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
     except Exception as exc:
-        log.warning("fred: fetch %s failed: %s", series_id, exc)
-        return None
+        log.warning("fred: fetch %s failed: %s%s", series_id, exc,
+                    " — 같은 날 옛 사본을 준다" if _stale else "")
+        return _stale
 
     clean = []
     for row in obs:
@@ -691,7 +704,7 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         except ValueError:
             continue
     if not clean:
-        return None
+        return _stale
 
     latest_date, latest_val = clean[0]
     prev_val = clean[1][1] if len(clean) >= 2 else None

@@ -1,0 +1,363 @@
+"""'느린 카드' 5종 점검(실수 #415, 사용자 2026-09-25 "캡쳐한 것들이 느린것들인데..이것들은
+어떨까?") — 경상수지·외환보유액·한국 GDP·미국 근원PCE·미국 GDP.
+
+다섯 다 공표 규약(`macro_cadence`) 기준 **뒤처지지 않았다**(오늘 판정 뒤짐 0). 느려 보인
+원인은 셋이었다:
+  1. 미국 GDP 가 분기인데 월로 적혔다 — FRED 는 분기 관측을 **분기 첫날**(2026-04-01)로
+     찍어 오는데 월로 잘라 '기준 2026-04 (5개월 전)' · '2023-07 대비' 였다. 같은 화면의
+     한국 GDP 는 '2026 Q2 (3개월 전)' 이다(#38 같은 계산을 두 화면이 다르게).
+  2. 분기 카드의 칩이 '12개월' 이었다 — 12점은 12**분기**(3년)다.
+  3. FRED 월간·분기 헤드라인 캐시가 24시간이었다 — 같은 카드의 스파크는 30초마다 새로
+     받으므로 공표일엔 그래프가 새 달을 그리는데 값·기준 라벨은 최대 하루 옛 달이었다.
+그리고 반복되는 질문("원천이 늦게 싣나, 우리가 늦게 받나")은 `macro_staleness_audit
+--history` 가 캐시 기록으로 답한다(#252 반복 확인은 제품에 심는다).
+
+네트워크 0 — FRED 는 `requests.get` 경계에서, ECOS 는 `_ecos_series` 에서 스텁한다.
+날짜는 시계에서 파생하거나 고정한다(#249).
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import subprocess
+import sys
+import time
+from contextlib import redirect_stdout
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
+
+import bot.macro_snapshot as ms
+
+_GDP = "A191RL1Q225SBEA"
+
+
+# ── 순수 헬퍼 ────────────────────────────────────────────────────────────
+def test_as_quarter_reads_fred_quarter_start_dates():
+    assert ms._as_quarter("2026-04-01") == "2026Q2"
+    assert ms._as_quarter("2023-07-01") == "2023Q3"
+    assert ms._as_quarter("2026-01-01") == "2026Q1" and ms._as_quarter("2026-12-01") == "2026Q4"
+    assert ms._as_quarter("2026-04") == "2026Q2"
+    # 못 읽으면 원문 그대로 — 판독 불가를 지어내지 않는다
+    for raw in ("", "2026Q2", "2026-13-01", "abcd-ef-gh"):
+        assert ms._as_quarter(raw) == raw, raw
+    assert ms._fmt_asof(ms._as_quarter("2026-04-01")) == "2026 Q2"
+
+
+def test_quarterly_ids_come_from_the_cadence_table():
+    """분기 판정의 단일 출처는 공표 규약이다(#38) — 옛 판은 요청 주기용 목록을 손으로 따로
+    들고 있었고(#24) 라벨·칩은 분기인지 묻지도 않았다."""
+    from bot.macro_cadence import CADENCE
+    assert ms._FRED_QUARTERLY == {s for s, spec in CADENCE.items() if spec[0] == "Q"}
+    assert {_GDP, "kr_gdp"} <= ms._FRED_QUARTERLY
+    assert not {"PCEPILFE", "T10Y2Y", "current_account"} & ms._FRED_QUARTERLY
+
+
+def test_the_quarter_label_counts_lag_from_quarter_end():
+    """경과는 분기 **말**부터 — 첫날로 세면 늘 두 달 부풀려진다(오늘이 언제든)."""
+    assert ms._asof_lag_months("2026-04-01") - ms._asof_lag_months("2026Q2") == 2
+    assert ms._asof_lag_months("2026Q2", date(2026, 9, 25)) == 3
+
+
+# ── 화면 배선(수집기를 통째로 태운다, #20) ────────────────────────────────
+class _Resp:
+    def __init__(self, obs):
+        self._obs = obs
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"observations": self._obs}
+
+
+def _quarters_desc(last_q_start: date, n: int) -> list[dict]:
+    """FRED 분기 관측(내림차순) — 날짜는 **분기 첫날**, 값은 분기마다 다르게(#91c)."""
+    out, d = [], last_q_start
+    for i in range(n):
+        out.append({"date": d.isoformat(), "value": f"{1.0 + i / 10:.1f}"})
+        y, m = (d.year, d.month - 3) if d.month > 3 else (d.year - 1, d.month + 9)
+        d = date(y, m, 1)
+    return out
+
+
+def _months_desc(last: date, n: int) -> list[dict]:
+    out, d = [], last
+    for i in range(n):
+        out.append({"date": d.isoformat(), "value": f"{120 + n - i:.2f}"})
+        d = date(d.year - (d.month == 1), 12 if d.month == 1 else d.month - 1, 1)
+    return out
+
+
+def _gdp_quarters():
+    """한국 GDP(ECOS) — 12분기, 마지막 2026Q2."""
+    out, y, q = [], 2026, 2
+    for i in range(12):
+        out.append((f"{y}Q{q}", 0.5 + i / 10))
+        y, q = (y, q - 1) if q > 1 else (y - 1, 4)
+    return list(reversed(out))
+
+
+def _snapshot(tmp_path, monkeypatch):
+    import bot.market_overview as mo
+    import bot.naver_marketindex as nm
+    monkeypatch.setenv("FRED_API_KEY", "x" * 8)
+    monkeypatch.setattr(ms, "_CACHE_DIR", tmp_path / "snap")
+    (tmp_path / "snap").mkdir()
+    monkeypatch.setattr(ms, "_fetch_macro_naver_values", lambda sids: {})
+    monkeypatch.setattr(ms, "_yf_monthly_batch", lambda tk: {})
+    monkeypatch.setattr(ms, "_yf_daily_1mo_batch", lambda tk: {})
+    for fn in ("fetch_commodity_spark", "fetch_naver_index_history",
+               "fetch_naver_crypto_history", "fetch_naver_fx_history"):
+        monkeypatch.setattr(nm, fn, lambda *a, **k: [])
+    monkeypatch.setattr(ms, "_customs_series", lambda key: {"points": [], "src": ""})
+    monkeypatch.setattr(ms, "_ecos_series",
+                        lambda key: _gdp_quarters() if key == "kr_gdp" else [])
+    gdp = _quarters_desc(date(2026, 4, 1), 24)
+    pce = _months_desc(date(2026, 7, 1), 24)
+
+    def fake_get(url, params=None, timeout=None):       # `_fred_monthly` 의 경계
+        sid = (params or {}).get("series_id")
+        if sid == _GDP:
+            assert params["frequency"] == "q", "분기 계열을 월로 물으면 FRED 가 400 이다"
+            return _Resp(gdp)
+        return _Resp(pce if sid == "PCEPILFE" else [])
+    monkeypatch.setattr(ms.requests, "get", fake_get)
+    spots = {_GDP: {"value": 1.5, "time": "2026-04-01", "change": -0.6},
+             "PCEPILFE": {"value": 130.66, "time": "2026-07-01", "change": 0.32}}
+    monkeypatch.setattr(mo, "_fred_fetch_series", lambda sid, lb: spots.get(sid))
+    out = ms.fetch_macro_snapshot()
+    return {r["key"]: r for r in list(out["domestic"]) + list(out["global"])}
+
+
+def test_us_gdp_card_speaks_in_quarters(tmp_path, monkeypatch):
+    """캡처 그대로의 결함 셋 — '기준 2026-04 (5개월 전)' · '2023-07 대비' · '12개월'."""
+    rows = _snapshot(tmp_path, monkeypatch)
+    gdp = rows["us_gdp"]
+    assert gdp["asof"] == "2026 Q2", gdp["asof"]
+    assert gdp["asof_lag"] == ms._asof_lag_months("2026Q2")       # 분기 말부터
+    assert gdp["period_start_asof"] == "2023 Q3", gdp["period_start_asof"]
+    assert gdp["spark_span"] == "12분기" and len(gdp["spark"]) == 12
+    assert gdp["period_start"] == pytest.approx(2.1)              # 창 첫 분기(12번째)의 값
+
+
+def test_korea_gdp_card_gets_the_same_quarter_chip(tmp_path, monkeypatch):
+    """같은 병이 형제 화면(ECOS 분기)에도 있었다 — 칩만 '12개월' 이었다(#38)."""
+    rows = _snapshot(tmp_path, monkeypatch)
+    kr = rows["kr_gdp"]
+    assert kr["asof"] == "2026 Q2" and kr["period_start_asof"] == "2023 Q3"
+    assert kr["spark_span"] == "12분기", kr["spark_span"]
+
+
+def test_monthly_cards_keep_their_month_labels(tmp_path, monkeypatch):
+    """반대 증거(#25) — 월간 카드는 그대로 '12개월'·'YYYY-MM' 이다."""
+    rows = _snapshot(tmp_path, monkeypatch)
+    pce = rows["us_pce"]
+    assert pce["asof"] == "2026-07" and pce["spark_span"] == "12개월"
+    assert pce["period_start_asof"] == "2025-08", pce["period_start_asof"]
+
+
+def test_the_card_renders_the_quarter_chip_and_start():
+    from bot.dashboard import _render_macro_card
+    html = _render_macro_card({
+        "key": "us_gdp", "label": "미국 GDP", "unit": "%", "value": 1.5, "decimals": 1,
+        "spark": [4.7, 1.5], "spark_dir": -1, "spark_span": "12분기",
+        "period_start": 4.7, "period_start_asof": "2023 Q3", "period_change": -3.2,
+        "change": -0.6, "pct_style": False, "asof": "2026 Q2", "asof_kind": "obs",
+        "asof_lag": 3})
+    assert ">12분기<" in html and "2023 Q3 대비" in html and "12개월" not in html
+    assert "기준 2026 Q2" in html and "(3개월 전)" in html
+
+
+# ── FRED 헤드라인 캐시 — 공표일에 스파크와 같은 기간을 말하게 ─────────────────
+def _fred_cache(tmp_path, monkeypatch):
+    import bot.market_overview as mo
+    monkeypatch.setenv("FRED_API_KEY", "x" * 8)
+    monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path / "mo")
+    return mo, tmp_path / "mo" / "fred" / f"PCEPILFE_{date.today().isoformat()}.json"
+
+
+def test_monthly_headline_cache_is_short_because_the_spark_is_not_cached(tmp_path, monkeypatch):
+    """스파크(`_fred_monthly`)는 캐시가 없어 30초마다 FRED 를 부른다 — 헤드라인만 하루를
+    묵으면 공표일에 한 카드가 두 기간을 말한다(#33). 1시간 지난 같은 날 사본은 다시 묻는다."""
+    mo, f = _fred_cache(tmp_path, monkeypatch)
+    assert mo._FRED_TTL_OTHER_H <= 1.0
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"value": 130.34, "time": "2026-06-01", "cv": mo._FRED_CACHE_VER}))
+    old = time.time() - 2 * 3600
+    os.utime(f, (old, old))
+    calls: list = []
+
+    def fake_get(url, timeout=None):
+        calls.append(url)
+        return _Resp([{"date": "2026-07-01", "value": "130.66"},
+                      {"date": "2026-06-01", "value": "130.34"}])
+    monkeypatch.setattr(mo.requests, "get", fake_get)
+    out = mo._fred_fetch_series("PCEPILFE", 400)
+    assert len(calls) == 1 and out["time"] == "2026-07-01" and out["value"] == 130.66
+    # 방금 쓴 사본은 TTL 안 — 다시 묻지 않는다
+    assert mo._fred_fetch_series("PCEPILFE", 400)["time"] == "2026-07-01" and len(calls) == 1
+
+
+def test_fred_failure_serves_the_same_day_copy_not_nothing(tmp_path, monkeypatch):
+    """TTL 을 줄이는 짝 — FRED 가 막힌 한 시간에 카드가 통째로 빠지면 안 된다(#394 낡은
+    값이 빈 값보다 낫다). 관측일을 그대로 싣고 가므로 기준 라벨은 사실이다."""
+    mo, f = _fred_cache(tmp_path, monkeypatch)
+    f.parent.mkdir(parents=True)
+    doc = {"value": 130.34, "time": "2026-06-01", "cv": mo._FRED_CACHE_VER}
+    f.write_text(json.dumps(doc))
+    old = time.time() - 5 * 3600
+    os.utime(f, (old, old))
+
+    def boom(url, timeout=None):
+        raise ConnectionError("fred down")
+    monkeypatch.setattr(mo.requests, "get", boom)
+    assert mo._fred_fetch_series("PCEPILFE", 400) == doc
+    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _Resp([]))
+    assert mo._fred_fetch_series("PCEPILFE", 400) == doc          # 빈 응답도 같은 날 사본으로
+    # 옛 버전 사본은 믿지 않는다(#18) — 그땐 종전대로 None
+    f.write_text(json.dumps(dict(doc, cv=mo._FRED_CACHE_VER - 1)))
+    os.utime(f, (old, old))
+    monkeypatch.setattr(mo.requests, "get", boom)
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None
+
+
+# ── --history: 새 기간을 처음 본 날 ──────────────────────────────────────
+def _days(a: date, b: date):
+    d = a
+    while d <= b:
+        yield d
+        d += timedelta(days=1)
+
+
+def test_first_seen_marks_what_it_cannot_know():
+    from bot.scripts.macro_staleness_audit import first_seen
+    daily = [("2026-07-20", "2026Q1"), ("2026-08-20", "2026Q1"), ("2026-08-21", "2026Q2"),
+             ("2026-08-22", "2026Q2"), ("2026-08-23", "쓰레기")]
+    assert first_seen(daily, "Q") == [("2026Q1", "2026-07-20", ""),
+                                      ("2026Q2", "2026-08-21", "2026-08-20")]
+    # 순서가 섞여 들어와도 날짜순으로 판다 · 못 읽은 파일은 '없었다' 의 증거가 아니다
+    shuffled = [("2026-08-21", "2026Q2"), ("2026-08-19", "??"), ("2026-07-20", "2026Q1")]
+    assert first_seen(shuffled, "Q") == [("2026Q1", "2026-07-20", ""),
+                                         ("2026Q2", "2026-08-21", "2026-07-20")]
+    assert first_seen([], "M") == []
+
+
+def _write_history(tmp_path):
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    for d in _days(date(2026, 7, 20), date(2026, 9, 25)):
+        gdp = [["2026Q1", 1.8]] + ([["2026Q2", 0.6]] if d >= date(2026, 8, 21) else [])
+        (ecos / f"series_v2_kr_gdp_1500_{d}.json").write_text(json.dumps(gdp))
+        ca = [["202606", 1.0]] + ([["202607", 2.0]] if d >= date(2026, 9, 6) else [])
+        (ecos / f"series_v2_current_account_400_{d}.json").write_text(json.dumps(ca))
+        # 한국 수출 ECOS 대조본 — 7월분이 +34일(09-03)에야
+        ex = [["202606", 1.0]] + ([["202607", 2.0]] if d >= date(2026, 9, 3) else [])
+        (ecos / f"series_v2_export_amt_400_{d}.json").write_text(json.dumps(ex))
+        br = [["20260701", 2.5]]
+        (ecos / f"series_v2_base_rate_400_{d}.json").write_text(json.dumps(br))
+    # 근원PCE — 8월 한 달 기록이 비어 있다(서버가 안 돌았다)
+    for d in list(_days(date(2026, 7, 20), date(2026, 7, 31))) + \
+            list(_days(date(2026, 9, 1), date(2026, 9, 25))):
+        t = "2026-06-01" if d < date(2026, 7, 31) else "2026-07-01"
+        (fred / f"PCEPILFE_{d}.json").write_text(json.dumps({"time": t}))
+    # 이름이 겹치는 다른 계열의 파일은 섞이지 않는다 · 날짜가 아닌 이름은 건너뛴다(크래시 금지)
+    (fred / "PCEPILFE2_2026-09-01.json").write_text(json.dumps({"time": "2027-01-01"}))
+    (fred / "PCEPILFE_backup.json").write_text(json.dumps({"time": "2027-02-01"}))
+    (ecos / "series_v2_kr_gdp_extra_1500_2026-09-01.json").write_text(json.dumps([["2027Q4", 9]]))
+    (ecos / "series_v2_kr_gdp_1500_2026-09-02.json").write_bytes(b"\xff{broken")
+    return ecos, fred
+
+
+def _block(lines, label):
+    i = next(k for k, ln in enumerate(lines) if ln.lstrip().startswith(label))
+    out = [lines[i]]
+    for ln in lines[i + 1:]:
+        if not ln.startswith("      "):
+            break
+        out.append(ln)
+    return out
+
+
+def test_history_reports_first_seen_against_the_cadence(tmp_path):
+    from bot.scripts.macro_staleness_audit import history_lines
+    ecos, fred = _write_history(tmp_path)
+    lines = history_lines(ms, ecos_dir=ecos, fred_dir=fred)
+    gdp = _block(lines, "한국 GDP")
+    assert "규약 +30일" in gdp[0] and "캐시 67일치 2026-07-20~2026-09-25" in gdp[0], gdp
+    assert "2026Q1" in gdp[1] and "❓ 기록 시작 전부터 있었다" in gdp[1]
+    assert "2026Q2" in gdp[2] and "처음 본 날 2026-08-21 (기간 종료 +52일)" in gdp[2]
+    assert "⚠️ 규약보다 최소 22일 늦게 실렸다" in gdp[2], gdp
+    assert "2027Q4" not in "\n".join(gdp), "다른 계열 파일이 섞였다"
+    ca = _block(lines, "경상수지")
+    assert "202607" in ca[2] and "(기간 종료 +37일)" in ca[2] and "✅ 규약 안" in ca[2], ca
+    ex = _block(lines, "한국 수출")
+    assert "customs:export_amt · ECOS 대조본" in ex[0]
+    assert "(기간 종료 +34일)" in ex[2] and "⚠️ 규약보다 최소 14일" in ex[2], ex
+    pce = _block(lines, "미국 근원PCE")
+    assert "2027" not in "\n".join(pce), "이름이 겹치는 FRED 파일이 섞였다"
+    assert "처음 본 날 2026-07-31 (기간 종료 +0일)" in pce[2] and "✅ 규약 안" in pce[2], pce
+    br = _block(lines, "한국 기준금리")
+    assert "⚪ 이벤트성" in br[0] and len(br) == 1
+    gdp_us = _block(lines, "미국 GDP")
+    assert "❓ 캐시 기록 없음" in gdp_us[0]
+
+
+def test_history_does_not_claim_across_a_gap(tmp_path):
+    """기록이 빈 사이에 실렸으면 규약 안인지 못 가른다 — 단정하지 않는다(#165)."""
+    from bot.scripts.macro_staleness_audit import history_lines
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    (fred / "PCEPILFE_2026-07-20.json").write_text(json.dumps({"time": "2026-06-01"}))
+    (fred / "PCEPILFE_2026-09-10.json").write_text(json.dumps({"time": "2026-07-01"}))
+    pce = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 근원PCE")
+    assert "직전 기록 2026-07-20" in pce[2] and "❓ 기록 사이가 비어" in pce[2], pce
+    # 사이가 비어도 **빨라도 늦은** 경우는 늦다고 말한다
+    (fred / "PCEPILFE_2026-09-08.json").write_text(json.dumps({"time": "2026-06-01"}))
+    pce = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 근원PCE")
+    assert "⚠️ 규약보다 최소" in pce[2], pce
+
+
+def test_history_is_a_flag_and_the_daily_sweep_does_not_run_it(monkeypatch):
+    """`audit_sweep` 은 `main([])` 을 부른다 — 기록 판독은 사람이 부르는 플래그다(#283)."""
+    import bot.scripts.macro_staleness_audit as m
+    called: list = []
+    monkeypatch.setattr(m, "history", lambda: called.append(1) or 0)
+    monkeypatch.setattr(m, "audit_rows", lambda _ms, _mo: [])
+    monkeypatch.setattr(m, "_treasury_status", lambda mo: None)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        m.main([])
+        m.main()
+    assert called == [] and "요약" in buf.getvalue()
+    assert m.main(["--history"]) == 0 and called == [1]
+
+
+def test_history_cli_entrypoint_passes_argv(tmp_path):
+    """진입점을 실제로 태운다(#252) — `__main__` 이 인자를 안 넘기면 플래그가 죽는다.
+    HOME 을 비워 캐시 0 — 모든 줄이 판정 불가이고 rc 1 이다(대조 0건은 통과가 아니다, #54)."""
+    env = dict(os.environ, HOME=str(tmp_path))
+    r = subprocess.run([sys.executable, "-m", "bot.scripts.macro_staleness_audit", "--history"],
+                       cwd=str(Path(__file__).resolve().parents[1]), env=env,
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 1, (r.returncode, r.stdout[-2000:], r.stderr[-2000:])
+    assert "--history" in r.stdout and "❓ 캐시 기록 없음" in r.stdout, r.stdout[-2000:]
+    assert "기록을 잰 계열 0/" in r.stdout and "✅" not in r.stdout
+
+
+def test_history_rc_is_zero_once_anything_was_measured(tmp_path, monkeypatch):
+    import bot.scripts.macro_staleness_audit as m
+    ecos, fred = _write_history(tmp_path)
+    real = m.history_report
+    monkeypatch.setattr(m, "history_report",
+                        lambda _ms, **kw: real(_ms, ecos_dir=ecos, fred_dir=fred))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = m.main(["--history"])
+    total = sum(1 for d in (ms.DOMESTIC, ms.GLOBAL) for row in d
+                if row[3] in ("fred", "fred_yoy", "ecos", "customs"))
+    assert rc == 0 and f"기록을 잰 계열 4/{total}개" in buf.getvalue(), buf.getvalue()

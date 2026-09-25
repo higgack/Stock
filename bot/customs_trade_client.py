@@ -20,17 +20,24 @@ item: `year` · `expDlr` · `impDlr` · `balPayments` · `expCnt` · `impCnt`.
     미리 채워 보낸다(`trade/customs_scan._latest_move` 실측 선례 — 2026-06-01 '0 으로
     랭킹이 지워진' 사고). 나라 전체 수출·수입이 0 일 수는 없으므로 0 은 값이 아니다.
 
-형제 선례(`trade/customs.py` — 같은 GW 계열 `Itemtrade/getItemtradeList` 를 실응답으로
-잰 것): 금액은 **USD 원값** · `year` 는 `YYYY.MM` · 경로 첫 글자는 **대문자**.
-그래서 SCALE 1e-8(USD→억$)이고 대문자 경로를 먼저 묻는다.
-
-⚠️ 재지 않은 것(#165 — 샌드박스에서는 apis.data.go.kr 에 못 닿는다): 이 서비스의
-경로 대소문자 · 조회기간 상한 · 한 쪽의 행 수(문서에 numOfRows 가 없다). 그래서 경로는
-**404 일 때만** 다음 후보를 묻고 값이 온 쪽을 쓴다(#345 찾음 ≠ 동작함) · 조회는
-6개월씩 나눈다(상한이 있어도 없어도 맞고, data.go.kr 기본 쪽 크기 10행에도 '총계'
-행까지 들어간다) · `year` 는 달 모양만 받고 그 밖('총계' 등)은 건너뛴다 · 단위는 위
-ECOS 대조가 지킨다. VM 에서 `cd ~/stock && .venv/bin/python -m
-bot.customs_trade_client --check` 가 잰다(창마다 받은 달 행 수까지 찍는다).
+실측(2026-09-25 VM — 이 서비스를 키로 직접 쳤다):
+  · 경로는 `Newtrade/getNewtradeList`(대문자) — HTTP 200 · resultCode 00. 소문자 `newtrade`
+    는 **HTTP 400 + resultCode 12**('해당 오픈API 서비스가 없거나 폐기됨')다. 재기 전엔 경로
+    사다리를 뒀으나(#345 찾음 ≠ 동작함) 쟀으므로 죽은 후보는 지운다(§작업 원칙).
+  · 조회기간은 **1년 이내**만 받는다 — 13개월 창(202508~202608)은 HTTP 200 + resultCode 99
+    ('시작과 종료의 조회기간은 1년이내 기간만 가능합니다'). 99 는 기다려도 안 풀린다 — 우리
+    창 크기를 고칠 일이라 일시 오류로 세지 않는다(#82). 창은 6개월씩 나눈다.
+  · body 엔 `items` 뿐이다(numOfRows·totalCount 칸이 없다) — 한 달 창은 그 달 + '총계' 2행.
+  · 금액은 **USD 원값**(9월 누계 expDlr 93,402,261,770 = 934억$ — ECOS 7월 989.6억$ 와 같은
+    자릿수) · balPayments = expDlr − impDlr 가 정확히 맞는다. 그래서 SCALE 1e-8(USD→억$).
+  · **진행 중인 달도 값을 준다** — 2026-09-25 에 9월분 934억$(월말 전이라 부분 누계다). 그래서
+    당월을 빼는 것은 실측으로도 필요하다(#40). 0 으로 미리 채운 달은 이 서비스에선 안 보였다 —
+    형제 계열의 선례라 방어로만 남긴다.
+  · 지난달분은 익월 1일부터 온다(ECOS 재게시보다 한 달 이상 빠르다) — 관세청 확정치는 **익월
+    15일 전후**라 그 전엔 **잠정치**다. 카드가 그 사실을 적는다(`provisional`, #34·#375).
+재지 않은 것(#165): 6개월 창이 잘리지 않는지(쪽 크기 칸이 없으니 잘린다면 조용히 잘린다) ·
+지난달분이 익월 1일 몇 시부터 온전한지. VM 에서 `cd ~/stock && .venv/bin/python -m
+bot.customs_trade_client --check` 가 창마다 받은 달 행 수까지 찍어 잰다.
 """
 from __future__ import annotations
 
@@ -52,16 +59,17 @@ from bot.env_keys import env_key as _env_key
 log = logging.getLogger("bot.customs_trade")
 
 _BASE = "https://apis.data.go.kr/1220000"
-# 경로 후보 — 순서가 곧 우선순위. **404 일 때만** 다음 후보를 묻는다: 인증·파라미터
-# 오류는 경로를 바꿔도 같은 답이라 더 묻지 않는다(#82·#279 '더 물어서 답이 바뀌나').
-# 대문자가 먼저인 건 형제 선례(`Itemtrade`) 때문이다 — 이 서비스는 재지 않았다.
-PATHS = ("Newtrade/getNewtradeList", "newtrade/getNewtradeList")
+# 경로는 하나다 — 2026-09-25 실측으로 소문자 후보는 HTTP 400 + resultCode 12 였다(모듈 설명).
+PATH = "Newtrade/getNewtradeList"
 _TIMEOUT = 10
 _UA = "Mozilla/5.0 (NOAH macro)"
-# 한 요청의 조회 달 수. 문서엔 쪽 크기(numOfRows)가 없고 data.go.kr 기본은 흔히 10행이라,
-# 12개월 + '총계' 13행을 한 번에 물으면 끝 몇 달이 **조용히 잘릴** 수 있다(#280).
-# 6개월이면 '총계' 까지 7행 — 기본 쪽 크기 안이다. 재지 않았으니 넉넉히 나눈다.
+# 한 요청의 조회 달 수. 원천 상한은 **1년 이내**(실측 — 13개월 창은 resultCode 99). 응답에
+# 쪽 크기(numOfRows)·총 건수 칸이 없어 잘려도 알 길이 없으므로(#280) 6개월씩 나눈다 —
+# '총계' 까지 7행이라 data.go.kr 흔한 기본 쪽 크기(10행) 안이다. 잘림 여부는 `--check` 가 잰다.
 CHUNK_MONTHS = 6
+# 관세청 월별 확정치 공표일(익월 15일 전후 — `macro_cadence` export_amt 근거와 같다). 그 전의
+# 지난달 값은 잠정치다(모듈 설명).
+CONFIRM_DAY = 15
 MONTHS = 13                # 카드 12점 + 여유 1(최신 달이 아직 안 나온 날에도 12점)
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "customs_trade"
 _CACHE_VER = 1
@@ -76,9 +84,12 @@ _OK_CODES = ("00", "0", "000")
 _NODATA_CODES = ("03",)
 # 기다리면 풀리는 결과코드(원천 쪽 오류·시간초과·일일 한도) — 키·파라미터·미등록·만료
 # (10·11·20·30·31·32 …)는 우리가 고칠 것이라 처방이 반대다(#82). 나머지는 '응답 오류'.
-_TRANSIENT_CODES = ("01", "02", "04", "05", "22", "99")
-# 12(NO_OPENAPI_SERVICE) = 그 **경로**에 서비스가 없다 — 게이트웨이가 틀린 경로에 404 대신
-# 200 + 이 코드로 답할 수도 있어(재지 않았다) 404 와 같이 다음 경로 후보를 묻는다.
+# ⚠️ 99 는 공통 규약상 '기타 에러'지만 이 서비스는 **요청 검증 오류**에 쓴다(2026-09-25 실측:
+# 13개월 창 → '조회기간은 1년이내'). 기다려도 안 풀리므로 여기 넣으면 우리가 고칠 것을
+# 감사가 ⚠️(기다림)로 덮는다(#260 을 거꾸로).
+_TRANSIENT_CODES = ("01", "02", "04", "05", "22")
+# 12(NO_OPENAPI_SERVICE) = 그 **경로**에 서비스가 없다 — 실측으로는 HTTP 400 에 실려 왔다
+# (소문자 경로). 상태코드만 보면 '파라미터 오류' 로 읽히므로 본문의 코드가 갈래를 정한다.
 _NO_SERVICE_CODES = ("12",)
 
 # 카드 계열 키 → 원천 필드. 키는 ECOS 시리즈 키와 같다 — 공표 규약(`macro_cadence`)과
@@ -86,7 +97,6 @@ _NO_SERVICE_CODES = ("12",)
 FIELDS = {"export_amt": "exp", "import_amt": "imp"}
 
 _fail: dict[tuple[str, str], tuple[float, str, str]] = {}
-_good_path: Optional[str] = None
 # 폴백 경고는 (계열, 갈래)마다 프로세스당 한 번 — 카드는 30초마다 다시 그려져, 원천이
 # 막힌 동안 같은 줄이 저널을 덮으면 다른 사실이 묻힌다(#260). 건마다는 debug 로.
 _warned: set[tuple[str, str]] = set()
@@ -147,39 +157,36 @@ def _code_kind(code: str) -> str:
     return "조회 실패" if code in _TRANSIENT_CODES else "응답 오류"
 
 
-def parse(text: str) -> tuple[list[dict], str, str]:
-    """응답 본문 → (달 행들, 오류 사유, 실패 갈래). 문서상 형식은 XML 이지만 JSON 도 받는다.
-
-    ⚠️ 오류 봉투는 **두 벌**이다(#352) — 서비스의 `header/resultCode` 와 게이트웨이의
-    `cmmMsgHeader`(인증키 미등록 등). 한쪽만 보면 다른 쪽 오류가 '행 없음' 으로 둔갑한다.
-    갈래는 결과코드가 정한다(`_code_kind`) — 한도 초과(22)와 키 미등록(30)은 같은 '오류'
-    지만 처방이 반대다(#82). 03(NODATA)은 오류가 아니라 **빈 창**이다.
-    """
+def _parse(text: str) -> tuple[list[dict], str, str, str]:
+    """`parse` + 원천 결과코드(없으면 ''). 비-200 응답도 본문의 코드로 갈래를 정하려고
+    코드를 따로 돌려준다(`status_reason`)."""
     t = (text or "").lstrip()
     if not t:
-        return [], "빈 응답", "응답 오류"
+        return [], "빈 응답", "응답 오류", ""
     items: list[dict] = []
     if t.startswith("<"):
         try:
             root = ET.fromstring(t)
         except ET.ParseError as exc:
-            return [], f"XML 형식 오류({exc})", "응답 오류"
-        code = (root.findtext(".//header/resultCode") or "").strip()
-        msg = (root.findtext(".//header/resultMsg") or "").strip()
+            return [], f"XML 형식 오류({exc})", "응답 오류", ""
+        # 결과코드는 **문서 어디에 있든** 읽는다 — 2026-09-25 VM 프로브가 `.//resultCode` 로
+        # 400·200 응답 둘 다에서 코드를 읽었다(header 밑이라고 가정하지 않는다)
+        code = (root.findtext(".//resultCode") or "").strip()
+        msg = (root.findtext(".//resultMsg") or "").strip()
         if not code:
             auth = (root.findtext(".//returnAuthMsg") or "").strip()
             err = (root.findtext(".//errMsg") or "").strip()
             rc = (root.findtext(".//returnReasonCode") or "").strip()
             if auth or err:
                 return ([], f"게이트웨이 오류 {rc} {auth or err}".strip(),
-                        _code_kind(rc) or "응답 오류")
+                        _code_kind(rc) or "응답 오류", rc)
         for it in root.iter("item"):
             items.append({c.tag: (c.text or "").strip() for c in it})
     elif t.startswith("{"):
         try:
             doc = json.loads(t)
         except ValueError as exc:
-            return [], f"JSON 형식 오류({exc})", "응답 오류"
+            return [], f"JSON 형식 오류({exc})", "응답 오류", ""
         doc = doc.get("response", doc) if isinstance(doc, dict) else {}
         hdr = doc.get("header") if isinstance(doc.get("header"), dict) else {}
         code = str(hdr.get("resultCode") or "").strip()
@@ -191,12 +198,12 @@ def parse(text: str) -> tuple[list[dict], str, str]:
             its = [its]
         items = [i for i in (its or []) if isinstance(i, dict)]
     else:
-        return [], f"XML·JSON 이 아닌 응답({t[:60]!r})", "응답 오류"
+        return [], f"XML·JSON 이 아닌 응답({t[:60]!r})", "응답 오류", ""
     if code and code not in _OK_CODES:
         kind = _code_kind(code)
         if not kind:
-            return [], "", ""                  # 03 NODATA — 이 창엔 자료가 없다
-        return [], f"resultCode={code} {msg}".strip(), kind
+            return [], "", "", code            # 03 NODATA — 이 창엔 자료가 없다
+        return [], f"resultCode={code} {msg}".strip(), kind, code
     rows: list[dict] = []
     for it in items:
         ym = norm_ym(it.get("year"))
@@ -204,7 +211,49 @@ def parse(text: str) -> tuple[list[dict], str, str]:
             continue                       # '총계' 등 달이 아닌 행
         rows.append({"ym": ym, "exp": _num(it.get("expDlr")),
                      "imp": _num(it.get("impDlr")), "bal": _num(it.get("balPayments"))})
-    return rows, "", ""
+    return rows, "", "", code
+
+
+def parse(text: str) -> tuple[list[dict], str, str]:
+    """응답 본문 → (달 행들, 오류 사유, 실패 갈래). 문서상 형식은 XML 이지만 JSON 도 받는다.
+
+    ⚠️ 오류 봉투는 **두 벌**이다(#352) — 서비스의 `resultCode` 와 게이트웨이의
+    `cmmMsgHeader`(인증키 미등록 등). 한쪽만 보면 다른 쪽 오류가 '행 없음' 으로 둔갑한다.
+    갈래는 결과코드가 정한다(`_code_kind`) — 한도 초과(22)와 키 미등록(30)은 같은 '오류'
+    지만 처방이 반대다(#82). 03(NODATA)은 오류가 아니라 **빈 창**이다.
+    """
+    return _parse(text)[:3]
+
+
+def status_reason(status: Optional[int], text: str) -> tuple[str, str]:
+    """HTTP 200 이 아닌 응답 → (실패 갈래, 사유)(순수).
+
+    본문에 결과코드가 있으면 **그 코드가 갈래를 정한다** — 2026-09-25 실측: 없는 경로는 404 가
+    아니라 HTTP 400 + resultCode 12('해당 오픈API 서비스가 없거나 폐기됨')로 왔다. 상태만 보면
+    '경로가 없다' 가 '파라미터 오류' 로 읽히고, 원천이 적어 보낸 문장은 버려진다(#82·#352)."""
+    _rows, err, kind, code = _parse(text)
+    if code and err:
+        return kind or "응답 오류", (f"HTTP {status} — {err}"
+                                   + (f" — 경로 {PATH}" if kind == "경로 없음" else ""))
+    if status == 404:
+        return "경로 없음", f"HTTP 404 — 경로 {PATH}"
+    # 429·5xx 는 기다리면 풀린다 — 키·파라미터 오류(4xx)와 처방이 반대다(#82)
+    kind = "조회 실패" if status == 429 or (status or 0) >= 500 else "응답 오류"
+    return kind, f"HTTP {status} — {(text or '')[:160]}"
+
+
+def provisional(ym: str, today: Optional[date] = None) -> bool:
+    """그 달(YYYYMM) 값이 아직 **잠정**인가(순수) — 관세청 확정치 공표일(익월 `CONFIRM_DAY`일)
+    당일까지는 잠정으로 본다. 그날 확정이 나와도 그 하루는 '잠정' 이라 적는 쪽이 안전한
+    방향이다(확정을 잠정이라 부르는 건 틀려도 잠정을 확정이라 부르는 것보다 가볍다, #375)."""
+    try:
+        y, m = int(ym[:4]), int(ym[4:6])
+    except (TypeError, ValueError):
+        return False
+    if not 1 <= m <= 12:
+        return False
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    return (today or _kst_today()) <= date(ny, nm, CONFIRM_DAY)
 
 
 def cross_check(ours, ecos, tol: float = RATIO_TOL) -> tuple[Optional[bool], str]:
@@ -284,11 +333,6 @@ def _cache_write(start: str, end: str, doc: dict) -> None:
             pass
 
 
-def _tried(info: dict) -> str:
-    """시도한 경로들(순서 유지·중복 없이) — 404 든 12 든 같은 목록을 댄다."""
-    return ", ".join(dict.fromkeys(a[0] for a in info["attempts"]))
-
-
 def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
                    fetch: Optional[Callable] = None, use_cache: bool = True,
                    key: Optional[str] = None) -> tuple[list[dict], dict]:
@@ -300,8 +344,8 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
     응답 오류 · 행 없음. `why` 는 사유 원문(키는 가린다). `attempts` 는 요청마다
     (경로, 시작, 끝, HTTP 상태, 예외 이름, 받은 달들) — 창이 잘렸는지 잰다.
     `use_cache=False` 면 디스크 캐시도 실패 기억도 건너뛴다 — 진단은 **지금** 을
-    재야 한다(#346·#368)."""
-    global _good_path
+    재야 한다(#346·#368). 한 창이라도 실패하면 거기서 멈춘다 — 다른 창도 같은 경로·키라
+    같은 답이다(#82·#279 '더 물어서 답이 바뀌나')."""
     today = today or _kst_today()
     end = ym_shift(today.strftime("%Y%m"), -1)            # 당월은 미완결 — 전월까지
     start = ym_shift(end, -(months - 1))
@@ -331,40 +375,23 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
             _fail[(start, end)] = (time.monotonic(), kind, info["why"])
         return [], info
 
-    paths = ([_good_path] + [p for p in PATHS if p != _good_path]) if _good_path else list(PATHS)
     for s, e in windows(start, end):
-        cands = [info["path"]] if info["path"] else paths
-        for i, path in enumerate(cands):
-            try:
-                status, text = fetch(path, s, e, key)
-            except Exception as exc:                           # noqa: BLE001
-                info["attempts"].append((path, s, e, None, type(exc).__name__, None))
-                return _fail_out("조회 실패", f"{type(exc).__name__}: {exc}")
-            if status == 404 and not info["path"] and i + 1 < len(cands):
-                info["attempts"].append((path, s, e, status, "", None))
-                continue                                       # 경로 후보만 바꿔 본다
-            if status == 404:
-                info["attempts"].append((path, s, e, status, "", None))
-                return _fail_out("경로 없음", f"HTTP 404 — 시도한 경로 {_tried(info)}")
-            if status != 200:
-                info["attempts"].append((path, s, e, status, "", None))
-                # 429·5xx 는 기다리면 풀린다 — 키·파라미터 오류(4xx)와 처방이 반대다(#82)
-                kind = ("조회 실패" if status == 429 or (status or 0) >= 500
-                        else "응답 오류")
-                return _fail_out(kind, f"HTTP {status} — {(text or '')[:160]}")
-            got, err, kind = parse(text)
-            info["attempts"].append((path, s, e, status, "", tuple(r["ym"] for r in got)))
-            if err and kind == "경로 없음" and not info["path"] and i + 1 < len(cands):
-                continue                                       # 12 도 404 처럼 — 다음 후보
-            if err and kind == "경로 없음":
-                return _fail_out(kind, f"{err} — 시도한 경로 {_tried(info)}")
-            if err:
-                return _fail_out(kind or "응답 오류", err)
-            info["path"] = path
-            for r in got:
-                rows[r["ym"]] = r
-            break
-    _good_path = info["path"] or _good_path
+        try:
+            status, text = fetch(PATH, s, e, key)
+        except Exception as exc:                               # noqa: BLE001
+            info["attempts"].append((PATH, s, e, None, type(exc).__name__, None))
+            return _fail_out("조회 실패", f"{type(exc).__name__}: {exc}")
+        if status != 200:
+            info["attempts"].append((PATH, s, e, status, "", None))
+            return _fail_out(*status_reason(status, text))
+        got, err, kind = parse(text)
+        info["attempts"].append((PATH, s, e, status, "", tuple(r["ym"] for r in got)))
+        if err:
+            return _fail_out(kind or "응답 오류",
+                             err + (f" — 경로 {PATH}" if kind == "경로 없음" else ""))
+        for r in got:
+            rows[r["ym"]] = r
+    info["path"] = PATH
     inwin = [r for ym, r in sorted(rows.items()) if start <= ym <= end]
     info["dropped"] = len(rows) - len(inwin)                  # 창 밖(당월 등) 행
     # 0 으로 미리 채운 미확정 달은 값이 아니다(모듈 설명 · trade/customs_scan 선례).
@@ -495,8 +522,11 @@ def check() -> int:
                     ("⚠️ 뒤처짐" if j.get("stale") else "✅ 최신"))
         if cs["src"] == "관세청":
             unit = ("✅ " if cs.get("verified") else "❓ 단위 미대조 — ") + cs["check"]
+            # 최신 달이 확정 공표 전이면 카드가 '잠정' 이라 적는다 — 진단도 같은 판정을 댄다(#35)
+            prov = (f" · {last} 는 잠정(확정 익월 {CONFIRM_DAY}일 전후)"
+                    if last and provisional(last) else "")
             print(f"③ {key}: ✅ 카드 원천 = 관세청 · 최신 {last} · {len(cs['points'])}점 · "
-                  f"{unit}{tail}")
+                  f"{unit}{prov}{tail}")
         else:
             rc = 1
             print(f"③ {key}: ❌ 카드 원천 = {cs['src'] or '없음'}(관세청 {cs['why']}: "
