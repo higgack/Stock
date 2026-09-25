@@ -33,6 +33,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from trade.bot_health import USAGE as BOT_HEALTH_CMD
+
 _PROBE_VER = 2   # 2026-09-10 ⑧ 원천 침묵(잠정 기한 · 소스별 마지막 게시 vs 평소 간격)
 _KST = timezone(timedelta(hours=9))
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
@@ -385,7 +387,8 @@ def audit_provisional(customs_db: Path, *, key_present: bool | None = None) -> l
 _BRANCH_MARK = {
     "ok": ("✅", ""),
     "channel_quiet": ("⚠️", "리스너는 살아 있고 채널이 조용 — 채널 상태·trade-bot 로그 확인"),
-    "listener": ("❌", "systemctl status trade-bot"),
+    # `systemctl status` 는 저널 꼬리를 같이 찍어 옛 판의 평문 토큰이 샌다(실수 #406 리뷰 M3c)
+    "listener": ("❌", BOT_HEALTH_CMD),
     "ingest": ("❌", "trade-bot-dashboard-refresh.timer / ingest_inbox 로그"),
     "parser": ("❌", "unstored_check 백로그(eval_misses.jsonl)로 파서 맞춤"),
     "unknown": ("⚠️", "cd ~/stock-trade && .venv/bin/python -m trade.dashboard --why"),

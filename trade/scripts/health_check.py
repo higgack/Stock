@@ -16,7 +16,9 @@ Runs from systemd timer (trade-bot-health.timer) hourly. Two signals:
   들어갔는데 32분 뒤 사람이 백필 dry-run 으로 알아챘다 — 두 저널을 나란히
   놓으면 기계가 알 수 있었다. 판정은 `trade.bot_health.delivery_check`
   단일 출처(#38). 판정 불가(저널 권한 등)는 경고 로그만 — '이상 없음' 으로
-  접지 않는다(#54). 같은 누락은 6시간에 한 번만 보낸다.
+  접지 않는다(#54). 받고 **릴레이 원천의** 글을 출처 게이트에서 버린 것도
+  알린다(inbox 에 안 들어가기는 마찬가지다). 같은 누락은 한 번만 보내되 다른
+  누락은 막지 않는다(누락마다 표식, 독립 리뷰 M4).
 
 Why no time-based dormancy: BeOn publishes only ~4 times a month,
 so the ~7-10 day silence between publication dates is normal
@@ -197,25 +199,41 @@ def check_cycle_gap() -> None:
 
 
 # 이 타이머 주기(1h)의 두 배 — 한 번 놓쳐도 다음 실행이 본다. 같은 누락이 두 번
-# 보이는 것은 표식이 막는다.
+# 보이는 것은 누락마다 다른 표식이 막는다(`bot_health.gap_alert_key`).
 DELIVERY_WINDOW_S = 2 * 3600
 DELIVERY_ALERT_EVERY_S = 6 * 3600
 
 
+def _prune_delivery_markers(keep_s: int = 2 * 86400) -> None:
+    """누락마다 표식이 하나씩 생기므로 오래된 것은 지운다(창을 한참 지난 누락은 다시
+    보일 수 없다). 못 지우면 경고만 — 표식 정리 실패가 알림을 막지 않는다."""
+    now = time.time()
+    for m in MARKER_DIR.glob("delivery-*"):
+        try:
+            if now - m.stat().st_mtime > keep_s:
+                m.unlink()
+        except OSError as e:
+            log.warning("delivery marker prune failed: %s", e)
+
+
 def check_delivery_gap() -> None:
-    """릴레이가 포워드한 만큼 trade-bot 이 받았나 — 못 받았으면 ⚠️ (실수 #406)."""
+    """릴레이가 포워드한 만큼 trade-bot 이 받았나 — 못 받았거나, 받고 릴레이 원천의
+    글을 출처 게이트에서 버렸으면 ⚠️ (실수 #406). 다른 출처의 버림(BeOn 이 되포워드한
+    남의 글)은 알리지 않는다 — 게이트가 제 일을 한 것이다(독립 리뷰 H2)."""
     from trade import bot_health as bh
 
-    g = bh.delivery_check(since=f"{DELIVERY_WINDOW_S} seconds ago")
+    g = bh.delivery_check(DELIVERY_WINDOW_S)
     if g["kind"] == "unknown":
         log.warning("delivery_gap: 판정 불가 — %s", g.get("err"))
         return
-    if g["kind"] not in ("total", "partial"):
-        log.info("delivery_gap: %s (sent=%s got=%s)", g["kind"], g.get("sent"), g.get("got"))
+    if not bh.gap_needs_alert(g):
+        log.info("delivery_gap: %s (sent=%s got=%s dropped=%s)", g["kind"], g.get("sent"),
+                 g.get("got"), g.get("dropped"))
         return
-    if not _alert_once_per_window("delivery-gap", DELIVERY_ALERT_EVERY_S):
-        log.info("delivery_gap: alert already sent within %ds, skipping",
-                 DELIVERY_ALERT_EVERY_S)
+    _prune_delivery_markers()
+    key = bh.gap_alert_key(g)
+    if not _alert_once_per_window(key, DELIVERY_ALERT_EVERY_S):
+        log.info("delivery_gap: %s already alerted, skipping", key)
         return
     msg = bh.gap_alert_text(g)
     log.warning("delivery gap: %s", msg.replace("\n", " | "))

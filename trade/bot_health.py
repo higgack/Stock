@@ -16,24 +16,39 @@
 매시간 돌려, 릴레이가 보낸 만큼 봇이 못 받았으면 **사람이 알아채기 전에**
 알린다.
 
+'받았다' 는 봇 저널의 **수신 줄(ingested) + 출처 게이트 버림 줄**이다 — 버림은
+게이트의 판정이지 수신 실패가 아니다. BeOn 은 다른 채널(AWAKE 플러스 등)의 글을
+그대로 되포워드하는데, 텔레그램은 포워드의 포워드에도 **원래 출처**를 달아 봇이
+그 글을 출처 게이트에서 버린다 — 그걸 '못 받았다' 로 세면 매번 거짓 누락이다
+(독립 리뷰 H2). 릴레이 원천의 글을 버렸으면 그건 따로 ❌ 다.
+
+판정은 **지금 도는 프로세스(MainPID)의 줄**로 한다 — 재시작 전 프로세스의 409·
+버림·예외는 옛 판·옛 설정의 일이라 지금 상태의 증거가 아니다(사실 메모로 따로
+말한다, 독립 리뷰 H1).
+
 읽기 전용 계약 — 텔레그램엔 `READ_ONLY_METHODS`(getMe · getWebhookInfo ·
 getChatMember · getChat)만 묻는다. ⚠️ getUpdates 는 **절대** 부르지 않는다: 돌고 있는
 봇과 409 로 부딪히고, 여기서 받아 간 업데이트는 봇이 영영 못 본다. 파일은
 읽기만 한다(#264). 토큰은 어떤 출력에도 싣지 않는다 — 오류 문구에 URL 이
-섞여도 지운다(trade-bot 저널의 getUpdates 줄엔 토큰이 **평문**이다, §Secrets).
+섞여도 지운다. 봇은 이 판부터 자기 로그의 토큰을 가리지만(`trade/bot.py`
+`_TokenRedactFormatter`), 그 전 판이 찍은 getUpdates 줄엔 토큰이 **평문**이고
+저널 보존기간 동안 남는다(§Secrets).
 
 python-telegram-bot 을 import 하지 않는다 — 봇 import 가 깨진 날에도 이 진단은
 돌아야 한다(그게 가를 갈래 중 하나다). 판정은 순수 함수라 의존성 없이 태운다
 (#176).
 
-⚠️ 못 보는 축(#274): 릴레이 목록은 `trade/scripts/*.py` 의 모듈 수준
-`SOURCE_USERNAME` 에서 파생한다 — 포워드하는 스크립트는 그 상수를 둬야 한다
-(회귀가 강제한다). 손으로 돌린 백필은 저널에 안 남아 '릴레이 포워드' 계수에
-안 잡힌다(systemd 유닛의 실행만 센다).
+⚠️ 못 보는 축(#274): 릴레이 원천(사용자명)은 `trade/scripts/*.py` 의 모듈 수준
+`SOURCE_USERNAME` 에서 파생하고, 릴레이 유닛 목록(`RELAY_UNITS`)은 손으로 적되
+`deploy/` 의 유닛과 회귀가 대조한다. 손으로 돌린 백필은 저널에 안 남아 '릴레이
+포워드' 계수에 안 잡힌다(systemd 유닛의 실행만 센다). 채널 게이트 버림은 봇이
+채널마다 프로세스당 한 번만 적어 **건수로 못 센다** — 목적지가 걸리면 그 사실만
+❌ 로 말한다.
 
-Usage on host:
+Usage on host (시각은 journalctl 규약 — 시간대를 붙이지 않으면 **서버 로컬**
+시각이다. 어디서나 같은 뜻은 UTC 로 적는다, 규칙 10a):
     cd ~/stock-trade && .venv/bin/python -m trade.bot_health
-    cd ~/stock-trade && .venv/bin/python -m trade.bot_health --since "2026-09-25 07:40"
+    cd ~/stock-trade && .venv/bin/python -m trade.bot_health --since "2026-09-24 22:40 UTC"
 """
 
 from __future__ import annotations
@@ -63,7 +78,9 @@ USAGE = "cd ~/stock-trade && .venv/bin/python -m trade.bot_health"
 READ_ONLY_METHODS = ("getMe", "getWebhookInfo", "getChatMember", "getChat")
 _ADMIN = ("creator", "administrator")
 
-# 채널 글을 비공개 채널로 넘기는 유닛들(포워드 계수의 모집단).
+# 채널 글을 비공개 채널로 넘기는 유닛들(포워드 계수의 모집단). ⚠️ 손으로 적는다 —
+# 회귀가 `deploy/*.service` 중 `SOURCE_USERNAME` 을 둔 스크립트를 띄우는 유닛과
+# **양방향**으로 대조한다(하나를 빼면 그 릴레이의 포워드는 조용히 안 세어진다).
 RELAY_UNITS = ("trade-bot-badonion-listener", "trade-bot-beon-listener",
                "trade-bot-badonion-sync", "trade-bot-beon-sync")
 
@@ -72,10 +89,15 @@ POLL_STALE_S = 300
 # 포워드 뒤 이만큼은 기다려야 '안 왔다' 고 말한다 — 봇은 보통 몇 초 안에 받는다.
 GAP_GRACE_S = 180
 # 백필의 'done: forwarded N' 은 **실행 끝**에 한 번 찍힌다 — 그 N 건의 실제 포워드는
-# 그보다 앞이다(2026-09-25 실측 17초 · 큰 BeOn 회수는 더 길다). 수신은 그만큼 앞에서
-# 부터 센다. 이보다 긴 실행은 그 앞부분 수신을 못 세어 '일부 누락' 으로 과대보고할 수
-# 있다 — 그래서 일부 누락은 수까지 적어 사람이 판정하게 한다.
+# 그보다 앞이다(2026-09-25 실측 17초 · 큰 BeOn 회수는 더 길다). 수신은 그 실행이 접속
+# 직후 찍는 `source(marked)=` 줄(같은 PID)부터 센다. 그 줄이 창 밖이면(실행이 창 앞에서
+# 시작) 끝에서 이만큼 앞부터 센다 — 이보다 긴 실행은 앞부분 수신을 못 세어 '일부 누락'
+# 으로 과대보고할 수 있어, 그 경우는 판정 줄이 그렇다고 밝힌다.
 RUN_SLACK_S = 1800
+# 리스너의 'forwarded N msg(s)' 는 forward 호출이 돌아온 **뒤** 찍힌다 — 봇이 그보다
+# 먼저 받을 수 있다(같은 서버·같은 시계라 보통 1초 안이지만, 리스너 이벤트 루프가
+# 바쁘면 로그가 늦는다). 그만큼 앞의 수신도 그 포워드의 몫으로 센다(독립 리뷰 M1).
+LISTEN_SLACK_S = 30
 
 # 봇이 main() 에서 `trade-bot starting — …` 를 찍는다(trade/bot.py).
 _START_RE = re.compile(
@@ -86,10 +108,18 @@ _PID_RE = re.compile(r"\[(\d+)\]:")
 _POLL_RE = re.compile(r'/getUpdates "HTTP/[\d.]+ (\d{3})')
 _FWD_RE = re.compile(r"(?P<who>[\w.]+) — (?:done: )?forwarded (?P<n>\d+) "
                      r"(?:of \d+ candidate messages|msg\(s\))")
+# 릴레이가 접속 직후 찍는 줄(리스너 'connected: source(marked)=…' · 백필 'source(marked)=…')
+_SRC_RE = re.compile(r"source\(marked\)=(?P<src>-?\d+)")
 _ERR_RE = re.compile(r"\[(?:ERROR|CRITICAL)\]|Traceback|telegram\.error\.")
-_DROP_ORIGIN_RE = re.compile(r"dropped msg=\S+ reason=origin origin_type=(?P<type>\S+) "
+_DROP_ORIGIN_RE = re.compile(r"dropped msg=(?P<msg>\S+) reason=origin origin_type=(?P<type>\S+) "
                              r"origin_chat=(?P<chat>\S+) origin_username=(?P<user>\S+)")
 _DROP_CHANNEL_RE = re.compile(r"dropped channel=(?P<chat>-?\d+)")
+_INGEST_RE = re.compile(r" ingested msg=(?P<msg>\d+)")
+# 봇의 에러 핸들러(trade/bot.py `_on_error`)가 찍는 한 줄 표식 — 핸들러 예외와 폴링 오류를
+# 가른다. 옛 판(에러 핸들러 없음)은 PTB 기본 문구만 남겨 어느 업데이트였는지 모른다.
+_EXC_RE = re.compile(r"(?P<kind>handler) error update=(?P<upd>\S+) msg=(?P<msg>\S+)"
+                     r"|(?P<pkind>polling) error exc=")
+_PTB_UNLABELED = "No error handlers are registered"
 
 
 def _sig() -> str:
@@ -155,15 +185,26 @@ def parse_start_line(line: str) -> dict | None:
             "drop_log": "drop_log=on" in m.group("rest")}
 
 
+def _pid(line: str) -> int | None:
+    m = _PID_RE.search(line or "")
+    return int(m.group(1)) if m else None
+
+
 def journal_facts(lines) -> dict:
-    """trade-bot 저널 줄 → 폴링·수신·버림 사실. 순수 함수(비밀값은 지워서 싣는다)."""
+    """trade-bot 저널 줄 → 폴링·수신·버림·예외 사실. 순수 함수(비밀값은 지워서 싣는다).
+
+    수신·버림·예외는 **시각과 메시지 번호**까지 싣는다 — 대조 창(`delivery_gap`)과
+    '예외로 놓친 글인가'(수신 줄이 없는 번호) 판정이 그걸로 한다.
+    """
     polls: Counter = Counter()
     last_ok = last_poll = None
     ingested: list = []
+    ingested_ids: set[int] = set()
     drops_origin: list[dict] = []
     drops_channel: list[dict] = []
     starts: list[dict] = []
     errors: list[str] = []
+    exceptions: list[dict] = []
     for ln in lines or []:
         m = _POLL_RE.search(ln)
         if m:
@@ -173,55 +214,125 @@ def journal_facts(lines) -> dict:
             if m.group(1) == "200":
                 last_ok = t or last_ok
             continue
-        if " ingested msg=" in ln:
+        m = _INGEST_RE.search(ln)
+        if m:
             ingested.append(_ts(ln))
+            ingested_ids.add(int(m.group("msg")))
             continue
         m = _DROP_ORIGIN_RE.search(ln)
         if m:
             chat = m.group("chat")
-            drops_origin.append({"line": scrub(ln), "type": m.group("type"),
+            drops_origin.append({"ts": _ts(ln), "line": scrub(ln), "type": m.group("type"),
                                  "chat": int(chat) if chat.lstrip("-").isdigit() else None,
                                  "user": "" if m.group("user") == "None" else m.group("user")})
             continue
         m = _DROP_CHANNEL_RE.search(ln)
         if m:
-            drops_channel.append({"line": scrub(ln), "chat": int(m.group("chat"))})
+            drops_channel.append({"ts": _ts(ln), "line": scrub(ln), "chat": int(m.group("chat"))})
             continue
         if "trade-bot starting" in ln:
             p = parse_start_line(ln)
             if p:
                 starts.append(p)
             continue
+        m = _EXC_RE.search(ln)
+        if m:
+            msg = m.group("msg") or ""
+            exceptions.append({"ts": _ts(ln), "line": scrub(ln),
+                               "kind": m.group("kind") or m.group("pkind"),
+                               "update": m.group("upd"),
+                               "msg": int(msg) if msg.isdigit() else None})
+        elif _PTB_UNLABELED in ln:
+            exceptions.append({"ts": _ts(ln), "line": scrub(ln), "kind": "unlabeled",
+                               "update": None, "msg": None})
         if _ERR_RE.search(ln):
             errors.append(scrub(ln))
     return {"n": len(lines or []), "span": scanned_span(lines or []),
             "polls": dict(polls), "last_ok": last_ok, "last_poll": last_poll,
-            "ingested": ingested, "drops_origin": drops_origin,
-            "drops_channel": drops_channel, "starts": starts,
-            "errors": errors[-6:]}
+            "ingested": ingested, "ingested_ids": ingested_ids,
+            "drops_origin": drops_origin, "drops_channel": drops_channel,
+            "starts": starts, "exceptions": exceptions, "errors": errors[-6:]}
 
 
 def relay_forwards(lines) -> list[dict]:
-    """릴레이 유닛 저널 → 포워드 사건(시각·건수·누가). 순수 함수."""
+    """릴레이 유닛 저널 → 포워드 사건(시각·건수·누가·언제부터 세나). 순수 함수.
+
+    `start` 는 그 사건의 봇 수신을 **어디부터** 셀지다:
+      · 리스너('forwarded N msg(s)')는 포워드 직후 찍힌다 → 그 시각 − `LISTEN_SLACK_S`
+      · 백필('done: forwarded N …')은 실행 **끝**에 찍힌다 → 같은 PID 가 접속 직후 찍은
+        `source(marked)=` 줄(포워드 전) 시각. 그 줄이 창 밖이면(실행이 창 앞에서 시작)
+        끝 − `RUN_SLACK_S` 로 짐작하고 `guessed` 로 표시한다(판정 줄이 그렇다고 밝힌다).
+    시각을 못 읽은 사건은 `start` 도 None(지어내지 않는다).
+    """
     out = []
+    run_at: dict[int, datetime] = {}
     for ln in lines or []:
+        t = _ts(ln)
+        pid = _pid(ln)
+        if _SRC_RE.search(ln) and pid is not None and t is not None:
+            run_at[pid] = t                  # 같은 PID 의 가장 최근 접속(재사용돼도 최근 것)
+            continue
         m = _FWD_RE.search(ln)
-        if m and int(m.group("n")) > 0:
-            out.append({"ts": _ts(ln), "n": int(m.group("n")), "who": m.group("who"),
-                        "done": "done: forwarded" in ln})
+        if not m or int(m.group("n")) <= 0:
+            continue
+        done = "done: forwarded" in ln
+        begun = run_at.pop(pid, None) if done and pid is not None else None
+        guessed = False
+        if t is None:
+            start = None
+        elif not done:
+            start = t - timedelta(seconds=LISTEN_SLACK_S)
+        elif begun is not None and begun <= t:
+            start = begun
+        else:
+            start, guessed = t - timedelta(seconds=RUN_SLACK_S), True
+        out.append({"ts": t, "n": int(m.group("n")), "who": m.group("who"),
+                    "done": done, "start": start, "guessed": guessed})
     return out
+
+
+def relay_source_ids(lines) -> set[int]:
+    """릴레이 저널이 스스로 밝힌 원천 채널 ID(`source(marked)=`). 순수 함수.
+
+    원천이 사용자명을 바꾸면 봇의 버림 줄엔 **새 이름**이 찍혀 이름으로는 릴레이인지
+    못 알아본다 — ID 는 안 바뀐다. 매시간 알림은 텔레그램·inbox 를 안 보므로 이게
+    유일한 ID 원천이다(창 안에 그 릴레이가 접속한 줄이 있을 때만)."""
+    out: set[int] = set()
+    for ln in lines or []:
+        m = _SRC_RE.search(ln)
+        if m:
+            out.add(int(m.group("src")))
+    return out
+
+
+def forward_drops(drops_origin, relay_names=(), relay_ids=()) -> list[dict]:
+    """출처 게이트 버림 중 **포워드**만(운영자가 직접 쓴 글 제외) — 릴레이 원천의
+    글인지(`relay`) 표시해 돌려준다. 순수 함수.
+
+    버린 포워드는 봇이 **받은** 것이다 — 대조(`delivery_gap`)에선 받음으로 센다. 그중
+    릴레이 원천의 글은 설정이 틀려 잃은 것이라 따로 ❌·알림이고, 다른 곳의 글(BeOn 이
+    되포워드한 AWAKE 플러스 등)은 게이트가 제 일을 한 것이다."""
+    names = {str(n).lower() for n in relay_names or ()}
+    ids = {int(i) for i in relay_ids or ()}
+    return [{**d, "relay": (d.get("user") or "").lower() in names or d.get("chat") in ids}
+            for d in drops_origin or [] if d.get("type") != "none"]
 
 
 def delivery_gap(forwards, ingested_ts, now: datetime, *,
                  grace_s: int = GAP_GRACE_S, slack_s: int = RUN_SLACK_S,
-                 not_before: datetime | None = None) -> dict:
+                 listen_slack_s: int = LISTEN_SLACK_S,
+                 not_before: datetime | None = None, dropped=()) -> dict:
     """릴레이가 보낸 만큼 봇이 받았나. 순수 함수.
 
     `kind`: none(기다릴 만큼 지난 포워드가 없다) · ok · partial(일부만) ·
     total(포워드 뒤로 **한 건도** 못 받았다) · unknown(시각을 못 읽음).
-    ⚠️ 수신은 1:1 이다 — 포워드한 메시지 하나가 채널 글 하나, 봇 `ingested`
-    한 줄이다(앨범 멤버도 각각). 시각을 못 읽은 사건은 세지 않고 **센 수를
-    말한다**(#54 — 모르는 것을 '누락' 으로 세면 없는 결함을 만든다).
+    받음 = 수신 줄(`got`) + 출처 게이트가 버린 포워드(`dropped`, `forward_drops` 의 결과 —
+    버림은 게이트의 판정이지 수신 실패가 아니다). 그중 릴레이 원천의 버림은
+    `relay_dropped` 로 따로 센다(그건 잃은 글이다).
+    ⚠️ 포워드 한 건이 봇에게 업데이트 한 건이라는 전제다(앨범 멤버도 각각). 채널
+    게이트 버림은 봇이 채널마다 한 번만 적어 여기서 못 센다 — 그 경우 판정의 ❌ 가
+    따로 말한다. 시각을 못 읽은 사건은 세지 않고 **센 수를 말한다**(#54 — 모르는 것을
+    '누락' 으로 세면 없는 결함을 만든다).
     `not_before` 보다 앞의 수신은 세지 않는다 — 지금 프로세스가 뜬 뒤의 포워드는
     지금 프로세스만 받을 수 있으므로, 그 전 수신(옛 포워드의 몫)을 세면 누락을 가린다.
     """
@@ -230,19 +341,30 @@ def delivery_gap(forwards, ingested_ts, now: datetime, *,
     undated = sum(1 for f in forwards or [] if f.get("ts") is None)
     if not due:
         return {"kind": "unknown" if undated else "none", "sent": 0, "got": 0,
-                "undated": undated}
+                "dropped": 0, "relay_dropped": 0, "undated": undated}
     first = min(f["ts"] for f in due)
     last = max(f["ts"] for f in due)
-    # 백필 'done' 줄은 실행 끝 시각이라 그 실행의 수신은 더 앞에서 시작한다.
-    start = first - timedelta(seconds=slack_s if any(f["done"] for f in due) else 5)
+
+    def _start(f):
+        # 사건이 스스로 아는 시작(relay_forwards) — 없으면 종류별 여유로 짐작한다.
+        s = f.get("start")
+        if s is not None:
+            return s
+        return f["ts"] - timedelta(seconds=slack_s if f.get("done") else listen_slack_s)
+    start = min(_start(f) for f in due)
     if not_before is not None and not_before > start:
         start = not_before
     sent = sum(f["n"] for f in due)
     got = sum(1 for t in ingested_ts or [] if t is not None and t >= start)
-    after_last = sum(1 for t in ingested_ts or [] if t is not None and t >= last)
-    kind = "ok" if got >= sent else ("total" if got == 0 else "partial")
-    return {"kind": kind, "sent": sent, "got": got, "after_last": after_last,
-            "first": first, "last": last, "undated": undated,
+    drops = [d for d in dropped or () if d.get("ts") is not None and d["ts"] >= start]
+    recv = got + len(drops)
+    after_last = (sum(1 for t in ingested_ts or [] if t is not None and t >= last)
+                  + sum(1 for d in drops if d["ts"] >= last))
+    kind = "ok" if recv >= sent else ("total" if recv == 0 else "partial")
+    return {"kind": kind, "sent": sent, "got": got, "dropped": len(drops),
+            "relay_dropped": sum(1 for d in drops if d.get("relay")),
+            "after_last": after_last, "first": first, "last": last, "start": start,
+            "guessed": any(f.get("guessed") for f in due), "undated": undated,
             "who": sorted({f["who"] for f in due})}
 
 
@@ -369,10 +491,14 @@ def verdict(f: dict) -> tuple[int, list[str]]:
 
     gap = f.get("gap") or {}
     if gap.get("kind") in ("total", "partial"):
+        dropped = gap.get("dropped") or 0
+        recv = gap["got"] + dropped
         head = (f"릴레이가 {gap['sent']}건을 포워드했는데(첫 {_kst(gap['first'])} · "
-                f"{', '.join(gap['who'])}) 봇이 받은 것은 {gap['got']}건이다")
+                f"{', '.join(gap['who'])}) 봇이 받은 것은 {recv}건이다"
+                + (f"(inbox 기록 {gap['got']} · 출처 게이트 버림 {dropped})" if dropped else ""))
         symptom.append(head + (" — **한 건도 못 받았다**" if gap["kind"] == "total"
-                               else f" — 마지막 포워드 뒤 수신 {gap['after_last']}건"))
+                               else f" — {gap['sent'] - recv}건은 수신·버림 어느 줄에도 없다"
+                                    f"(마지막 포워드 뒤 수신 {gap['after_last']}건)"))
     elif gap.get("kind") == "unknown":
         unk.append("릴레이 포워드와 봇 수신을 대조 못 했다 — "
                    + (gap.get("err") or f"포워드 {gap.get('undated')}건의 시각을 못 읽었다"))
@@ -382,9 +508,11 @@ def verdict(f: dict) -> tuple[int, list[str]]:
         # 수로 센 것이다 — 어느 글이 빠졌는지는 모르고, 재시작 뒤 수신도 같이 센다(그래서
         # 다시 포워드해 받으면 이 메모가 사라진다 · 재시작 뒤 수신이 많으면 모자람을 덜
         # 말한다, #274). 'inbox 에 없다' 를 단정하지 않는다(#165).
+        gd = gb.get("dropped") or 0
         notes.append(f"지금 프로세스가 뜨기 전(시작 {started}) 릴레이가 {gb['sent']}건을 "
                      f"포워드했는데(첫 {_kst(gb['first'])}) 그 뒤 봇 수신 줄은 {gb['got']}건"
-                     "이다 — 모자란 만큼은 inbox 에 안 들어갔다고 봐야 한다(수로 센 것이라 "
+                     + (f"·출처 게이트 버림 줄은 {gd}건" if gd else "")
+                     + "이다 — 모자란 만큼은 inbox 에 안 들어갔다고 봐야 한다(수로 센 것이라 "
                      "어느 글인지는 모른다). 지금 판정이 이상 없으면 그 기간을 다시 포워드할 "
                      "것 — 백필은 inbox 에 이미 있는 글을 건너뛴다")
 
@@ -460,11 +588,23 @@ def verdict(f: dict) -> tuple[int, list[str]]:
         else:
             unk.append(f"원천 @{u} 를 못 물었다({res.get('err')})")
 
+    relay_ids |= set(f.get("relay_ids") or ())      # 릴레이 저널이 스스로 밝힌 원천 ID
+    relay_names = {u.lower() for u in (f.get("relays") or {})}
+    run = f.get("running")
+    unlabeled: list[dict] = []                      # 어느 업데이트였는지 안 적힌 PTB 예외(대조 창 안)
     j = f.get("journal")
     if j is None:
         unk.append(f"trade-bot 저널을 못 읽었다 — {f.get('journal_err') or '사유 미상'}")
     else:
-        n409 = j["polls"].get("409", 0)
+        # 판정은 **지금 프로세스(MainPID)의 줄**로 한다 — 재시작 전 프로세스의 409·버림·
+        # 예외는 옛 판·옛 설정의 일이라 지금 상태의 증거가 아니다(독립 리뷰 H1). 그 전
+        # 것은 사실 메모로 말한다. PID 를 모르면(유닛이 안 돌거나 systemd 에 못 물음) 창
+        # 전체로 본다(옛 동작) — 그때 '지금 프로세스' 라고 말하지 않는다.
+        jc = f.get("journal_cur")
+        cur = jc if jc is not None else j
+        prior = "재시작 전 프로세스가"
+        n409 = cur["polls"].get("409", 0)
+        old409 = j["polls"].get("409", 0) - n409 if jc is not None else 0
         if n409:
             others = f.get("others") or []
             where = (f"이 서버에 다른 trade.bot 프로세스가 있다: "
@@ -473,37 +613,89 @@ def verdict(f: dict) -> tuple[int, list[str]]:
                      "토큰으로 봇을 돌리는지 볼 것")
             bad.append(f"폴링이 409 Conflict 로 {n409}회 거절됐다 — 같은 토큰으로 다른 "
                        f"곳이 폴링(또는 웹훅)해 채널 글을 그쪽이 가져간다. {where}")
+        elif old409:
+            notes.append(f"{prior} 폴링을 409 Conflict 로 {old409}회 거절당했다 — 지금 "
+                         "프로세스의 줄엔 없다(그 사이 같은 토큰의 다른 폴러가 꺼졌거나 아직 "
+                         "안 부딪혔다). 그 동안 온 글은 그쪽이 가져갔을 수 있다")
         if alive:
-            if j["last_ok"] is None:
-                bad.append("창 안에 정상 폴링(getUpdates 200)이 한 번도 없다 — 봇이 텔레그램"
-                           "에서 아무것도 못 받고 있다")
-            elif (now - j["last_ok"]).total_seconds() > POLL_STALE_S:
-                bad.append(f"폴링이 {_age((now - j['last_ok']).total_seconds())} 전에 멈췄다"
-                           f"(마지막 정상 {_kst(j['last_ok'])}) — watchdog 가 5분 안에 재시작"
+            started = (run or {}).get("ts")
+            ref = cur["last_ok"]
+            if ref is None:
+                # 막 뜬 프로세스는 아직 첫 폴링 전일 수 있다 — 멈춤과 같은 창으로 봐 준다.
+                if not (started is not None
+                        and (now - started).total_seconds() <= POLL_STALE_S):
+                    bad.append(f"{'지금 프로세스' if jc is not None else '창 안'}에 정상 폴링"
+                               "(getUpdates 200)이 한 번도 없다 — 봇이 텔레그램에서 아무것도 "
+                               "못 받고 있다" + (f"(프로세스 시작 {_kst(started)})" if started else ""))
+            elif (now - ref).total_seconds() > POLL_STALE_S:
+                bad.append(f"폴링이 {_age((now - ref).total_seconds())} 전에 멈췄다"
+                           f"(마지막 정상 {_kst(ref)}) — watchdog 가 5분 안에 재시작"
                            "해야 정상이다")
         # 버림이 다 결함은 아니다(#82) — 다른 채널의 글·운영자가 직접 쓴 글은 정상이다.
-        mine = [d for d in j["drops_channel"] if dest is not None and d["chat"] == dest]
+        mine = [d for d in cur["drops_channel"] if dest is not None and d["chat"] == dest]
+        old_mine = ([d for d in j["drops_channel"] if dest is not None and d["chat"] == dest]
+                    if jc is not None and not mine else [])
         if mine:
             bad.append("봇이 릴레이 목적지의 글을 **채널 게이트**에서 버렸다 — "
                        + mine[-1]["line"][-240:])
+        elif old_mine:
+            notes.append(f"{prior} 릴레이 목적지의 글을 채널 게이트에서 버렸다(지금 프로세스의 "
+                         "줄엔 없다 — 채널마다 첫 버림만 적는다). 그 뒤 설정을 고쳤어도 그 전 "
+                         "포워드는 다시 포워드해야 들어온다 — " + old_mine[-1]["line"][-200:])
         others_ch = sorted({d["chat"] for d in j["drops_channel"]} - {dest})
         if others_ch:
             notes.append(f"허용 목록 밖 채널 {others_ch} 의 글을 버렸다 — 봇이 관리자인 다른 "
                          "채널이면 정상이다")
-        relay_names = {u.lower() for u in (f.get("relays") or {})}
-        # 직접 쓴 글(type=none)은 chat·username 이 없어 여기 걸릴 수 없다 — 따로 거르지 않는다
-        relay_drops = [d for d in j["drops_origin"]
-                       if d["user"].lower() in relay_names or d["chat"] in relay_ids]
+        relay_drops = [d for d in forward_drops(cur["drops_origin"], relay_names, relay_ids)
+                       if d["relay"]]
         if relay_drops:
             bad.append(f"봇이 릴레이 포워드 {len(relay_drops)}건을 **출처 게이트**에서 버렸다 — "
                        "예: " + relay_drops[-1]["line"][-240:])
+        elif jc is not None:
+            old_relay = [d for d in forward_drops(j["drops_origin"], relay_names, relay_ids)
+                         if d["relay"]]
+            if old_relay:
+                notes.append(f"{prior} 릴레이 포워드 {len(old_relay)}건을 출처 게이트에서 "
+                             "버렸다 — 그 글은 그때 inbox 에 안 들어갔다(그 뒤 다시 포워드해 "
+                             "받지 않았다면 지금도 없다). 예: " + old_relay[-1]["line"][-200:])
+        fd_all = forward_drops(j["drops_origin"], relay_names, relay_ids)
         n_direct = sum(1 for d in j["drops_origin"] if d["type"] == "none")
-        n_other = len(j["drops_origin"]) - len(relay_drops) - n_direct
-        if n_direct or n_other:
-            notes.append(f"출처 게이트가 릴레이 아닌 글을 버렸다(직접 쓴 글 {n_direct} · 다른 "
-                         f"곳 포워드 {n_other}) — 릴레이 경로가 아니면 정상이다")
+        other_src = [d for d in fd_all if not d["relay"]]
+        if n_direct or other_src:
+            names = sorted({f"@{d['user']}" if d["user"] else str(d["chat"]) for d in other_src})
+            notes.append(f"출처 게이트가 릴레이 원천이 아닌 글을 버렸다(직접 쓴 글 {n_direct} · "
+                         f"다른 출처 포워드 {len(other_src)}"
+                         + (f": {', '.join(names[:3])}{' 외' if len(names) > 3 else ''}"
+                            if names else "")
+                         + ") — 게이트가 제 일을 한 것이다. 다른 출처 포워드는 BeOn 처럼 남의 "
+                         "글을 되포워드하는 원천에서 온다(텔레그램이 원래 출처를 단다) — 그 "
+                         "출처의 글도 받으려면 .env TRADE_SOURCE_ORIGIN 에 더하고 봇 재시작")
+        # 받은 채널 글을 처리하다 난 예외(독립 리뷰 M2) — 수신 줄 없이 끝난 번호는 기록도
+        # 버림도 아니게 사라진 글이다. 대조 창 안에 있고 누락이 보일 때만 원인으로 읽는다.
+        gstart = gap.get("start")
 
-    run = f.get("running")
+        def _in_gap(e):
+            return gstart is not None and e.get("ts") is not None and e["ts"] >= gstart
+        hx = [e for e in cur["exceptions"]
+              if e["kind"] == "handler" and e.get("update") == "channel_post"]
+        lost = [e for e in hx if _in_gap(e) and e["msg"] not in cur["ingested_ids"]]
+        if lost and gap.get("kind") in ("total", "partial"):
+            bad.append(f"봇이 받은 채널 글 {len(lost)}건을 처리하다 예외로 놓쳤다 — 수신 줄 없이 "
+                       "끝나 inbox 에 없다. 원인을 고친 뒤 그 기간을 다시 포워드할 것. 예: "
+                       + lost[-1]["line"][-240:])
+        elif hx:
+            notes.append(f"채널 글을 처리하다 예외가 {len(hx)}번 났다 — 지금 대조엔 그 글로 "
+                         "빠진 것이 없다(기록 뒤 단계였거나 대조할 포워드 밖). 예: "
+                         + hx[-1]["line"][-200:])
+        unlabeled = [e for e in cur["exceptions"] if e["kind"] == "unlabeled" and _in_gap(e)]
+        n_starts = len(j["starts"])
+        restarts = (f.get("facts") or {}).get("s_NRestarts")
+        if n_starts >= 3:
+            notes.append(f"창 안에서 봇이 {n_starts}번 시작했다"
+                         + (f"(systemd 자동 재시작 누적 {restarts}회)" if restarts not in
+                            (None, "") else "")
+                         + " — 배포·수동 재시작이 아니면 봇이 반복해 죽는다: 위 오류 표본을 볼 것")
+
     if run is None:
         unk.append(f"실행 중인 봇의 시작 줄을 못 찾았다({f.get('running_err') or '사유 미상'}) "
                    "— 허용 채널·출처·inbox 경로를 릴레이와 대조 못 했다")
@@ -548,15 +740,36 @@ def verdict(f: dict) -> tuple[int, list[str]]:
         # 못 잰 조건이 남아 있으면 '다 맞는다' 고 말할 수 없다(#165) — 그것부터.
         unk.append("원인을 짚지 못했다 — 위 ❓ 의 못 잰 조건이 남아 있으니 그것부터 잴 것")
     elif symptom and not bad:
-        # 증상은 있는데 위에서 원인을 하나도 못 짚었다 — 남은 갈래를 사실대로(#165).
+        # 증상은 있는데 위에서 원인을 하나도 못 짚었다 — 남은 갈래를 **남은 사실대로**
+        # 말한다(#165). 전부/일부, 버림이 있었나, 어느 업데이트였는지 안 적힌 예외가 있나에
+        # 따라 할 말이 다르다(독립 리뷰 H2 — 버림이 있는데 '버림 기록도 없는데' 라고 쓰면
+        # 거짓이다).
+        missing = gap["sent"] - gap["got"] - (gap.get("dropped") or 0)
+        exc = (f" 그 창에 어느 업데이트였는지 안 적힌 PTB 예외가 {len(unlabeled)}번 찍혔다 — "
+               "위 오류 표본부터 볼 것(처리하다 죽은 글일 수 있다)." if unlabeled else "")
         if run is not None and not run["drop_log"]:
-            unk.append("위 조건은 전부 맞는데 못 받았다 — 실행 중인 봇이 버림을 적지 않는 옛 "
-                       "판이라 '받고 버렸나 / 아예 안 왔나' 를 저널이 말하지 않는다. 이 수정을 "
-                       "배포한 뒤(봇 재시작) 다시 포워드하면 버림 줄이나 수신 줄이 답한다")
+            unk.append(f"위 조건은 전부 맞는데 {missing}건을 못 받았다 — 실행 중인 봇이 버림을 "
+                       "적지 않는 옛 판이라 '받고 버렸나 / 아예 안 왔나' 를 저널이 말하지 않는다."
+                       + exc + " 이 수정을 배포한 뒤(봇 재시작) 다시 포워드하면 버림 줄이나 "
+                       "수신 줄이 답한다")
             notes.remove(_OLD_BUILD_NOTE)     # 같은 사실을 두 줄로 말하지 않는다(#395)
-        else:
-            unk.append("위 조건은 전부 맞고 버림 기록도 없는데 받은 기록이 없다 — 텔레그램이 "
+        elif unlabeled:
+            unk.append(f"위 조건은 전부 맞는데 {missing}건이 수신·버림 어느 줄에도 없다 —"
+                       + exc)
+        elif gap["kind"] == "total":
+            # total 은 받음(기록+버림)이 0 이다 — 여기서 '버림 기록도 없다' 는 사실이다.
+            unk.append("위 조건은 전부 맞고 버림·예외 기록도 없는데 받은 기록이 없다 — 텔레그램이 "
                        "전달하지 않았다는 뜻이다(드묾). 봇 재시작 뒤 다시 포워드해 볼 것")
+        else:
+            dropped = gap.get("dropped") or 0
+            unk.append(f"위 조건은 전부 맞는데 {missing}건이 수신·버림·예외 어느 줄에도 없다"
+                       + (f"(받은 {gap['got'] + dropped}건 중 {dropped}건은 출처 게이트가 버린 "
+                          "다른 출처 포워드다)" if dropped else "")
+                       + (" — 30분 넘게 돈 백필이 창 앞에서 시작했으면 앞부분 수신을 못 세어 "
+                          "이렇게 보인다(그 실행의 시작 줄이 창 밖이라 시작을 짐작했다) — "
+                          "--since 를 넓혀 다시 돌려 볼 것" if gap.get("guessed") else
+                          " — 텔레그램이 일부를 전달하지 않았다는 뜻이다(드묾). 빠진 기간을 "
+                          "다시 포워드해 볼 것"))
     bad = symptom + bad
     rc = 1 if bad else (2 if unk else 0)
     out = [f"❌ {t}" for t in bad] + [f"❓ {t}" for t in unk] + [f"⚠️ {t}" for t in notes]
@@ -717,10 +930,12 @@ def find_start_line(pid: int, *, popen=subprocess.Popen, max_lines: int = 500):
     except Exception as exc:                                   # noqa: BLE001
         return None, f"{type(exc).__name__}: {exc}"[:120]
     found = None
+    raw = ""
     try:
         for i, ln in enumerate(p.stdout):
             if "trade-bot starting" in ln:
-                found = parse_start_line(ln.rstrip("\n"))
+                raw = ln.rstrip("\n")
+                found = parse_start_line(raw)
                 break
             if i >= max_lines:
                 break
@@ -730,8 +945,14 @@ def find_start_line(pid: int, *, popen=subprocess.Popen, max_lines: int = 500):
             p.wait(timeout=5)
         except Exception:                                      # noqa: BLE001
             pass
-    return found, ("" if found else f"PID {pid} 의 앞 {max_lines}줄에 시작 줄이 없다"
-                   "(저널 보존기간 밖일 수 있다)")
+    if found:
+        return found, ""
+    if raw:
+        # 줄은 있는데 형식을 못 읽었다 — '없다' 와 처방이 다르다(형식이 바뀐 것, #82).
+        return None, (f"PID {pid} 의 시작 줄은 있는데 형식을 못 읽었다 — "
+                      f"{scrub(raw)[-160:]}")
+    return None, (f"PID {pid} 의 앞 {max_lines}줄에 시작 줄이 없다"
+                  "(저널 보존기간 밖일 수 있다)")
 
 
 def other_bot_processes(own: set[int], proc_root: Path = Path("/proc")) -> list[dict]:
@@ -745,61 +966,151 @@ def other_bot_processes(own: set[int], proc_root: Path = Path("/proc")) -> list[
             continue
         if int(d.name) in own or not _is_bot_cmd(args):
             continue
-        out.append({"pid": int(d.name), "cmd": " ".join(args)[:160]})
+        # ⚠️ 가린 **뒤에** 자른다 — 자르고 가리면 잘린 토큰 조각이 패턴을 빠져나간다
+        # (`sudo … env TRADE_BOT_TOKEN=… python -m trade.bot` 같은 명령줄, 독립 리뷰 M3a).
+        out.append({"pid": int(d.name), "cmd": scrub(" ".join(args))[:160]})
     return out
 
 
+_PY_RE = re.compile(r"python[\d.]*$")
+_PY_OPT_ARG = ("-X", "-W", "-Q")          # 인자를 하나 더 받는 인터프리터 옵션
+
+
 def _is_bot_cmd(args: list[str]) -> bool:
-    """`-m trade.bot` 또는 `…/trade/bot.py` — `trade.bot_health` 같은 형제는 아니다."""
+    """파이썬이 `-m trade.bot` 또는 `…/trade/bot.py` 를 **실행하는** 명령인가.
+
+    인터프리터 뒤 첫 비옵션 인자가 스크립트다 — `vim trade/bot.py` · `grep … trade/bot.py`
+    · `python -m pytest trade/bot.py` 는 봇이 아니다(독립 리뷰 M3b). `sudo`·`env` 를
+    앞에 둔 실행도 잡는다(인터프리터를 명령줄에서 찾는다). `trade.bot_health` 같은
+    형제도 아니다."""
     for i, a in enumerate(args):
-        if a == "-m" and i + 1 < len(args) and args[i + 1] == "trade.bot":
-            return True
-        if a.endswith("trade/bot.py"):
-            return True
+        if not _PY_RE.match(Path(a).name):
+            continue
+        rest = args[i + 1:]
+        k = 0
+        while k < len(rest):
+            opt = rest[k]
+            if opt == "-m":
+                return k + 1 < len(rest) and rest[k + 1] == "trade.bot"
+            if opt == "-c":
+                return False
+            if opt in _PY_OPT_ARG:
+                k += 2
+                continue
+            if opt.startswith("-"):
+                k += 1
+                continue
+            return opt.endswith("trade/bot.py")
+        return False
     return False
 
 
-def _forwards(read, since: str) -> tuple[list[dict], str]:
-    """릴레이 유닛 저널 → (포워드 사건, 못 읽었으면 사유)."""
+def _forwards(read, since: str) -> tuple[list[dict], set[int], str]:
+    """릴레이 유닛 저널 → (포워드 사건, 릴레이가 밝힌 원천 ID, 못 읽었으면 사유)."""
     lines, err, kind = read(RELAY_UNITS, since)
-    return relay_forwards(lines), ("" if _readable(kind) else err or kind)
+    return (relay_forwards(lines), relay_source_ids(lines),
+            ("" if _readable(kind) else err or kind))
 
 
-def delivery_check(since: str, *, now: datetime | None = None,
+_SINCE_UNIT_S = {"s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+                 "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+                 "h": 3600, "hour": 3600, "hours": 3600,
+                 "d": 86400, "day": 86400, "days": 86400}
+_REL_SINCE = re.compile(r"^\s*(\d+)\s*([a-z]+)\s+ago\s*$")
+_EPOCH_SINCE = re.compile(r"^\s*@(\d+)\s*$")
+_ABS_SINCE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)(\s+UTC)?\s*$")
+
+
+def widen_since(since: str, sec: int) -> str | None:
+    """journalctl `--since` 값을 `sec` 초 앞당긴다. 순수 함수.
+
+    알아듣는 꼴만 — 상대('N 단위 ago') · '@epoch' · 'YYYY-MM-DD HH:MM[:SS][ UTC]'. 모르는
+    꼴이면 None(호출부가 같은 창으로 읽고 그렇다고 밝힌다 — 지어내지 않는다). 시간대 없는
+    절대 시각은 journalctl 이 서버 로컬로 읽는다 — 같은 꼴로 되돌려 그 해석을 보존한다
+    (서버 시간대가 서머타임을 안 쓰는 한 정확하다)."""
+    s = since or ""
+    m = _REL_SINCE.match(s)
+    if m and m.group(2) in _SINCE_UNIT_S:
+        return f"{int(m.group(1)) * _SINCE_UNIT_S[m.group(2)] + int(sec)} seconds ago"
+    m = _EPOCH_SINCE.match(s)
+    if m:
+        return f"@{int(m.group(1)) - int(sec)}"
+    m = _ABS_SINCE.match(s)
+    if m:
+        fmt = "%Y-%m-%d %H:%M:%S" if m.group(1).count(":") == 2 else "%Y-%m-%d %H:%M"
+        t = datetime.strptime(m.group(1), fmt) - timedelta(seconds=int(sec))
+        return t.strftime("%Y-%m-%d %H:%M:%S") + (" UTC" if m.group(2) else "")
+    return None
+
+
+def delivery_check(window_s: int, *, now: datetime | None = None,
                    read=read_journal) -> dict:
-    """릴레이 포워드 vs 봇 수신 — 저널만 읽는다(텔레그램·파일 안 건드림).
+    """릴레이 포워드 vs 봇 수신 — 저널 두 개와 레포의 릴레이 선언만 본다(텔레그램·
+    inbox 는 안 본다).
 
     `trade.scripts.health_check` 가 매시간 부른다. 저널을 못 읽으면 `kind=
     "unknown"` 과 사유 — 판정 불가를 '이상 없음' 으로 접지 않는다(#54).
+    ⚠️ 봇 저널은 릴레이 창보다 `RUN_SLACK_S` **앞에서부터** 읽는다 — 창 첫머리에 찍힌
+    백필 'done' 줄은 그 실행의 수신이 창 앞에 있을 수 있어, 같은 창으로 읽으면 멀쩡한
+    실행을 누락으로 오보한다(독립 리뷰 M1).
     ⚠️ 여기는 재시작 전후를 **가르지 않는다**(`collect` 는 가른다) — 알림이 묻는 것은
     '지난 두 시간에 글이 빠졌나' 이고 그건 어느 프로세스의 일이든 사실이다. 지금 상태가
     원인인지는 알림이 가리키는 `bot_health` 가 가른다(재시작 전 누락은 ⚠️ 메모).
+    ⚠️ 못 보는 축(#274): 원천이 사용자명을 바꿨는데 창 안에 그 릴레이의 접속 줄
+    (`source(marked)=`)이 없으면 그 버림을 릴레이 것으로 못 알아본다 — 받음으로만 센다.
+    `bot_health` 는 텔레그램·inbox 로 ID 를 배워 잡는다.
     """
     now = now or datetime.now(timezone.utc)
-    fwd, ferr = _forwards(read, since)
+    fwd, ids, ferr = _forwards(read, f"{int(window_s)} seconds ago")
     if ferr:
         return {"kind": "unknown", "sent": 0, "got": 0, "undated": 0,
                 "err": f"릴레이 저널을 못 읽었다 — {ferr}"}
     if not fwd:
         return {"kind": "none", "sent": 0, "got": 0, "undated": 0, "err": ""}
-    bl, berr, bkind = read((_SERVICE,), since)
+    bl, berr, bkind = read((_SERVICE,), f"{int(window_s) + RUN_SLACK_S} seconds ago")
     if not _readable(bkind):
         return {"kind": "unknown", "sent": sum(x["n"] for x in fwd), "got": 0,
                 "undated": 0, "err": f"trade-bot 저널을 못 읽었다 — {berr or bkind}"}
-    g = delivery_gap(fwd, journal_facts(bl)["ingested"], now)
+    jf = journal_facts(bl)
+    drops = forward_drops(jf["drops_origin"], relay_sources(_REPO / "trade" / "scripts"), ids)
+    g = delivery_gap(fwd, jf["ingested"], now, dropped=drops)
     g["err"] = ""
     return g
 
 
+def gap_needs_alert(g: dict) -> bool:
+    """알릴 일인가 — 못 받았거나(누락) 받고 **릴레이 원천의 글을** 버렸다. 다른 출처의
+    버림(BeOn 이 되포워드한 남의 글)은 게이트가 제 일을 한 것이라 알리지 않는다(#260)."""
+    return g.get("kind") in ("total", "partial") or bool(g.get("relay_dropped"))
+
+
+def gap_alert_key(g: dict) -> str:
+    """같은 누락은 한 번만 알리되 **다른** 누락은 막지 않는 표식 이름(독립 리뷰 M4).
+
+    대조 창 안 첫 포워드의 시각 + 릴레이 이름. 옛 판은 이름 하나('delivery-gap')로
+    6시간을 막아, 그 사이 새로 난 누락이 조용했다. ⚠️ 창이 굴러 첫 포워드가 바뀌면 같은
+    누락을 한 번 더 알릴 수 있다 — 조용한 것보다 낫다(#43)."""
+    first = g.get("first")
+    stamp = int(first.timestamp()) if first else 0
+    who = re.sub(r"[^\w.+-]", "_", "+".join(g.get("who") or []) or "unknown")
+    what = "gap" if g.get("kind") in ("total", "partial") else "drop"
+    return f"delivery-{what}-{stamp}-{who}"
+
+
 def gap_alert_text(g: dict) -> str:
     """`delivery_check` 결과 → 텔레그램 알림(HTML). 토큰·원문 없음."""
+    lost = g["kind"] in ("total", "partial")
+    recv = g["got"] + (g.get("dropped") or 0)
     what = ("<b>한 건도 못 받았습니다</b>" if g["kind"] == "total"
-            else f"{g['got']}건만 받았습니다")
-    return ("⚠️ <b>trade-bot 수신 누락</b>\n"
-            f"릴레이가 {g['sent']}건을 비공개 채널로 포워드했는데(첫 {_kst(g['first'])} · "
-            f"{', '.join(g.get('who') or [])}) 봇은 {what}.\n"
-            "inbox·대시보드에 안 들어갑니다. 원인 가르기(읽기 전용):\n"
-            f"<code>{USAGE}</code>")
+            else f"{recv}건만 받았습니다" if lost else "다 받았습니다")
+    out = [f"⚠️ <b>trade-bot {'수신 누락' if lost else '출처 게이트 버림'}</b>",
+           f"릴레이가 {g['sent']}건을 비공개 채널로 포워드했는데(첫 {_kst(g['first'])} · "
+           f"{', '.join(g.get('who') or [])}) 봇은 {what}."]
+    if g.get("relay_dropped"):
+        out.append(f"받은 것 중 <b>{g['relay_dropped']}건은 봇이 출처 게이트에서 버렸습니다</b>"
+                   "(릴레이 원천의 글 — .env TRADE_SOURCE_ORIGIN 과 원천 사용자명 확인).")
+    out += ["inbox·대시보드에 안 들어갑니다. 원인 가르기(읽기 전용):", f"<code>{USAGE}</code>"]
+    return "\n".join(out)
 
 
 def collect(since: str, *, now: datetime | None = None, env=None, facts_fn=None,
@@ -819,13 +1130,20 @@ def collect(since: str, *, now: datetime | None = None, env=None, facts_fn=None,
                "unit": listener_verdict(facts, unit=_UNIT, reauth=False),
                "inbox_expected": env.get("inbox"),
                "relays": relay_sources(_REPO / "trade" / "scripts")}
-    lines, err, kind = read((_SERVICE,), since)
+    # 봇 저널은 릴레이 창보다 RUN_SLACK_S 앞에서부터 읽는다 — 창 첫머리 백필의 수신이 창
+    # 앞에 있을 수 있다(독립 리뷰 M1). 못 알아듣는 --since 꼴이면 같은 창으로 읽고 밝힌다.
+    wide = widen_since(since, RUN_SLACK_S)
+    f["bot_since"], f["bot_since_widened"] = wide or since, wide is not None
+    lines, err, kind = read((_SERVICE,), wide or since)
     # 읽히는데 창 안에 0줄이면 '못 읽음' 이 아니라 **아무것도 안 찍었다** 는 사실이다
     # — 빈 사실로 판정을 태운다(살아 있다면 폴링 0회 = 문제, #52).
     f["journal"] = journal_facts(lines) if _readable(kind) else None
     f["journal_err"] = err
     main_pid = facts.get("s_MainPID")
     main_pid = int(main_pid) if str(main_pid or "").isdigit() and int(main_pid) > 0 else None
+    # 지금 프로세스의 줄만 — 판정은 이걸로 한다(재시작 전 프로세스의 일은 메모, 독립 리뷰 H1).
+    f["journal_cur"] = (journal_facts([ln for ln in lines if _pid(ln) == main_pid])
+                        if f["journal"] is not None and main_pid else None)
     run = None
     if f["journal"]:
         mine = [s for s in f["journal"]["starts"] if main_pid and s["pid"] == main_pid]
@@ -834,29 +1152,39 @@ def collect(since: str, *, now: datetime | None = None, env=None, facts_fn=None,
     if run is None and main_pid:
         run, f["running_err"] = start_fn(main_pid)
     elif run is None:
-        f["running_err"] = "실행 중인 프로세스(MainPID)가 없다"
+        f["running_err"] = ("systemd 에 못 물어 실행 중인 PID 를 모른다" if not facts.get("ok")
+                            else "실행 중인 프로세스(MainPID)가 없다")
     f["running"] = run
-    fwd, ferr = _forwards(read, since)
+    fwd, rids, ferr = _forwards(read, since)
     f["forwards"] = fwd
+    f["relay_ids"] = sorted(rids)
+    # inbox 는 대조 **전에** 읽는다 — 거기서 배운 원천 ID 가 버림 분류(릴레이 것인가)에 든다.
+    f["inbox"] = inbox_facts(Path(env.get("inbox") or ""), now) if env.get("inbox") else {}
     if ferr:
         f["gap"] = {"kind": "unknown", "err": f"릴레이 저널을 못 읽었다 — {ferr}", "undated": 0}
     elif f["journal"] is None:
         f["gap"] = ({"kind": "unknown", "undated": 0,
                      "err": f"trade-bot 저널을 못 읽었다 — {err}"} if fwd else {"kind": "none"})
     else:
+        ids = set(rids)
+        for u in f["relays"]:
+            ids |= set((((f["inbox"].get("by") or {}).get(u.lower())) or {}).get("ids") or ())
+        drops = forward_drops(f["journal"]["drops_origin"], f["relays"], ids)
         # 판정은 **지금 프로세스가 뜬 뒤의 포워드**로만 한다 — 그 전 것은 옛 판·옛 설정이
         # 받았거나 버린 것이라 지금 상태의 증거가 아니고, 다시 포워드한 뒤에도 24시간
         # 창에 남아 '보냄 54 / 받음 27' 같은 거짓 누락을 만든다. 그 전 누락은 사실
         # 메모로 따로 말한다(다시 포워드해야 들어온다).
         cur, old = split_by_start(fwd, (run or {}).get("ts"))
         f["gap"] = delivery_gap(cur, f["journal"]["ingested"], now,
-                                not_before=(run or {}).get("ts"))
-        f["gap_before"] = (delivery_gap(old, f["journal"]["ingested"], now)
+                                not_before=(run or {}).get("ts"), dropped=drops)
+        f["gap_before"] = (delivery_gap(old, f["journal"]["ingested"], now, dropped=drops)
                            if old else {"kind": "none"})
-    f["inbox"] = inbox_facts(Path(env.get("inbox") or ""), now) if env.get("inbox") else {}
     f["tg"] = tg_fn(env.get("token") or "", env.get("dest"), sorted(f["relays"]))
     f["others"] = procs_fn({os.getpid()} | ({main_pid} if main_pid else set()))
     return f
+
+
+_EXC_KO = {"handler": "핸들러", "polling": "폴링", "unlabeled": "표식 없음(옛 판)"}
 
 
 def render(f: dict, since: str) -> list[str]:
@@ -864,9 +1192,14 @@ def render(f: dict, since: str) -> list[str]:
     now = f["now"]
     env = f.get("env") or {}
     out = [f"# trade.bot_health v{_VER} · 코드 지문 {_sig()} · 인터프리터 {sys.executable}",
-           "# 읽기 전용 — 텔레그램엔 getMe·getWebhookInfo·getChatMember 만 묻는다"
+           f"# 읽기 전용 — 텔레그램엔 {'·'.join(READ_ONLY_METHODS)} 만 묻는다"
            "(getUpdates 는 안 부른다). 토큰은 어디에도 찍지 않는다.",
-           f"# 창 --since {since!r} · 설정 출처 {env.get('src')}"
+           f"# 창 --since {since!r}"
+           + (f"(봇 저널은 수신을 세려고 {RUN_SLACK_S // 60}분 앞부터: {f.get('bot_since')!r})"
+              if f.get("bot_since_widened") else
+              "(봇 저널도 같은 창 — 이 꼴은 못 넓혀 창 첫머리 백필의 수신을 덜 셀 수 있다)"
+              if f.get("bot_since") else "")
+           + f" · 설정 출처 {env.get('src')}"
            + (f" · .env 읽기 실패 {env.get('err')}" if env.get("err") else "")]
     facts = f.get("facts") or {}
     restarts = facts.get("s_NRestarts")
@@ -885,8 +1218,10 @@ def render(f: dict, since: str) -> list[str]:
             parts.append(f"웹훅 {'있음(' + _host(r['url']) + ')' if r.get('url') else '없음'}")
             parts.append(f"대기 업데이트 {r.get('pending_update_count', 0)}건")
             au = r.get("allowed_updates")
+            # 응답에 없으면 '기본값' 이라고 단정하지 않는다 — 웹훅이 없을 때 텔레그램이
+            # 이 칸을 채우는지 재지 않았다(#165). 판정에도 안 쓴다.
             parts.append(f"수신 종류 {', '.join(au)}" if isinstance(au, list) and au
-                         else "수신 종류 저장값 없음(텔레그램 기본값)")
+                         else "수신 종류 응답에 없음(판정 안 함)")
             if r.get("last_error_date"):
                 le = datetime.fromtimestamp(int(r["last_error_date"]), timezone.utc)
                 parts.append(f"마지막 전달 오류 {_kst(le)} · {scrub(r.get('last_error_message'))[:120]}")
@@ -923,11 +1258,21 @@ def render(f: dict, since: str) -> list[str]:
         polls = " · ".join(f"{k}×{v}" for k, v in sorted(j["polls"].items())) or "없음"
         ing = [t for t in j["ingested"] if t is not None]
         last_ok = (f"{_age((now - j['last_ok']).total_seconds())} 전" if j["last_ok"] else "없음")
+        exc = Counter(e["kind"] for e in j["exceptions"])
         out.append(f"④ 저널 {j['n']}줄({sp.get('first')}~{sp.get('last')}): 폴링 {polls} · "
                    f"마지막 정상 폴링 {last_ok} · 수신(ingested) {len(j['ingested'])}건"
                    + (f"(마지막 {_kst(max(ing))})" if ing else "")
                    + f" · 버림 채널 {len(j['drops_channel'])}·출처 {len(j['drops_origin'])} · "
-                   f"시작 {len(j['starts'])}회")
+                   f"시작 {len(j['starts'])}회"
+                   + (" · 예외 " + " · ".join(f"{_EXC_KO.get(k, k)} {v}"
+                                              for k, v in sorted(exc.items())) if exc else ""))
+        jc = f.get("journal_cur")
+        if jc is not None:
+            out.append(f"   지금 프로세스(PID {(f.get('facts') or {}).get('s_MainPID')}) 줄 "
+                       f"{jc['n']} · 폴링 "
+                       + (" · ".join(f"{k}×{v}" for k, v in sorted(jc["polls"].items())) or "없음")
+                       + f" · 수신 {len(jc['ingested'])} · 버림 채널 {len(jc['drops_channel'])}"
+                       f"·출처 {len(jc['drops_origin'])} — 판정은 이 줄들로 한다")
         for ln in j["errors"][-3:]:
             out.append(f"   오류 표본: {ln[-220:]}")
     fwd = f.get("forwards") or []
@@ -940,9 +1285,13 @@ def render(f: dict, since: str) -> list[str]:
         out.append(f"⑤ 릴레이 포워드 {sum(by.values())}건("
                    + ", ".join(f"{k} {v}" for k, v in sorted(by.items()))
                    + f") · 마지막 {_kst(max((x['ts'] for x in fwd if x['ts']), default=None))}"
-                   + (f" · 지금 프로세스 뒤 대조: 보냄 {gap.get('sent')} / 받음 {gap.get('got')}"
+                   + (f" · 지금 프로세스 뒤 대조: 보냄 {gap.get('sent')} / 받음 "
+                      f"{gap.get('got', 0) + (gap.get('dropped') or 0)}"
+                      + (f"(기록 {gap.get('got')} · 게이트 버림 {gap.get('dropped')})"
+                         if gap.get("dropped") else "")
                       if gap.get("kind") not in (None, "none", "unknown") else "")
                    + (f" · 재시작 전 포워드 {gb.get('sent')}건 / 그 뒤 수신 {gb.get('got')}건"
+                      + (f"·버림 {gb.get('dropped')}건" if gb.get("dropped") else "")
                       if gb.get("kind") not in (None, "none", "unknown") else ""))
     else:
         out.append("⑤ 릴레이 포워드: 창 안에 없음(systemd 유닛 실행만 센다 — 손으로 돌린 백필은 안 잡힌다)")
@@ -954,7 +1303,8 @@ def render(f: dict, since: str) -> list[str]:
                      key=lambda x: x[1]["last"] or datetime.min.replace(tzinfo=timezone.utc),
                      reverse=True)[:5]
         out.append(f"⑥ inbox {ib['path']} · {ib['lines']}줄 · 마지막 기록 "
-                   f"{_kst(last[0]) if last else '—'}({last[1] or '출처 없음' if last else ''})")
+                   + (f"{_kst(last[0])}({last[1] or '출처 없음'})" if last
+                      else "시각을 읽을 수 있는 기록 없음"))
         out.append("   원천별 마지막 수신(24시간 건수): "
                    + " · ".join(f"{u} {_kst(e['last'])}({e['n24']})" for u, e in src))
     elif ib:
@@ -968,7 +1318,8 @@ def render(f: dict, since: str) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="trade-bot 수신 경로 진단(읽기 전용)")
     ap.add_argument("--since", default="86400 seconds ago",
-                    help='journalctl --since 값 (기본: 24시간 전, 예: "2026-09-25 07:40")')
+                    help='journalctl --since 값 (기본: 24시간 전). 시간대 없는 시각은 서버 '
+                         '로컬로 읽힌다 — 어디서나 같은 뜻은 UTC 로: "2026-09-24 22:40 UTC"')
     args = ap.parse_args(argv)
     f = collect(args.since)
     for ln in render(f, args.since):

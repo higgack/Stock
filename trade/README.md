@@ -100,7 +100,7 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 1. Add the bot as an **admin** of the destination private channel
    (regular members don't receive channel posts via Bot API).
 2. With `TRADE_CHANNEL_CHAT_IDS=` empty, post any message in the channel.
-3. `journalctl -u trade-bot -n 20 | grep 'channel chat ID'` will show `channel chat ID is -100...` (grep 으로 거르는 이유: 다른 줄엔 봇 토큰이 평문이다).
+3. `journalctl -u trade-bot -n 20 | grep 'channel chat ID'` will show `channel chat ID is -100...` (grep 으로 거르는 이유: 봇이 토큰을 가리기 전 판이 찍은 줄엔 토큰이 평문으로 남아 있다).
 4. Set `TRADE_CHANNEL_CHAT_IDS=-100...` in `.env`, `systemctl restart trade-bot`.
 
 ## Verifying ingestion
@@ -108,8 +108,9 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 ```bash
 tail -f ~/.trade/inbox.jsonl                # one line per message
 ls ~/.trade/media/$(date -I)/                # downloaded photos for today
-# live log — ⚠️ getUpdates 줄에 봇 토큰이 평문이다(httpx 가 URL 을 찍는다).
-# 출력을 어디 붙여 넣을 거면 가릴 것:
+# live log — 봇은 자기 로그의 토큰을 `BOT_TOKEN` 으로 가린다(실수 #406 리뷰). ⚠️ 가리기
+# 전 판이 찍은 getUpdates 줄엔 토큰이 평문으로 남아 있다(저널 보존기간 동안) — 출력을
+# 어디 붙여 넣을 거면 가릴 것:
 journalctl -u trade-bot -f | sed -u -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g'
 ```
 
@@ -121,8 +122,9 @@ journalctl -u trade-bot -f | sed -u -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>
 cd ~/stock-trade && .venv/bin/python -m trade.bot_health
 ```
 
-같은 대조(릴레이가 보낸 수 ↔ 봇이 받은 수)를 `trade-bot-health.timer` 가 매시간 돌려
-못 받았으면 채널로 알린다.
+같은 대조(릴레이가 보낸 수 ↔ 봇이 받은 수 — 받음은 기록 + 출처 게이트 버림)를
+`trade-bot-health.timer` 가 매시간 돌려, 못 받았거나 릴레이 원천의 글을 버렸으면 채널로
+알린다(BeOn 이 되포워드한 다른 채널 글의 버림은 알리지 않는다 — 게이트가 제 일을 한 것).
 
 ## One-time backfill — Telethon (`trade/scripts/backfill_beon.py`)
 

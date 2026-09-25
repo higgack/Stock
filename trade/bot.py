@@ -63,10 +63,36 @@ from trade.parser import parse_caption
 
 load_dotenv()
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    level=logging.INFO,
-)
+# ⚠️ 이 형식은 `trade.bot_health` 가 저널을 읽는 계약이다(`name — message` 구분자) —
+# 바꾸면 회귀(test_bot_drop_log)가 그 파서로 태워 본다.
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+
+
+class _TokenRedactFormatter(logging.Formatter):
+    """봇 토큰을 출력 직전에 `BOT_TOKEN` 으로 바꾼다 — 메시지·인자·트레이스백 전부.
+
+    ⚠️ 왜 있나(실수 #406 독립 리뷰 M3d). httpx 는 요청마다 URL 을 INFO 로 찍는데
+    그 경로에 `bot<TOKEN>` 이 평문으로 든다 — trade-bot 저널의 getUpdates 줄마다 토큰이
+    남았고, `systemctl status`·`journalctl` 출력을 붙여 넣는 순간 샜다. NOAH 봇
+    (`bot/telegram_bot.py` `_TokenRedactFilter`)과 같은 규약(#38)이되 **포매터**에
+    둔다: 필터는 레코드를 제자리에서 고쳐 같은 레코드를 받는 다른 핸들러까지 바꾸고,
+    트레이스백(exc_info)은 못 가린다. 레벨은 INFO 그대로 — watchdog
+    (deploy/trade-watchdog.sh)가 'getUpdates' 줄을 세므로 억제하면 오탐 재시작이다.
+    토큰은 서식 시각에 모듈 전역에서 읽는다(이 클래스가 TOKEN 보다 먼저 정의된다).
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        out = super().format(record)
+        tok = globals().get("TOKEN") or ""
+        return out.replace(tok, "BOT_TOKEN") if tok else out
+
+
+# 봇 자신의 핸들러에만 붙인다 — 루트에 이미 핸들러가 있으면(테스트 러너) basicConfig 는
+# 아무것도 안 하고, 그 핸들러들은 건드리지 않는다. 운영(`python -m trade.bot`)에선
+# 루트에 이것 하나다 — 회귀가 별도 프로세스로 그걸 잰다.
+_LOG_HANDLER = logging.StreamHandler()
+_LOG_HANDLER.setFormatter(_TokenRedactFormatter(_LOG_FORMAT))
+logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
 log = logging.getLogger("trade-bot")
 
 def _require_env(name: str) -> str:
@@ -1346,6 +1372,30 @@ async def _post_init(app: Application) -> None:
         log.warning("heatmap startup kick failed (timer will cover): %s", e)
 
 
+async def _on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB 가 넘기는 예외를 **한 줄 표식**으로 남긴다 — 트레이스백은 그대로(exc_info).
+
+    ⚠️ 왜 있나(실수 #406 독립 리뷰 M2). 에러 핸들러가 없으면 PTB 는 'No error handlers
+    are registered, logging exception.' 만 찍는데, 그 줄은 **어느 업데이트였는지** 말하지
+    않는다. 채널 글을 처리하다 예외가 나면(디스크 가득 · inbox 권한) 그 글은 수신 줄도
+    버림 줄도 없이 사라지고, `trade.bot_health` 는 그 누락을 '텔레그램이 안 줬다' 로
+    읽었다. 이 줄이 메시지 번호까지 적어 '받았는데 처리하다 죽었다' 를 가른다.
+    `run_polling` 은 getUpdates 실패(409·네트워크)도 `update=None` 으로 여기 넘긴다 —
+    그건 '폴링 오류' 로 따로 적는다(처방이 다르다, #82). 형식은 bot_health `_EXC_RE` 와
+    짝이다(회귀가 이 함수를 태워 그 파서로 읽는다).
+    """
+    err = getattr(ctx, "error", None)
+    if update is None:
+        log.error("polling error exc=%s: %s", type(err).__name__, err, exc_info=err)
+        return
+    post = getattr(update, "channel_post", None)
+    log.error("handler error update=%s msg=%s exc=%s: %s",
+              "channel_post" if post is not None else type(update).__name__,
+              getattr(post if post is not None else getattr(update, "effective_message", None),
+                      "message_id", None),
+              type(err).__name__, err, exc_info=err)
+
+
 def main() -> None:
     app = (
         Application.builder()
@@ -1353,6 +1403,7 @@ def main() -> None:
         .post_init(_post_init)
         .build()
     )
+    app.add_error_handler(_on_error)
     # Commands fire in private chats (DM the bot directly).
     app.add_handler(CommandHandler(["help", "start"], cmd_help))
     app.add_handler(CommandHandler("watch", cmd_watch))
@@ -1394,5 +1445,20 @@ def main() -> None:
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
+def _run() -> int:
+    """진입점 — 잡히지 않은 예외도 **가림 포매터를 거쳐** 찍는다.
+
+    ⚠️ 인터프리터가 직접 찍는 트레이스백은 로깅을 안 거친다. python-telegram-bot 은
+    시작 때 토큰이 거절되면 예외 문구에 토큰을 그대로 싣는다(21.6 `_bot.py`
+    'The token `…` was rejected by the server.') — 그 줄이 저널에 평문으로 남는다.
+    종료 코드는 전과 같다(1 — systemd 가 실패로 본다)."""
+    try:
+        main()
+    except Exception:                                          # noqa: BLE001
+        log.exception("trade-bot crashed")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_run())

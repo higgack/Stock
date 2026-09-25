@@ -18,6 +18,7 @@ python-telegram-bot 이 없으면 통째로 건너뛴다(형제 test_bot_origin 
 """
 
 import asyncio
+import logging
 import os
 import unittest
 from datetime import datetime, timezone
@@ -182,7 +183,8 @@ class DropLogIsReadByBotHealthTests(unittest.TestCase):
                             fwd_username="Badonions", msg_id=2))
             _run(bot, _post(fwd_chat_id=_BADONION, fwd_username="Badonions",
                             msg_id=3, text="x"))
-        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+        # 봇의 **실제** 포매터로 — 손으로 적은 형식은 형식이 바뀌어도 축복한다(#155·#91b)
+        fmt = bot._TokenRedactFormatter(bot._LOG_FORMAT)
         lines = ["2026-09-25T07:49:12+0900 telegram-bot-usc python[4242]: " + fmt.format(r)
                  for r in cm.records]
         j = bot_health.journal_facts(lines)
@@ -205,10 +207,14 @@ class AllowedUpdatesTests(unittest.TestCase):
 
         from trade import bot
         seen = {}
+        errs = []
 
         class _App:
             def add_handler(self, *_a, **_k):
                 pass
+
+            def add_error_handler(self, cb, *_a, **_k):
+                errs.append(cb)
 
             def run_polling(self, **kw):
                 seen.update(kw)
@@ -229,6 +235,201 @@ class AllowedUpdatesTests(unittest.TestCase):
         self.assertIn("allowed_updates", seen)
         self.assertEqual(list(seen["allowed_updates"]), list(Update.ALL_TYPES))
         self.assertIn("channel_post", seen["allowed_updates"])
+        # 에러 핸들러가 실제로 걸린다 — 안 걸리면 PTB 기본 문구만 남아 어느 글이었는지
+        # 모른다(독립 리뷰 M2)
+        self.assertEqual(errs, [bot._on_error])
+
+
+def _ctx(err):
+    return SimpleNamespace(error=err, bot=mock.AsyncMock())
+
+
+def _journal_lines(bot, records, pid=4242):
+    """봇 로그 레코드 → 저널 줄 — 봇의 실제 포매터로(생산자 = 소비자 계약, #155)."""
+    fmt = bot._TokenRedactFormatter(bot._LOG_FORMAT)
+    return [f"2026-09-25T07:49:12+0900 telegram-bot-usc python[{pid}]: " + fmt.format(r)
+            for r in records]
+
+
+@unittest.skipUnless(_HAVE_TELEGRAM, "python-telegram-bot not installed")
+class ErrorHandlerTests(unittest.TestCase):
+    """독립 리뷰 M2 — 받은 채널 글을 처리하다 예외가 나면 그 글은 수신 줄도 버림 줄도 없이
+    사라진다. 옛 판(에러 핸들러 없음)은 PTB 기본 문구만 남겨 `bot_health` 가 그 누락을
+    '텔레그램이 안 줬다' 로 읽었다. 봇이 찍은 줄을 진단 파서로 태워 갈래가 읽히는지 본다."""
+
+    def setUp(self):
+        from trade import bot, bot_health
+        self.bot, self.bh = bot, bot_health
+
+    def _log(self, update, err):
+        with self.assertLogs("trade-bot", level="ERROR") as cm:
+            asyncio.run(self.bot._on_error(update, _ctx(err)))
+        return cm.records
+
+    def test_channel_post_exception_is_a_parseable_handler_line_with_traceback(self):
+        try:
+            raise OSError(28, "No space left on device")
+        except OSError as exc:
+            err = exc
+        recs = self._log(SimpleNamespace(channel_post=_post(msg_id=77)), err)
+        self.assertEqual(len(recs), 1)
+        self.assertIsNotNone(recs[0].exc_info)          # 트레이스백은 그대로 남긴다
+        j = self.bh.journal_facts(_journal_lines(self.bot, recs))
+        self.assertEqual([(e["kind"], e["update"], e["msg"]) for e in j["exceptions"]],
+                         [("handler", "channel_post", 77)], j)
+
+    def test_polling_error_is_not_called_a_handler_error(self):
+        recs = self._log(None, RuntimeError("Conflict: terminated by other getUpdates request"))
+        j = self.bh.journal_facts(_journal_lines(self.bot, recs))
+        self.assertEqual([e["kind"] for e in j["exceptions"]], ["polling"], j)
+
+    def test_other_update_kinds_are_named_and_not_counted_as_channel_posts(self):
+        dm = SimpleNamespace(channel_post=None, effective_message=SimpleNamespace(message_id=5))
+        recs = self._log(dm, ValueError("x"))
+        j = self.bh.journal_facts(_journal_lines(self.bot, recs))
+        self.assertEqual([(e["kind"], e["update"], e["msg"]) for e in j["exceptions"]],
+                         [("handler", "SimpleNamespace", 5)], j)
+
+    def test_a_lost_post_is_read_as_the_cause_not_as_telegram(self):
+        """E2E(순수 쪽): 봇이 찍은 예외 줄 → 저널 사실 → 대조 → 판정이 '예외로 놓쳤다'."""
+        from datetime import timedelta
+
+        bh = self.bh
+        recs = self._log(SimpleNamespace(channel_post=_post(msg_id=77)), OSError("disk"))
+        j = bh.journal_facts(_journal_lines(self.bot, recs))
+        now = datetime(2026, 9, 25, 8, 30, tzinfo=timezone(timedelta(hours=9)))
+        fwd = [{"ts": now - timedelta(minutes=41), "n": 1, "who": "listen_badonion",
+                "done": False}]
+        gap = bh.delivery_gap(fwd, j["ingested"], now)
+        self.assertEqual(gap["kind"], "total")
+        run = bh.parse_start_line(
+            "2026-09-24T23:53:10+0900 h python[4242]: 2026-09-24 23:53:10,000 [INFO] trade-bot"
+            f" — trade-bot starting — inbox=/x/inbox.jsonl media=/x/media allowed={{{_DEST}}} "
+            "origin={'badonions', 'beon_beclear'} concurrency=8 drop_log=on")
+        f = {"now": now, "env": {"dest": _DEST, "inbox": "/x/inbox.jsonl"},
+             "unit": {"kind": "running", "text": "살아 있다"}, "gap": gap,
+             "tg": {"token": False}, "journal": j, "running": run,
+             "relays": {}, "inbox_expected": "/x/inbox.jsonl", "inbox": {}, "others": []}
+        f["journal"]["last_ok"] = now                     # 폴링은 정상 — 원인은 예외다
+        _rc, lines = bh.verdict(f)
+        out = "\n".join(lines)
+        self.assertIn("❌ 봇이 받은 채널 글 1건을 처리하다 예외로 놓쳤다", out)
+        self.assertNotIn("텔레그램이 전달하지 않았다", out)
+
+
+@unittest.skipUnless(_HAVE_TELEGRAM, "python-telegram-bot not installed")
+class TokenRedactionTests(unittest.TestCase):
+    """독립 리뷰 M3d — httpx 가 요청 URL(`bot<TOKEN>`)을 INFO 로 찍어 trade-bot 저널의
+    getUpdates 줄마다 토큰이 평문이었다. NOAH 봇의 선례(`_TokenRedactFilter`)를 포매터로
+    옮겼다. 가린 뒤에도 watchdog 이 세는 'getUpdates' 와 진단의 폴링 파서는 살아야 한다."""
+
+    TOK = "123456789" + ":" + "AAH" + "x" * 32              # 소스에 토큰 모양을 두지 않는다(#407)
+
+    def setUp(self):
+        from trade import bot, bot_health
+        self.bot, self.bh = bot, bot_health
+        p = mock.patch.object(bot, "TOKEN", self.TOK)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_url_object_args_and_tracebacks_are_masked_and_polls_still_parse(self):
+        class _URL:                                        # httpx 는 URL **객체**를 인자로 넘긴다
+            def __init__(self, s):
+                self.s = s
+
+            def __str__(self):
+                return self.s
+        url = _URL(f"https://api.telegram.org/bot{self.TOK}/getUpdates")
+        rec = logging.LogRecord("httpx", logging.INFO, "x", 1, 'HTTP Request: %s %s "%s"',
+                                ("POST", url, "HTTP/1.1 200 OK"), None)
+        fmt = self.bot._TokenRedactFormatter(self.bot._LOG_FORMAT)
+        out = fmt.format(rec)
+        self.assertNotIn(self.TOK, out)
+        self.assertNotIn(self.TOK.split(":")[1], out)
+        self.assertIn("/botBOT_TOKEN/getUpdates", out)      # watchdog 이 세는 낱말은 산다
+        line = "2026-09-25T07:49:12+0900 h python[4242]: " + out
+        self.assertEqual(self.bh.journal_facts([line])["polls"], {"200": 1})
+        try:
+            raise RuntimeError(f"The token `{self.TOK}` was rejected by the server.")
+        except RuntimeError:
+            import sys
+            rec2 = logging.LogRecord("trade-bot", logging.ERROR, "x", 1, "crashed", None,
+                                     sys.exc_info())
+        tb = fmt.format(rec2)
+        self.assertIn("Traceback", tb)
+        self.assertNotIn(self.TOK, tb)
+        self.assertNotIn(self.TOK.split(":")[1], tb)
+
+    def test_the_formatter_does_not_mutate_the_shared_record(self):
+        """필터와 달리 포매터는 레코드를 제자리에서 고치지 않는다 — 같은 레코드를 받는 다른
+        핸들러(테스트 러너의 캡처 등)가 바뀐 글을 보지 않는다."""
+        rec = logging.LogRecord("httpx", logging.INFO, "x", 1, "u=%s", (self.TOK,), None)
+        self.bot._TokenRedactFormatter(self.bot._LOG_FORMAT).format(rec)
+        self.assertIn(self.TOK, rec.getMessage())
+
+    def test_production_root_handler_is_the_masking_one(self):
+        """운영과 같은 조건(루트에 핸들러 없음)의 **별도 프로세스**로 import 해, 루트 핸들러가
+        봇 것이고 그 출력에 토큰이 없는지 잰다 — 다른 모듈이 먼저 로깅을 설정하면
+        basicConfig 가 아무것도 안 해 가림이 조용히 빠진다(#12)."""
+        import os
+        import subprocess
+        import sys
+        import textwrap
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[2]
+        code = textwrap.dedent("""
+            import logging, sys
+            import trade.bot as b
+            assert logging.getLogger().handlers == [b._LOG_HANDLER], logging.getLogger().handlers
+            logging.getLogger("httpx").info(
+                'HTTP Request: POST %s "HTTP/1.1 200 OK"',
+                "https://api.telegram.org/bot" + b.TOKEN + "/getUpdates")
+            try:
+                raise RuntimeError("boom " + b.TOKEN)
+            except RuntimeError:
+                logging.getLogger("telegram.ext.Application").exception("x")
+            print("DONE", file=sys.stderr)
+        """)
+        env = {**os.environ, "TRADE_BOT_TOKEN": self.TOK,
+               "PYTHONPATH": os.pathsep.join(
+                   [str(repo), *[x for x in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+                                 if x]])}
+        r = subprocess.run([sys.executable, "-c", code], cwd=repo, env=env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertIn("DONE", r.stderr)
+        self.assertIn("/botBOT_TOKEN/getUpdates", r.stderr)
+        self.assertNotIn(self.TOK.split(":")[1], r.stderr + r.stdout)
+
+
+@unittest.skipUnless(_HAVE_TELEGRAM, "python-telegram-bot not installed")
+class EntrypointTests(unittest.TestCase):
+    """잡히지 않은 예외도 가림 포매터를 거친다 — PTB 는 토큰이 거절되면 예외 문구에 토큰을
+    싣는다(21.6 `_bot.py`). 종료 코드는 전과 같이 1."""
+
+    def test_crash_is_logged_through_the_bot_logger_and_exits_1(self):
+        from trade import bot
+        with mock.patch.object(bot, "main", side_effect=RuntimeError("boom")), \
+                self.assertLogs("trade-bot", level="ERROR") as cm:
+            self.assertEqual(bot._run(), 1)
+        self.assertTrue(any(r.getMessage() == "trade-bot crashed" and r.exc_info
+                            for r in cm.records), cm.output)
+        with mock.patch.object(bot, "main", return_value=None):
+            self.assertEqual(bot._run(), 0)
+
+    def test_main_block_goes_through_run(self):
+        import ast
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "bot.py").read_text(encoding="utf-8")
+        blocks = [n for n in ast.parse(src).body if isinstance(n, ast.If)
+                  and "__main__" in ast.unparse(n.test)]
+        self.assertEqual(len(blocks), 1)
+        calls = {c.func.id for c in ast.walk(blocks[0])
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        self.assertIn("_run", calls)
+        self.assertNotIn("main", calls)
 
 
 if __name__ == "__main__":

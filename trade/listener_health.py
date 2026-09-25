@@ -20,9 +20,10 @@ _SERVICE = f"{_UNIT}.service"
 
 def _show_cmd(unit: str) -> str:
     """상태를 묻는 명령. ⚠️ `systemctl status` 가 아니다 — 그건 저널 꼬리를
-    같이 찍고, trade-bot 저널의 getUpdates 줄엔 **봇 토큰이 평문**으로 있다
-    (httpx 가 URL 을 INFO 로 찍는다). 그 출력을 붙여 넣으면 토큰이 새므로
-    저널을 안 싣는 `show` 로 묻는다(§Secrets · 실수 #406)."""
+    같이 찍고, 봇이 토큰을 가리기 전 판이 찍은 trade-bot 저널의 getUpdates 줄엔
+    **봇 토큰이 평문**이다(httpx 가 URL 을 INFO 로 찍었다 — 저널 보존기간 동안 남는다).
+    그 출력을 붙여 넣으면 토큰이 새므로 저널을 안 싣는 `show` 로 묻는다(§Secrets ·
+    실수 #406)."""
     return f"`systemctl show {unit}.service -p LoadState -p ActiveState -p SubState`"
 
 

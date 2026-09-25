@@ -357,8 +357,14 @@ def _module_pollution() -> list:
          `bot.world_quote` 자리)가 그대로 샜다.
     """
     bad = []
-    now = _sys.modules
-    for name, mod in list(now.items()):
+    # ⚠️ 살아 있는 `sys.modules` 를 순회하지 않는다 — 테스트가 띄운 백그라운드
+    # 스레드가 그 사이 import 하면 `dictionary changed size during iteration` 으로
+    # **가드 자신이** 그 테스트를 error 로 만든다(2026-09-25 `make test` 실측:
+    # TestIntlHighLow52 · 앞선 두 실행은 통과 = 타이밍 경쟁). `list(d.items())` 는
+    # 항목마다 튜플을 만들며 GC 가 돌 수 있어 그 틈에 스레드가 끼어든다 —
+    # `dict.copy()` 는 C 에서 한 번에 복사한다.
+    now = _sys.modules.copy()
+    for name, mod in now.items():
         if mod is None:
             continue            # None 은 파이썬이 실패한 import 자리에 넣는다
         prev = _MOD_BASELINE.get(name)

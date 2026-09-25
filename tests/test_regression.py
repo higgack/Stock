@@ -77286,6 +77286,33 @@ class TestSysModulesLeakGuard20260921:
         assert " failed" not in out and " error" not in out, out[-2500:]
         assert "passed" in out, out[-2500:]
 
+    def test_the_guard_snapshots_sys_modules_instead_of_iterating_it_live(self, tmp_path):
+        """가드가 살아 있는 `sys.modules` 를 순회하면, 테스트가 띄운 백그라운드
+        스레드의 import 가 그 사이 끼어들어 **가드 자신이** error 를 낸다
+        (2026-09-25 `make test` 실측 — TestIntlHighLow52 teardown ·
+        `dictionary changed size during iteration`, 앞선 두 실행은 통과했다).
+
+        ⚠️ 시간·스레드로 재면 단독 green · 전체 red 다(#128) — 순회 **도중에**
+        크기가 바뀌는 사전을 가짜로 끼워 결정적으로 재현한다. 옛 판(`list(
+        now.items())`)은 그 `items()` 를 불러 터지고, 스냅샷(`dict.copy()`)은
+        C 에서 복사해 가짜 `items()` 를 아예 안 부른다."""
+        out = self._run(tmp_path, (
+            "import sys\n"
+            "import conftest\n\n\n"
+            "class _Racy(dict):\n"
+            "    def items(self):\n"
+            "        it = iter(dict.items(self))\n"
+            "        yield next(it)\n"
+            "        self['_race_injected'] = None      # 다른 스레드의 import 흉내\n"
+            "        yield from it\n\n\n"
+            "class _Sys:\n"
+            "    modules = _Racy(sys.modules)\n\n\n"
+            "def test_snapshot(monkeypatch):\n"
+            "    monkeypatch.setattr(conftest, '_sys', _Sys())\n"
+            "    conftest._module_pollution()\n"))
+        assert "1 passed" in out and "error" not in out.lower().split("passed")[-1], out[-2500:]
+        assert "dictionary changed size" not in out, out[-2500:]
+
     def test_the_guard_lives_in_the_root_conftest(self):
         """`tests/conftest.py` 에 두면 `pytest bot/tests` 단독 실행에서 통째로
         안 걸린다 — 바깥 원천 차단이 루트에 있는 것과 **같은 이유**다(#24).
