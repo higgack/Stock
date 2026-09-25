@@ -129,7 +129,13 @@ fi
 # Best-effort: 나쁜양파(대만) 리스너 재시작 — listen_badonion.py 변경 시
 # (BeOn 리스너와 동일 클래스, 사용자 2026-07-10). sudoers 항목은
 # install-trade-units.sh 가 자기확장 설치.
-BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$' || true)
+# ⚠️ 리스너가 **import 하는** 모듈(관련성 필터 `badonion_sources` 와 그 파서들 ·
+# 재게시 보증 `relay_origins` · `tg_entities`)이 바뀌어도 재시작한다(실수 #411 —
+# 옛 판은 스크립트 파일만 봐서, 보증 형식이 바뀌면 리스너가 옛 형식으로 쓰고 새
+# 봇이 못 읽어 재게시 글을 버렸을 것이다). dashboard 와 같은 규칙(`^trade/[^/]+\.py$`)
+# 이고, 리스너의 trade.* import 폐포가 이 정규식에 걸리는지 회귀가 잰다
+# (`trade/tests/test_listen_badonion_vouch.py`).
+BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/[^/]+\.py$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-badonion-listener 2>/dev/null; then
         echo "trade-bot-update: also restarted trade-bot-badonion-listener"

@@ -1,9 +1,11 @@
 """Live Badonions(나쁜양파) → trade channel forwarder (Telethon listener).
 
-미러 of listen_beon.py (사용자 2026-07-10). 배포 주의: 이 파일 변경 시
-trade-auto-update 가 trade-bot-badonion-listener 서비스를 재시작해야 새
-코드가 로드된다(install-trade-units.sh 의 "active service content changed
-→ restart" 규칙, beon-listener 와 동일 패턴).
+미러 of listen_beon.py (사용자 2026-07-10). 배포 주의: 이 파일 **또는 이 파일이
+import 하는 trade 모듈**(관련성 필터 `badonion_sources` 와 그 파서들 · 재게시 보증
+`relay_origins` · `tg_entities`)이 바뀌면 trade-auto-update 가
+trade-bot-badonion-listener 서비스를 재시작한다 — 안 그러면 리스너가 옛 코드로 돈다
+(실수 #411: 옛 규칙은 이 파일만 봤다). 폐포가 그 규칙에 걸리는지는
+`trade/tests/test_listen_badonion_vouch.py` 가 소스에서 잰다.
 
 Long-running Telethon client that subscribes to NewMessage events on
 the Badonions channel and forwards each new post (or album) to the
@@ -41,6 +43,12 @@ Relevance filter (differs from listen_beon.py, 사용자 2026-07-11 — 실백�
 한국 수출을 추가할 때 실제로 로그 문구가 어긋났다(필터는 통과시키는데
 로그엔 '한국'이 없었다).
 
+재게시 글(나쁜양파가 다른 채널에서 퍼 온 글)은 큐에 넣기 **전에** 원래 출처를
+`trade.relay_origins` 에 보증한다(실수 #411) — 텔레그램은 포워드의 포워드에도
+원래 출처를 달아, 보증이 없으면 봇의 출처 게이트가 '다른 출처' 로 버린다
+(2026-09-25 27건). 보증을 못 쓰면 그 글은 큐에 넣지 않고 알린다 — 주기 sync 가
+다시 보증해 포워드한다.
+
 Lifecycle alerts (best-effort, never raise):
   🟢 <b>나쁜양파 리스너 가동</b>
   ⚠️ <b>나쁜양파 리스너 forward 실패</b>
@@ -72,6 +80,7 @@ from telethon.errors import (
 from trade.tg_entities import SessionFormatError  # noqa: E402
 
 from trade import badonion_sources as _srcs
+from trade import relay_origins as _relay
 
 load_dotenv()
 
@@ -139,6 +148,36 @@ def _notify(text: str) -> None:
         )
     except Exception as e:
         log.warning("notify failed: %s", e)
+
+
+def _vouch_before_queue(msgs, get_peer_id, *, what: str) -> bool:
+    """재게시 글을 봇이 받도록 포워드 큐에 넣기 **전에** 보증한다(실수 #411) → 넣어도 되나.
+
+    False = 보증을 못 썼다 — 넣지 않는다. 포워드하면 봇이 원래 출처로 받아 출처
+    게이트에서 버리고, 주기 sync 도 inbox 에 없으니 다시 포워드한다(그땐 보증을 다시
+    시도한다). 보증할 수 없는 포워드(원래 출처가 채널 글이 아님)는 막지 않고 센다 —
+    봇이 버리는 옛 동작 그대로다(`relay_origins` 못 보는 축). 형제 백필의
+    `_vouch_reposts` 와 같은 모듈을 쓴다(#38)."""
+    pairs, blind = _relay.repost_pairs(msgs, get_peer_id)
+    if blind:
+        log.warning("%s: 재게시 %d건은 원래 출처가 채널 글이 아니라 보증할 수 없다 — 봇의 "
+                    "출처 게이트가 버린다", what, blind)
+    if not pairs:
+        return True
+    try:
+        added = _relay.vouch(pairs, by="listener",
+                             path=_relay.path_in(_relay.default_dir()))
+    except Exception as exc:                                   # noqa: BLE001
+        why = f"{type(exc).__name__}: {exc}"[:200]
+        log.error("%s: 재게시 출처 보증 실패(%s) — 포워드하지 않는다(주기 sync 가 회수)",
+                  what, why)
+        _notify("⚠️ <b>나쁜양파 리스너 — 재게시 출처 보증 실패</b>\n"
+                f"{html.escape(why)}\n"
+                "포워드하지 않았다(하면 봇이 원래 출처로 받아 버린다). 데이터 디렉터리 "
+                "쓰기를 확인할 것 — 주기 sync 가 다시 보증해 포워드한다.")
+        return False
+    log.info("%s: vouched repost origin=%s (새로 %d건)", what, _relay.describe(pairs), added)
+    return True
 
 
 async def _forward_ids(client, source, dest, msg_ids: list[int]) -> bool:
@@ -215,6 +254,7 @@ async def _run_listener() -> int:
              _tutils.get_peer_id(source), _tutils.get_peer_id(dest))
 
     album_buf: dict[int, list[int]] = {}
+    album_msgs: dict[int, list] = {}          # 보증할 재게시 출처를 읽으려고(#411)
     album_relevant: dict[int, bool] = {}
     album_tasks: dict[int, asyncio.Task] = {}
     fwd_q: asyncio.Queue = asyncio.Queue()
@@ -225,9 +265,13 @@ async def _run_listener() -> int:
         try:
             await asyncio.sleep(ALBUM_DEBOUNCE_S)
             ids = album_buf.pop(gid, [])
+            msgs = album_msgs.pop(gid, [])
             relevant = album_relevant.pop(gid, False)
             album_tasks.pop(gid, None)
             if not ids:
+                return
+            if relevant and not _vouch_before_queue(
+                    msgs, _tutils.get_peer_id, what=f"album gid={gid}"):
                 return
             if relevant:
                 fwd_q.put_nowait(sorted(ids))
@@ -245,6 +289,9 @@ async def _run_listener() -> int:
         relevant_msg = _is_relevant(msg.text or "")
         gid = getattr(msg, "grouped_id", None)
         if gid is None:
+            if relevant_msg and not _vouch_before_queue(
+                    [msg], _tutils.get_peer_id, what=f"msg={msg.id}"):
+                return
             if relevant_msg:
                 fwd_q.put_nowait([msg.id])
                 log.info("queued msg=%d (q=%d)", msg.id, fwd_q.qsize())
@@ -253,6 +300,7 @@ async def _run_listener() -> int:
                          msg.id, _srcs.labels())
             return
         album_buf.setdefault(gid, []).append(msg.id)
+        album_msgs.setdefault(gid, []).append(msg)
         if relevant_msg:
             album_relevant[gid] = True
         if gid not in album_tasks:

@@ -92,6 +92,14 @@ dry-run 류(`--dry-run`·`--show-irrelevant`·`--find`)는 라이브 세션이 �
 깔아야 하는지 알린다. 옛 판은 생성자가 `too many values to unpack` 으로 알림
 경로 밖에서 죽었다.
 
+재게시 글(나쁜양파가 다른 채널에서 퍼 온 글)은 포워드하기 **직전에** 원래
+출처를 `trade.relay_origins` 에 보증한다(실수 #411) — 텔레그램은 포워드의
+포워드에도 원래 출처를 달아, 보증이 없으면 봇의 출처 게이트가 그 글을 '다른
+출처' 로 버린다(2026-09-25 27건 — kri 보드가 0개 회사였던 갈래). 보증을 못
+쓰면 그 유닛은 포워드하지 않는다(포워드하면 봇이 버리고 다음 틱이 또
+포워드한다) — 완료 알림이 그 수와 사유를 따로 말한다. `to-forward`·`find` 줄은
+재게시 유닛이면 원래 출처를 같이 찍는다.
+
 Run by systemd (trade-bot-badonion-sync.timer):
   Invoked without --since; uses the default window above — 3 days (realtime
   listener is the primary path, this is the downtime safety net), or 40 days
@@ -125,6 +133,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trade import badonion_sources as _srcs
 from trade import ignored as _ignored
+from trade import relay_origins as _relay
 
 
 def _is_relevant(text: str) -> bool:
@@ -420,6 +429,40 @@ def _unit_head(unit: list[Message], width: int = 160) -> tuple[str, str]:
     return when, head
 
 
+def _repost_note(unit: list[Message]) -> str:
+    """재게시 유닛이면 ` · 재게시 원래 출처 …` — `to-forward`·`find` 줄에 붙인다.
+
+    봇은 재게시 글을 **원래 출처**로 받는다 — 어느 유닛이 보증을 타는지 dry-run 이
+    미리 말해야, 실제 실행 뒤 봇 쪽 줄(`accepted … reason=relay_vouch`)과 대조된다
+    (실수 #411). 보증할 수 없는 포워드(개인 계정 글 등)도 센다 — 봇이 버린다."""
+    pairs, blind = _relay.repost_pairs(unit, _tutils.get_peer_id)
+    note = f" · 재게시 원래 출처 {_relay.describe(pairs)}" if pairs else ""
+    return note + (f" · 보증 못 하는 포워드 {blind}건(봇이 버린다)" if blind else "")
+
+
+def _vouch_reposts(unit: list[Message]) -> str:
+    """이 유닛의 재게시 글을 봇이 받도록 **포워드 전에** 보증한다 → 실패 사유("" = 성공
+    또는 보증할 것 없음). 실수 #411.
+
+    ⚠️ 실패하면 부르는 쪽이 그 유닛을 **포워드하지 않는다** — 포워드하면 봇이 원래
+    출처로 받아 출처 게이트에서 버리고, inbox 에 없으니 다음 동기화가 같은 글을 또
+    포워드해 또 버린다. 보증할 수 없는 포워드(원래 출처가 채널 글이 아님)는 막지
+    않고 센다 — 그건 봇이 버리는 옛 동작 그대로다(`relay_origins` 못 보는 축)."""
+    pairs, blind = _relay.repost_pairs(unit, _tutils.get_peer_id)
+    ids = [m.id for m in unit]
+    if blind:
+        log.warning("재게시 %d건은 원래 출처가 채널 글이 아니라 보증할 수 없다 msgs=%s — 봇의 "
+                    "출처 게이트가 버린다", blind, ids)
+    if not pairs:
+        return ""
+    try:
+        added = _relay.vouch(pairs, by="backfill", path=_relay.path_in(INBOX_DIR))
+    except Exception as exc:                                   # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"[:200]
+    log.info("vouched repost msgs=%s origin=%s (새로 %d건)", ids, _relay.describe(pairs), added)
+    return ""
+
+
 def _group_by_album(messages: list[Message]) -> list[list[Message]]:
     """Walk chronological messages and return a list of send-units:
     each unit is one standalone message OR one full album."""
@@ -693,8 +736,8 @@ async def run(
         # 리스너가 실시간으로 받으므로 평소 동기화에선 0줄이다.
         for u in units:
             when, head = _unit_head(u)
-            log.info("to-forward unit %s [%s]: %s", when,
-                     _srcs.unit_labels(u), head)
+            log.info("to-forward unit %s [%s]: %s%s", when,
+                     _srcs.unit_labels(u), head, _repost_note(u))
 
         if skipped_irrelevant and not show_irrelevant:
             # 새 형식은 늘 '드랍된 쪽'에 숨는다(2026-09-10 TSMC 월매출 — 여섯
@@ -732,8 +775,8 @@ async def run(
                         when, head = _unit_head(u)
                         if kind == "irrelevant" and first_irrelevant is None:
                             first_irrelevant = when[:10]
-                        log.info("find %s unit %s [%s]: %s", kind, when,
-                                 _srcs.unit_labels(u), head)
+                        log.info("find %s unit %s [%s]: %s%s", kind, when,
+                                 _srcs.unit_labels(u), head, _repost_note(u))
             if hits:
                 # 갈래별 수를 한 줄로 — 여러 건이 걸리면 어디에 몰렸는지가 곧
                 # 다음 수다(3차 리뷰 L4 — 세어 놓고 안 쓰던 계수).
@@ -781,13 +824,24 @@ async def run(
         skipped_units = 0
         consecutive_failures = 0
         failed_units: list = []
+        vouch_failed = 0                  # 재게시 보증을 못 써 포워드하지 않은 유닛(#411)
+        vouch_err = ""
         i = 0
         try:
             for i, unit in enumerate(units, 1):
                 if i == 1 or i % DISK_CHECK_EVERY_UNITS == 0:
                     await _maybe_pause_for_disk(forwarded_msgs, total_msgs)
 
-                ok = await _forward_unit(client, source, unit, dest)
+                verr = _vouch_reposts(unit)
+                if verr:
+                    # 포워드하지 않는다 — 봇이 원래 출처로 받아 버린다(실수 #411)
+                    ok = False
+                    vouch_failed += 1
+                    vouch_err = verr
+                    log.error("재게시 출처 보증 실패 msgs=%s (%s) — 포워드하지 않는다(봇이 "
+                              "버린다 · 다음 동기화가 다시 시도)", [m.id for m in unit], verr)
+                else:
+                    ok = await _forward_unit(client, source, unit, dest)
                 if ok:
                     forwarded_msgs += len(unit)
                     consecutive_failures = 0
@@ -814,6 +868,8 @@ async def run(
                             f"{consecutive_failures} consecutive forward "
                             f"failures — likely systemic (session/permission/"
                             f"network), not isolated per-message errors"
+                            + (f" · 그중 재게시 출처 보증 실패 {vouch_failed}건"
+                               f"({vouch_err})" if vouch_failed else "")
                         )
                 if i % 20 == 0:
                     pace = _current_pause(forwarded_msgs)
@@ -873,12 +929,17 @@ async def run(
             )
             if fwd_fallback_count:
                 _note += f"\n⚠️ 출처 불명 {fwd_fallback_count}건 포함"
-            if skipped_units:
+            if skipped_units - vouch_failed:
                 # '영구' 를 단정하지 않는다 — 자동 회수는 이 알림 뒤에 '다시 훑는다
                 # (N/3)' 판정을 붙여 한 통으로 보낸다(L6). '영구실패' 옆에 재시도를
                 # 적으면 한 알림이 두 말을 한다(#165 · 2차 리뷰가 로그에서 뺀 단정).
-                _note += (f"\n⚠️ 포워드 실패로 스킵된 unit {skipped_units}건"
+                _note += (f"\n⚠️ 포워드 실패로 스킵된 unit {skipped_units - vouch_failed}건"
                           "(삭제·포워드 불가 등일 수 있다)")
+            if vouch_failed:
+                # 보증 실패는 처방이 다르다(#82) — 삭제된 글을 찾으러 가게 하지 않는다.
+                _note += (f"\n❌ 재게시 출처 보증을 못 써 포워드하지 않은 unit {vouch_failed}건 "
+                          f"— {html.escape(vouch_err)} (데이터 디렉터리 쓰기 확인 · 다음 "
+                          "동기화가 다시 시도)")
             if defer:
                 stats["note"] = _note
             else:

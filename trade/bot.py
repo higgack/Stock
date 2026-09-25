@@ -59,6 +59,7 @@ from telegram.ext import (
 )
 
 from trade import cost, hs_lookup, hs_map, ignored, operator, watchlist
+from trade import relay_origins as _relay
 from trade.parser import parse_caption
 
 load_dotenv()
@@ -238,9 +239,37 @@ def _allowed_channel(chat_id: int) -> bool:
     return False
 
 
+def _origin_chat(post):
+    """포워드의 원래 채널 — 새 필드(`forward_origin.chat`) 우선, 옛 필드 폴백. 게이트·
+    버림 줄·보증 대조가 같은 규칙으로 읽는다(#38)."""
+    origin = getattr(post, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    if chat is None:
+        chat = getattr(post, "forward_from_chat", None)
+    return chat
+
+
+def _origin_msg_id(post):
+    """원래 채널의 글 번호 — `_serialize` 의 `forward_origin_message_id` 와 같은 규칙이다.
+    릴레이의 중복 제거 키(원래 채널, 원래 글번호)와 보증(`relay_origins`)이 이 짝을 쓴다."""
+    origin = getattr(post, "forward_origin", None)
+    return (getattr(origin, "message_id", None)
+            or getattr(post, "forward_from_message_id", None))
+
+
 def _origin_matches(post: Message) -> bool:
+    """출처 게이트가 이 글을 받나 — 판정은 `_origin_gate`(갈래까지 돌려준다)."""
+    return _origin_gate(post)[0]
+
+
+def _origin_gate(post: Message) -> tuple[bool, str]:
     """Accept a post if it's a real forward from any configured source
-    OR a copy-style forward whose body starts with the BeOn header.
+    OR a copy-style forward whose body starts with the BeOn header
+    OR a repost the Badonions relay vouched for (실수 #411) → (받나, 갈래).
+
+    갈래: 받으면 `any`(목록 없음) · `allowlist` · `beon_header` · `relay_vouch`,
+    버리면 보증 대조 결과 `n/a`(채널 글 포워드가 아니다) · `miss`(보증 없음) ·
+    `unreadable`(보증 기록을 못 읽었다) — 버림 줄의 `vouch=` 칸이 이걸 적는다.
 
     Discovery mode (SOURCE_ORIGINS unset) accepts everything. Multiple
     sources (comma-separated in TRADE_SOURCE_ORIGIN) match OR — needed
@@ -249,47 +278,75 @@ def _origin_matches(post: Message) -> bool:
     non-BeOn origin silently fails here and never reaches inbox.jsonl
     (no log line — this is exactly how the Badonion pipeline's forwards
     disappeared despite Telethon reporting them forwarded successfully).
-    A False here is now logged by the caller (`_log_origin_drop`, #406) —
-    this function stays a pure predicate so the tests can call it bare.
+    A False here is logged by the caller (`_log_origin_drop`, #406).
+    보증 기록 파일은 **목록·머리글로 못 받은 글에만** 읽는다 — 평소 수신은 그 전에
+    끝난다.
     """
     if not SOURCE_ORIGINS:
-        return True
+        return True, "any"
 
-    origin = getattr(post, "forward_origin", None)
-    chat = getattr(origin, "chat", None) if origin else None
-    if chat is None:
-        chat = getattr(post, "forward_from_chat", None)
-
+    chat = _origin_chat(post)
     if chat is not None:
         chat_username = (chat.username or "").lower()
         for src in SOURCE_ORIGINS:
             if src.lstrip("-").isdigit():
                 if chat.id == int(src):
-                    return True
+                    return True, "allowlist"
             elif chat_username == src:
-                return True
+                return True, "allowlist"
 
     body = post.text or post.caption or ""
     if _BEON_HEADER_RE.search(body):
-        return True
+        return True, "beon_header"
 
-    return False
+    return _vouch_lookup(post, chat)
+
+
+# 보증 기록을 못 읽은 사유는 프로세스당 사유마다 한 번만 적는다 — 건마다는 버림 줄의
+# `vouch=unreadable` 이 말한다(`_DROPPED_CHANNELS` 와 같은 규약).
+_VOUCH_WARNED: set[str] = set()
+
+
+def _vouch_lookup(post, chat) -> tuple[bool, str]:
+    """릴레이가 **이 글**(원래 채널, 원래 글번호)을 보증했나 — 실수 #411.
+
+    나쁜양파가 다른 채널에서 퍼 온 글은 텔레그램이 원래 출처를 달아 보내 위 목록에
+    안 걸린다(2026-09-25 27건을 여기서 버렸다). 릴레이가 포워드 **전에** 적어 둔 짝만
+    받는다 — 채널을 통째로 허용하지 않는 이유(BeOn 이 같은 채널의 무관 글을 되포워드
+    한다)는 `trade.relay_origins` 독스트링. 기록을 못 읽으면 받지 않는다 — 확인 못 한
+    글을 받으면 게이트가 없는 것과 같다."""
+    cid = getattr(chat, "id", None)
+    mid = _origin_msg_id(post)
+    if cid is None or mid is None:
+        return False, "n/a"
+    pairs, err = _relay.load(_relay.path_in(INBOX_DIR))
+    if err and err not in _VOUCH_WARNED:
+        _VOUCH_WARNED.add(err)
+        log.warning("relay_origins 를 못 읽었다(%s) — 보증된 재게시 글도 출처 게이트가 "
+                    "버린다(프로세스당 사유마다 1회만 기록)", err)
+    if _relay.is_vouched(pairs, cid, mid):
+        return True, "relay_vouch"
+    return False, ("unreadable" if err else "miss")
 
 
 def _origin_fields(post) -> tuple:
-    """포워드 출처 → (종류, 채널 ID, 사용자명) — 버림 줄과 예외 줄이 같은 규약으로 적는다
-    (#38). 종류는 텔레그램 `forward_origin.type` · 옛 필드만 있으면 'legacy' · 포워드가
-    아니면(운영자가 직접 쓴 글·명령) 'none'. `trade.bot_health` 가 이 셋으로 릴레이 원천의
-    글인지 가른다."""
+    """포워드 출처 → (종류, 채널 ID, 사용자명, 원래 글번호) — 버림 줄과 예외 줄이 같은
+    규약으로 적는다(#38). 종류는 텔레그램 `forward_origin.type` · 옛 필드만 있으면
+    'legacy' · 포워드가 아니면(운영자가 직접 쓴 글·명령) 'none'. `trade.bot_health` 가
+    이 넷으로 릴레이 원천의 글인지 가른다 — 원래 글번호는 릴레이가 보증한 재게시
+    글인지(`relay_origins`) 대조하는 열쇠다(실수 #411)."""
     origin = getattr(post, "forward_origin", None)
-    chat = getattr(origin, "chat", None) if origin else None
-    if chat is None:
-        chat = getattr(post, "forward_from_chat", None)
+    chat = _origin_chat(post)
     return (getattr(origin, "type", None) or ("legacy" if chat is not None else "none"),
-            getattr(chat, "id", None), getattr(chat, "username", None))
+            getattr(chat, "id", None), getattr(chat, "username", None), _origin_msg_id(post))
 
 
-def _log_origin_drop(post: Message) -> None:
+def _origin_title(post) -> str | None:
+    """원래 채널의 제목 — 사용자명이 없는 채널(비공개·ID 뿐)을 사람이 알아보게."""
+    return getattr(_origin_chat(post), "title", None)
+
+
+def _log_origin_drop(post: Message, vouch: str = "?") -> None:
     """출처 게이트가 버린 글을 **사유와 함께** 한 줄 남긴다.
 
     ⚠️ 왜 있나. 이 게이트는 2026-07-11 에 한 번 나쁜양파 포워드 68건을
@@ -298,12 +355,26 @@ def _log_origin_drop(post: Message) -> None:
     갔을 때 저널에 'ingested' 가 0 이었는데, 그 0 은 '못 받았다' 와 '받고
     여기서 버렸다' 를 가르지 못했다(실수 #406). 드물게만 일어나는 일이라
     건마다 적는다 — 운영자가 채널에 직접 쓴 글 정도다.
+
+    `vouch=` 는 릴레이 보증 대조 결과(`_origin_gate` 갈래), `origin_title` 은 원래
+    채널 제목이다 — 이 한 줄만 보고 '어느 채널의 어느 글이고 왜 못 받았나' 가 갈려야
+    한다(#356·#82). 제목은 사람이 붙인 자유 문자열이라 **줄 끝**에 repr 로 둔다.
     """
     log.info(
         "dropped msg=%s reason=origin origin_type=%s origin_chat=%s "
-        "origin_username=%s allowed_origins=%s",
+        "origin_username=%s origin_msg=%s allowed_origins=%s vouch=%s origin_title=%r",
         getattr(post, "message_id", None), *_origin_fields(post), sorted(SOURCE_ORIGINS),
+        vouch, _origin_title(post),
     )
+
+
+def _log_vouch_accept(post: Message) -> None:
+    """보증으로 받은 재게시 글 — 이 경로가 실제로 일했다는 **긍정 증거**다(#79).
+    `trade.bot_health` 가 센다."""
+    log.info("accepted msg=%s reason=relay_vouch origin_chat=%s origin_msg=%s "
+             "origin_title=%r", getattr(post, "message_id", None),
+             getattr(_origin_chat(post), "id", None), _origin_msg_id(post),
+             _origin_title(post))
 
 
 def _serialize(post: Message) -> dict:
@@ -480,9 +551,12 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    if not _origin_matches(post):
-        _log_origin_drop(post)
+    accepted, why = _origin_gate(post)
+    if not accepted:
+        _log_origin_drop(post, why)
         return
+    if why == "relay_vouch":
+        _log_vouch_accept(post)
 
     record = _serialize(post)
     _append_jsonl(record)
@@ -1404,7 +1478,7 @@ async def _on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     post = getattr(update, "channel_post", None)
     if post is not None:
         log.error("handler error update=channel_post msg=%s origin_type=%s origin_chat=%s "
-                  "origin_username=%s exc=%s: %s",
+                  "origin_username=%s origin_msg=%s exc=%s: %s",
                   getattr(post, "message_id", None), *_origin_fields(post),
                   type(err).__name__, err, exc_info=err)
         return
@@ -1443,11 +1517,14 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     # `drop_log=on` 은 이 프로세스가 게이트 버림을 저널에 적는 판이라는 표식이다
     # — `trade.bot_health` 는 이게 없으면 '버림 0건' 을 증거로 쓰지 않는다(옛 판은
-    # 버려도 아무것도 안 적었다, 실수 #406). 앞부분 "trade-bot starting" 은
-    # watchdog 가 grep 하므로 바꾸지 말 것(deploy/trade-watchdog.sh).
+    # 버려도 아무것도 안 적었다, 실수 #406). `relay_vouch=on` 은 릴레이가 보증한
+    # 재게시 글을 받는 판이라는 표식이다 — 없으면 `trade.bot_health` 가 ❓(rc 2)라
+    # 배포 직후 `bot_health && 다시 포워드` 가 봇 재시작 전에 흘러가지 않는다(실수
+    # #411·#409). 앞부분 "trade-bot starting" 은 watchdog 가 grep 하므로 바꾸지 말 것
+    # (deploy/trade-watchdog.sh).
     log.info(
         "trade-bot starting — inbox=%s media=%s allowed=%s origin=%s concurrency=%d "
-        "drop_log=on",
+        "drop_log=on relay_vouch=on",
         INBOX_PATH,
         MEDIA_ROOT,
         CHANNEL_CHAT_IDS or "<discovery>",
