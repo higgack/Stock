@@ -298,12 +298,13 @@ def test_history_reports_first_seen_against_the_cadence(tmp_path):
     lines = history_lines(ms, ecos_dir=ecos, fred_dir=fred)
     gdp = _block(lines, "한국 GDP")
     assert "규약 +30일" in gdp[0] and "캐시 67일치 2026-07-20~2026-09-25" in gdp[0], gdp
-    assert "2026Q1" in gdp[1] and "❓ 기록 시작 전부터 있었다" in gdp[1]
-    assert "2026Q2" in gdp[2] and "처음 본 날 2026-08-21 (기간 종료 +52일)" in gdp[2]
+    # 기간 칸은 카드와 같은 표기다(#418 — 옛 판은 원문 '2026Q1'·'202607', 계약을 다시 썼다 #222)
+    assert "2026 Q1" in gdp[1] and "❓ 기록 시작 전부터 있었다" in gdp[1]
+    assert "2026 Q2" in gdp[2] and "처음 본 날 2026-08-21 (기간 종료 +52일)" in gdp[2]
     assert "⚠️ 규약보다 최소 22일 늦게 실렸다" in gdp[2], gdp
-    assert "2027Q4" not in "\n".join(gdp), "다른 계열 파일이 섞였다"
+    assert "2027" not in "\n".join(gdp), "다른 계열 파일이 섞였다"
     ca = _block(lines, "경상수지")
-    assert "202607" in ca[2] and "(기간 종료 +37일)" in ca[2] and "✅ 규약 안" in ca[2], ca
+    assert "2026-07" in ca[2] and "(기간 종료 +37일)" in ca[2] and "✅ 규약 안" in ca[2], ca
     ex = _block(lines, "한국 수출")
     assert "customs:export_amt · ECOS 대조본" in ex[0]
     # 이 행은 ECOS **대조본**이다 — 카드는 관세청이라 이 지연을 안 탄다(리뷰 L13). 경고 글자를
@@ -533,3 +534,65 @@ def test_an_empty_fred_answer_is_remembered_and_a_yoy_success_clears_it(tmp_path
                         lambda url, timeout=None: calls.append(url) or _Resp(obs))
     assert mo._fetch_fred_yoy("CPIAUCSL")["time"] == "2026-07-01" and len(calls) == 3
     assert [k for k in mo._fred_fail if "_yoy_" in k] == [], mo._fred_fail
+
+
+# ── --history 표기·계수(2026-09-26 VM 출력이 드러냈다, 실수 #418) ─────────────────
+def test_history_labels_the_period_like_the_card(tmp_path):
+    """기간 칸이 원천 원문(`2026-04-01`)이면 옆의 '기간 종료 +N일' 을 **표시된 기간으로 검산할 수
+    없다** — 04-01 에서 08-01 은 +122일인데 줄은 +32일(분기 말 06-30 기준)이라 적는다(#33). 카드와
+    **같은 표기 함수**(`_fmt_asof`, 분기는 `_as_quarter` 경유, 일별은 날짜 그대로)로 적는다(#38)."""
+    from bot.scripts.macro_staleness_audit import history_lines
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    for d, t in (("2026-07-20", "2026-01-01"), ("2026-08-01", "2026-04-01")):
+        (fred / f"{_GDP}_{d}.json").write_text(json.dumps({"time": t}))
+    for d, t in (("2026-08-26", "2026-06-01"), ("2026-08-27", "2026-07-01")):
+        (fred / f"PCEPILFE_{d}.json").write_text(json.dumps({"time": t}))
+    for d, t in (("2026-09-23", "2026-09-21"), ("2026-09-24", "2026-09-22")):
+        (fred / f"DGS10_{d}.json").write_text(json.dumps({"time": t}))
+    for d, pts in (("2026-09-03", [["202606", 1.0]]), ("2026-09-04", [["202607", 2.0]])):
+        (ecos / f"series_v2_current_account_400_{d}.json").write_text(json.dumps(pts))
+    lines = history_lines(ms, ecos_dir=ecos, fred_dir=fred)
+    gdp = _block(lines, "미국 GDP")
+    assert gdp[2].split()[0] == "2026" and "2026 Q2" in gdp[2], gdp       # 분기: 카드와 같은 'YYYY Qn'
+    assert "(기간 종료 +32일)" in gdp[2] and "2026-04-01" not in gdp[2], gdp
+    assert "2026 Q1" in gdp[1] and "2026-01-01" not in gdp[1], gdp
+    pce = _block(lines, "미국 근원PCE")
+    assert pce[2].split()[0] == "2026-07" and "(기간 종료 +27일)" in pce[2], pce   # 월: 'YYYY-MM'
+    dgs = _block(lines, "미국 10Y")
+    assert dgs[2].split()[0] == "2026-09-22", dgs                           # 일별: 날짜 그대로
+    ca = _block(lines, "경상수지")
+    assert ca[2].split()[0] == "2026-07" and "202607" not in ca[2], ca     # ECOS 월도 같은 표기
+    # 표기는 카드 헤드라인 라벨과 같은 함수에서 나온다 — 카드가 바뀌면 같이 바뀐다
+    assert ms._fmt_asof(ms._as_quarter("2026-04-01")) == "2026 Q2"
+
+
+def test_history_counts_days_not_files_and_collapses_same_day_copies(tmp_path):
+    """국고채 10년은 매크로 카드와 유동성 보드가 **조회 길이가 다른** ECOS 파일을 매일 하나씩
+    만든다(`series_v2_kr10y_400_…` · `…_950_…`). 옛 판은 파일 수를 '캐시 N일치' 로 세어 31일
+    구간에 62일치라 적었고(2026-09-26 VM 출력, #45), 같은 날 두 파일의 최신 기간이 다르면
+    `직전 기록` 이 **같은 날**이 돼 하한이 상한보다 커졌다 — 규약+여유 당일에 처음 본 기간이
+    '⚠️ 늦게 실렸다' 로 뒤집힌다. 같은 날 파일은 하루로 합친다(그날 본 가장 새 기간)."""
+    from bot.scripts.macro_staleness_audit import history_lines, first_seen
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    # 규약 +1 · 여유 4 → 한도 5일. 09-15 분이 09-20(+5, 한도 당일)에 처음 보였다.
+    days = {"2026-09-18": ("20260914", "20260914"),
+            "2026-09-19": ("20260914", "20260914"),
+            "2026-09-20": ("20260914", "20260915")}   # 같은 날 한 파일만 새 기간
+    for d, (a, b) in days.items():
+        (ecos / f"series_v2_kr10y_400_{d}.json").write_text(json.dumps([[a, 3.0]]))
+        (ecos / f"series_v2_kr10y_950_{d}.json").write_text(json.dumps([[b, 3.0]]))
+    kr = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "국고채 10년")
+    assert "캐시 3일치 2026-09-18~2026-09-20" in kr[0], kr
+    last = kr[-1]
+    assert last.split()[0] == "2026-09-15" and "처음 본 날 2026-09-20 (기간 종료 +5일)" in last, kr
+    assert "✅ 규약 안" in last and "⚠️" not in last, kr
+    # 순수 함수도 같은 날을 하나로 — 직전 기록은 **앞선 날**이다
+    rows = [("2026-09-19", "20260914"), ("2026-09-20", "20260914"), ("2026-09-20", "20260915")]
+    assert first_seen(rows, "D")[-1] == ("20260915", "2026-09-20", "2026-09-19")
+    # 같은 날 못 읽은 파일만 있는 날은 '직전 기록' 이 되지 않는다(없었다는 증거가 아니다)
+    rows2 = rows + [("2026-09-21", "??")]
+    assert first_seen(rows2, "D") == first_seen(rows, "D")

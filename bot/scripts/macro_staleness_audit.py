@@ -24,7 +24,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-_PROBE_VER = 4
+# v5 = `--history` 기간 칸을 카드 표기로 · 같은 날 여러 사본을 하루로(2026-09-26 VM 출력, #418) — 옛
+#      출력(`캐시 62일치`·`2026-04-01`)과 새 출력을 배너로 가른다(#21)
+_PROBE_VER = 5
 
 
 def _p(*a):
@@ -272,18 +274,35 @@ def first_seen(daily: list[tuple[str, str]], freq: str) -> list[tuple[str, str, 
     것을 사실처럼 적지 않는다). 못 읽은 파일은 '없었다' 는 증거가 아니라 건너뛴다.
     기간 비교는 공표 규약과 같은 함수(`parse_period_end`)로 한다(#38)."""
     from bot.macro_cadence import parse_period_end
-    out: list[tuple[str, str, str]] = []
-    best: Optional[date] = None
-    prev = ""
-    for d, raw in sorted(daily):
+    # ⚠️ 같은 날 파일이 **여럿**일 수 있다 — 국고채 10년은 매크로 카드(400일)와 유동성 보드
+    # (950일)가 조회 길이가 다른 사본을 매일 하나씩 만든다. 날짜로 먼저 합친다(그날 본 가장 새
+    # 기간). 안 합치면 같은 날 두 사본의 기간이 갈릴 때 `직전 기록` 이 **같은 날**이 돼 하한이
+    # 상한보다 커지고, 한도 당일에 처음 본 기간이 '늦게 실렸다' 로 뒤집힌다(2026-09-26 VM, #418).
+    per_day: dict[str, tuple[date, str]] = {}
+    for d, raw in daily:
         end = parse_period_end(raw, freq)
         if end is None:
             continue
+        if d not in per_day or end > per_day[d][0]:
+            per_day[d] = (end, raw)
+    out: list[tuple[str, str, str]] = []
+    best: Optional[date] = None
+    prev = ""
+    for d in sorted(per_day):
+        end, raw = per_day[d]
         if best is None or end > best:
             out.append((raw, d, prev))          # 첫 기록이면 prev 는 아직 '' 다
             best = end
         prev = d
     return out
+
+
+def period_label(ms, raw: str, freq: str) -> str:
+    """history 줄의 기간 칸 — **카드와 같은 표기**(순수, #38). 원문(`2026-04-01`)을 그대로 찍으면
+    옆의 '기간 종료 +N일' 을 표시된 기간으로 검산할 수 없다(분기 말 06-30 기준인데 04-01 로 읽힌다,
+    #33). 분기는 `_as_quarter` 를 거쳐 'YYYY Qn', 일별은 날짜 그대로, 월은 'YYYY-MM'."""
+    s = ms._as_quarter(raw) if freq == "Q" else raw
+    return ms._fmt_asof(s, full=(freq == "D")) or raw
 
 
 def _history_daily(src: str, sid: str, ecos_dir: Path, fred_dir: Path) -> list[tuple[str, str]]:
@@ -358,9 +377,10 @@ def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Pa
             if freq == "E":
                 out.append(f"  {label:<14} {name:<30} ⚪ 이벤트성({why}) — 첫 등장 판정 안 함")
                 continue
-            days = sorted(d for d, _r in daily)
+            # 날짜 수 — 파일 수가 아니다(조회 길이가 다른 사본이 하루에 둘일 수 있다, #45·#418)
+            days = sorted({d for d, _r in daily})
             measured += 1
-            out.append(f"  {label:<14} {name:<30} 캐시 {len(daily)}일치 {days[0]}~{days[-1]}"
+            out.append(f"  {label:<14} {name:<30} 캐시 {len(days)}일치 {days[0]}~{days[-1]}"
                        f" · 규약 +{lag}일({why})")
             limit = lag + GRACE_DAYS
             for raw, d, prev in first_seen(daily, freq)[-keep:]:
@@ -384,7 +404,8 @@ def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Pa
                         verdict = "✅ 규약 안"
                     else:
                         verdict = "❓ 기록 사이가 비어 규약 안인지 못 가른다"
-                out.append(f"      {raw:<12} 처음 본 날 {d} (기간 종료 +{hi}일){gap}  {verdict}")
+                out.append(f"      {period_label(ms, raw, freq):<12} 처음 본 날 {d} "
+                           f"(기간 종료 +{hi}일){gap}  {verdict}")
     return out, measured, total
 
 
