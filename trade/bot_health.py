@@ -20,7 +20,10 @@
 게이트의 판정이지 수신 실패가 아니다. BeOn 은 다른 채널(AWAKE 플러스 등)의 글을
 그대로 되포워드하는데, 텔레그램은 포워드의 포워드에도 **원래 출처**를 달아 봇이
 그 글을 출처 게이트에서 버린다 — 그걸 '못 받았다' 로 세면 매번 거짓 누락이다
-(독립 리뷰 H2). 릴레이 원천의 글을 버렸으면 그건 따로 ❌ 다.
+(독립 리뷰 H2). 릴레이 원천의 글을 버렸으면 그건 따로 ❌ 다. ⚠️ 다른 출처 포워드의
+버림은 **판정하지 않는다** — 나쁜양파가 재게시한 관련 글(다른 채널에서 퍼 온 글)도 같은
+모양으로 와서 여기선 BeOn 되포워드와 못 가른다(3차 독립 리뷰 M2). ⚠️ 메모가 출처·건수와
+가르는 명령(`FIND_CMD` — 그 글이 여전히 to-forward 면 손실)을 말한다.
 
 판정은 **지금 도는 프로세스(MainPID)의 줄**로 한다 — 재시작 전 프로세스의 409·
 버림·예외로 놓친 릴레이 글은 옛 판·옛 설정의 일이라 지금 상태의 증거가 아니다(사실
@@ -85,6 +88,11 @@ _SERVICE = f"{_UNIT}.service"
 _REPO = Path(__file__).resolve().parents[1]
 _KST = timezone(timedelta(hours=9))
 USAGE = "cd ~/stock-trade && .venv/bin/python -m trade.bot_health"
+# 한 글이 **어느 갈래**(포워드할 것 · 이미 inbox · 필터 밖)인지 보는 명령 — 수로 센 메모
+# 끝에서 '다음 수' 로 건넨다(3차 독립 리뷰 M2·M3). 인터프리터는 동기화 유닛과 같은
+# `.backfill-venv`(deploy/trade-bot-badonion-sync.service) · `--find` 는 dry-run 을 강제한다.
+FIND_CMD = ("cd ~/stock-trade && .backfill-venv/bin/python trade/scripts/backfill_badonion.py "
+            "--dry-run --since <YYYY-MM-DD> --find <글자>")
 
 # 텔레그램엔 이것만 묻는다 — 목록 밖 메서드는 `tg_call` 이 거부한다.
 READ_ONLY_METHODS = ("getMe", "getWebhookInfo", "getChatMember", "getChat")
@@ -362,8 +370,11 @@ def forward_drops(drops_origin, relay_names=(), relay_ids=()) -> list[dict]:
     글인지(`relay`) 표시해 돌려준다. 순수 함수.
 
     버린 포워드는 봇이 **받은** 것이다 — 대조(`delivery_gap`)에선 받음으로 센다. 그중
-    릴레이 원천의 글은 설정이 틀려 잃은 것이라 따로 ❌·알림이고, 다른 곳의 글(BeOn 이
-    되포워드한 AWAKE 플러스 등)은 게이트가 제 일을 한 것이다."""
+    릴레이 원천의 글은 설정이 틀려 잃은 것이라 따로 ❌·알림이다. 다른 출처의 글은 **여기서
+    못 가른다**(3차 독립 리뷰 M2) — BeOn 이 되포워드한 AWAKE 플러스면 게이트가 제 일을 한
+    것이지만, 나쁜양파가 **재게시**한 글(다른 채널에서 퍼 온 글)이면 릴레이는 관련 글만
+    포워드하므로 손실이다. 텔레그램은 재포워드에도 원래 출처를 달아 둘이 같은 모양으로
+    온다 — 판정하지 않고 사실(출처·건수)만 메모로 말한다(#165)."""
     return [{**d, "relay": bool(relay_origin(d, relay_names, relay_ids))}
             for d in drops_origin or [] if d.get("type") != "none"]
 
@@ -624,7 +635,11 @@ def verdict(f: dict) -> tuple[int, list[str]]:
                      + (f"·출처 게이트 버림 줄은 {gd}건" if gd else "")
                      + "이다 — 모자란 만큼은 inbox 에 안 들어갔다고 봐야 한다(수로 센 것이라 "
                      "어느 글인지는 모른다). 지금 판정이 이상 없으면 그 기간을 다시 포워드할 "
-                     "것 — 백필은 inbox 에 이미 있는 글을 건너뛴다")
+                     "것 — 백필은 inbox 에 이미 있는 글을 건너뛴다. ⚠️ 손으로 돌린 백필은 "
+                     "저널에 안 남아 위 '포워드' 수에 안 든다 — 이미 다시 포워드했는데도 이 "
+                     "수가 그대로면 봇이 그 글을 못 받은 것이다(수로 센 것이라 단정은 못 한다). "
+                     "같은 포워드를 되풀이하지 말고 그 글이 어느 갈래인지부터 볼 것: "
+                     f"`{FIND_CMD}`")
 
     tg = f.get("tg") or {}
     dest = (f.get("env") or {}).get("dest")
@@ -780,9 +795,18 @@ def verdict(f: dict) -> tuple[int, list[str]]:
                          f"다른 출처 포워드 {len(other_src)}"
                          + (f": {', '.join(names[:3])}{' 외' if len(names) > 3 else ''}"
                             if names else "")
-                         + ") — 게이트가 제 일을 한 것이다. 다른 출처 포워드는 BeOn 처럼 남의 "
-                         "글을 되포워드하는 원천에서 온다(텔레그램이 원래 출처를 단다) — 그 "
-                         "출처의 글도 받으려면 .env TRADE_SOURCE_ORIGIN 에 더하고 봇 재시작")
+                         + ")"
+                         # 직접 쓴 글은 데이터가 아니다 — 거기까지만 '제 일' 이라 말한다. 다른
+                         # 출처 포워드는 여기서 못 가른다(3차 독립 리뷰 M2): 단정하지 않고 가르는
+                         # 방법을 건넨다(#165 — 옛 판은 둘 다 '게이트가 제 일을 한 것' 이라 했다).
+                         + (" — 다른 출처 포워드는 여기서 못 가른다: BeOn 이 되포워드한 남의 "
+                            "글(AWAKE 플러스 등)이면 게이트가 제 일을 한 것이지만, 나쁜양파가 "
+                            "**재게시**한 글(다른 채널에서 퍼 온 글 — 텔레그램은 재포워드에도 "
+                            "원래 출처를 단다)이면 릴레이는 관련 글만 포워드하므로 손실이다. 그 "
+                            f"글이 `{FIND_CMD}` 에서 to-forward 로 남으면 손실이다 — 그 출처를 "
+                            ".env TRADE_SOURCE_ORIGIN 에 더하고 봇 재시작 뒤 그 기간을 다시 포워드"
+                            if other_src else
+                            " — 채널에 직접 쓴 글·명령이라 게이트가 제 일을 한 것이다"))
         # 받은 채널 글을 처리하다 예외로 끝나 수신 줄이 **없는** 번호는 손실의 직접 증거다
         # — 수 대조(gap)와 무관하게 판정한다. 수는 번호로 짝을 짓지 않아 같은 창의 다른 글
         # 수신·버림이 그 손실을 덮는다(2차 독립 리뷰 H1 — 옛 판은 누락이 보일 때만 ❌ 로
@@ -795,9 +819,15 @@ def verdict(f: dict) -> tuple[int, list[str]]:
         unk_lost = [e for e in lost if e["relay"] is None]
         other_lost = [e for e in lost if e["relay"] is False]
         if mine_lost:
+            # ⚠️ 다시 포워드한 글은 비공개 채널에서 **새 번호**를 받아 이 예외 줄과 짝이 안
+            # 맞는다 — 고치고 다시 포워드해 받았어도 이 줄이 창에 남는 동안 ❌ 가 남는다(3차
+            # 독립 리뷰 M1). 번호로 복구를 알아볼 수 없으니 그 사실과 창을 좁히는 법을 적는다.
             bad.append(f"봇이 릴레이 원천의 채널 글 {len(mine_lost)}건을 처리하다 예외로 놓쳤다"
                        f"(번호 {_msgs(mine_lost)}) — 수신 줄 없이 끝나 inbox 에 없다. 원인을 "
-                       "고친 뒤 그 기간을 다시 포워드할 것. 예: " + mine_lost[-1]["line"][-240:])
+                       "고친 뒤 그 기간을 다시 포워드할 것(다시 포워드한 글은 새 번호로 들어와 "
+                       "이 줄과 짝이 안 맞는다 — 이미 다시 포워드해 받았다면 이 ❌ 는 이 줄이 "
+                       "창에 남는 동안 계속 뜬다: 다시 포워드한 **뒤** 시각으로 --since 를 좁혀 "
+                       "다시 볼 것). 예: " + mine_lost[-1]["line"][-240:])
         if unk_lost:
             unk.append(f"봇이 채널 글 {len(unk_lost)}건을 처리하다 예외로 놓쳤는데(번호 "
                        f"{_msgs(unk_lost)} — inbox 에 없다) 그 줄은 포워드 출처를 적지 않는 판이 "
@@ -1272,7 +1302,10 @@ def delivery_check(window_s: int, *, seen=(), now: datetime | None = None,
 def gap_needs_alert(g: dict) -> bool:
     """알릴 일인가 — **아직 안 알린** 사실 중에 ① 포워드의 누락(`fresh`) ② 예외로 놓친 글
     (릴레이 원천이거나 출처를 모르는 것) ③ 릴레이 원천 글의 출처 게이트 버림이 있다. 다른
-    출처의 버림(BeOn 이 되포워드한 남의 글)은 게이트가 제 일을 한 것이라 알리지 않는다(#260)."""
+    출처의 버림은 알리지 않는다 — BeOn 이 되포워드한 남의 글이 대부분이라 매시간 못 고칠
+    경고가 된다(#260). ⚠️ 그래서 나쁜양파가 **재게시**한 관련 글의 버림(3차 독립 리뷰 M2)은
+    여기서 안 보인다 — 여기선 둘을 못 가른다. `python -m trade.bot_health` 의 메모가
+    출처·건수와 가르는 방법(`FIND_CMD`)을 말한다."""
     return ((g.get("fresh") or {}).get("kind") in ("total", "partial")
             or bool(g.get("new_lost")) or bool(g.get("new_drops")))
 

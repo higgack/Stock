@@ -68,12 +68,17 @@ MARKER_DIR.mkdir(parents=True, exist_ok=True)
 CYCLE_GAP_DAYS = int(os.environ.get("TRADE_CYCLE_GAP_DAYS") or "2")
 
 
-def _notify(text: str) -> None:
+def _notify(text: str) -> bool:
+    """채널로 한 통 — **전달됐는가**를 돌려준다(텔레그램이 ok:true 로 답했을 때만 True).
+
+    ⚠️ 왜 돌려주나(3차 독립 리뷰 M4). 수신 누락 알림은 알린 사실을 기록해 다시 안 알리는데,
+    전달 실패(429·네트워크)도 '알렸다' 로 기록하면 그 사실은 **영영** 안 알려진다 —
+    기록은 전달된 뒤에만 한다. 건너뜀(토큰 없음)도 전달이 아니다(False)."""
     token = os.environ.get("TRADE_BOT_TOKEN")
     chat_ids = os.environ.get("TRADE_CHANNEL_CHAT_IDS", "")
     if not token or not chat_ids:
         log.info("notify skipped: no TRADE_BOT_TOKEN / TRADE_CHANNEL_CHAT_IDS")
-        return
+        return False
     chat_id = chat_ids.split(",")[0].strip()
     try:
         r = subprocess.run(
@@ -95,8 +100,13 @@ def _notify(text: str) -> None:
         if r.returncode != 0 or '"ok":true' not in body.replace(" ", ""):
             log.warning("notify not delivered: rc=%s len=%d resp=%s",
                         r.returncode, len(text), body[:200])
+            return False
+        return True
     except Exception as e:
-        log.warning("notify failed: %s", e)
+        # 예외 문구는 찍지 않는다 — subprocess.TimeoutExpired 는 명령줄 전체(토큰이 든 URL)를
+        # 문구에 싣는다(§Secrets). 종류만으로 '시간 초과 / 실행 불가' 는 갈린다.
+        log.warning("notify failed: %s", type(e).__name__)
+        return False
 
 
 def _alert_once_per_window(marker_name: str, window_seconds: int) -> bool:
@@ -235,9 +245,11 @@ def _load_alerted(now: float | None = None) -> dict:
 
 def _save_alerted(seen: dict) -> None:
     """원자적으로 쓴다(임시 파일 → rename) — 쓰다 만 파일을 다음 실행이 읽어 기록을
-    통째로 잃지 않게(#379). 못 쓰면 경고만."""
+    통째로 잃지 않게(#379). 못 쓰면 경고만. 임시 파일 이름엔 PID 를 붙인다 — 타이머 실행과
+    손으로 돌린 실행이 겹쳐도 서로의 임시 파일을 덮어 섞지 않는다(3차 독립 리뷰 L3).
+    두 실행이 같은 사실을 둘 다 알리는 것까지는 막지 않는다(잠금 없음 — 드물고 무해하다)."""
     p = MARKER_DIR / DELIVERY_ALERTED
-    tmp = p.with_name(p.name + ".tmp")
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(seen, sort_keys=True), encoding="utf-8")
         os.replace(tmp, p)
@@ -249,8 +261,11 @@ def _save_alerted(seen: dict) -> None:
 def check_delivery_gap() -> None:
     """릴레이가 포워드한 만큼 trade-bot 이 받았나 — 못 받았거나, 채널 글을 처리하다 예외로
     놓쳤거나, 받고 릴레이 원천의 글을 출처 게이트에서 버렸으면 ⚠️ (실수 #406). 다른
-    출처의 버림(BeOn 이 되포워드한 남의 글)은 알리지 않는다 — 게이트가 제 일을 한
-    것이다(독립 리뷰 H2). 같은 사실은 한 번만(2차 독립 리뷰 L4)."""
+    출처의 버림은 알리지 않는다 — BeOn 이 되포워드한 남의 글이 대부분이라 매시간 못 고칠
+    경고가 된다(독립 리뷰 H2). ⚠️ 나쁜양파가 **재게시**한 관련 글의 버림도 그래서 여기선
+    안 보인다(3차 독립 리뷰 M2 — `bot_health.gap_needs_alert` 독스트링). 같은 사실은 한 번만
+    (2차 독립 리뷰 L4) — 기록은 알림이 **전달된 뒤에만** 한다(3차 독립 리뷰 M4: 전달 실패를
+    '알렸다' 로 적으면 그 사실은 영영 안 알려진다)."""
     from trade import bot_health as bh
 
     seen = _load_alerted()
@@ -267,7 +282,11 @@ def check_delivery_gap() -> None:
         return
     msg = bh.gap_alert_text(g)
     log.warning("delivery gap: %s", msg.replace("\n", " | "))
-    _notify(msg)
+    if not _notify(msg):
+        # 전달이 안 됐으면 기록하지 않는다 — 다음 실행(1시간 뒤)이 같은 사실을 다시 알린다.
+        log.warning("delivery_gap: 알림이 전달되지 않아 기록하지 않았다 — 다음 실행이 다시 "
+                    "알린다(사실 %d건)", len(g.get("ids") or []))
+        return
     now = time.time()
     seen.update({i: now for i in g.get("ids") or []})
     _save_alerted(seen)

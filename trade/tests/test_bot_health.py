@@ -562,7 +562,8 @@ def hc(tmp_path, monkeypatch):
     from trade.scripts import health_check as hc
     monkeypatch.setattr(hc, "MARKER_DIR", tmp_path)        # 운영 ~/.trade 를 안 건드린다(#30)
     sent = []
-    monkeypatch.setattr(hc, "_notify", lambda msg: sent.append(msg))
+    # 전달됐다고 답한다 — 기록은 전달된 알림만 한다(3차 독립 리뷰 M4). 실패는 따로 잰다.
+    monkeypatch.setattr(hc, "_notify", lambda msg: sent.append(msg) or True)
     hc._sent = sent
     return hc
 
@@ -745,8 +746,10 @@ def test_delivery_check_relay_journal_unreadable_is_unknown():
 
 def test_benign_drops_are_notes_not_failures():
     """버림이 다 결함은 아니다(#82) — 봇이 관리자인 **다른** 채널의 글, 운영자가 채널에
-    직접 쓴 글, 릴레이가 아닌 곳의 포워드는 게이트가 제 일을 한 것이다. 그걸 ❌ 로
-    세면 매번 거짓 경보가 되고 진짜 ❌ 를 가린다(#260)."""
+    직접 쓴 글은 게이트가 제 일을 한 것이다. 릴레이가 아닌 곳의 포워드는 **여기서 못
+    가른다**(3차 독립 리뷰 M2 — 나쁜양파의 재게시면 손실이다, 문구는 아래 전용 테스트).
+    어느 쪽이든 ❌ 로 세면 BeOn 되포워드마다 거짓 경보가 되고 진짜 ❌ 를 가린다(#260) —
+    그래서 ⚠️ 메모이고 rc 는 0 이다."""
     f = _good()
     f["journal"] = bh.journal_facts([
         _poll("2026-09-25T08:29:50"),
@@ -1894,3 +1897,208 @@ def test_collect_counts_receipts_before_since_for_a_run_that_ended_inside_it():
                    tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
     assert f["journal"]["ingested"] == []                  # 판정 창엔 수신 줄이 없다
     assert (f["gap"]["kind"], f["gap"]["got"], f["gap"]["guessed"]) == ("ok", 3, True), f["gap"]
+
+
+# ── 3차 독립 리뷰(e5b528a..abf0836) 반영 ─────────────────────────────────
+
+def _note_with(out: str, needle: str) -> str:
+    """판정 출력에서 `needle` 이 든 **그 줄 하나** — 페이지 전체 grep 은 다른 줄이 대신
+    만족시킨다(#55·#75)."""
+    got = [ln for ln in out.splitlines() if needle in ln]
+    assert len(got) == 1, (needle, out)
+    return got[0]
+
+
+def test_other_origin_drops_are_not_called_benign_and_say_how_to_tell():
+    """3차 독립 리뷰 M2 — 다른 출처 포워드의 버림을 '게이트가 제 일을 한 것' 이라 **단정**했다.
+    나쁜양파는 관련 글만 포워드하는데 그 채널이 **재게시**한 글(다른 채널에서 퍼 온 글)은
+    텔레그램이 원래 출처를 달아 BeOn 의 AWAKE 되포워드와 같은 모양으로 온다 — 여기선 둘을 못
+    가른다(#165). 판정은 그대로 ⚠️(rc 0 — BeOn 되포워드마다 ❌·❓ 면 `bot_health && 백필`
+    이 늘 막히고 진짜 ❌ 를 가린다, #260), 대신 메모가 단정을 빼고 가르는 명령을 건넨다.
+    반대 증거: 직접 쓴 글만이면 '제 일' 이라 말해도 참이다(데이터가 아니다)."""
+    f = _good()
+    f["journal"] = bh.journal_facts([
+        _poll("2026-09-25T08:29:50"),
+        _drop("2026-09-25T08:00:02", 6, -100777, "badonion_kr"),
+    ])
+    rc, out = _v(f)
+    assert rc == 0, out
+    note = _note_with(out, "다른 출처 포워드 1: @badonion_kr")
+    assert note.startswith("⚠️"), note
+    assert "여기서 못 가른다" in note and "재게시" in note, note
+    assert bh.FIND_CMD in note and "to-forward" in note, note
+    assert "TRADE_SOURCE_ORIGIN" in note, note
+    # 옛 판의 단정 — 다른 출처가 섞이면 '제 일' 은 **조건부**로만 나온다
+    assert "게이트가 제 일을 한 것이다" not in note, note
+    # 반대 증거: 직접 쓴 글만 — 거기엔 가를 것이 없다
+    f["journal"] = bh.journal_facts([
+        _poll("2026-09-25T08:29:50"),
+        _jl("2026-09-25T08:00:01", "dropped msg=5 reason=origin origin_type=none "
+                                   "origin_chat=None origin_username=None allowed_origins=['x']"),
+    ])
+    rc2, out2 = _v(f)
+    note2 = _note_with(out2, "직접 쓴 글 1 · 다른 출처 포워드 0")
+    assert rc2 == 0 and "채널에 직접 쓴 글·명령이라 게이트가 제 일을 한 것이다" in note2, note2
+    assert "재게시" not in note2 and bh.FIND_CMD not in note2, note2
+
+
+def test_find_cmd_uses_the_sync_units_interpreter_and_real_flags():
+    """메모가 건네는 명령은 **실재하는 인터프리터·플래그**여야 한다(#316·#371 — 기억으로 적은
+    플래그가 unrecognized arguments 로 한 라운드를 태웠다). 동기화 유닛의 ExecStart 와
+    백필의 argparse 에서 잰다."""
+    unit = (_REPO / "deploy" / "trade-bot-badonion-sync.service").read_text(encoding="utf-8")
+    exec_start = next(ln for ln in unit.splitlines() if ln.startswith("ExecStart="))
+    interp, script = exec_start.split("=", 1)[1].split()[:2]
+    assert interp.endswith("/stock-trade/.backfill-venv/bin/python"), exec_start
+    assert f".backfill-venv/bin/python {script}" in bh.FIND_CMD, (exec_start, bh.FIND_CMD)
+    assert bh.FIND_CMD.startswith("cd ~/stock-trade && "), bh.FIND_CMD
+    tree = ast.parse((_REPO / "trade" / "scripts" / "backfill_badonion.py").read_text(
+        encoding="utf-8"))
+    flags = {a.value for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "attr", "") == "add_argument"
+             for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+    used = {tok for tok in bh.FIND_CMD.split() if tok.startswith("--")}
+    assert used == {"--dry-run", "--since", "--find"} and used <= flags, (used, flags)
+
+
+def test_exception_red_line_says_reforwarded_posts_get_new_ids():
+    """3차 독립 리뷰 M1 — 예외로 놓친 릴레이 글의 ❌ 는 '다시 포워드할 것' 을 처방하는데,
+    다시 포워드한 글은 비공개 채널에서 **새 번호**를 받아 그 예외 줄과 짝이 안 맞는다 —
+    고치고 다시 포워드해 받았어도 줄이 창에 남는 동안 ❌ 가 남는다(재현: 27건 예외 → 디스크
+    정리 → 새 번호로 27건 수신 → 여전히 rc 1). 번호로 복구를 알아볼 수 없으니 그 사실과 창을
+    좁히는 법을 **그 ❌ 줄에** 적는다."""
+    f = _good()
+    f["journal"] = bh.journal_facts([_start(), _poll("2026-09-25T08:29:50"),
+                                     _exc("2026-09-25T07:50:05", 77)])
+    rc, out = _v(f)
+    red = _note_with(out, "예외로 놓쳤다(번호 77)")
+    assert rc == 1 and red.startswith("❌"), out
+    assert "새 번호" in red and "--since" in red and "다시 포워드한 **뒤** 시각" in red, red
+
+
+def test_pre_restart_shortfall_note_says_manual_backfills_are_invisible():
+    """3차 독립 리뷰 M3 — 재시작 전 모자람 메모는 '그 기간을 다시 포워드할 것' 으로 끝났는데,
+    손으로 돌린 백필은 저널에 안 남아 '포워드' 수에 안 들어 그 메모가 **다시 포워드한 뒤에도
+    그대로** 남는다 — 같은 처방을 되풀이하게 만드는 순환이다. 메모가 그 사실과 '어느 갈래인지
+    먼저 볼 것' 을 말한다."""
+    f = _good()
+    f["running"] = bh.parse_start_line(_start(ts="2026-09-25T08:00:00"))
+    f["gap_before"] = bh.delivery_gap(
+        [_fwd(datetime(2026, 9, 25, 7, 49, 9, tzinfo=_KST), 27, done=True,
+              who="backfill_badonion")], [], NOW)
+    assert f["gap_before"]["kind"] == "total", f["gap_before"]
+    rc, out = _v(f)
+    note = _note_with(out, "지금 프로세스가 뜨기 전")
+    assert rc == 0 and note.startswith("⚠️"), out
+    assert "손으로 돌린 백필은 저널에 안 남아" in note and bh.FIND_CMD in note, note
+    assert "되풀이하지 말고" in note, note
+
+
+def test_hourly_alert_is_recorded_only_when_delivered(hc, monkeypatch, caplog):
+    """3차 독립 리뷰 M4 — 알림 전달이 실패해도(429·네트워크) 사실을 '알렸다' 로 기록해 다음
+    실행이 다시 안 알렸다(재현: 429 → 'notify not delivered' 경고 → 신원 기록 → 재시도 없음).
+    '한 번만' 은 '한 번 시도' 가 아니라 '한 번 **전달**' 이어야 한다. 대조군: 전달되면 기록하고
+    그 다음은 조용하다."""
+    fwd = _jl("2026-09-25T07:49:09", "done: forwarded 27 of 27 candidate messages "
+              "(skipped_units=0)", logger="backfill_badonion", pid=99)
+    _drive(monkeypatch, bot=[_poll("2026-09-25T08:29:50")], relay=[fwd])
+    tries = []
+    monkeypatch.setattr(hc, "_notify", lambda msg: tries.append(msg) or False)
+    with caplog.at_level(logging.WARNING, logger="health-check"):
+        hc.check_delivery_gap()
+    assert len(tries) == 1 and "27건" in tries[0], tries
+    assert not (hc.MARKER_DIR / hc.DELIVERY_ALERTED).exists()
+    assert any("전달되지 않아 기록하지 않았다" in r.getMessage() for r in caplog.records)
+    # 다음 실행 — 같은 사실을 다시 알린다(이번엔 전달된다) · 그 다음은 조용하다
+    monkeypatch.setattr(hc, "_notify", lambda msg: tries.append(msg) or True)
+    hc.check_delivery_gap()
+    hc.check_delivery_gap()
+    assert len(tries) == 2 and tries[1] == tries[0], tries
+    saved = json.loads((hc.MARKER_DIR / hc.DELIVERY_ALERTED).read_text(encoding="utf-8"))
+    assert len(saved) == 1 and next(iter(saved)).startswith("fwd:"), saved
+
+
+def test_notify_reports_delivery_and_never_logs_the_command(monkeypatch, caplog):
+    """`_notify` 가 **전달됐는가**를 돌려준다(3차 독립 리뷰 M4) — ok:true 일 때만 True,
+    건너뜀(토큰 없음)·거절·예외는 False. 예외 문구는 찍지 않는다: subprocess.TimeoutExpired
+    는 명령줄 전체(토큰이 든 URL)를 문구에 싣는다(§Secrets)."""
+    import subprocess
+
+    from trade.scripts import health_check as hc
+
+    tok = "123456789" + ":" + "AAH" + "x" * 32                # 조립한다 — 리터럴은 스캐너에 걸린다
+    monkeypatch.setenv("TRADE_BOT_TOKEN", tok)
+    monkeypatch.setenv("TRADE_CHANNEL_CHAT_IDS", "-100123")
+
+    def run_with(stdout: bytes, rc: int = 0):
+        return lambda cmd, **kw: subprocess.CompletedProcess(cmd, rc, stdout, b"")
+    monkeypatch.setattr(hc.subprocess, "run", run_with(b'{"ok": true, "result": {}}'))
+    assert hc._notify("hi") is True
+    monkeypatch.setattr(hc.subprocess, "run", run_with(
+        b'{"ok":false,"error_code":429,"description":"Too Many Requests"}'))
+    assert hc._notify("hi") is False
+    monkeypatch.setattr(hc.subprocess, "run", run_with(b"", rc=28))
+    assert hc._notify("hi") is False
+
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 15)
+    monkeypatch.setattr(hc.subprocess, "run", boom)
+    with caplog.at_level(logging.WARNING, logger="health-check"):
+        assert hc._notify("hi") is False
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("TimeoutExpired" in m for m in msgs), msgs
+    assert not any(tok in m for m in msgs), msgs
+    monkeypatch.delenv("TRADE_BOT_TOKEN")
+    assert hc._notify("hi") is False                       # 건너뜀도 전달이 아니다
+
+
+def test_save_alerted_is_atomic_and_per_process(hc, monkeypatch, caplog):
+    """3차 독립 리뷰 L3 — '원자적 쓰기' 를 문서가 적는데 그걸 재는 테스트가 없었다(비원자적
+    쓰기 뮤테이션 M25 생존). 교체(rename)가 실패하면 **옛 기록이 그대로** 남아야 하고, 임시
+    파일 이름엔 PID 가 붙어 겹친 실행이 서로의 임시 파일을 덮지 않는다."""
+    import os
+
+    p = hc.MARKER_DIR / hc.DELIVERY_ALERTED
+    p.write_text(json.dumps({"fwd:old": 1.0}), encoding="utf-8")
+    moves = []
+    real_replace = os.replace
+
+    def failing_replace(src, dst):
+        moves.append((Path(src).name, Path(dst).name))
+        raise OSError("disk full")
+    monkeypatch.setattr(hc.os, "replace", failing_replace)
+    with caplog.at_level(logging.WARNING, logger="health-check"):
+        hc._save_alerted({"fwd:new": 2.0})
+    assert json.loads(p.read_text(encoding="utf-8")) == {"fwd:old": 1.0}
+    assert moves == [(f"{hc.DELIVERY_ALERTED}.{os.getpid()}.tmp", hc.DELIVERY_ALERTED)], moves
+    assert any("알림 기록을 못 썼다" in r.getMessage() for r in caplog.records)
+    monkeypatch.setattr(hc.os, "replace", real_replace)
+    hc._save_alerted({"fwd:new": 2.0})
+    assert json.loads(p.read_text(encoding="utf-8")) == {"fwd:new": 2.0}
+    # 성공한 교체는 임시 파일을 남기지 않는다(실패로 남았던 같은 이름도 그 쓰기가 가져갔다)
+    assert [x.name for x in hc.MARKER_DIR.iterdir()] == [hc.DELIVERY_ALERTED]
+
+
+def test_msgs_caps_the_list_and_says_how_many_were_cut():
+    """3차 독립 리뷰 L4 — 번호 목록 상한(8)이 무가드였다(뮤테이션 M33 생존). 자르면 **자른
+    수를 말한다**(#45)."""
+    items = [{"msg": i} for i in range(1, 13)]
+    assert bh._msgs(items) == "1, 2, 3, 4, 5, 6, 7, 8 외 4건"
+    assert bh._msgs(items[:8]) == "1, 2, 3, 4, 5, 6, 7, 8"
+
+
+def test_pre_restart_exceptions_of_other_origin_posts_are_not_called_lost_relay_data():
+    """3차 독립 리뷰 L4 — 재시작 전 예외 메모의 `relay is not False` 필터가 무가드였다
+    (뮤테이션 M28 생존). 직접 쓴 글·다른 출처 글의 예외는 릴레이 데이터 손실 메모에 들지
+    않는다. 대조군: 릴레이 원천 글이면 든다."""
+    old = [_start(ts="2026-09-25T06:00:00", pid=1111),
+           _exc("2026-09-25T06:30:00", 56, chat=-100555, user="SomeNews", pid=1111)]
+    new = [_start(ts="2026-09-25T08:00:00", pid=4242), _poll("2026-09-25T08:29:50")]
+    f, _ = _collect(old + new)
+    f["tg"] = _good()["tg"]
+    rc, out = _v(f)
+    assert rc == 0 and "재시작 전 프로세스가 채널 글" not in out, out
+    f2, _ = _collect([old[0], _exc("2026-09-25T06:30:00", 55, pid=1111)] + new)
+    f2["tg"] = _good()["tg"]
+    _rc2, out2 = _v(f2)
+    assert "재시작 전 프로세스가 채널 글 1건을 처리하다 예외로 놓쳤다(번호 55)" in out2, out2

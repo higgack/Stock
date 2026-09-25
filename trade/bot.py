@@ -63,10 +63,12 @@ from trade.parser import parse_caption
 
 load_dotenv()
 
-# 로그 한 줄의 틀. ⚠️ `trade.bot_health` 는 이 틀이 아니라 **메시지 본문**(`ingested msg=`
-# · `dropped msg=` · `handler error update=` · `trade-bot starting —`)만 읽는다 — 그
+# 로그 한 줄의 틀. ⚠️ `trade.bot_health` 는 판정을 **메시지 본문**(`ingested msg=`
+# · `dropped msg=` · `handler error update=` · `trade-bot starting —`)으로 한다 — 그
 # 계약은 본문 쪽이고 회귀(test_bot_drop_log)가 그 본문을 bot_health 파서로 태워 본다.
-# watchdog(deploy/trade-watchdog.sh)도 본문('trade-bot starting' · 'getUpdates')만 센다.
+# 틀에서 읽는 것은 오류 **표본**을 고르는 레벨 표식(`[ERROR]`·`[CRITICAL]`, `_ERR_RE`)
+# 하나다 — 레벨 칸의 모양을 바꾸면 표본이 빈다(3차 독립 리뷰 L5).
+# watchdog(deploy/trade-watchdog.sh)는 본문('trade-bot starting' · 'getUpdates')만 센다.
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 
 
