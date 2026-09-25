@@ -176,6 +176,7 @@ def _fred_cache(tmp_path, monkeypatch):
     import bot.market_overview as mo
     monkeypatch.setenv("FRED_API_KEY", "x" * 8)
     monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path / "mo")
+    monkeypatch.setattr(mo, "_fred_fail", {})      # 실패 기억(M6)은 테스트마다 비운다
     return mo, tmp_path / "mo" / "fred" / f"PCEPILFE_{date.today().isoformat()}.json"
 
 
@@ -215,9 +216,14 @@ def test_fred_failure_serves_the_same_day_copy_not_nothing(tmp_path, monkeypatch
         raise ConnectionError("fred down")
     monkeypatch.setattr(mo.requests, "get", boom)
     assert mo._fred_fetch_series("PCEPILFE", 400) == doc
-    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _Resp([]))
+    # 실패 기억(M6)을 비워야 아래 갈래가 **실제로 원천을 탄다**(안 비우면 기억이 대신 답한다)
+    mo._fred_fail.clear()
+    got: list = []
+    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: got.append(1) or _Resp([]))
     assert mo._fred_fetch_series("PCEPILFE", 400) == doc          # 빈 응답도 같은 날 사본으로
+    assert got == [1]
     # 옛 버전 사본은 믿지 않는다(#18) — 그땐 종전대로 None
+    mo._fred_fail.clear()
     f.write_text(json.dumps(dict(doc, cv=mo._FRED_CACHE_VER - 1)))
     os.utime(f, (old, old))
     monkeypatch.setattr(mo.requests, "get", boom)
@@ -296,7 +302,10 @@ def test_history_reports_first_seen_against_the_cadence(tmp_path):
     assert "202607" in ca[2] and "(기간 종료 +37일)" in ca[2] and "✅ 규약 안" in ca[2], ca
     ex = _block(lines, "한국 수출")
     assert "customs:export_amt · ECOS 대조본" in ex[0]
-    assert "(기간 종료 +34일)" in ex[2] and "⚠️ 규약보다 최소 14일" in ex[2], ex
+    # 이 행은 ECOS **대조본**이다 — 카드는 관세청이라 이 지연을 안 탄다(리뷰 L13). 경고 글자를
+    # 붙이면 카드가 늦다고 읽힌다(#34) — 계약 변경(#222): 옛 판은 '⚠️ 규약보다 최소 14일'.
+    assert "(기간 종료 +34일)" in ex[2] and "ECOS 재게시가 규약보다 최소 14일 늦다" in ex[2], ex
+    assert "⚠️" not in ex[2] and "카드 원천 관세청은 이 지연을 안 탄다" in ex[2], ex
     pce = _block(lines, "미국 근원PCE")
     assert "2027" not in "\n".join(pce), "이름이 겹치는 FRED 파일이 섞였다"
     assert "처음 본 날 2026-07-31 (기간 종료 +0일)" in pce[2] and "✅ 규약 안" in pce[2], pce
@@ -361,3 +370,141 @@ def test_history_rc_is_zero_once_anything_was_measured(tmp_path, monkeypatch):
     total = sum(1 for d in (ms.DOMESTIC, ms.GLOBAL) for row in d
                 if row[3] in ("fred", "fred_yoy", "ecos", "customs"))
     assert rc == 0 and f"기록을 잰 계열 4/{total}개" in buf.getvalue(), buf.getvalue()
+
+
+# ── 독립 리뷰(2026-09-25) 반영 ──────────────────────────────────────────
+def test_the_global_fred_card_speaks_in_quarters_too():
+    """리뷰 M2(#38) — 같은 market.html 의 글로벌 스냅샷 '핵심 지표' 가 미국 GDP 를 '(2026-04)' 로
+    적고 매크로 카드는 '2026 Q2' 였다. 두 표면이 **같은 규칙 한 벌**(`macro_snapshot`)을 쓴다."""
+    from bot.dashboard import _render_fred_card, _render_macro_card
+    html = _render_fred_card([
+        {"label": "미국 GDP", "series_id": _GDP, "unit": "%",
+         "data": {"value": 1.5, "time": "2026-04-01", "change": -0.6}},
+        {"label": "근원 PCE", "series_id": "PCEPILFE", "unit": "",
+         "data": {"value": 130.66, "time": "2026-07-01", "change": 0.3}}], None)
+    assert "(2026 Q2" in html and "2026-04" not in html, html
+    assert "(2026-07" in html                      # 반대 증거(#25) — 월간은 그대로
+    macro = _render_macro_card({
+        "key": "us_gdp", "label": "미국 GDP", "unit": "%", "value": 1.5, "decimals": 1,
+        "spark": [4.7, 1.5], "spark_dir": -1, "spark_span": "12분기", "period_start": 4.7,
+        "period_start_asof": "2023 Q3", "period_change": -3.2, "change": -0.6,
+        "pct_style": False, "asof": ms._fmt_asof(ms._as_quarter("2026-04-01")),
+        "asof_kind": "obs"})
+    assert "2026 Q2" in macro                     # 한 픽스처(2026-04-01)에서 두 표면이 같은 말
+
+
+def test_a_fred_failure_is_remembered_briefly(tmp_path, monkeypatch):
+    """리뷰 M6 — TTL 을 1시간으로 줄이자 원천 장애 동안 30초 재생성마다 시리즈별 10초
+    타임아웃을 줄지어 기다렸다(옛 24시간 캐시에선 0). 실패는 10분 기억하고, 만료되면 다시 묻고,
+    성공하면 기억을 지운다(#178)."""
+    mo, f = _fred_cache(tmp_path, monkeypatch)
+    calls: list = []
+
+    def boom(url, timeout=None):
+        calls.append(url)
+        raise ConnectionError("down")
+    monkeypatch.setattr(mo.requests, "get", boom)
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None and len(calls) == 1
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None and len(calls) == 1   # 기억 — 안 묻는다
+    k = next(iter(mo._fred_fail))
+    mo._fred_fail[k] -= mo._FRED_FAIL_TTL_S + 1
+    ok = [{"date": "2026-07-01", "value": "130.66"}, {"date": "2026-06-01", "value": "130.34"}]
+    monkeypatch.setattr(mo.requests, "get",
+                        lambda url, timeout=None: calls.append(url) or _Resp(ok))
+    assert mo._fred_fetch_series("PCEPILFE", 400)["time"] == "2026-07-01" and len(calls) == 2
+    assert mo._fred_fail == {}                     # 성공이 기억을 지운다
+    # 기억은 **그 캐시 파일** 단위다 — 캐시 디렉터리가 다른 실행(테스트 포함)은 남의 실패를
+    # 물려받지 않는다(#30). 한 디렉터리에서 실패한 뒤 다른 디렉터리로 바꾸면 다시 묻는다.
+    monkeypatch.setattr(mo.requests, "get", boom)
+    f.unlink()
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None and len(calls) == 3
+    monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path / "other")
+    assert mo._fred_fetch_series("PCEPILFE", 400) is None and len(calls) == 4
+
+
+def test_the_yoy_path_shares_the_ttl_the_stale_copy_and_the_memory(tmp_path, monkeypatch,
+                                                                   caplog):
+    """리뷰 M3(#38·#33) — 글로벌 '(YoY)' 행만 24시간으로 남아 공표일에 매크로 카드와 다른 달을
+    말했다. 헤드라인과 같은 TTL·같은 날 사본·실패 기억을 쓰고, 실패는 조용하지 않다(#12)."""
+    import logging
+    mo, _f = _fred_cache(tmp_path, monkeypatch)
+    y = tmp_path / "mo" / "fred" / f"CPIAUCSL_yoy_{date.today().isoformat()}.json"
+    y.parent.mkdir(parents=True)
+    doc = {"value": 2.7, "time": "2026-06-01", "prev_value": 2.6, "change": 0.1,
+           "cv": mo._FRED_CACHE_VER}
+    y.write_text(json.dumps(doc))
+    old = time.time() - 2 * 3600                    # 옛 판(24h)이면 그대로 서빙했을 나이
+    os.utime(y, (old, old))
+    calls: list = []
+    obs = [{"date": f"{yy}-{mm:02d}-01", "value": f"{300 + i}"}
+           for i, (yy, mm) in enumerate([(2026, 7), (2026, 6), (2025, 7), (2025, 6)])]
+    monkeypatch.setattr(mo.requests, "get",
+                        lambda url, timeout=None: calls.append(url) or _Resp(obs))
+    got = mo._fetch_fred_yoy("CPIAUCSL")
+    assert len(calls) == 1 and got["time"] == "2026-07-01", got     # 1시간 지난 사본은 다시 묻는다
+    os.utime(y, (old, old))
+
+    def boom(url, timeout=None):
+        calls.append(url)
+        raise ConnectionError("down")
+    monkeypatch.setattr(mo.requests, "get", boom)
+    caplog.set_level(logging.WARNING)
+    assert mo._fetch_fred_yoy("CPIAUCSL") == got and len(calls) == 2   # 같은 날 사본
+    assert any("YoY fetch CPIAUCSL failed" in r.getMessage() for r in caplog.records)
+    assert mo._fetch_fred_yoy("CPIAUCSL") == got and len(calls) == 2   # 기억 — 안 묻는다
+
+
+def test_the_ecos_chip_counts_what_was_drawn(tmp_path, monkeypatch):
+    """리뷰 L9(#29) — ECOS·관세청 카드의 칩이 점 수와 무관하게 '12개월' 이었다. 원천이 7달만
+    준 날엔 '7개월' 이다(분기 칩과 같은 규칙 — 데이터 폭으로)."""
+    import bot.market_overview as mo
+    import bot.naver_marketindex as nm
+    monkeypatch.setattr(ms, "_CACHE_DIR", tmp_path / "snap")
+    (tmp_path / "snap").mkdir()
+    for name, val in (("_fetch_macro_naver_values", lambda sids: {}),
+                      ("_yf_monthly_batch", lambda tk: {}), ("_yf_daily_1mo_batch", lambda tk: {}),
+                      ("_fred_monthly", lambda sid, months=12: []),
+                      ("_customs_series", lambda key: {"points": [], "src": ""})):
+        monkeypatch.setattr(ms, name, val)
+    for fn in ("fetch_commodity_spark", "fetch_naver_index_history",
+               "fetch_naver_crypto_history", "fetch_naver_fx_history"):
+        monkeypatch.setattr(nm, fn, lambda *a, **k: [])
+    monkeypatch.setattr(mo, "_fred_fetch_series", lambda sid, lb: None)
+    seven = [(f"2026{m:02d}", float(m)) for m in range(1, 8)]
+    monkeypatch.setattr(ms, "_ecos_series",
+                        lambda key: seven if key == "current_account" else
+                        [(f"2025{m:02d}", 1.0) for m in range(1, 13)] + [("202601", 2.0)])
+    out = ms.fetch_macro_snapshot()
+    rows = {r["key"]: r for r in list(out["domestic"]) + list(out["global"])}
+    assert rows["kr_ca"]["spark_span"] == "7개월", rows["kr_ca"]["spark_span"]
+    assert rows["kr_reserve"]["spark_span"] == "12개월"
+
+
+def test_a_zero_span_change_says_no_change_not_previous_month():
+    """리뷰 L11 — 헤드라인 칩은 **그린 기간 전체**(첫 점→끝 점) 변화다. 0 일 때 '전월 동일' 은
+    재지 않은 비교를 말했다(분기 카드면 더 틀렸다)."""
+    from bot.dashboard import _macro_fmt_change, _render_macro_card
+    assert "변동 없음" in _macro_fmt_change(0.0, 2) and "전월" not in _macro_fmt_change(0.0, 2)
+    html = _render_macro_card({
+        "key": "kr_rate", "label": "한국 기준금리", "unit": "%", "value": 2.5, "decimals": 2,
+        "spark": [2.5, 2.5], "spark_dir": 0, "spark_span": "12개월", "period_start": 2.5,
+        "period_start_asof": "2025-09", "period_change": 0.0, "change": 0.0,
+        "pct_style": False, "asof": "2026-08", "asof_kind": "obs"})
+    assert "변동 없음" in html and "전월 동일" not in html
+
+
+def test_the_history_boundary_is_inclusive(tmp_path):
+    """리뷰 L7 — 규약+여유 **당일**에 처음 보였으면 규약 안이다(`hi <= limit`). 근원PCE
+    (월간 +30 · 여유 4): 6월분(06-30 종료)을 08-03(+34일)에 처음 봤고 직전 기록이 08-02 다."""
+    from bot.scripts.macro_staleness_audit import history_lines
+    ecos, fred = tmp_path / "ecos", tmp_path / "fred"
+    ecos.mkdir()
+    fred.mkdir()
+    (fred / "PCEPILFE_2026-08-02.json").write_text(json.dumps({"time": "2026-05-01"}))
+    (fred / "PCEPILFE_2026-08-03.json").write_text(json.dumps({"time": "2026-06-01"}))
+    pce = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 근원PCE")
+    assert "(기간 종료 +34일)" in pce[2] and "✅ 규약 안" in pce[2], pce
+    (fred / "PCEPILFE_2026-08-03.json").write_text(json.dumps({"time": "2026-05-01"}))
+    (fred / "PCEPILFE_2026-08-04.json").write_text(json.dumps({"time": "2026-06-01"}))
+    pce = _block(history_lines(ms, ecos_dir=ecos, fred_dir=fred), "미국 근원PCE")
+    assert "(기간 종료 +35일)" in pce[2] and "⚠️ 규약보다 최소 5일" in pce[2], pce

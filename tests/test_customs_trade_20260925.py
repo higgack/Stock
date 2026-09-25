@@ -561,8 +561,14 @@ def test_macro_card_marks_the_provisional_month(cti, tmp_path, monkeypatch, pinn
 
 
 def test_customs_series_exception_path_names_no_source_when_ecos_is_empty(monkeypatch):
-    """관세청 모듈이 던지고 ECOS 도 비었으면 'ECOS 로 그렸다' 는 거짓이다 — 원천 칸을 비운다."""
+    """관세청 모듈이 던지고 ECOS 도 비었으면 'ECOS 로 그렸다' 는 거짓이다 — 원천 칸을 비운다.
+
+    계약 변경(독립 리뷰 2026-09-25 L6 · #222): 이 경로의 갈래는 '조회 실패' 였다. 그런데
+    원천 조회의 실패는 `card_series` 안에서 이미 갈래가 붙는다 — 여기까지 올라온 예외는 **우리
+    코드의 결함**이고, '조회 실패'(⚠️ 기다림)로 적으면 감사가 고칠 것을 기다리라고 한다(#82).
+    '내부 오류' 로 적고 감사는 ❌ 로 센다."""
     import bot.macro_snapshot as ms
+    from bot.scripts.macro_staleness_audit import customs_fallback_line
 
     def boom(key, **kw):
         raise RuntimeError("x")
@@ -571,7 +577,8 @@ def test_customs_series_exception_path_names_no_source_when_ecos_is_empty(monkey
     assert ms._customs_series("export_amt")["src"] == ""
     monkeypatch.setattr(ms, "_ecos_series", lambda k: [("202607", 1.0)])
     cs = ms._customs_series("export_amt")
-    assert cs["src"] == "ECOS" and cs["why"] == "조회 실패" and "RuntimeError" in cs["detail"]
+    assert cs["src"] == "ECOS" and cs["why"] == "내부 오류" and "RuntimeError" in cs["detail"]
+    assert customs_fallback_line(cs).startswith("❌"), customs_fallback_line(cs)
 
 
 def test_macro_card_says_when_it_fell_back_to_ecos(cti, tmp_path, monkeypatch):
@@ -609,6 +616,14 @@ def test_fallback_line_marks_transient_and_ours_apart():
     from bot.scripts.macro_staleness_audit import customs_fallback_line as f
     pts = [("202607", 1.0)]
     assert f({"src": "관세청", "points": pts}) == ""
+    assert f({"src": "관세청", "points": pts, "verified": True, "check": "비 중앙값 1.0"}) == ""
+    # 단위를 **못 잰 채** 그렸다 — 조용하면 단위가 바뀐 날 그대로 통과한다(리뷰 M1 · #54)
+    line = f({"src": "관세청", "points": pts, "verified": None,
+              "check": "ECOS 와 겹치는 달이 없어 단위를 대조하지 못했다"})
+    assert line.startswith("⚠️ 관세청 값을 ECOS 대조 없이") and "겹치는 달이 없어" in line, line
+    # 가운데 달이 빈 계열 — 우리가 들여다볼 것이다(❌)
+    line = f({"src": "ECOS", "points": pts, "why": "달 누락", "detail": "202512 빈 달"})
+    assert line.startswith("❌") and "달 누락" in line, line
     assert f({"src": "ECOS", "points": pts, "why": "조회 실패",
               "detail": "ReadTimeout"}).startswith("⚠️ 관세청 원천을 못 써 ECOS 로")
     line = f({"src": "ECOS", "points": pts, "why": "응답 오류", "detail": "HTTP 401"})
@@ -705,3 +720,205 @@ def test_check_cli_reports_the_source_and_exits_by_it(cti, monkeypatch):
         rc = cti._main(["--check"])
     assert rc == 1 and "❌ 카드 원천 = ECOS(관세청 응답 오류" in buf.getvalue()
     assert not list(cti._CACHE_DIR.glob("*.json")), "진단이 운영 캐시를 썼다(#264)"
+
+
+# ── 독립 리뷰(2026-09-25) 반영 ──────────────────────────────────────────
+def _pieces(text, key, n=6):
+    """`text` 에 남은 키 조각(n 자 이상)."""
+    return [key[i:i + n] for i in range(len(key) - n + 1) if key[i:i + n] in text]
+
+
+_LONG = "".join(("Qz7", "Wx8", "Yv9", "Ut6")) * 8          # 96자 — 조립(#407)
+
+
+def test_the_body_is_masked_before_it_is_cut(cti):
+    """리뷰 M5(#350) — 본문을 160·60자로 **자른 뒤** 가리면, 원천이 키를 되읊을 때 그 경계에
+    걸친 앞부분이 사유·감사 줄로 샌다(리뷰 실측: 99자 키 중 10·33자). 자르기 전에 가린다."""
+    # 뒤 두 줄은 **다른 인코딩으로 되읊은** `serviceKey=…` 가 경계에서 5자만 남는 모양이다 —
+    # 자른 뒤의 가림(8자 이상만 본다)은 그 조각을 못 본다. 자르기 전 가림만 막는 자리를 만든다(#91c).
+    for status, body in ((403, "x" * 150 + _LONG + "y" * 50),     # 160자 경계에 걸친다
+                         (200, "Z" * 40 + _LONG),                  # XML·JSON 아님 — 60자 경계
+                         (403, "e" * 144 + "serviceKey=" + _LONG.lower() + "&a=1"),
+                         (200, "Z" * 44 + "serviceKey=" + _LONG.lower())):
+        ct._fail.clear()
+        rows, info = ct.monthly_totals(fetch=lambda p, s_, e, k, b=body, st=status: (st, b),
+                                       key=_LONG, use_cache=False)
+        assert rows == [] and not _pieces(info["why"], _LONG, 5), (status, info["why"])
+        assert not _pieces(info["why"], _LONG.lower(), 5), info["why"]
+
+
+def _hole_fetch(calls, hole_window):
+    base = _window_fetch(calls)
+
+    def fetch(path, s, e, key):
+        if s == hole_window:
+            calls.append((path, s, e, key))
+            return 200, _xml([], code="03", msg="NODATA_ERROR")
+        return base(path, s, e, key)
+    return fetch
+
+
+def test_a_hole_in_the_middle_is_not_a_complete_series(cti):
+    """리뷰 M4(#280) — 가운데 창이 03(빈 창)이면 13개월 중 몇 달만 남는다. 그걸 6시간 굽고
+    카드가 이으면 '직전' 이 몇 달을 건너뛴 변화를 말한다. 굽지 않고 계열 통째 폴백한다."""
+    win = cti.windows(*cti.monthly_totals(fetch=_window_fetch([]), use_cache=False)[1]["window"])
+    assert len(win) >= 3
+    mid = win[1]
+    rows, info = cti.monthly_totals(fetch=_hole_fetch([], mid[0]))
+    assert rows == [] and info["kind"] == "달 누락", info
+    assert info["holes"] == _months(*mid) and mid[0] in info["why"], info
+    assert not list(cti._CACHE_DIR.glob("*.json")), "빈 달이 있는 계열을 캐시에 구웠다"
+    cti._fail.clear()
+    import bot.customs_trade_client as mod
+    orig = mod._http_get
+    try:
+        mod._http_get = _hole_fetch([], mid[0])
+        cs = cti.card_series("export_amt", ecos=_ecos_same)
+    finally:
+        mod._http_get = orig
+    assert cs["src"] == "ECOS" and cs["why"] == "달 누락", cs
+    # 반대 증거(#25): **꼬리**(아직 안 나온 최신 달)가 빈 것은 정상 — 앞 창들의 값은 산다
+    cti._fail.clear()
+    rows, info = cti.monthly_totals(fetch=_hole_fetch([], win[-1][0]), use_cache=False)
+    assert rows and info["kind"] == "" and info["holes"] == [], info
+
+
+def test_a_leading_hole_is_a_hole_too(cti):
+    """첫 창이 비어도(잘림·원천 공백) '받은 마지막 달보다 앞의 빈 달' 이다."""
+    win = cti.windows(*cti.monthly_totals(fetch=_window_fetch([]), use_cache=False)[1]["window"])
+    rows, info = cti.monthly_totals(fetch=_hole_fetch([], win[0][0]), use_cache=False)
+    assert rows == [] and info["kind"] == "달 누락" and info["holes"][0] == win[0][0], info
+
+
+def test_the_card_says_when_the_unit_was_not_cross_checked(cti, tmp_path, monkeypatch):
+    """리뷰 M1 — ECOS 가 비어 단위를 **못 잰 채** 관세청을 그린 날, 카드가 그렇게 말한다.
+    대조가 된 날은 붙지 않는다(늘 뜨는 표식은 아무것도 안 잰다, #25·#260)."""
+    monkeypatch.setattr(cti, "_http_get", _window_fetch([]))
+    rows = _snapshot(tmp_path, monkeypatch,
+                     lambda k: [] if k in ("export_amt", "import_amt") else _ecos_all(k))
+    assert rows["kr_export"]["asof"].endswith(" · ECOS 대조 못 함"), rows["kr_export"]["asof"]
+    assert "관세청" in rows["kr_export"]["asof"]
+    import bot.macro_snapshot as msnap
+    monkeypatch.setattr(msnap, "_CACHE_DIR", tmp_path / "snap2")
+    (tmp_path / "snap2").mkdir()
+    out = msnap.fetch_macro_snapshot()
+    ok = {r["key"]: r for r in list(out["domestic"]) + list(out["global"])}
+    assert "대조 못 함" in ok["kr_export"]["asof"]              # 같은 스텁 — 여전히 못 잼
+    monkeypatch.setattr(msnap, "_ecos_series", _ecos_all)
+    monkeypatch.setattr(msnap, "_CACHE_DIR", tmp_path / "snap3")
+    (tmp_path / "snap3").mkdir()
+    out = msnap.fetch_macro_snapshot()
+    good = {r["key"]: r for r in list(out["domestic"]) + list(out["global"])}
+    assert "대조 못 함" not in good["kr_export"]["asof"], good["kr_export"]["asof"]
+
+
+def test_an_unchecked_unit_is_a_wait_and_the_staleness_still_counts(monkeypatch):
+    """감사 — 단위 미대조 줄은 ⚠️(기다림)로 '일시 상태' 버킷에 들고(리뷰 L5), 폴백이 아니므로
+    관세청 계열의 지연 판정은 **따로** 센다(#45 한 원인은 한 번, 다른 원인은 따로)."""
+    from bot.audit_sweep import _findings
+    old = ct.ym_shift(ct._kst_today().strftime("%Y%m"), -4)
+    out = _run_audit(monkeypatch, {"points": [(old, 1.0)], "src": "관세청", "why": "",
+                                   "detail": "", "verified": None,
+                                   "check": "ECOS 와 겹치는 달이 없어 단위를 대조하지 못했다"})
+    assert "⚠️ 관세청 값을 ECOS 대조 없이" in out, out
+    assert "위 폴백 탓" not in out
+    summ = [ln for ln in out.splitlines() if "요약:" in ln][0]
+    assert "일시 상태 1개" in summ and "원천 공표 지연 0개" in summ, summ
+    hits = _findings(out)
+    assert any("관측" in h and "❌" in h for h in hits), hits      # 지연은 ❌ 로 따로
+
+
+def test_a_transient_fallback_is_a_wait_not_a_publication_delay(monkeypatch):
+    """리뷰 L5(#34·#292) — 관세청이 잠깐 막혀 ECOS 로 그린 것은 '원천 공표 지연' 이 아니다
+    (원천은 실었는데 **우리가** 잠깐 못 받았다). 요약이 그 둘을 다른 수로 센다."""
+    fresh = ct.ym_shift(ct._kst_today().strftime("%Y%m"), -1)
+    out = _run_audit(monkeypatch, {"points": [(fresh, 1.0)], "src": "ECOS",
+                                   "why": "조회 실패", "detail": "ReadTimeout"})
+    summ = [ln for ln in out.splitlines() if "요약:" in ln][0]
+    assert "일시 상태 1개" in summ and "원천 공표 지연 0개" in summ, summ
+    assert "일시 상태 = 관세청 조회가 잠깐 막혔거나" in out
+    note = [ln for ln in out.splitlines() if "일시 상태 =" in ln][0]
+    assert "⚠️" not in note and "❌" not in note        # 처방 줄엔 판정 글자가 없다(#289)
+
+
+def test_scale_is_usd_to_eok_literally():
+    """리뷰 L1 — 기댓값을 `SCALE` 로 만들면 SCALE 이 틀려도 통과한다(#66). 실측 숫자 그대로:
+    9월 누계 expDlr 93,402,261,770 USD = 934.02억$."""
+    assert ct.SCALE == 1e-8
+    pts, _ = ct.series_points("export_amt", totals=(
+        [{"ym": "202608", "exp": 93402261770.0, "imp": 60923162589.0}], {}))
+    assert pts == [("202608", pytest.approx(934.0226177))]
+
+
+def test_the_ratio_tolerance_is_three_percent():
+    """리뷰 L2 — 1000배 불일치만 재면 허용폭을 1.5 로 풀어도 통과한다. 5% 는 거부, 2% 는 수용."""
+    assert ct.RATIO_TOL == 0.03
+    ecos = [("202606", 1000.0), ("202607", 1000.0)]
+    assert ct.cross_check([(m, v * 1.05) for m, v in ecos], ecos)[0] is False
+    assert ct.cross_check([(m, v * 0.95) for m, v in ecos], ecos)[0] is False
+    assert ct.cross_check([(m, v * 1.02) for m, v in ecos], ecos)[0] is True
+
+
+class _HttpxStub:
+    def __init__(self):
+        self.calls: list = []
+
+    def get(self, url, **kw):
+        self.calls.append((url, kw))
+
+        class R:
+            status_code = 200
+            text = "<response/>"
+        return R()
+
+
+def test_http_get_sends_the_window_and_the_key(monkeypatch):
+    """리뷰 L3 — `_http_get` 은 스텁 뒤라 한 번도 안 탔다(파라미터 이름·창·인코딩 키 분기)."""
+    import httpx
+    stub = _HttpxStub()
+    monkeypatch.setattr(httpx, "get", stub.get)
+    assert ct._http_get(ct.PATH, "202601", "202606", _LONG) == (200, "<response/>")
+    url, kw = stub.calls[-1]
+    assert url == f"{ct._BASE}/{ct.PATH}", url
+    assert kw["params"] == {"serviceKey": _LONG, "strtYymm": "202601", "endYymm": "202606"}
+    # 이미 인코딩된 키(`%`)는 **그대로** 싣는다 — httpx 가 다시 인코딩하면 %25 가 된다
+    enc = "Ab%2Bcd%2Fef%3D%3D" + _LONG
+    ct._http_get(ct.PATH, "202607", "202608", enc)
+    url, kw = stub.calls[-1]
+    assert "params" not in kw, kw
+    assert url.startswith(f"{ct._BASE}/{ct.PATH}?serviceKey={enc}&"), url
+    assert "strtYymm=202607" in url and "endYymm=202608" in url, url
+
+
+def test_drop_reason_names_both_sources_for_customs():
+    """리뷰 L7 — 두 원천이 다 비어 카드가 빠지면 그 사실을 이름으로(#43·#82)."""
+    import bot.macro_snapshot as ms
+    assert ms.drop_reason("customs", "export_amt", naver_mapped=False) == \
+        "관세청·ECOS 관측을 둘 다 못 받았습니다"
+
+
+def test_the_fallback_warning_is_said_once_per_kind(cti, monkeypatch, caplog):
+    """리뷰 L7 — 카드는 30초마다 다시 그려진다. 원천이 막힌 동안 같은 경고가 저널을 덮으면
+    다른 사실이 묻힌다(#260) — (계열, 갈래)마다 한 번 WARNING, 그다음은 DEBUG."""
+    import logging
+    monkeypatch.setattr(cti, "_http_get", _window_fetch([], status=401))
+    caplog.set_level(logging.DEBUG, logger="bot.customs_trade")
+    for _ in range(3):
+        cti._fail.clear()
+        cti.card_series("export_amt", ecos=_ecos_same)
+    lv = [r.levelno for r in caplog.records if "관세청 원천을 못 써" in r.getMessage()]
+    assert lv == [logging.WARNING, logging.DEBUG, logging.DEBUG], lv
+    cti._fail.clear()
+    cti.card_series("import_amt", ecos=_ecos_same)            # 다른 계열은 따로 한 번
+    assert caplog.records[-1].levelno == logging.WARNING
+
+
+def test_cadence_stale_covers_customs_like_ecos():
+    """리뷰 L4 — 관세청 카드도 공표 규약으로 ⚠ 지연을 받는다(원천만 바뀌었지 규약은 같다)."""
+    import bot.macro_snapshot as ms
+    old = "202001"
+    assert ms._cadence_stale("customs", "export_amt", old) is True
+    assert ms._cadence_stale("ecos", "export_amt", old) is True
+    for raw in ("202001", ct.ym_shift(ct._kst_today().strftime("%Y%m"), -1)):
+        assert ms._cadence_stale("customs", "import_amt", raw) == \
+            ms._cadence_stale("ecos", "import_amt", raw), raw

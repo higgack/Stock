@@ -217,7 +217,15 @@ def customs_fallback_line(cs: dict) -> str:
     ⚠️ ECOS 까지 비었으면 **카드가 화면에서 빠진다** — 갈래와 무관하게 ❌ 한 줄로,
     관세청 사유를 같이 싣는다. 폴백 줄과 '관측 없음' 줄을 따로 내면 한 카드가 결산에서
     두 번 세어진다(#45·#250)."""
-    if not cs or cs.get("src") == "관세청":
+    if not cs:
+        return ""
+    if cs.get("src") == "관세청":
+        # 관세청으로 그렸지만 **단위를 못 잰 채**다(ECOS 와 겹치는 달이 없음) — 조용하면 단위가
+        # 바뀐 날 1000배 틀린 값이 ✅ 로 통과한다(리뷰 M1 · #54). ECOS 가 비었거나 뒤처진 탓이라
+        # 기다리면 풀린다 — ⚠️.
+        if "verified" in cs and cs.get("verified") is None:
+            return (f"⚠️ 관세청 값을 ECOS 대조 없이 그렸다 — {str(cs.get('check') or '')[:200]}"
+                    " (ECOS 가 돌아오면 다음 수집에서 대조된다)")
         return ""
     why = str(cs.get("why") or "못 받음")
     detail = str(cs.get("detail") or "")[:200]
@@ -365,7 +373,12 @@ def history_report(ms, *, ecos_dir: Optional[Path] = None, fred_dir: Optional[Pa
                     lo = (date.fromisoformat(prev) - end).days + 1   # 빨라도 직전 기록 다음 날
                     if (date.fromisoformat(d) - date.fromisoformat(prev)).days > 1:
                         gap = f" · 직전 기록 {prev}(사이가 비어 그 안 어디서 실렸는지 모른다)"
-                    if lo > limit:
+                    if lo > limit and src == "customs":
+                        # 이 행은 ECOS **대조본**이다 — 카드는 관세청이라 이 지연을 안 탄다(리뷰 L13).
+                        # 경고 글자를 붙이면 카드가 늦다고 읽힌다(#34).
+                        verdict = (f"ECOS 재게시가 규약보다 최소 {lo - lag}일 늦다 "
+                                   "(카드 원천 관세청은 이 지연을 안 탄다)")
+                    elif lo > limit:
                         verdict = f"⚠️ 규약보다 최소 {lo - lag}일 늦게 실렸다"
                     elif hi <= limit:
                         verdict = "✅ 규약 안"
@@ -415,6 +428,9 @@ def main(argv: Optional[list] = None) -> int:
 
     late: list[str] = []
     src_lag: list[str] = []
+    # 기다리면 풀리는 상태(관세청 조회 실패 · ECOS 대조 불가) — '원천 공표 지연' 과 처방은 같아도
+    # 사실이 다르다: 원천은 실었는데 **우리가 잠깐 못 받았다**(리뷰 L5 · #34·#292)
+    wait: list[str] = []
     unknown: list[str] = []
     for surface, label, key, mode, lb in rows:
         src, sid = key.split(":", 1)
@@ -434,11 +450,12 @@ def main(argv: Optional[list] = None) -> int:
                 _fb = customs_fallback_line(_cs)
                 if _fb:
                     _p(f"  {label:<18} {key:<28} {_fb}")
-                    (src_lag if _fb.startswith("⚠️") else late).append(
-                        f"{label}(관세청 {_cs.get('why')})")
+                    (wait if _fb.startswith("⚠️") else late).append(
+                        f"{label}(관세청 {_cs.get('why') or '단위 미대조'})")
                     if not pts:
                         continue       # 카드가 빠졌다 — 위 한 줄이 이미 셌다(#45)
-                    fell_back = True
+                    # 관세청으로 그렸다면(단위 미대조 줄) 폴백이 아니다 — 지연 판정은 따로 센다
+                    fell_back = _cs.get("src") != "관세청"
             else:
                 # ⚠️ 화면이 쓰는 그 선택기로 묻는다 — 옛 판은 전 행을
                 # `_fred_fetch_series(sid, 400)` 로 물어 **YoY 카드**(730일
@@ -510,7 +527,7 @@ def main(argv: Optional[list] = None) -> int:
     _treasury_status(mo)
     _p("")
     _p(f"── 요약: 대상 {len(rows)}개 · 지연 의심 {len(late)}개 · "
-       f"원천 공표 지연 {len(src_lag)}개 · 규약 없음 {len(unknown)}개")
+       f"원천 공표 지연 {len(src_lag)}개 · 일시 상태 {len(wait)}개 · 규약 없음 {len(unknown)}개")
     # ⚠️ **요약이 항목을 다시 나열하면 같은 결함이 두 번 세어진다.** 위 표가
     # 이미 지연 항목마다 ❌ 한 줄씩 찍는데 여기서 또 찍어, sweep 의 '❌ N건'
     # 이 정확히 두 배가 됐다(2026-08-26 실측: 실제 2건 → 4건, #45 같은
@@ -522,10 +539,14 @@ def main(argv: Optional[list] = None) -> int:
         # ⚠️ 사실은 위 표가 이미 폭까지 말했다(#41) — 여기선 **처방**만.
         _p("   (⚠️ 원천 공표 지연은 우리가 고칠 게 없다 — 원천이 실으면 "
            "다음 수집에서 자동 반영된다)")
+    if wait:
+        # 판정 글자 없이 처방만(글자가 있으면 sweep 이 같은 결함을 한 번 더 센다, #289)
+        _p("   (일시 상태 = 관세청 조회가 잠깐 막혔거나 대조할 ECOS 가 비었다 — 다음 수집에서 "
+           "다시 잰다)")
     if late or unknown:
         # ⚠️ "판정 불가"를 "정상"으로 요약하지 않는다 — 그게 오보의 씨앗이다.
         _p("   (⚪ 는 판정을 못 한 것이지 정상이 아니다)")
-    elif not src_lag:
+    elif not src_lag and not wait:
         _p("   전부 통상 공표 일정 안쪽 — 늦게 보이는 건 원천 공표지연이다.")
     return 0
 

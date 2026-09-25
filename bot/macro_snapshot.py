@@ -707,7 +707,10 @@ def _customs_series(key: str) -> dict:
         log.warning("macro: 관세청 계열 %s 실패: %s", key, exc)
         pts = _ecos_series(key)
         # ECOS 도 비었으면 'ECOS 로 그렸다' 가 거짓이다 — 원천 칸을 비운다(card_series 와 같은 규약)
-        return {"points": pts, "src": "ECOS" if pts else "", "why": "조회 실패",
+        # ⚠️ 원천 조회의 실패는 `card_series` 안에서 이미 갈래가 붙는다 — 여기까지 올라온 예외는
+        # **우리 코드의 결함**이다. '조회 실패'(기다리면 풀림 ⚠️)로 적으면 감사가 고칠 것을
+        # 기다리라고 한다(리뷰 L6 · #82·#260 을 거꾸로).
+        return {"points": pts, "src": "ECOS" if pts else "", "why": "내부 오류",
                 "detail": f"{type(exc).__name__}: {exc}"}
 
 
@@ -721,7 +724,11 @@ def _customs_note(cs: dict, today: Optional[date] = None) -> str:
     if cs.get("src") == "관세청":
         pts = cs.get("points") or []
         from bot.customs_trade_client import provisional
-        return " · 관세청" + (" 잠정" if pts and provisional(pts[-1][0], today) else "")
+        # ⚠️ ECOS 와 겹치는 달이 없어 **단위를 못 잰 채** 그린 날은 그렇다고 적는다(리뷰 M1 —
+        # 조용하면 단위가 바뀐 날 1000배 틀린 값이 '관세청' 딱지를 달고 뜬다, #54·#139).
+        return (" · 관세청" + (" 잠정" if pts and provisional(pts[-1][0], today) else "")
+                + (" · ECOS 대조 못 함" if "verified" in cs and cs.get("verified") is None
+                   else ""))
     if cs.get("src") == "ECOS":
         return f" · ECOS(관세청 {cs.get('why') or '못 받음'})"
     return ""
@@ -749,8 +756,8 @@ def _monthly_buckets(points: list[tuple[str, float]],
     """점들 → [(기간, 그 기간의 마지막 값)] 최근 n개(오름차순). 기간 = TIME 앞 6자
     (YYYYMMDD·YYYYMM → YYYYMM, 분기 YYYYQn 은 그대로).
 
-    ⚠️ 스파크라인(`_downsample_monthly`)과 카드의 **시작 기간 라벨**이 같은 버킷을 써야
-    한다 — 따로 세면 '2025-09 대비' 라고 적어 놓고 다른 달 값을 그린다(#38·#33)."""
+    ⚠️ 스파크라인과 카드의 **시작 기간 라벨**이 이 한 벌의 버킷을 써야 한다 — 따로 세면
+    '2025-09 대비' 라고 적어 놓고 다른 달 값을 그린다(#38·#33)."""
     if not points:
         return []
     by_month: dict[str, float] = {}
@@ -760,10 +767,6 @@ def _monthly_buckets(points: list[tuple[str, float]],
         by_month[m] = v  # points are sorted asc → last wins
     return [(m, by_month[m]) for m in sorted(by_month.keys())[-n:]]
 
-
-def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> list[float]:
-    """Collapse points to one-per-month (last value of each month), last n."""
-    return [v for _m, v in _monthly_buckets(points, n)]
 
 
 # ── 네이버 현재값 매핑 (사용자 2026-06-14 '값 네이버 + 차트 유지') ──────────
@@ -988,7 +991,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 chart_spark = _fred_monthly(sid)
                 card_spark = chart_spark      # 월간 시계열(스파크라인)
                 # 헤드라인 값/변동 = 최신 관측치(spot) — 글로벌 핵심지표와 **동일 소스**
-                # (_fred_fetch_series, 24h 캐시 공유)로 통일(사용자 2026-06-23 '두 표면
+                # (_fred_fetch_series 캐시 공유 — 월간·분기 1시간, 실수 #415)로 통일(사용자 2026-06-23 '두 표면
                 # 일치'). 일별 series(2Y/10Y/금리차/하이일드)는 macro 월평균(freq=m)이
                 # 글로벌 spot 과 달라 불일치했음(2Y 4.00 vs 4.20). 월간 series(CPI/실업률/
                 # PPI)는 최신 관측 = 월말값이라 무변. 차트(추세)는 월간 그대로.
@@ -1031,6 +1034,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     chart_spark = [v for _m, v in _mb]
                     card_spark = chart_spark
                     _ps_period = _fmt_asof(_mb[0][0]) if _mb else ""
+                    # 칩은 **그린 점 수**에서 센다 — 원천이 12달보다 적게 준 날도 '12개월' 이라
+                    # 적으면 창을 부풀려 말한다(리뷰 L9 · #29 요청이 아니라 데이터 폭으로).
+                    spark_span = f"{len(chart_spark)}개월"
                 spark_dir = _spark_dir(card_spark, -2)
             if _qtr and card_spark:
                 # 12점이 12**분기**(3년)다 — '12개월' 칩은 창을 네 배 짧게 말했다(실수 #415).

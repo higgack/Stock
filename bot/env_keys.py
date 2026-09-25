@@ -26,11 +26,97 @@ _log = logging.getLogger("bot.env_keys")
 
 _TRIED: set[str] = set()
 
+# ── 여기서 건넨 비밀값은 어느 로그에도 평문으로 남지 않는다(실수 #416) ─────────────
+# ⚠️ 왜 여기인가. 키를 URL 에 싣는 클라이언트(data.go.kr `serviceKey` · FRED `api_key` ·
+# ECOS 경로 속 키 …)는 전부 이 헬퍼로 키를 받는다(#23 회귀가 강제). 그런데 httpx 는 매
+# 요청 URL 을 INFO 로 찍고(`HTTP Request: GET …?serviceKey=…`), requests 예외 문구도
+# URL 을 싣는다 — 클라이언트의 가림(`_mask`)은 **그 클라이언트가 만든 문자열**만 덮어
+# 그 줄들은 journald 로 그대로 갔다(독립 리뷰 2026-09-25 H1 · 관세청 카드가 6시간마다
+# 3줄씩 새로 냈다). 로거·클라이언트마다 필터를 다는 것은 목록이라 다음 클라이언트를 못
+# 잡는다(#24) — **키를 건네는 이 자리가 값을 기억**하고, 레코드 팩토리 하나가 모든 로그
+# 레코드(메시지·트레이스백)에서 그 값을 가린다. 값 기반이라 오탐이 없다.
+# ⚠️ 로그 레벨은 건드리지 않는다 — httpx INFO(getUpdates)는 watchdog 의 생존 신호다(#2).
+# ⚠️ 비밀값이 **없는** 레코드는 한 글자도 바꾸지 않는다(args 유지) — 가림이 다른 로깅을
+# 바꾸지 않게.
+# 못 보는 축(#274): 16자 미만 값(짧은 비밀번호 — 흔한 글자를 가리는 오탐을 막는 대가) ·
+# `print()` 출력 · 이 헬퍼를 거치지 않은 값(텔레그램 토큰은 `telegram_bot` 의 필터가 가린다).
+_SECRET_MIN = 16
+_SECRETS: tuple[str, ...] = ()        # 긴 것 먼저 — 인코딩 변형이 원문을 품을 수 있다
+
+
+def _remember(value: str) -> None:
+    """건넨 값을 가림 목록에 — 원문과 URL 에 실릴 모양(퍼센트 인코딩 대·소문자)까지."""
+    global _SECRETS
+    if len(value) < _SECRET_MIN or value in _SECRETS:
+        return
+    import re
+    from urllib.parse import quote, unquote
+    enc = quote(value, safe="")
+    forms = {value, enc, quote(value), unquote(value),
+             re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), enc)}
+    _SECRETS = tuple(sorted(set(_SECRETS) | {f for f in forms if len(f) >= _SECRET_MIN},
+                            key=len, reverse=True))
+
+
+def redact(text: str) -> str:
+    """`text` 안의 **건넨 비밀값**(인코딩 변형 포함)을 `***` 로. 로그가 아닌 출력(진단의
+    `print`·사유 문자열)도 이걸 거치면 같은 규칙으로 가려진다."""
+    if not text or not _SECRETS:
+        return text
+    for s in _SECRETS:
+        if s in text:
+            text = text.replace(s, "***")
+    return text
+
+
+def _redact_record(record: logging.LogRecord) -> None:
+    if not _SECRETS:
+        return
+    try:
+        msg = record.getMessage()
+    except Exception:                                          # noqa: BLE001
+        msg = None                  # 포맷이 깨진 레코드 — 로깅이 원래대로 오류를 알린다
+    if msg is not None:
+        red = redact(msg)
+        if red != msg:
+            record.msg, record.args = red, None
+    if record.exc_info and not record.exc_text:
+        try:
+            text = logging.Formatter().formatException(record.exc_info)
+        except Exception:                                      # noqa: BLE001
+            text = ""
+        red = redact(text)
+        if red != text:
+            record.exc_text = red   # Formatter 는 채워진 exc_text 를 그대로 쓴다
+    if record.stack_info:
+        record.stack_info = redact(record.stack_info)
+
+
+def _install_record_redaction() -> None:
+    """레코드 팩토리를 한 번만 감싼다(모듈 재적재에도 두 겹이 되지 않게)."""
+    prev = logging.getLogRecordFactory()
+    if getattr(prev, "_noah_redact", False):
+        return
+
+    def _factory(*args, **kwargs):
+        record = prev(*args, **kwargs)
+        try:
+            _redact_record(record)
+        except Exception:                                      # noqa: BLE001
+            pass                    # 가림의 결함이 로그 자체를 죽이지 않게
+        return record
+
+    _factory._noah_redact = True
+    logging.setLogRecordFactory(_factory)
+
+
+_install_record_redaction()
+
 
 def env_key(name: str) -> str:
     """`name` 값(공백 제거). 환경에 없으면 `.env` 에서 **그 키만** 읽어 채운다.
 
-    파일 I/O 는 키마다 한 번. 못 찾으면 빈 문자열.
+    파일 I/O 는 키마다 한 번. 못 찾으면 빈 문자열. 건넨 값은 로그에서 가려진다(`redact`).
 
     ⚠️ 스캔은 `_dotenv_lookup` **하나**를 쓴다 — 예전엔 여기와 `env_why` 가
     같은 루프를 각각 갖고 있어, 한쪽만 고치면 두 진단이 같은 상태를 다르게
@@ -38,6 +124,8 @@ def env_key(name: str) -> str:
     """
     v = (os.environ.get(name) or "").strip()
     if v or name in _TRIED:
+        if v:
+            _remember(v)
         return v
     _TRIED.add(name)
     got, _why, err = _dotenv_lookup(name)
@@ -49,6 +137,7 @@ def env_key(name: str) -> str:
         _log.warning("env_key(%s): .env 폴백 실패 — %s", name, err)
     if got:
         os.environ[name] = got
+        _remember(got)
         return got
     return ""
 

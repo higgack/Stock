@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from bot.env_keys import env_key as _env_key
+from bot.naver_diag import mask_secrets as _mask_params
 
 log = logging.getLogger("bot.customs_trade")
 
@@ -198,7 +199,8 @@ def _parse(text: str) -> tuple[list[dict], str, str, str]:
             its = [its]
         items = [i for i in (its or []) if isinstance(i, dict)]
     else:
-        return [], f"XML·JSON 이 아닌 응답({t[:60]!r})", "응답 오류", ""
+        # 자르기 **전에** 가린다 — 자른 뒤에 가리면 경계에 걸친 키의 앞부분이 샌다(리뷰 M5·#350)
+        return [], f"XML·JSON 이 아닌 응답({_mask_params(t)[:60]!r})", "응답 오류", ""
     if code and code not in _OK_CODES:
         kind = _code_kind(code)
         if not kind:
@@ -239,7 +241,7 @@ def status_reason(status: Optional[int], text: str) -> tuple[str, str]:
         return "경로 없음", f"HTTP 404 — 경로 {PATH}"
     # 429·5xx 는 기다리면 풀린다 — 키·파라미터 오류(4xx)와 처방이 반대다(#82)
     kind = "조회 실패" if status == 429 or (status or 0) >= 500 else "응답 오류"
-    return kind, f"HTTP {status} — {(text or '')[:160]}"
+    return kind, f"HTTP {status} — {_mask_params(text or '')[:160]}"   # 가린 뒤에 자른다(M5)
 
 
 def provisional(ym: str, today: Optional[date] = None) -> bool:
@@ -273,13 +275,26 @@ def cross_check(ours, ecos, tol: float = RATIO_TOL) -> tuple[Optional[bool], str
 
 
 def _mask(text: str, key: str) -> str:
-    """오류 문구에서 서비스 키를 지운다(§Secrets — 예외 문구가 URL 을 실을 수 있다)."""
-    if not key:
+    """오류 문구에서 서비스 키를 지운다(§Secrets — 예외 문구가 URL 을 실을 수 있다). 값 그대로의
+    모양들을 지우고, 다른 인코딩으로 되읊은 `serviceKey=…` 도 지운다(`naver_diag.mask_secrets`)."""
+    if key:
+        from urllib.parse import quote
+        for k in sorted({key, quote(key, safe=""), quote(key)}, key=len, reverse=True):
+            if k:
+                text = text.replace(k, "***")
+    return _mask_params(text)
+
+
+def _mask_body(text: str, key: str) -> str:
+    """응답 본문의 키를 **어떤 자르기보다 먼저** 지운다(리뷰 M5 — 본문을 160·60자로 자른 뒤에
+    가리면, 원천이 키를 되읊을 때 그 경계에 걸친 앞부분이 사유·감사 줄로 샌다, #350). 값
+    그대로의 모양만 지운다 — 파싱할 본문이라 패턴 치환은 하지 않는다. 8자 미만 키는 건너뛴다
+    (짧은 가짜 키가 본문의 평범한 글자를 지우지 않게 — 실제 키는 수십 자다)."""
+    if not text or not key or len(key) < 8:
         return text
     from urllib.parse import quote
-    for k in {key, quote(key, safe=""), quote(key)}:
-        if k:
-            text = text.replace(k, "***")
+    for k in sorted({key, quote(key, safe=""), quote(key)}, key=len, reverse=True):
+        text = text.replace(k, "***")
     return text
 
 
@@ -338,10 +353,10 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
                    key: Optional[str] = None) -> tuple[list[dict], dict]:
     """최근 `months` 개 **완결** 달의 수출·수입 총액(원천 단위 USD) →
     (행 오름차순, 진단 {"path", "attempts", "kind", "why", "cached", "dropped",
-    "unconfirmed", "window"}).
+    "unconfirmed", "holes", "window"}).
 
     `kind` 는 실패 갈래의 짧은 이름(카드에 실린다) — 키 없음 · 조회 실패 · 경로 없음 ·
-    응답 오류 · 행 없음. `why` 는 사유 원문(키는 가린다). `attempts` 는 요청마다
+    응답 오류 · 행 없음 · 달 누락(받은 마지막 달보다 앞에 빈 달 — `holes`). `why` 는 사유 원문(키는 가린다). `attempts` 는 요청마다
     (경로, 시작, 끝, HTTP 상태, 예외 이름, 받은 달들) — 창이 잘렸는지 잰다.
     `use_cache=False` 면 디스크 캐시도 실패 기억도 건너뛴다 — 진단은 **지금** 을
     재야 한다(#346·#368). 한 창이라도 실패하면 거기서 멈춘다 — 다른 창도 같은 경로·키라
@@ -350,7 +365,7 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
     end = ym_shift(today.strftime("%Y%m"), -1)            # 당월은 미완결 — 전월까지
     start = ym_shift(end, -(months - 1))
     info: dict = {"path": "", "attempts": [], "kind": "", "why": "", "cached": False,
-                  "dropped": 0, "unconfirmed": 0, "window": (start, end)}
+                  "dropped": 0, "unconfirmed": 0, "holes": [], "window": (start, end)}
     key = _env_key("DATA_GO_KR_API_KEY") if key is None else key
     if not key:
         info.update(kind="키 없음", why="DATA_GO_KR_API_KEY 미설정 — ~/stock/.env 에 넣을 것")
@@ -381,6 +396,7 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
         except Exception as exc:                               # noqa: BLE001
             info["attempts"].append((PATH, s, e, None, type(exc).__name__, None))
             return _fail_out("조회 실패", f"{type(exc).__name__}: {exc}")
+        text = _mask_body(text, key)
         if status != 200:
             info["attempts"].append((PATH, s, e, status, "", None))
             return _fail_out(*status_reason(status, text))
@@ -401,6 +417,19 @@ def monthly_totals(*, months: int = MONTHS, today: Optional[date] = None,
         return _fail_out("행 없음", (
             f"응답의 {start}~{end} 달 행 {len(inwin)}개가 전부 0(미확정)" if inwin
             else f"응답에 {start}~{end} 달 행이 없다"))
+    # ⚠️ **가운데가 빈 계열은 완전본이 아니다**(리뷰 M4 · #280) — 창 하나가 03(빈 창)을
+    # 받거나 조용히 잘리면(응답에 쪽 크기·총 건수 칸이 없다) 13개월 중 몇 달만 남은 채
+    # 6시간 구워지고, 카드는 그 점들을 이어 '직전' 이 몇 달을 건너뛴 변화를 말한다. 최신 쪽
+    # 꼬리(아직 안 나온 달)는 정상이지만, **받은 마지막 달보다 앞의 빈 달**은 결함이다 —
+    # 굽지 않고 계열 통째 ECOS 로 폴백한다(한 차트에 원천을 섞지 않는다, #240).
+    have = {r["ym"] for r in out}
+    holes = [m for m in (ym_shift(start, j) for j in range(month_count(start, out[-1]["ym"])))
+             if m not in have]
+    info["holes"] = holes
+    if holes:
+        return _fail_out("달 누락", (
+            f"{start}~{out[-1]['ym']} 사이 값이 없는 달 {len(holes)}개({', '.join(holes)}) — "
+            "창이 잘렸거나 원천이 비웠다(가운데가 빈 계열은 그리지 않는다)"))
     if use_cache:
         _cache_write(start, end, {"rows": out, "path": info["path"]})
         _fail.pop((start, end), None)
@@ -442,7 +471,8 @@ def card_series(key: str, *, ecos: Optional[Callable] = None, **kw) -> dict:
         ok, check = cross_check(pts, ecos_pts)
         if ok is not False:
             # verified=None 이면 단위를 **못 잰 채** 관세청을 쓴다 — 판정 불가를 통과로
-            # 접지 않도록 진단이 그 사실을 따로 적는다(#54)
+            # 접지 않도록 카드(`macro_snapshot._customs_note` 'ECOS 대조 못 함')·일일 감사
+            # (`customs_fallback_line` ⚠️)·`--check`(❓) 셋이 그 사실을 적는다(#54 · 리뷰 M1)
             return {"points": pts, "src": "관세청", "why": "", "detail": "",
                     "check": check, "verified": ok, "info": info}
         kind, why = "단위 불일치", check
