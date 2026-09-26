@@ -2290,24 +2290,28 @@ L5: 전역 `os.replace` 를 가는 두 테스트가 **이 스파크 경로만** 
 
 뮤테이션 34종(conftest 4 · 스파크 23 · `--history` 6 · `pct_style` 판정 1)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다.
 
-## #420 — 배포로 설명되는 봇 재시작은 경고하지 않는다 (`trade/tests/test_bot_health.py` +9 · 2026-09-26)
+## #420 — 배포로 설명되는 봇 재시작은 경고하지 않는다 · 크래시는 systemd 가 말한다 (`trade/tests/test_bot_health.py` +17 · `tests/test_regression.py` 날짜 1 · 2026-09-26)
 
 VM 실측(2026-09-26 `trade.bot_health`): 24시간 창에 봇 시작 4회 = base merge 4회(80c0e6c·2a0b3da·af57db1·88944f2
 — `~/stock-trade` 는 같은 base 를 추적해 merge 마다 trade-bot 을 재시작한다)인데 `NRestarts=0` 이어도 매번 "창 안에서
-봇이 4번 시작했다 … 반복해 죽는다" ⚠️ 가 떴다. 배포 여부는 체크아웃이 안다(#86) — `deploy/trade-auto-update.sh` 는
-`git reset --hard` 로 HEAD 를 옮긴 직후 재시작하므로 reflog 에 그 시각이 남는다.
+봇이 4번 시작했다 … 반복해 죽는다" ⚠️ 가 떴다. 크래시는 systemd 가(죽은 봇을 Restart= 로 다시 띄울 때만 `Scheduled
+restart job` 줄), 배포는 봇 체크아웃의 reflog 가 안다(#86).
 
 | 축 | 무엇을 재나 | 테스트 |
 |---|---|---|
-| ① 재현 | 시작 4회가 전부 체크아웃 갱신 직후(`DEPLOY_START_SLACK_S` 안)면 ⚠️ 가 없다 · 사실은 ④ 줄이 `시작 4회(전부 배포 직후)` 로 말한다(#43) | `::test_starts_explained_by_deploys_do_not_warn` |
-| ② 남은 시작 | 설명 안 되는 시작만 **시각으로** 이름을 대고(설명된 시작은 나열하지 않는다) systemd 자동 재시작 누적을 같이 · 배포 하나는 시작 **하나만** 설명한다(새 판이 뜨자마자 죽는 크래시 루프가 조용해지지 않게) · 배포 **전**·한참 **뒤**의 시작은 설명되지 않는다 · 시각을 못 읽은 시작은 설명하지 않는다 · 가까운 두 배포는 각자 자기 뒤의 시작을 가져간다 | `::test_unexplained_start_among_deploys_still_warns_and_names_it` · `::test_crash_loop_after_one_deploy_is_not_explained_by_it` · `::test_start_before_or_long_after_a_deploy_is_not_explained` · `::test_attribute_starts_pairs_each_deploy_with_one_start` |
-| ③ 판정 불가 | reflog 를 못 읽으면(root 로 돌려 dubious ownership · git 없음 · 저장소 아님) 옛 경고를 **사유와 함께** 그대로 낸다 — '배포라서 괜찮다' 로 가정하지 않는다(#54·#165) · 저장소가 아닌 것은 빈 목록('배포 없음')이 아니라 None · 절대 안 던진다 | `::test_unreadable_deploy_record_keeps_the_old_warning_with_the_reason` · `::test_read_deploys_never_raises` |
-| ④ 생산자·배선 | 임시 저장소에서 **실제 git** 으로 commit·`reset --hard` 를 만들어 reflog 를 읽는다(손으로 쓴 줄은 형식 변경을 축복한다, #155) · `collect` 가 배포 기록을 싣는다 · 다른 `collect` 테스트는 배포 기록을 비워 두어 개발기 reflog 에 흔들리지 않는다 | `::test_read_deploys_parses_a_real_git_reflog` · `::test_collect_wires_the_deploy_record` |
+| ① 재현 | 시작 4회가 전부 배포 직후(merge → 타이머 틱 → reset 의 **실측 간격 74~124초**)면 ⚠️ 가 없다 · ④ 줄이 `시작 4회(전부 배포 직후)` 로 사실을 말한다(#43) · 창은 실측 최대 간격을 덮고 그 밖·배포 전의 시작은 설명하지 않는다 | `::test_starts_explained_by_deploys_do_not_warn` · `::test_the_slack_covers_the_measured_reset_to_start_gap` |
+| ② 크래시 | systemd 자동 재시작 줄이 앞선 시작은 배포 직후여도 크래시(새 판이 곧바로 죽는 루프) · 한 번이라도, reflog 를 못 읽어도 말한다 · 크래시 줄은 직전 시작 뒤·이 시작까지에만 속한다 · 줄머리 앵커라 봇 줄에 실린 같은 문구는 크래시가 아니다 · ④ 줄 `(배포 직후 N · 크래시 N · 그 밖 N)` | `::test_crash_restarts_warn_even_right_after_a_deploy` · `::test_one_crash_is_named_even_with_few_starts_and_without_the_reflog` · `::test_attribute_starts_crash_needs_a_line_between_the_previous_start_and_this_one` · `::test_a_crash_line_cannot_be_forged_by_a_bot_line` |
+| ③ 그 밖 재시작 | 설치기+auto-update 의 **이중 재시작**은 한 배포로 설명된다(독립 리뷰 #2) · 크래시도 배포도 아닌 재시작은 두 번부터 말하고(한 번은 수동일 수 있다) **최근** 시각을 보이고 생략 수를 밝힌다 · 원인 후보에 수동·watchdog·재부팅 · reflog 가 창 도중부터거나 비었으면 '대조하지 못했다' 고 말한다 · 창 안의 시작만 판정한다(넓힌 저널 아님) | `::test_one_deploy_can_explain_the_installers_double_restart` · `::test_unexplained_restarts_are_named_newest_first_and_counted` · `::test_a_single_unexplained_restart_is_not_a_warning` · `::test_reflog_coverage_starting_inside_the_window_is_said` · `::test_only_window_starts_are_attributed` |
+| ④ 판정 불가 | reflog 를 못 읽으면(root 로 돌려 dubious ownership · git 없음 · 저장소 아님) 옛 경고를 사유와 함께 · ④ 줄에 체크아웃과 사유 · git 의 여러 줄 오류는 **첫 줄만**(판정 문장이 두 줄로 쪼개지지 않게) · 저장소가 아니면 빈 목록이 아니라 None · 절대 안 던진다 | `::test_unreadable_deploy_record_keeps_the_old_warning_with_the_reason` · `::test_read_deploys_keeps_only_the_first_stderr_line` · `::test_read_deploys_never_raises` |
+| ⑤ 생산자·배선 | 임시 저장소에서 **실제 git** 으로 commit·`reset --hard` 를 만들어 reflog 를 읽는다(#155) · `collect` 가 봇 유닛의 **WorkingDirectory** 체크아웃을 읽고(systemd 에 묻는다) 못 물으면 이 모듈의 체크아웃 · 다른 `collect` 테스트는 배포 기록을 비워 둔다 | `::test_read_deploys_parses_a_real_git_reflog` · `::test_collect_reads_the_reflog_of_the_bots_own_checkout` · `::test_collect_asks_systemd_for_the_working_directory` |
+| ⑥ 날짜 시한폭탄 | 블로그 수집 테스트의 pubDate 를 시계에서 파생(리터럴 09-12 가 오늘 `_MAX_AGE_DAYS` 14일을 채워 base 도 빨간불이었다, #249·#291·#342) | `tests/test_regression.py::TestFlowTrendDiagnosis20260818::test_collector_applies_the_title_gate_and_counts_it_apart` |
 
 ⚠️ 못 보는 축(#274): 봇 코드가 안 바뀐 갱신(문서·NOAH 만 바뀐 merge — 재시작 없이 `reset --hard` 만 한다) 직후
-5분 안에 **다른 이유로** 뜬 시작도 배포로 센다 · 수동 `systemctl restart` 와 watchdog 재시작은 여전히 '설명 안 됨' 이다
-(경고 문구가 그 둘을 이름으로 댄다).
+5분 안에 수동·watchdog 으로 뜬 시작도 배포로 센다(크래시는 systemd 줄로 따로 가르므로 해당 없음) · 재부팅 뒤 시작은
+설명하지 않는다(경고 문구가 원인 후보로 댄다).
 
-뮤테이션 12종(배포당 시작 하나 · 하한 · 늘 경고 · 못 읽음 무음 · 실패를 빈 목록으로 · 수집 배선 · ④ 꼬리 · 시각 없는
-시작 · 창 안 가장 늦은 시작 · 설명된 시작 나열 · 예외 전파 · 사유 문구)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가
+독립 리뷰(1차 체크포인트 d05a403): Blocking·High 없음, Medium 4 · Low 5 · 생존 뮤테이션 11(동등 4) — 전부 반영.
+반영 뒤 뮤테이션 20종(창 30초 · 하한 · 크래시 무시 · 크래시 경계 · 앵커 제거 · 크래시 경고 제거 · 문턱 1 · 경고 안 함 ·
+오래된 시각 · 생략 수 · 대조 못 함 · stderr 통째 · ④ 섞임 꼬리 · ④ 못 읽음 꼬리 · 넓힌 저널 · 작업 디렉터리 무시 ·
+작업 디렉터리 안 물음 · 크래시 안 넘김 · 예외 여러 줄 · 크래시를 설명으로)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가
 일치했다.
