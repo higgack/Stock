@@ -26701,6 +26701,12 @@ class TestFlowTrendDiagnosis20260818:
         나쁘다 · #45 소계는 각자 세라).
         """
         import bot.blog_watch as bw
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        # ⚠️ pubDate 를 리터럴로 박으면 날짜가드(`_MAX_AGE_DAYS`)가 그 글을 버리는
+        # 날 무관한 커밋에서 빨간불이 된다 — 2026-09-26 에 실제로 그랬다(리터럴
+        # 09-12 + 14일, #249·#291·#342). 시계에서 파생시킨다.
+        pub = format_datetime(datetime.now(timezone(timedelta(hours=9))) - timedelta(days=1))
         # 픽스처는 **원천이 실제로 보내는 모양**으로 — 형제 테스트의 `_xml`
         # 하네스를 그대로 쓴다(#155 · 손으로 만든 dict 는 파서를 안 탄다).
         xml = ("<rss><channel><title>테니스 슈즈</title>"
@@ -26708,7 +26714,7 @@ class TestFlowTrendDiagnosis20260818:
                    f"<item><title>{t}</title>"
                    f"<link>https://blog.naver.com/hempty/{g}</link>"
                    f"<guid>{g}</guid><category>일상</category>"
-                   "<pubDate>Fri, 12 Sep 2026 10:00:00 +0900</pubDate></item>"
+                   f"<pubDate>{pub}</pubDate></item>"
                    for t, g in (("2026년 08월 결산", "g1"),
                                 ("260318_터보832 촬영 영상", "g2")))
                + "</channel></rss>")

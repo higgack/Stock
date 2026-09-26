@@ -467,7 +467,7 @@ def _collect(bot_lines, relay_lines=(), *, bot_kind="", relay_kind="", start=Non
            "inbox": str(inbox) if inbox else ""}
     f = bh.collect("x", now=NOW, env=env, facts_fn=lambda: facts, read=read,
                    start_fn=start_fn, tg_fn=lambda *a: {"token": False},
-                   procs_fn=lambda own: [])
+                   procs_fn=lambda own: [], deploys_fn=lambda *a: ([], ""))
     return f, starts
 
 
@@ -1133,7 +1133,7 @@ def test_collect_reads_the_bot_journal_with_the_widened_window():
                           env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
                           facts_fn=lambda: {"ok": True, "s_MainPID": "0"}, read=read_fn,
                           start_fn=lambda pid: (None, ""), tg_fn=lambda *a: {"token": False},
-                          procs_fn=lambda own: [])
+                          procs_fn=lambda own: [], deploys_fn=lambda *a: ([], ""))
     f = run(read)
     bot_reads = [s for u, s in asked if u == (bh._SERVICE,)]
     assert bot_reads == ["86400 seconds ago", f"{86400 + bh.RUN_SLACK_S} seconds ago"], asked
@@ -1304,7 +1304,8 @@ def test_collect_excludes_itself_and_the_running_bot_from_other_processes():
     bh.collect("x", now=NOW, env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
                facts_fn=lambda: {"ok": True, "s_MainPID": "4242"},
                read=lambda u, s: ([], "", "rotated"), start_fn=lambda pid: (None, ""),
-               tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: seen.append(own) or [])
+               tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: seen.append(own) or [],
+               deploys_fn=lambda *a: ([], ""))
     assert seen == [{os.getpid(), 4242}]
 
 
@@ -1413,7 +1414,7 @@ def test_running_err_says_systemd_was_not_asked():
     f = bh.collect("x", now=NOW, env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
                    facts_fn=lambda: {"ok": False, "err": "boom"},
                    read=lambda u, s: ([], "", "rotated"), start_fn=lambda pid: (None, ""),
-                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [], deploys_fn=lambda *a: ([], ""))
     assert f["running_err"] == "systemd 에 못 물어 실행 중인 PID 를 모른다"
 
 
@@ -1798,7 +1799,7 @@ def test_judgment_uses_the_since_window_and_receipts_use_the_wide_one():
                                      "s_SubState": "running", "s_MainPID": "4242",
                                      "s_NRestarts": "0"},
                    read=read, start_fn=lambda pid: (bh.parse_start_line(bot_all[0]), ""),
-                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [], deploys_fn=lambda *a: ([], ""))
     assert [s for u, s in asked if u == (bh._SERVICE,)] == ["2026-09-25 08:00",
                                                           "2026-09-25 07:30:00"], asked
     f["tg"] = _good()["tg"]
@@ -1905,7 +1906,7 @@ def test_collect_counts_receipts_before_since_for_a_run_that_ended_inside_it():
                                      "s_SubState": "running", "s_MainPID": "4242",
                                      "s_NRestarts": "0"},
                    read=read, start_fn=lambda pid: (bh.parse_start_line(bot_all[0]), ""),
-                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [], deploys_fn=lambda *a: ([], ""))
     assert f["journal"]["ingested"] == []                  # 판정 창엔 수신 줄이 없다
     assert (f["gap"]["kind"], f["gap"]["got"], f["gap"]["guessed"]) == ("ok", 3, True), f["gap"]
 
@@ -2497,3 +2498,284 @@ def test_an_exception_on_a_vouched_repost_is_a_lost_relay_post():
     f["vouch"] = _vf()
     rc2, out2 = _v(f)
     assert rc2 == 0 and "릴레이 원천이 아닌 채널 글 1건" in out2, out2
+
+
+# ── 봇 시작 ↔ 크래시 · 배포 대조 (실수 #420) ──────────────────────────────────
+# 2026-09-26 VM: 24시간 창에 시작 4회 = base merge 4회(80c0e6c·2a0b3da·af57db1·88944f2)
+# 인데 매번 "창 안에서 봇이 4번 시작했다 … 배포·수동 재시작이 아니면 봇이 반복해 죽는다"
+# 가 떴다. 배포 여부는 체크아웃이 안다(#86) — auto-update 는 `git reset --hard` 로 HEAD 를
+# 옮기므로 reflog 에 그 시각이 남는다. 크래시 여부는 systemd 가 안다 — 죽은 봇을 Restart=
+# 로 다시 띄울 때만 'Scheduled restart job' 줄을 찍는다(독립 리뷰 #2·#4).
+
+_UTC = timezone.utc
+# VM 실측: merge 시각(= 가장 이른 배포 가능 시각) → 시작. 간격 94·124·83·74초 — 업데이트
+# 타이머 틱(1분 + AccuracySec)이 사이에 낀다. 픽스처가 이 간격을 써야 창을 줄이는 변형이
+# 잡힌다(독립 리뷰 #3 — 9초 픽스처에선 창 30초도 통과했다).
+_VM = (("2026-09-25T17:46:38", "2026-09-25T17:48:12"), ("2026-09-25T22:26:36", "2026-09-25T22:28:40"),
+       ("2026-09-26T02:35:42", "2026-09-26T02:37:05"), ("2026-09-26T05:48:20", "2026-09-26T05:49:34"))
+_VM_STARTS = tuple(st for _m, st in _VM)
+
+
+def _kst_dt(s: str) -> datetime:
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_KST)
+
+
+def _crash_line(ts: str, n: int = 1) -> str:
+    """systemd 가 실제로 찍는 줄(journalctl -o short-iso -u trade-bot.service)."""
+    return (f"{ts}+0900 telegram-bot-usc systemd[1]: trade-bot.service: Scheduled restart "
+            f"job, restart counter is at {n}.")
+
+
+def _starts_journal(stamps, pid0=5000, crashes=()):
+    lines = [_start(ts, pid=pid0 + i) for i, ts in enumerate(stamps)] + [
+        _crash_line(c) for c in crashes]
+    lines.sort(key=lambda ln: ln.split(" ", 1)[0])
+    return bh.journal_facts(lines + [_poll("2026-09-26T08:29:50", pid=pid0 + len(stamps) - 1)])
+
+
+def _deploys(stamps=None):
+    return {"times": [_kst_dt(m) for m, _st in _VM] if stamps is None
+            else [_kst_dt(x) for x in stamps], "err": "", "repo": "/home/h/stock-trade"}
+
+
+def _restart_note(out: str) -> list[str]:
+    return [ln for ln in out.splitlines() if "번 시작했" in ln or "재시작을" in ln
+            or "번 죽었" in ln]
+
+
+def _render4(f) -> str:
+    f.setdefault("facts", {"s_NRestarts": "0"})
+    f.update(journal_err="", forwards=[],
+             env={"dest": _DEST, "src": {}, "err": "", "inbox": "/home/h/.trade/inbox.jsonl"})
+    r4 = [ln for ln in bh.render(f, "x") if ln.startswith("④")]
+    assert r4, "④ 줄이 없다"
+    return r4[0]
+
+
+def test_starts_explained_by_deploys_do_not_warn():
+    """재현: 시작 4회가 전부 배포(merge → 타이머 틱 → reset --hard) 직후면 경고하지 않는다
+    (늘 뜨는 경고는 아무것도 안 잰다 — #25·#260). 옛 판은 이 픽스처에서 ⚠️ 를 찍었다."""
+    f = _good()
+    f["journal"] = _starts_journal(_VM_STARTS)
+    f["deploys"] = _deploys()
+    rc, out = _v(f)
+    assert rc == 0 and not _restart_note(out), out
+    # 사실은 버리지 않는다 — ④ 줄이 배포로 설명됐다고 말한다(#43)
+    assert "시작 4회(전부 배포 직후)" in _render4(f)
+
+
+def test_crash_restarts_warn_even_right_after_a_deploy():
+    """systemd 의 자동 재시작 줄이 앞선 시작은 **크래시**다 — 배포가 아무리 가까워도 설명하지
+    않는다(새 판이 뜨자마자 죽어 10초마다 다시 뜨는 루프, Restart=always · RestartSec=10)."""
+    loop = ("2026-09-26T05:49:34", "2026-09-26T05:49:46", "2026-09-26T05:49:58")
+    f = _good()
+    f["journal"] = _starts_journal(loop, crashes=("2026-09-26T05:49:44", "2026-09-26T05:49:56"))
+    f["deploys"] = _deploys(["2026-09-26T05:48:20"])
+    f["facts"] = {"s_NRestarts": "2"}
+    _rc, out = _v(f)
+    note = [ln for ln in out.splitlines() if "번 죽었" in ln]
+    assert len(note) == 1 and "2번 죽었고 systemd 가 다시 띄웠다" in note[0], out
+    assert "systemd 자동 재시작 누적 2회" in note[0], note
+    assert "05:49:44" in note[0] and "05:49:56" in note[0], note
+    assert "(배포 직후 1 · 크래시 2 · 그 밖 0)" in _render4(f)
+
+
+def test_one_crash_is_named_even_with_few_starts_and_without_the_reflog():
+    """크래시는 배포 기록과 무관한 직접 증거다 — 시작이 셋 미만이어도, reflog 를 못 읽어도
+    말한다."""
+    f = _good()
+    f["journal"] = _starts_journal(("2026-09-26T03:00:00",), crashes=("2026-09-26T02:59:50",))
+    f["deploys"] = {"times": None, "err": "x"}
+    _rc, out = _v(f)
+    assert "1번 죽었고" in out and "02:59:50" in out, out
+
+
+def test_a_crash_line_cannot_be_forged_by_a_bot_line():
+    """봇 줄(남의 글 제목이 실린다)에 같은 문구가 있어도 크래시가 아니다 — 줄머리에 앵커."""
+    forged = _jl("2026-09-26T03:00:00", "dropped origin=x title='trade-bot.service: Scheduled "
+                 "restart job, restart counter is at 9'")
+    j = bh.journal_facts([forged, _crash_line("2026-09-26T03:01:00")])
+    assert len(j["crashes"]) == 1, j["crashes"]
+
+
+def test_one_deploy_can_explain_the_installers_double_restart():
+    """유닛 파일이 바뀐 배포는 install-trade-units.sh 와 auto-update 가 **두 번** 재시작한다
+    — 둘 다 크래시가 아니라 배포다(독립 리뷰 #2)."""
+    stamps = ("2026-09-26T05:49:20", "2026-09-26T05:49:34", "2026-09-26T07:00:00",
+              "2026-09-26T07:01:00")
+    f = _good()
+    f["journal"] = _starts_journal(stamps)
+    f["deploys"] = _deploys(["2026-09-26T05:48:20", "2026-09-26T06:59:30"])
+    rc, out = _v(f)
+    assert rc == 0 and not _restart_note(out), out
+
+
+def test_unexplained_restarts_are_named_newest_first_and_counted():
+    stamps = _VM_STARTS + tuple(f"2026-09-26T07:{m:02d}:00" for m in range(0, 16, 2))
+    f = _good()
+    f["journal"] = _starts_journal(stamps)
+    f["deploys"] = _deploys()
+    _rc, out = _v(f)
+    note = [ln for ln in out.splitlines() if "재시작을" in ln]
+    assert len(note) == 1 and "재시작을 8번 했다" in note[0], out
+    # 최근 것을 보이고 생략 수를 밝힌다(진행 중인 루프는 끝이 중요하다 — 독립 리뷰 #8)
+    assert "앞 2번 생략" in note[0] and "07:14:00" in note[0] and "07:00:00" not in note[0], note
+    assert "17:48:12" not in note[0], note                      # 설명된 시작은 나열하지 않는다
+    assert "재부팅" in note[0] and "watchdog" in note[0], note  # 가능한 원인을 다 댄다(#5)
+    assert "(배포 직후 4 · 크래시 0 · 그 밖 8)" in _render4(f)
+
+
+def test_a_single_unexplained_restart_is_not_a_warning():
+    """한 번은 수동 재시작일 수 있다 — 두 번부터 말한다(옛 판도 시작 셋 미만은 조용했다)."""
+    f = _good()
+    f["journal"] = _starts_journal(_VM_STARTS + ("2026-09-26T07:10:00",))
+    f["deploys"] = _deploys()
+    rc, out = _v(f)
+    assert rc == 0 and not _restart_note(out), out
+
+
+def test_the_slack_covers_the_measured_reset_to_start_gap():
+    """창은 VM 실측 간격(최대 124초)을 덮어야 하고, 그 **밖**의 시작은 설명하지 않는다."""
+    d = _kst_dt("2026-09-26T01:00:00")
+    inside = d + timedelta(seconds=124)
+    outside = d + timedelta(seconds=bh.DEPLOY_START_SLACK_S + 1)
+    before = d - timedelta(seconds=1)
+    a = bh.attribute_starts([before, inside, outside], [d])
+    assert a["explained"] == 1 and a["unexplained"] == [before, outside], a
+
+
+def test_reflog_coverage_starting_inside_the_window_is_said():
+    """reflog 가 창 도중부터면(다시 clone 등) 그 앞 시작은 '배포 아님' 이 아니라 대조 못 함."""
+    f = _good()
+    f["journal"] = _starts_journal(("2026-09-25T10:00:00", "2026-09-25T11:00:00",
+                                    "2026-09-26T03:00:00"))
+    f["deploys"] = _deploys(["2026-09-26T02:59:00"])
+    _rc, out = _v(f)
+    assert "2026-09-26 02:59:00 KST 부터라 그 앞 시작은 배포인지 대조하지 못했다" in out, out
+    f["deploys"] = {"times": [], "err": ""}
+    _rc, out2 = _v(f)
+    assert "배포 기록(reflog)이 비어 있어" in out2, out2
+
+
+def test_unreadable_deploy_record_keeps_the_old_warning_with_the_reason():
+    """배포 기록을 못 읽으면 '배포라서 괜찮다' 고 가정하지 않는다(#54·#165)."""
+    f = _good()
+    f["journal"] = _starts_journal(_VM_STARTS)
+    f["deploys"] = {"times": None, "err": "fatal: detected dubious ownership",
+                    "repo": "/home/h/stock-trade"}
+    _rc, out = _v(f)
+    note = _restart_note(out)
+    assert len(note) == 1 and "4번 시작했다" in note[0], out
+    assert "배포 기록(git reflog)을 못 읽어" in note[0] and "dubious ownership" in note[0], note
+    assert "(배포 기록 못 읽음 — /home/h/stock-trade: fatal: detected dubious ownership)" \
+        in _render4(f)
+    f.pop("deploys")
+    _rc, out2 = _v(f)
+    assert len(_restart_note(out2)) == 1, out2
+
+
+def test_only_window_starts_are_attributed():
+    """넓힌 저널(수신 대조용)의 시작은 판정에 안 든다 — 창 앞 시작을 끌어오면 옛 사건이
+    '지금' 의 경고가 된다(독립 리뷰 M15)."""
+    f = _good()
+    f["journal"] = _starts_journal(_VM_STARTS)
+    f["journal_wide"] = _starts_journal(_VM_STARTS[:1] + tuple(
+        f"2026-09-25T0{h}:00:00" for h in range(1, 6)) + _VM_STARTS[1:])
+    f["deploys"] = _deploys()
+    assert bh.start_attribution(f)["unexplained"] == []
+
+
+def test_attribute_starts_crash_needs_a_line_between_the_previous_start_and_this_one():
+    d = datetime(2026, 9, 26, 0, 0, tzinfo=_UTC)
+    s0, s1, s2 = d, d + timedelta(minutes=10), d + timedelta(minutes=20)
+    a = bh.attribute_starts([s0, s1, s2, None], [], crashes=[d + timedelta(minutes=19)])
+    assert a["crash"] == [s2] and a["unexplained"] == [s0, s1, None], a
+    # 크래시 줄은 한 시작에만 속한다 — 앞 시작 이전의 줄은 뒤 시작을 크래시로 만들지 않는다
+    a2 = bh.attribute_starts([s0, s1], [], crashes=[d - timedelta(seconds=5)])
+    assert a2["crash"] == [s0], a2
+
+
+def test_read_deploys_parses_a_real_git_reflog(tmp_path):
+    """생산자(git)의 실제 출력으로 잰다 — 손으로 쓴 reflog 줄은 형식 변경을 축복한다(#155)."""
+    import shutil
+    import subprocess
+    if not shutil.which("git"):
+        pytest.skip("git 없음")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+
+    def g(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, env=env,
+                       capture_output=True)
+    g("init", "-q")
+    (tmp_path / "a").write_text("1")
+    g("add", "a")
+    g("commit", "-qm", "one")
+    (tmp_path / "a").write_text("2")
+    g("commit", "-qam", "two")
+    before = datetime.now(_UTC) - timedelta(minutes=1)
+    g("reset", "--hard", "-q", "HEAD~1")                # auto-update 가 하는 그 이동
+    times, err = bh.read_deploys(tmp_path)
+    assert err == "" and len(times) == 3, (times, err)
+    assert all(t.tzinfo is not None for t in times)
+    assert max(times) >= before, times
+    # 저장소가 아니면 판정 불가(None) — 빈 목록('배포 없음')으로 접지 않는다(#82)
+    t2, e2 = bh.read_deploys(tmp_path / "nope")
+    assert t2 is None and e2.startswith("fatal:") and "\n" not in e2, (t2, e2)
+
+
+def test_read_deploys_keeps_only_the_first_stderr_line():
+    """git 은 여러 줄로 말한다 — 통째로 실으면 판정 문장이 두 줄로 쪼개진다(독립 리뷰 #1)."""
+    err = ("fatal: detected dubious ownership in repository at '/home/h/stock-trade'\n"
+           "To add an exception for this directory, call:\n\n"
+           "\tgit config --global --add safe.directory /home/h/stock-trade\n")
+    t, e = bh.read_deploys(_REPO, run=lambda *a, **k: types.SimpleNamespace(
+        returncode=128, stdout="", stderr=err))
+    assert t is None and e == ("fatal: detected dubious ownership in repository at "
+                               "'/home/h/stock-trade'"), e
+    t2, e2 = bh.read_deploys(_REPO, run=lambda *a, **k: types.SimpleNamespace(
+        returncode=3, stdout="", stderr="\n"))
+    assert t2 is None and e2 == "git rc=3", e2
+
+
+def test_read_deploys_never_raises():
+    def boom(*a, **k):
+        raise FileNotFoundError("git\nsecond line")
+    t, e = bh.read_deploys(_REPO, run=boom)
+    assert t is None and e.startswith("FileNotFoundError") and "\n" not in e, e
+
+
+def test_collect_reads_the_reflog_of_the_bots_own_checkout():
+    """봇 유닛의 WorkingDirectory 가 봇이 도는 체크아웃이다(#86) — 이 진단을 ~/stock 에서
+    돌려도 NOAH 의 reflog 를 읽지 않는다(독립 리뷰 #7). 못 물으면 이 모듈의 체크아웃."""
+    seen = []
+
+    def deploys_fn(repo):
+        seen.append(str(repo))
+        return [datetime(2026, 9, 25, tzinfo=_UTC)], ""
+
+    def run(facts):
+        return bh.collect("x", now=NOW, env={"token": "", "dest": _DEST, "src": {}, "err": "",
+                                             "inbox": ""},
+                          facts_fn=lambda: facts,
+                          read=lambda units, since: ([_start(), _poll("2026-09-25T08:29:50")],
+                                                     "", ""),
+                          start_fn=lambda pid: (None, "없음"), tg_fn=lambda *a: {"token": False},
+                          procs_fn=lambda own: [], deploys_fn=deploys_fn)
+    f = run({"ok": True, "s_MainPID": "4242", "s_WorkingDirectory": "/home/h/stock-trade"})
+    assert seen == ["/home/h/stock-trade"]
+    assert f["deploys"] == {"times": [datetime(2026, 9, 25, tzinfo=_UTC)], "err": "",
+                            "repo": "/home/h/stock-trade"}
+    run({"ok": True, "s_MainPID": "4242"})
+    assert seen[-1] == str(bh._REPO)
+
+
+def test_collect_asks_systemd_for_the_working_directory(monkeypatch):
+    import bot.daily_kr_flow as dk
+    asked = []
+    monkeypatch.setattr(dk, "systemd_facts", lambda **kw: asked.append(kw) or {"ok": False})
+    bh.collect("x", now=NOW, env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
+               read=lambda units, since: ([], "", "rotated"), start_fn=lambda pid: (None, ""),
+               tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [],
+               deploys_fn=lambda *a: ([], ""))
+    assert asked and "WorkingDirectory" in asked[0]["extra"], asked
