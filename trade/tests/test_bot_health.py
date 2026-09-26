@@ -467,7 +467,7 @@ def _collect(bot_lines, relay_lines=(), *, bot_kind="", relay_kind="", start=Non
            "inbox": str(inbox) if inbox else ""}
     f = bh.collect("x", now=NOW, env=env, facts_fn=lambda: facts, read=read,
                    start_fn=start_fn, tg_fn=lambda *a: {"token": False},
-                   procs_fn=lambda own: [])
+                   procs_fn=lambda own: [], deploys_fn=lambda: ([], ""))
     return f, starts
 
 
@@ -1133,7 +1133,7 @@ def test_collect_reads_the_bot_journal_with_the_widened_window():
                           env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
                           facts_fn=lambda: {"ok": True, "s_MainPID": "0"}, read=read_fn,
                           start_fn=lambda pid: (None, ""), tg_fn=lambda *a: {"token": False},
-                          procs_fn=lambda own: [])
+                          procs_fn=lambda own: [], deploys_fn=lambda: ([], ""))
     f = run(read)
     bot_reads = [s for u, s in asked if u == (bh._SERVICE,)]
     assert bot_reads == ["86400 seconds ago", f"{86400 + bh.RUN_SLACK_S} seconds ago"], asked
@@ -1413,7 +1413,7 @@ def test_running_err_says_systemd_was_not_asked():
     f = bh.collect("x", now=NOW, env={"token": "", "dest": _DEST, "src": {}, "err": "", "inbox": ""},
                    facts_fn=lambda: {"ok": False, "err": "boom"},
                    read=lambda u, s: ([], "", "rotated"), start_fn=lambda pid: (None, ""),
-                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [], deploys_fn=lambda: ([], ""))
     assert f["running_err"] == "systemd 에 못 물어 실행 중인 PID 를 모른다"
 
 
@@ -1798,7 +1798,7 @@ def test_judgment_uses_the_since_window_and_receipts_use_the_wide_one():
                                      "s_SubState": "running", "s_MainPID": "4242",
                                      "s_NRestarts": "0"},
                    read=read, start_fn=lambda pid: (bh.parse_start_line(bot_all[0]), ""),
-                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [], deploys_fn=lambda: ([], ""))
     assert [s for u, s in asked if u == (bh._SERVICE,)] == ["2026-09-25 08:00",
                                                           "2026-09-25 07:30:00"], asked
     f["tg"] = _good()["tg"]
@@ -1905,7 +1905,7 @@ def test_collect_counts_receipts_before_since_for_a_run_that_ended_inside_it():
                                      "s_SubState": "running", "s_MainPID": "4242",
                                      "s_NRestarts": "0"},
                    read=read, start_fn=lambda pid: (bh.parse_start_line(bot_all[0]), ""),
-                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [])
+                   tg_fn=lambda *a: {"token": False}, procs_fn=lambda own: [], deploys_fn=lambda: ([], ""))
     assert f["journal"]["ingested"] == []                  # 판정 창엔 수신 줄이 없다
     assert (f["gap"]["kind"], f["gap"]["got"], f["gap"]["guessed"]) == ("ok", 3, True), f["gap"]
 
@@ -2497,3 +2497,165 @@ def test_an_exception_on_a_vouched_repost_is_a_lost_relay_post():
     f["vouch"] = _vf()
     rc2, out2 = _v(f)
     assert rc2 == 0 and "릴레이 원천이 아닌 채널 글 1건" in out2, out2
+
+
+# ── 봇 시작 ↔ 배포 대조 (실수 #420) ─────────────────────────────────────────
+# 2026-09-26 VM: 24시간 창에 시작 4회 = base merge 4회(80c0e6c·2a0b3da·af57db1·88944f2)
+# 인데 매번 "창 안에서 봇이 4번 시작했다 … 배포·수동 재시작이 아니면 봇이 반복해 죽는다"
+# 가 떴다. 배포 여부는 체크아웃이 안다(#86) — auto-update 는 `git reset --hard` 로 HEAD 를
+# 옮기므로 reflog 에 그 시각이 남는다.
+
+_UTC = timezone.utc
+# VM 실측 시작 시각(KST)과 그 직전 체크아웃 갱신(auto-update 타이머 틱)
+_VM_STARTS = ("2026-09-25T17:48:12", "2026-09-25T22:28:40", "2026-09-26T02:37:05",
+              "2026-09-26T05:49:34")
+
+
+def _kst_dt(s: str) -> datetime:
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_KST)
+
+
+def _starts_journal(stamps, pid0=5000):
+    return bh.journal_facts([_start(ts, pid=pid0 + i) for i, ts in enumerate(stamps)]
+                            + [_poll("2026-09-26T08:29:50", pid=pid0 + len(stamps) - 1)])
+
+
+def _deploys(stamps, lead_s=9):
+    return {"times": [_kst_dt(s) - timedelta(seconds=lead_s) for s in stamps], "err": ""}
+
+
+def _restart_note(out: str) -> list[str]:
+    return [ln for ln in out.splitlines() if "번 시작했" in ln]
+
+
+def test_starts_explained_by_deploys_do_not_warn():
+    """재현: 시작 4회가 전부 배포 직후면 경고하지 않는다(늘 뜨는 경고는 아무것도 안 잰다
+    — #25·#260). 옛 판은 이 픽스처에서 ⚠️ 를 찍었다."""
+    f = _good()
+    f["journal"] = _starts_journal(_VM_STARTS)
+    f["deploys"] = _deploys(_VM_STARTS)
+    rc, out = _v(f)
+    assert rc == 0 and not _restart_note(out), out
+    # 사실은 버리지 않는다 — ④ 줄이 배포로 설명됐다고 말한다(#43)
+    f.update(facts={"s_NRestarts": "0"}, journal_err="", forwards=[],
+             env={"dest": _DEST, "src": {}, "err": "", "inbox": "/home/h/.trade/inbox.jsonl"})
+    r4 = [ln for ln in bh.render(f, "x") if ln.startswith("④")]
+    assert r4 and "시작 4회(전부 배포 직후)" in r4[0], r4
+
+
+def test_unexplained_start_among_deploys_still_warns_and_names_it():
+    stamps = _VM_STARTS + ("2026-09-26T07:10:00",)          # 배포 없이 한 번 더
+    f = _good()
+    f["journal"] = _starts_journal(stamps)
+    f["deploys"] = _deploys(_VM_STARTS)
+    f["facts"] = {"s_NRestarts": "1"}
+    rc, out = _v(f)
+    note = _restart_note(out)
+    assert rc == 0 and len(note) == 1, out
+    assert "5번 시작했" in note[0] and "1번은 배포" in note[0], note
+    assert "2026-09-26 07:10:00 KST" in note[0], note          # 어느 시작인지 이름을 댄다
+    assert "systemd 자동 재시작 누적 1회" in note[0], note
+    assert "17:48:12" not in note[0], note                      # 설명된 시작은 나열하지 않는다
+
+
+def test_crash_loop_after_one_deploy_is_not_explained_by_it():
+    """배포 한 번은 시작 한 번만 설명한다 — 새 판이 뜨자마자 죽어 systemd 가 10초마다
+    다시 띄우면(Restart=always · RestartSec=10) 그 나머지는 배포가 아니다."""
+    loop = ("2026-09-26T05:49:34", "2026-09-26T05:49:46", "2026-09-26T05:49:58")
+    f = _good()
+    f["journal"] = _starts_journal(loop)
+    f["deploys"] = _deploys(loop[:1])
+    _rc, out = _v(f)
+    note = _restart_note(out)
+    assert len(note) == 1 and "2번은 배포" in note[0], out
+
+
+def test_start_before_or_long_after_a_deploy_is_not_explained():
+    s = ("2026-09-26T01:00:00", "2026-09-26T02:00:00", "2026-09-26T03:00:00")
+    f = _good()
+    f["journal"] = _starts_journal(s)
+    # 첫째는 배포 5초 **전**, 둘째는 배포 한참 뒤, 셋째만 직후
+    f["deploys"] = {"times": [_kst_dt(s[0]) + timedelta(seconds=5),
+                              _kst_dt(s[1]) - timedelta(seconds=bh.DEPLOY_START_SLACK_S + 60),
+                              _kst_dt(s[2]) - timedelta(seconds=30)], "err": ""}
+    _rc, out = _v(f)
+    note = _restart_note(out)
+    assert len(note) == 1 and "2번은 배포" in note[0], out
+    assert "01:00:00" in note[0] and "02:00:00" in note[0] and "03:00:00" not in note[0], note
+
+
+def test_unreadable_deploy_record_keeps_the_old_warning_with_the_reason():
+    """배포 기록을 못 읽으면 '배포라서 괜찮다' 고 가정하지 않는다(#54·#165)."""
+    f = _good()
+    f["journal"] = _starts_journal(_VM_STARTS)
+    f["deploys"] = {"times": None, "err": "fatal: detected dubious ownership"}
+    _rc, out = _v(f)
+    note = _restart_note(out)
+    assert len(note) == 1 and "4번 시작했다" in note[0], out
+    assert "배포 기록(git reflog)을 못 읽어" in note[0] and "dubious ownership" in note[0], note
+    f.pop("deploys")
+    _rc, out2 = _v(f)
+    assert len(_restart_note(out2)) == 1, out2
+
+
+def test_attribute_starts_pairs_each_deploy_with_one_start():
+    d = datetime(2026, 9, 26, 0, 0, tzinfo=_UTC)
+    starts = [d + timedelta(seconds=10), d + timedelta(seconds=130), None]
+    # 배포 둘이 2분 간격 — 각자 자기 뒤의 시작 하나씩(먼저 온 배포가 두 시작을 다 먹지 않는다)
+    a = bh.attribute_starts(starts, [d, d + timedelta(seconds=120)])
+    assert a["explained"] == 2 and a["unexplained"] == [None], a
+    a2 = bh.attribute_starts(starts, [d])
+    assert a2["explained"] == 1 and a2["unexplained"] == [starts[1], None], a2
+    assert bh.attribute_starts(starts, [])["explained"] == 0
+
+
+def test_read_deploys_parses_a_real_git_reflog(tmp_path):
+    """생산자(git)의 실제 출력으로 잰다 — 손으로 쓴 reflog 줄은 형식 변경을 축복한다(#155)."""
+    import shutil
+    import subprocess
+    if not shutil.which("git"):
+        pytest.skip("git 없음")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+
+    def g(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, env=env,
+                       capture_output=True)
+    g("init", "-q")
+    (tmp_path / "a").write_text("1")
+    g("add", "a")
+    g("commit", "-qm", "one")
+    (tmp_path / "a").write_text("2")
+    g("commit", "-qam", "two")
+    before = datetime.now(_UTC) - timedelta(minutes=1)
+    g("reset", "--hard", "-q", "HEAD~1")                # auto-update 가 하는 그 이동
+    times, err = bh.read_deploys(tmp_path)
+    assert err == "" and len(times) == 3, (times, err)
+    assert all(t.tzinfo is not None for t in times)
+    assert max(times) >= before, times
+    # 저장소가 아니면 판정 불가(None) — 빈 목록('배포 없음')으로 접지 않는다(#82)
+    t2, e2 = bh.read_deploys(tmp_path / "nope")
+    assert t2 is None and e2, (t2, e2)
+
+
+def test_read_deploys_never_raises():
+    def boom(*a, **k):
+        raise FileNotFoundError("git")
+    t, e = bh.read_deploys(_REPO, run=boom)
+    assert t is None and "FileNotFoundError" in e
+
+
+def test_collect_wires_the_deploy_record():
+    seen = []
+
+    def deploys_fn():
+        seen.append(1)
+        return [datetime(2026, 9, 25, tzinfo=_UTC)], ""
+    f = bh.collect("x", now=NOW, env={"token": "", "dest": _DEST, "src": {}, "err": "",
+                                      "inbox": ""},
+                   facts_fn=lambda: {"ok": True, "s_MainPID": "4242"},
+                   read=lambda units, since: ([_start(), _poll("2026-09-25T08:29:50")], "", ""),
+                   start_fn=lambda pid: (None, "없음"), tg_fn=lambda *a: {"token": False},
+                   procs_fn=lambda own: [], deploys_fn=deploys_fn)
+    assert seen == [1] and f["deploys"] == {"times": [datetime(2026, 9, 25, tzinfo=_UTC)],
+                                            "err": ""}

@@ -2289,3 +2289,25 @@ L5: 전역 `os.replace` 를 가는 두 테스트가 **이 스파크 경로만** 
 `exec_module` 을 안 거치는 실행은 지연 리다이렉트도 안 닿는다(그 테스트는 HOME 으로 막았다).
 
 뮤테이션 34종(conftest 4 · 스파크 23 · `--history` 6 · `pct_style` 판정 1)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다.
+
+## #420 — 배포로 설명되는 봇 재시작은 경고하지 않는다 (`trade/tests/test_bot_health.py` +9 · 2026-09-26)
+
+VM 실측(2026-09-26 `trade.bot_health`): 24시간 창에 봇 시작 4회 = base merge 4회(80c0e6c·2a0b3da·af57db1·88944f2
+— `~/stock-trade` 는 같은 base 를 추적해 merge 마다 trade-bot 을 재시작한다)인데 `NRestarts=0` 이어도 매번 "창 안에서
+봇이 4번 시작했다 … 반복해 죽는다" ⚠️ 가 떴다. 배포 여부는 체크아웃이 안다(#86) — `deploy/trade-auto-update.sh` 는
+`git reset --hard` 로 HEAD 를 옮긴 직후 재시작하므로 reflog 에 그 시각이 남는다.
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 재현 | 시작 4회가 전부 체크아웃 갱신 직후(`DEPLOY_START_SLACK_S` 안)면 ⚠️ 가 없다 · 사실은 ④ 줄이 `시작 4회(전부 배포 직후)` 로 말한다(#43) | `::test_starts_explained_by_deploys_do_not_warn` |
+| ② 남은 시작 | 설명 안 되는 시작만 **시각으로** 이름을 대고(설명된 시작은 나열하지 않는다) systemd 자동 재시작 누적을 같이 · 배포 하나는 시작 **하나만** 설명한다(새 판이 뜨자마자 죽는 크래시 루프가 조용해지지 않게) · 배포 **전**·한참 **뒤**의 시작은 설명되지 않는다 · 시각을 못 읽은 시작은 설명하지 않는다 · 가까운 두 배포는 각자 자기 뒤의 시작을 가져간다 | `::test_unexplained_start_among_deploys_still_warns_and_names_it` · `::test_crash_loop_after_one_deploy_is_not_explained_by_it` · `::test_start_before_or_long_after_a_deploy_is_not_explained` · `::test_attribute_starts_pairs_each_deploy_with_one_start` |
+| ③ 판정 불가 | reflog 를 못 읽으면(root 로 돌려 dubious ownership · git 없음 · 저장소 아님) 옛 경고를 **사유와 함께** 그대로 낸다 — '배포라서 괜찮다' 로 가정하지 않는다(#54·#165) · 저장소가 아닌 것은 빈 목록('배포 없음')이 아니라 None · 절대 안 던진다 | `::test_unreadable_deploy_record_keeps_the_old_warning_with_the_reason` · `::test_read_deploys_never_raises` |
+| ④ 생산자·배선 | 임시 저장소에서 **실제 git** 으로 commit·`reset --hard` 를 만들어 reflog 를 읽는다(손으로 쓴 줄은 형식 변경을 축복한다, #155) · `collect` 가 배포 기록을 싣는다 · 다른 `collect` 테스트는 배포 기록을 비워 두어 개발기 reflog 에 흔들리지 않는다 | `::test_read_deploys_parses_a_real_git_reflog` · `::test_collect_wires_the_deploy_record` |
+
+⚠️ 못 보는 축(#274): 봇 코드가 안 바뀐 갱신(문서·NOAH 만 바뀐 merge — 재시작 없이 `reset --hard` 만 한다) 직후
+5분 안에 **다른 이유로** 뜬 시작도 배포로 센다 · 수동 `systemctl restart` 와 watchdog 재시작은 여전히 '설명 안 됨' 이다
+(경고 문구가 그 둘을 이름으로 댄다).
+
+뮤테이션 12종(배포당 시작 하나 · 하한 · 늘 경고 · 못 읽음 무음 · 실패를 빈 목록으로 · 수집 배선 · ④ 꼬리 · 시각 없는
+시작 · 창 안 가장 늦은 시작 · 설명된 시작 나열 · 예외 전파 · 사유 문구)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가
+일치했다.

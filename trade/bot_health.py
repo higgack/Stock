@@ -69,6 +69,10 @@ python-telegram-bot 을 import 하지 않는다 — 봇 import 가 깨진 날에
 한계 밖이다. 채널 게이트 버림은 봇이 채널마다 프로세스당 한 번만 적어 **건수로 못
 센다** — 목적지가 걸리면 그 사실만 ❌ 로 말한다.
 
+창 안의 봇 시작이 셋 이상이면 이 체크아웃의 배포 기록(git reflog — auto-update 가 `git reset
+--hard` 직후 재시작한다)과 맞춰, 배포 직후가 아닌 시작만 시각으로 경고한다(실수 #420). 기록을
+못 읽으면 옛 경고를 사유와 함께 낸다.
+
 Usage on host (시각은 journalctl 규약 — 시간대를 붙이지 않으면 **서버 로컬**
 시각이다. 어디서나 같은 뜻은 UTC 로 적는다, 규칙 10a):
     cd ~/stock-trade && .venv/bin/python -m trade.bot_health
@@ -223,6 +227,61 @@ def _msgs(items, cap: int = 8) -> str:
 
 
 # ── 순수 판정 ───────────────────────────────────────────────────────────
+
+# 체크아웃 갱신(auto-update 의 `git reset --hard`) 뒤 이 안에 뜬 봇 시작은 그 배포로 설명된다.
+# 재시작은 갱신 직후지만 unit 설치(daemon-reload)·파이썬 기동이 사이에 낄 수 있다.
+DEPLOY_START_SLACK_S = 300
+_REFLOG_RE = re.compile(r"^HEAD@\{(\d+)\}\t")
+
+
+def attribute_starts(starts, deploys, slack_s: int = DEPLOY_START_SLACK_S) -> dict:
+    """봇 시작 시각들 ↔ 배포(체크아웃 갱신) 시각들. 순수 함수(실수 #420).
+
+    배포 하나는 **그 뒤 `slack_s` 안의 가장 이른 시작 하나만** 설명한다 — 새 판이 뜨자마자
+    죽어 systemd 가 다시 띄운 시작(Restart=always)까지 배포 몫으로 세면 크래시 루프가
+    조용해진다. 시각을 못 읽은 시작은 설명하지 않는다(지어내지 않는다, #165)."""
+    left = sorted((t for t in starts if t is not None))
+    explained = 0
+    for d in sorted(deploys):
+        hit = next((t for t in left if d <= t <= d + timedelta(seconds=slack_s)), None)
+        if hit is not None:
+            left.remove(hit)
+            explained += 1
+    return {"explained": explained,
+            "unexplained": left + [t for t in starts if t is None]}
+
+
+def start_attribution(f: dict) -> dict | None:
+    """창 안 봇 시작의 배포 대조 — 배포 기록을 못 읽었으면 None(판정 불가, #54)."""
+    j = f.get("journal") or {}
+    times = (f.get("deploys") or {}).get("times")
+    if times is None:
+        return None
+    return attribute_starts([s.get("ts") for s in j.get("starts") or ()], times)
+
+
+def read_deploys(repo=_REPO, *, run=subprocess.run) -> tuple[list[datetime] | None, str]:
+    """이 체크아웃의 HEAD 이동 시각(git reflog) — 읽기 전용. 절대 안 던진다.
+
+    배포 여부는 체크아웃이 안다(#86): `deploy/trade-auto-update.sh` 는 `git reset --hard` 로
+    HEAD 를 옮긴 **직후** trade-bot 을 재시작한다. 못 읽으면 (None, 사유) — 빈 목록('배포
+    없음')으로 접지 않는다(#82). ⚠️ 못 보는 축(#274): 봇 코드가 안 바뀐 갱신은 재시작을
+    안 하므로 그 갱신 직후 다른 이유로 뜬 시작도 배포로 센다(창 `DEPLOY_START_SLACK_S`)."""
+    cmd = ["git", "-C", str(repo), "reflog", "show", "--date=unix", "--format=%gd%x09%gs",
+           "HEAD"]
+    try:
+        p = run(cmd, capture_output=True, text=True, timeout=10)
+    except Exception as e:                                     # noqa: BLE001
+        return None, f"{type(e).__name__}: {scrub(e)[:160]}"
+    if p.returncode != 0:
+        return None, scrub((p.stderr or "").strip())[:160] or f"git rc={p.returncode}"
+    times = []
+    for ln in (p.stdout or "").splitlines():
+        m = _REFLOG_RE.match(ln)
+        if m:
+            times.append(datetime.fromtimestamp(int(m.group(1)), tz=timezone.utc))
+    return times, ""
+
 
 def parse_start_line(line: str) -> dict | None:
     """봇 시작 줄 → 실행 중 설정. 순수 함수.
@@ -1040,11 +1099,23 @@ def verdict(f: dict) -> tuple[int, list[str]]:
                      and gstart is not None and e.get("ts") is not None and e["ts"] >= gstart]
         n_starts = len(j["starts"])
         restarts = (f.get("facts") or {}).get("s_NRestarts")
-        if n_starts >= 3:
-            notes.append(f"창 안에서 봇이 {n_starts}번 시작했다"
-                         + (f"(systemd 자동 재시작 누적 {restarts}회)" if restarts not in
-                            (None, "") else "")
-                         + " — 배포·수동 재시작이 아니면 봇이 반복해 죽는다: 위 오류 표본을 볼 것")
+        auto = (f"(systemd 자동 재시작 누적 {restarts}회)" if restarts not in (None, "") else "")
+        attr = start_attribution(f) if n_starts >= 3 else None
+        if n_starts >= 3 and attr is None:
+            # 배포 기록을 못 읽었다 — 배포라서 괜찮다고 가정하지 않는다(#54·#165)
+            notes.append(f"창 안에서 봇이 {n_starts}번 시작했다" + auto
+                         + " — 배포·수동 재시작이 아니면 봇이 반복해 죽는다: 위 오류 표본을 볼 것"
+                         " (배포 기록(git reflog)을 못 읽어 배포로 설명되는지 모른다: "
+                         + ((f.get("deploys") or {}).get("err") or "사유 미상") + ")")
+        elif n_starts >= 3 and attr["unexplained"]:
+            # 배포 직후의 시작은 빼고 남은 것만 이름을 댄다 — 배포가 잦은 날 매번 뜨는 경고는
+            # 아무것도 안 잰다(#25·#260, 실수 #420).
+            un = attr["unexplained"]
+            notes.append(f"창 안에서 봇이 {n_starts}번 시작했는데 그중 {len(un)}번은 배포(체크아웃 "
+                         f"갱신 뒤 {DEPLOY_START_SLACK_S // 60}분 안)로 설명되지 않는다("
+                         + ", ".join(_kst(t) for t in un[:6])
+                         + (f" 외 {len(un) - 6}번" if len(un) > 6 else "") + ")" + auto
+                         + " — 수동·watchdog 재시작이 아니면 봇이 반복해 죽는다: 위 오류 표본을 볼 것")
 
     if run is None:
         unk.append(f"실행 중인 봇의 시작 줄을 못 찾았다({f.get('running_err') or '사유 미상'}) "
@@ -1533,9 +1604,23 @@ def vouch_facts(path) -> dict:
     return {"path": str(p), "exists": p.exists(), "pairs": pairs, "err": err}
 
 
+def _starts_note(f: dict) -> str:
+    """④ 줄의 시작 횟수 꼬리 — 배포로 설명된 몫을 사실로 말한다(경고가 아니다, #43)."""
+    j = f.get("journal") or {}
+    if not j.get("starts"):
+        return ""
+    a = start_attribution(f)
+    if a is None:
+        err = (f.get("deploys") or {}).get("err")
+        return f"(배포 기록 못 읽음 — {err})" if err else ""
+    if not a["unexplained"]:
+        return "(전부 배포 직후)"
+    return f"(배포 직후 {a['explained']} · 그 밖 {len(a['unexplained'])})"
+
+
 def collect(since: str, *, now: datetime | None = None, env=None, facts_fn=None,
             read=read_journal, start_fn=find_start_line, tg_fn=telegram_facts,
-            procs_fn=other_bot_processes) -> dict:
+            procs_fn=other_bot_processes, deploys_fn=read_deploys) -> dict:
     """모든 사실을 모은다(읽기 전용). 각 원천은 주입 가능 — 테스트가 태운다."""
     now = now or datetime.now(timezone.utc)
     env = env if env is not None else trade_env()
@@ -1623,6 +1708,8 @@ def collect(since: str, *, now: datetime | None = None, env=None, facts_fn=None,
                            if old else {"kind": "none"})
     f["tg"] = tg_fn(env.get("token") or "", env.get("dest"), sorted(f["relays"]))
     f["others"] = procs_fn({os.getpid()} | ({main_pid} if main_pid else set()))
+    times, derr = deploys_fn()
+    f["deploys"] = {"times": times, "err": derr}
     return f
 
 
@@ -1736,7 +1823,7 @@ def render(f: dict, since: str) -> list[str]:
                    + (f"(마지막 {_kst(max(ing))})" if ing else "")
                    + f" · 보증 수용 {len(j.get('vouch_accepts') or ())}건"
                    + f" · 버림 채널 {len(j['drops_channel'])}·출처 {len(j['drops_origin'])} · "
-                   f"시작 {len(j['starts'])}회"
+                   f"시작 {len(j['starts'])}회" + _starts_note(f)
                    + (" · 예외 " + " · ".join(f"{_EXC_KO.get(k, k)} {v}"
                                               for k, v in sorted(exc.items())) if exc else ""))
         jc = f.get("journal_cur")
