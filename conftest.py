@@ -24,7 +24,9 @@
 #      경로는 전부 `Path.home()`·`expanduser("~")` 에서 오고 이 conftest 가 어떤 레포
 #      모듈보다 먼저 import 되므로, 모듈 상수까지 통째로 따라온다. 자식 프로세스는 환경을
 #      물려받는다. `.env` 자동 로드(`load_dotenv`)도 끈다 — `TRADE_DATA_DIR` 같은 절대경로가
-#      들어오면 ①을 우회한다(#294 운영 .env 를 읽는 시한폭탄과 같은 뿌리).
+#      들어오면 ①을 우회한다(#294 운영 .env 를 읽는 시한폭탄과 같은 뿌리). 스위치를 모르는 옛
+#      python-dotenv 는 **동작으로** 재서 갈아 끼운다. 셸에서 실제 홈을 가리키는 경로 지정 변수
+#      (XDG 기본 디렉터리·`TRADE_*`·`TRADINGAGENTS_*`)도 지운다.
 #   ② **그래도 실제 홈 아래를 쓰면 막고 그 테스트를 실패시킨다**(감사 훅). 절대경로·
 #      환경변수·`pwd` 로 실제 홈을 가리키는 코드는 ①을 우회하므로 여기서 잡는다.
 #      ⚠️ 막기만 하면 안 보인다 — 이 레포엔 `except Exception: pass` 가 흔해서 앱 코드가
@@ -33,11 +35,16 @@
 #      기록 파일에 적는다(#401 자식은 부모의 그물을 빠져나간다).
 #
 # ⚠️ 못 보는 축(#274): 레포 체크아웃 **안**의 쓰기(VM 에선 그게 운영 NOAH 체크아웃이다 —
-# `.pytest_cache`·`__pycache__` 가 거기 생겨 막을 수 없다) · C 확장이 직접 여는 파일(sqlite
-# 는 연결 시점에 잡는다) · `dir_fd` 상대 경로 · 파이썬이 아닌 자식(git·curl)과 `env=` 를
-# 직접 조립해 `PYTHONPATH` 를 뺀 자식(아래 자식 가드의 못 보는 축과 같다) · 세션이 끝난 뒤
-# (atexit) 쓰기 · 읽기(실제 홈을 **읽는** 테스트는 이 가드가 잡지 않는다 — ①이 경로를
-# 옮겨 줄 뿐이다).
+# `.pytest_cache`·`__pycache__` 가 거기 생겨 막을 수 없다) · C 확장이 직접 여는 파일(sqlite 는
+# **연결한 파일만** 잡는다 — `ATTACH DATABASE`·`VACUUM INTO` 가 여는 파일과 3.12 이하 `dbm` 은
+# 못 본다) · 감사 이벤트가 없는 연산(`os.mkfifo`·`os.mknod`) · `dir_fd` 상대 경로 · 홈 **밖**에 둔
+# 링크를 거친 쓰기(심볼릭 링크, 그리고 세션 **전부터** 있던 하드 링크 — 세션 중에 홈 안 파일에
+# 거는 하드 링크는 막는다) · 파이썬이 아닌 자식(git·curl)과 `PYTHONPATH` 까지 지운 자식(`clear=True`
+# 창에서 띄운 자식 포함 — 아래 자식 가드의 못 보는 축과 같다) · 이 conftest 가 import 되기 **전**의
+# 코드(진입점 플러그인)와 `python -m unittest`·`--noconftest` 실행 · 세션이 끝난 뒤(atexit) 쓰기와
+# 우리보다 나중에 도는 플러그인의 `pytest_sessionfinish` 쓰기(막히지만 보고되지 않는다) · 지킬 홈이
+# 레포·임시 디렉터리와 **같은** 자리(`TMPDIR=$HOME` — 같은 길이면 허용이 이긴다) · 읽기(실제 홈을
+# **읽는** 테스트는 이 가드가 잡지 않는다 — ①이 경로를 옮겨 줄 뿐이다).
 import os as _os
 import pathlib as _pathlib
 import sys as _sys
@@ -99,12 +106,14 @@ def _home_write_guard(protected, allowed, record):
     wflags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
     # 이벤트 → ((경로 인자 위치, 그 경로의 dir_fd 인자 위치), …) — CPython 3.11 실측 모양.
     # `shutil.copyfile`·`move`·`copytree` 는 안에서 아래 이벤트를 다시 내므로 뺀다.
+    # 하드 링크는 **원본**도 본다 — 홈 안 파일에 홈 밖 이름을 붙이면 그 이름으로 쓴 것이 홈에 닿는다.
     table = {
         "open": ((0, None),),
         "os.remove": ((0, 1),), "os.rmdir": ((0, 1),), "os.mkdir": ((0, 2),),
-        "os.rename": ((0, 2), (1, 3)), "os.link": ((1, 3),), "os.symlink": ((1, 2),),
+        "os.rename": ((0, 2), (1, 3)), "os.link": ((0, 2), (1, 3)), "os.symlink": ((1, 2),),
         "os.utime": ((0, 3),), "os.chmod": ((0, 2),), "os.chown": ((0, 3),),
         "os.truncate": ((0, None),), "shutil.rmtree": ((0, 1),),
+        "os.setxattr": ((0, None),), "os.removexattr": ((0, None),),
         "sqlite3.connect": ((0, None),),
     }
     busy = threading.local()
@@ -119,6 +128,15 @@ def _home_write_guard(protected, allowed, record):
                     s, _, q = s[5:].partition("?")
                     if "mode=ro" in q or "mode=memory" in q or "immutable=1" in q:
                         return None
+                    s = s.partition("#")[0]
+                    if s.startswith("//"):               # file://<권한>/경로 — sqlite 는 빈 권한·localhost 만 연다
+                        host, sl, rest = s[2:].partition("/")
+                        if host not in ("", "localhost"):
+                            return None
+                        s = sl + rest
+                    if "%" in s:                         # sqlite 가 %HH 를 풀어 그 이름으로 만든다(3.10~3.13 실측)
+                        import urllib.parse
+                        s = urllib.parse.unquote(s)
                 if not s or s == ":memory:":
                     return None
             return _abs(s)
@@ -140,7 +158,7 @@ def _home_write_guard(protected, allowed, record):
                 if isinstance(fd, int) and fd != -1:
                     continue                     # dir_fd 상대 경로 — 어디인지 모른다
             p = _path(args[pi], event)
-            if (p is None or f"{sep}__pycache__{sep}" in p
+            if (p is None or f"{sep}__pycache__{sep}" in p + sep   # 그 디렉터리를 만드는 것까지
                     or (pyc is not None and (p == pyc or p.startswith(pyc + sep)))):
                 continue                         # 인터프리터의 .pyc 캐시
             for _n, kind, r in roots:
@@ -174,24 +192,27 @@ def _home_write_guard(protected, allowed, record):
     return hook, target
 
 
-def _child_home_guard_install(guard, state, names) -> bool:
+def _child_home_guard_install(guard, state, names, baked=((), (), "")) -> bool:
     """자식 프로세스에서 **sitecustomize 가** 부른다 — 부모가 물려준 환경으로 같은 가드를 건다.
 
     ⚠️ 자기 완결이어야 한다(소스를 그대로 옮겨 실행한다). 막은 쓰기는 부모가 정한 기록
     파일에 한 줄로 적는다 — 부모 세션의 fixture 가 그 줄로 범인 테스트를 지목한다.
     `state["on"]` 은 이 자식이 **pytest 세션**이면 그 세션의 conftest 가 꺼서 넘겨받는다
     (안 그러면 이 훅이 먼저 막고 **바깥** 기록 파일에 적어, 그 세션이 범인을 못 본다).
+    환경에 그 값이 없으면(테스트가 `clear=True` 창·`env={…}` 로 지웠다) 이 파일을 심은 세션이
+    **구워 둔** `baked`(보호·허용·기록)를 쓴다 — 안 그러면 그 자식은 가드도 기록도 없이 실제 홈에
+    썼다(2026-09-27 독립 리뷰 L1 실측). `PYTHONPATH` 까지 지운 자식은 이 파일을 아예 못 읽는다.
     """
     import os
     import sys
 
     prot_env, allow_env, log_env = names
     env = os.environ
-    prot = [p for p in env.get(prot_env, "").split(os.pathsep) if p]
+    prot = [p for p in env.get(prot_env, "").split(os.pathsep) if p] or list(baked[0])
     if not prot:
         return False
-    allow = [p for p in env.get(allow_env, "").split(os.pathsep) if p]
-    log = env.get(log_env, "")
+    allow = [p for p in env.get(allow_env, "").split(os.pathsep) if p] or list(baked[1])
+    log = env.get(log_env, "") or baked[2]
 
     def record(event, path):
         if not log:
@@ -216,20 +237,91 @@ def _child_home_guard_install(guard, state, names) -> bool:
 
 
 def _real_homes(env) -> list:
-    """지켜야 할 실제 홈 — 바깥 세션이 정했으면 그대로(중첩 세션), 아니면 `$HOME` 과 계정 홈.
+    """지켜야 할 실제 홈 — 바깥 세션이 정했으면 그 값(중첩 세션), 아니면 `$HOME`. 계정 홈은 **늘** 더한다.
 
-    ⚠️ 둘 다 본다: `$HOME` 을 바꿔 띄운 셸이어도 `pwd` 의 계정 홈엔 운영 데이터가 있다.
+    ⚠️ `$HOME` 을 바꿔 띄운 셸이어도 `pwd` 의 계정 홈엔 운영 데이터가 있다. 바깥 값이 셸에 **낡은 채**
+    남아 있어도(리뷰 L6) 계정 홈은 빠지지 않는다 — 중첩 세션에선 바깥이 이미 넣은 값이라 같다.
     """
     given = [p for p in env.get(_PROTECTED_ENV, "").split(_os.pathsep) if p]
-    if given:
-        return given
-    out = [env["HOME"]] if env.get("HOME") else []
+    out = given or ([env["HOME"]] if env.get("HOME") else [])
     try:
         import pwd
         out.append(pwd.getpwuid(_os.getuid()).pw_dir)
     except Exception:                                   # noqa: BLE001 — 비-POSIX
         pass
     return out
+
+
+def _protected_homes(env) -> list:
+    """내보낼 보호 루트 — 정규화하고 `/` 는 뺀다. 가드는 `/` 를 루트로 안 받는데(모든 쓰기가 막힌다)
+    그대로 내보내면 자식·검사가 '지킨다' 고 읽는다(리뷰 L4 실측: 컨테이너처럼 `HOME=/` 면 빨간불)."""
+    return sorted({_os.path.abspath(p) for p in _real_homes(env)} - {_os.sep})
+
+
+# 레포가 읽는 **경로 지정 변수**의 이름공간 — 가드가 막을 자리를 가리키면 세션 시작에 지운다(그 변수를
+# 읽는 코드가 임시 홈 기본값으로 돌아간다). 리뷰 M3 실측: `TRADE_DATA_DIR` 가 실제 홈을 가리키면
+# trade/tests 99건이 빨간불(쓰기는 막혔다). 새 경로 변수가 이 밖에 생기면 회귀가 잡는다(#24).
+_DIR_VAR_PREFIXES = ("TRADE_", "TRADINGAGENTS_")
+
+
+def _home_dir_var(name: str) -> bool:
+    """세션 시작에 값을 대조할 변수인가 — XDG 기본 디렉터리(`*_HOME`) · 레포 이름공간."""
+    return (name.startswith("XDG_") and name.endswith("_HOME")) or name.startswith(_DIR_VAR_PREFIXES)
+
+
+def _dotenv_force_switch() -> None:
+    """`load_dotenv` 가 `PYTHON_DOTENV_DISABLED` 를 따르게 갈아 끼운다(스위치가 꺼져 있으면 원래대로).
+
+    python-dotenv 1.2 부터 그 스위치를 스스로 알고, 1.0.1·1.1.1 엔 그 이름이 아예 없다(리뷰 M1 실측 —
+    `trade/requirements.txt` 가 1.0.1 을 고정한다). ⚠️ 자기 완결 — 자식 sitecustomize 가 소스 그대로
+    실행한다(#38). 이미 갈아 끼운 판은 다시 감싸지 않는다(중첩 세션).
+    """
+    import os
+    import dotenv
+    import dotenv.main as main
+
+    if getattr(main.load_dotenv, "_noah_switch", False):
+        return
+    real = main.load_dotenv
+
+    def load_dotenv(*args, **kwargs):
+        if os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}:
+            return False
+        return real(*args, **kwargs)
+
+    load_dotenv._noah_switch = True
+    dotenv.load_dotenv = main.load_dotenv = load_dotenv
+
+
+def _dotenv_switch() -> str:
+    """이 인터프리터의 `load_dotenv` 가 스위치를 따르나 — 판 번호가 아니라 **동작으로** 잰다(#25).
+
+    임시 `.env` 를 실제로 읽혀 본다. 'native'(스스로 안다) · 'patched'(옛 판 — 갈아 끼웠다, 자식도
+    같이) · 'absent'(설치 안 됨). ⚠️ `PYTHON_DOTENV_DISABLED` 를 켠 **뒤에** 부를 것.
+    """
+    try:
+        import dotenv
+    except Exception:                                   # noqa: BLE001
+        return "absent"
+    if getattr(dotenv.load_dotenv, "_noah_switch", False):
+        return "patched"                                # 바깥 세션의 자식 가드가 이미 갈아 끼웠다
+    import tempfile
+    key = "NOAH_TEST_DOTENV_PROBE"
+    fd, path = tempfile.mkstemp(prefix="noah-test-dotenv-", suffix=".env")
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(key + "=1\n")
+        try:
+            honored = dotenv.load_dotenv(path) is False and key not in _os.environ
+        except Exception:                               # noqa: BLE001 — 못 재면 갈아 끼운다(안전한 쪽)
+            honored = False
+    finally:
+        _os.environ.pop(key, None)
+        _os.unlink(path)
+    if honored:
+        return "native"
+    _dotenv_force_switch()
+    return "patched"
 
 
 _HOME_WRITES: list = []      # 이 프로세스가 막은 쓰기 — fixture 가 테스트별로 읽는다
@@ -273,7 +365,7 @@ def _isolate_home() -> dict:
     import tempfile
 
     env = _os.environ
-    protected = sorted({_os.path.abspath(p) for p in _real_homes(env)})
+    protected = _protected_homes(env)
     home = tempfile.mkdtemp(prefix="noah-test-home-")
     atexit.register(shutil.rmtree, home, True)
     env["HOME"] = home
@@ -283,10 +375,12 @@ def _isolate_home() -> dict:
     allowed = [_REPO_ROOT, home, tempfile.gettempdir()]
     info = {"protected": protected, "allowed": allowed, "home": home,
             "log": _os.path.join(logdir, "blocked.tsv")}
+    info["dotenv"] = _dotenv_switch()   # 스위치를 모르는 옛 판이면 갈아 끼운다(자식도, 리뷰 M1)
     hook, info["target"] = _home_write_guard(protected, allowed, _record_home_write)
-    for k in [k for k in env if k.startswith("XDG_") and k.endswith("_HOME")]:
-        if env[k] and info["target"]("os.mkdir", (env[k], 0o777, -1)):
-            del env[k]      # 가드가 막을 자리 — XDG 기본값($HOME/.cache …)이 곧 임시 홈이다(한 규칙, #38)
+    for k in [k for k in env if _home_dir_var(k)]:
+        v = env[k]
+        if v and _os.path.isabs(v) and info["target"]("os.mkdir", (v, 0o777, -1)):
+            del env[k]      # 가드가 막을 자리 — 기본값($HOME/…)이 곧 임시 홈이다(가드와 한 판정, #38)
     env[_PROTECTED_ENV] = _os.pathsep.join(protected)
     env[_ALLOWED_ENV] = _os.pathsep.join(allowed)
     env[_GUARD_LOG_ENV] = info["log"]
@@ -460,7 +554,9 @@ def _install_child_backstop() -> str:
 
     두 가드를 싣는다: 소켓 가드, 그리고 실제 홈 쓰기 가드(실수 #421 — 자식은 HOME
     리다이렉트를 환경으로 물려받지만, 절대경로로 실제 홈을 겨누는 자식은 이 가드가
-    막는다). 홈 가드는 위 `_home_write_guard` 의 **소스를 그대로** 옮긴다(#38).
+    막는다). 홈 가드는 위 `_home_write_guard` 의 **소스를 그대로** 옮긴다(#38). 이 세션의
+    보호·허용·기록 값을 파일에 **구워** 환경을 지운 자식도 지키고, 이 인터프리터의
+    python-dotenv 가 스위치를 모르면 그 패치도 같은 소스로 싣는다.
 
     ⚠️ **못 보는 축**(#274): 파이썬이 아닌 자식(curl·git), `-I`/`-E`/`-S` 로
     띄운 파이썬, 그리고 `env=` 를 **직접 조립해** 넘기는 호출(그 dict 에
@@ -515,8 +611,15 @@ def _install_child_backstop() -> str:
         + inspect.getsource(_child_home_guard_install) + "\n\n"
         "NOAH_HOME_GUARD = {'on': True}\n"
         "HOME_GUARD = _child_home_guard_install(_home_write_guard, NOAH_HOME_GUARD, "
-        + repr((_PROTECTED_ENV, _ALLOWED_ENV, _GUARD_LOG_ENV)) + ")\n"
+        + repr((_PROTECTED_ENV, _ALLOWED_ENV, _GUARD_LOG_ENV)) + ", "
+        # 환경을 지운 자식(`clear=True` 창·`env={…}`)도 이 세션의 값으로 지킨다(리뷰 L1)
+        + repr((tuple(_HOME["protected"]), tuple(_HOME["allowed"]), _HOME["log"])) + ")\n"
     )
+    if _HOME.get("dotenv") == "patched":
+        # 이 인터프리터의 python-dotenv 가 스위치를 모른다 — 자식도 부모처럼 갈아 끼운다(리뷰 M1)
+        body += ("\n# ── python-dotenv < 1.2 스위치(루트 conftest 소스 그대로, #38)\n"
+                 + inspect.getsource(_dotenv_force_switch) + "\n\n"
+                 "try:\n    _dotenv_force_switch()\nexcept Exception:\n    pass\n")
     d = tempfile.mkdtemp(prefix="noah-test-childguard-")
     (pathlib.Path(d) / "sitecustomize.py").write_text(body, encoding="utf-8")
     atexit.register(shutil.rmtree, d, True)
@@ -694,8 +797,12 @@ def _fmt_home_write(r: dict) -> str:
 
 
 def _fmt_child_write(line: str) -> str:
-    pid, event, path, _test, argv = (line.split("\t") + [""] * 5)[:5]
-    return f"{event} {path}  [자식 pid {pid}: {argv}]"
+    """자식이 적은 한 줄 — 그 자식을 **띄운 테스트**(물려받은 `PYTEST_CURRENT_TEST`)도 적는다.
+    백그라운드 자식은 띄운 테스트가 끝난 뒤에 써서 다른 테스트 창에 든다 — 그 창의 테스트만
+    지목하면 범인이 안 보인다(리뷰 L2 실측, #114)."""
+    pid, event, path, test, argv = (line.split("\t") + [""] * 5)[:5]
+    by = f" · 띄운 테스트 {test}" if test else ""
+    return f"{event} {path}  [자식 pid {pid}{by}: {argv}]"
 
 
 def _shown(lines: list) -> str:

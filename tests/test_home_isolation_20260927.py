@@ -26,7 +26,9 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -90,10 +92,23 @@ def test_writes_under_the_real_home_are_named(guard):
         "pathlike": ("os.remove", (pathlib.Path(p), -1)),
         # 리눅스에선 `//x` 가 `/x` 다 — `normpath` 는 선두 `//` 를 남겨 루트 비교를 빠져나갔다
         "double-slash": ("open", ("/" + p, "w", _W)),
+        # 2026-09-27 독립 리뷰가 실측한 우회·빈틈(L5·L7)
+        "link-src": ("os.link", (p, "/tmp/alias", -1, -1)),       # 홈 안 파일에 홈 밖 이름
+        "setxattr": ("os.setxattr", (p, "user.k", b"v", 0)),
+        "removexattr": ("os.removexattr", (p, "user.k")),
+        "rdonly-trunc": ("open", (p, "r", os.O_RDONLY | os.O_TRUNC)),   # 리눅스는 이것도 비운다
+        "rmtree-3.10": ("shutil.rmtree", (p,)),                    # 3.10 은 인자가 하나다(실측)
+        "sqlite-uri-localhost": ("sqlite3.connect", (f"file://localhost{p}",)),
+        "sqlite-uri-empty-host": ("sqlite3.connect", (f"file://{p}",)),
+        "sqlite-uri-bytes-3.10": ("sqlite3.connect", (f"file:{p}".encode(),)),   # 3.10 은 bytes
+        "sqlite-uri-fragment": ("sqlite3.connect", (f"file:{p}#frag",)),   # sqlite 는 # 뒤를 버린다
     }
     miss = {k: guard["target"](e, a) for k, (e, a) in cases.items()
             if guard["target"](e, a) != p}
     assert not miss, miss
+    # sqlite 는 URI 의 %HH 를 풀어 그 이름으로 만든다(3.10~3.13 실측) — 푼 이름으로 판정한다
+    q = str(guard["home"] / "a b%.db")
+    assert guard["target"]("sqlite3.connect", ("file:" + urllib.parse.quote(q),)) == q
 
 
 def test_reads_and_unplaceable_paths_pass(guard, monkeypatch):
@@ -111,14 +126,25 @@ def test_reads_and_unplaceable_paths_pass(guard, monkeypatch):
         "dir_fd-relative": ("os.remove", ("x.json", 5)),
         "rename-dir_fd": ("os.rename", ("a", "b", 5, 5)),
         "pycache": ("open", (str(h / "lib" / "__pycache__" / "m.cpython-311.pyc"), "wb", _W)),
+        "pycache-dir": ("os.mkdir", (str(h / "lib" / "__pycache__"), 0o777, -1)),   # 리뷰 L3
+        "rmdir-dir_fd": ("os.rmdir", ("x.json", 5)),
+        "mkdir-dir_fd": ("os.mkdir", ("x.json", 0o777, 5)),
+        "utime-dir_fd": ("os.utime", ("x.json", None, None, 5)),
         "sqlite-memory": ("sqlite3.connect", (":memory:",)),
+        "sqlite-empty": ("sqlite3.connect", ("",)),              # 임시 DB — cwd 로 풀면 홈 안이 된다
         "sqlite-ro-uri": ("sqlite3.connect", (f"file:{p}?mode=ro",)),
+        "sqlite-memory-uri": ("sqlite3.connect", (f"file:{p}?mode=memory",)),
+        "sqlite-immutable-uri": ("sqlite3.connect", (f"file:{p}?immutable=1",)),
+        "sqlite-other-host": ("sqlite3.connect", (f"file://elsewhere{p}",)),   # sqlite 가 안 연다
         "unknown-event": ("os.listdir", (p,)),
     }
     got = {k: guard["target"](e, a) for k, (e, a) in cases.items()}
     assert all(v is None for v in got.values()), got
-    # 반대 증거(#25): 같은 cwd 에서 dir_fd 가 없으면(-1) 상대 이름도 홈 안으로 풀려 막힌다
-    assert guard["target"]("os.remove", ("x.json", -1)) == str(h / "x.json")
+    # 반대 증거(#25): 같은 cwd 에서 dir_fd 가 없으면(-1) 상대 이름도 홈 안으로 풀려 막힌다 —
+    # 이벤트마다 dir_fd 자리가 다르다(remove·rmdir 1 · mkdir 2 · utime 3)
+    for e, a in (("os.remove", ("x.json", -1)), ("os.rmdir", ("x.json", -1)),
+                 ("os.mkdir", ("x.json", 0o777, -1)), ("os.utime", ("x.json", None, None, -1))):
+        assert guard["target"](e, a) == str(h / "x.json"), e
 
 
 def test_a_relocated_pycache_prefix_is_the_interpreters_cache(tmp_path):
@@ -207,15 +233,82 @@ def test_a_failing_record_still_blocks(tmp_path):
 
 
 def test_real_homes_prefers_what_the_outer_session_said():
-    """중첩 세션은 바깥 세션이 정한 홈을 그대로 지킨다(자기 HOME 은 이미 임시 홈이다) ·
-    그게 없으면 `$HOME` **과** 계정 홈(`pwd`) 둘 다 — HOME 을 바꿔 띄운 셸이어도 계정 홈엔
-    운영 데이터가 있다."""
+    """중첩 세션은 바깥 세션이 정한 홈을 지킨다(자기 HOME 은 이미 임시 홈이다) · 그게 없으면
+    `$HOME` · 계정 홈(`pwd`)은 **늘** 더한다 — HOME 을 바꿔 띄운 셸이어도, 바깥 값이 셸에 **낡은
+    채** 남아 있어도 계정 홈엔 운영 데이터가 있다. 내보낼 목록엔 `/` 가 없다(컨테이너 `HOME=/`).
+
+    ⚠️ 2026-09-27 다시 썼다(#222): 옛 계약은 바깥 값**만** 돌려줬다 — 독립 리뷰 L6 이 낡은 값이
+    계정 홈을 통째로 빼는 것을, L4 가 `HOME=/` 에서 `/` 를 내보내 빨간불이 되는 것을 짚었다."""
     import pwd
     cf = _conftest()
-    assert cf._real_homes({"NOAH_TEST_PROTECTED_HOME": os.pathsep.join(["/a", "/b"]),
-                           "HOME": "/x"}) == ["/a", "/b"]
+    acct = pwd.getpwuid(os.getuid()).pw_dir
+    got = cf._real_homes({"NOAH_TEST_PROTECTED_HOME": os.pathsep.join(["/a", "/b"]), "HOME": "/x"})
+    assert got[:2] == ["/a", "/b"] and acct in got and "/x" not in got, got
     got = cf._real_homes({"HOME": "/x"})
-    assert "/x" in got and pwd.getpwuid(os.getuid()).pw_dir in got
+    assert "/x" in got and acct in got, got
+    prot = cf._protected_homes({"HOME": "/"})
+    assert os.sep not in prot and os.path.abspath(acct) in prot, prot
+
+
+
+def test_the_session_allows_the_repo_and_temp_even_inside_a_protected_home():
+    """VM 은 레포(`~/stock`)가 지킬 홈 **안**이다 — 이 세션이 실제로 만든 허용 목록이 레포·임시
+    디렉터리·임시 홈을 담고 자식에게 **같은 목록**을 넘긴다. 목록에서 레포를 빼면 VM 에서
+    `.pytest_cache` 가 막혀 `make test` 가 빨간불이다(2026-09-27 독립 리뷰 M2 실측 — 판정 규칙만
+    재던 회귀는 세션이 넘기는 목록을 안 봐서 셋 다 빼도 통과했다)."""
+    cf = _conftest()
+    allowed = cf._HOME["allowed"]
+    assert os.environ["NOAH_TEST_HOME_ALLOWED"].split(os.pathsep) == allowed
+    assert {cf._REPO_ROOT, tempfile.gettempdir(), cf._HOME["home"]} <= set(allowed), allowed
+    # VM 모양으로 태운다 — 레포의 부모를 지킬 홈으로 두고 **세션이 만든** 목록으로 판정한다
+    parent = os.path.dirname(cf._REPO_ROOT)
+    _, t = cf._home_write_guard([parent], allowed, lambda *a: None)
+    assert t("os.mkdir", (os.path.join(cf._REPO_ROOT, ".pytest_cache"), 0o777, -1)) is None
+    sib = os.path.join(parent, "stock-trade", "x")
+    assert t("open", (sib, "w", _W)) == sib
+
+
+def test_blame_skips_frames_inside_the_repo_venv():
+    """범인 지목은 **레포 코드의 줄**이다 — 레포 안 `.venv` 의 라이브러리 줄은 건너뛴다(그 줄로는
+    고칠 자리를 모른다, #114). 가짜 파일 이름으로 컴파일한 두 단 호출로 잰다."""
+    cf = _conftest()
+    lib = os.path.join(cf._REPO_ROOT, ".venv", "lib", "python3.11", "site-packages", "libx.py")
+    ns = {"rec": cf._record_home_write}
+    exec(compile("def hook():\n    rec('open', '/nowhere/x')\n"
+                 "def lib_write():\n    hook()\n", lib, "exec"), ns)
+    n0 = len(cf._HOME_WRITES)
+    ns["lib_write"]()
+    rec = cf._HOME_WRITES.pop()                  # 이 테스트의 fixture 가 '쓰기' 로 세지 않게
+    assert len(cf._HOME_WRITES) == n0
+    assert rec["where"] and not any(".venv" in w for w in rec["where"]), rec
+    assert rec["where"][0].startswith("tests/test_home_isolation_20260927.py:"), rec
+
+
+def test_a_child_line_names_the_test_that_spawned_it():
+    """백그라운드 자식은 띄운 테스트가 끝난 뒤에 써서 **다른** 테스트 창에 든다 — 줄이 그 자식을
+    띄운 테스트(물려받은 `PYTEST_CURRENT_TEST`)를 말해야 범인이 보인다(리뷰 L2 실측)."""
+    cf = _conftest()
+    line = cf._fmt_child_write("12\topen\t/h/x\ttests/a.py::test_bg (call)\t-c")
+    assert line.startswith("open /h/x  [자식 pid 12 · 띄운 테스트 tests/a.py::test_bg (call): -c]"), line
+    assert "띄운 테스트" not in cf._fmt_child_write("12\topen\t/h/x\t\t-c")
+
+
+def test_every_path_env_var_the_repo_reads_is_checked_at_session_start():
+    """레포가 읽는 경로 지정 변수(`…_DIR`·`…_PATH`·`…_HOME`·`…_FILE`)는 전부 세션 시작에 값을
+    대조받는다 — 이름공간 목록이 새 변수를 놓치면 여기서 걸린다(#24). 셸이 실제 홈을 가리키게
+    둔 `TRADE_DATA_DIR` 은 trade/tests 99건을 빨간불로 만들었다(리뷰 M3 실측, 쓰기는 막혔다)."""
+    cf = _conftest()
+    pat = re.compile(r"""(?:environ\.get|getenv|environ\[|environ\.setdefault)\(?\s*["']([A-Z][A-Z0-9_]*)["']""")
+    names = set()
+    for base in ("bot", "trade"):
+        for f in (ROOT / base).rglob("*.py"):
+            if "tests" not in f.relative_to(ROOT).parts:
+                names.update(pat.findall(f.read_text(encoding="utf-8", errors="replace")))
+    pathish = {n for n in names if re.search(r"(DIR|PATH|HOME|FILE)$", n)}
+    assert {"TRADE_DATA_DIR", "TRADINGAGENTS_HOME", "TRADE_HS_MAP_PATH"} <= pathish, pathish  # #54
+    missing = sorted(n for n in pathish - {"HOME", "PATH", "PYTHONPATH"} if not cf._home_dir_var(n))
+    assert not missing, missing
+    assert cf._home_dir_var("XDG_CACHE_HOME") and not cf._home_dir_var("XDG_RUNTIME_DIR")
 
 
 def test_child_log_reads_only_complete_lines(tmp_path, monkeypatch):
@@ -364,11 +457,25 @@ def test_a_pycache_prefix_inside_the_home_does_not_fail_imports(tmp_path):
 _E2E = textwrap.dedent(r'''
     import os, subprocess, sys
     from pathlib import Path
+    import pytest
     FAKE = Path(os.environ["E2E_FAKE"])
     try:
         (FAKE / "stray.txt").write_text("x")     # 수집 시점 — 어느 테스트 창에도 안 든다
     except OSError:
         pass
+    subprocess.run([sys.executable, "-c", "open(%r, 'w').write('x')" % str(FAKE / "early_child.txt")],
+                   capture_output=True)          # 수집 시점 **자식** — 첫 테스트 창 앞에 적힌다
+
+
+    @pytest.fixture(scope="session", autouse=True)
+    def _late_writes():
+        yield                                    # 마지막 테스트 창 **뒤** — 세션 끝에서만 보인다
+        try:
+            (FAKE / "late_inproc.txt").write_text("x")
+        except OSError:
+            pass
+        subprocess.run([sys.executable, "-c",
+                        "open(%r, 'w').write('x')" % str(FAKE / "late_child.txt")], capture_output=True)
 
 
     def test_swallowed_write():
@@ -391,14 +498,23 @@ _E2E = textwrap.dedent(r'''
                        capture_output=True)
 
 
+    def test_child_bare_env_write():             # 환경을 지운 자식(`env={…}`) — 세션이 구운 값으로 지킨다
+        subprocess.run([sys.executable, "-c",
+                        "open(%r, 'w').write('x')" % str(FAKE / "bare_child.txt")],
+                       env={"PYTHONPATH": os.environ["PYTHONPATH"]}, capture_output=True)
+
+
     def test_home_and_env_are_isolated():
         assert Path.home().name.startswith("noah-test-home-")
         p = Path.home() / ".tradingagents" / "x.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("{}")
         assert "XDG_CACHE_HOME" not in os.environ          # 실제 홈을 가리키던 XDG 는 지운다
-        assert os.environ.get("XDG_RUNTIME_DIR") == "/run/noah-e2e"   # *_HOME 이 아니면 둔다
+        assert "TRADE_DATA_DIR" not in os.environ          # 레포 이름공간 경로 변수도(리뷰 M3)
+        assert os.environ.get("XDG_RUNTIME_DIR", "").endswith("run")   # *_HOME 이 아니면 홈 안이어도 둔다
         assert os.environ.get("XDG_DATA_HOME", "").endswith("xdg_data")   # 홈 밖을 가리키면 둔다
+        assert os.environ.get("TRADINGAGENTS_DATA_DIR", "").endswith("ta_data")   # 홈 밖 → 둔다
+        assert os.environ.get("TRADE_REL_PROBE", "").startswith("..")    # 상대경로는 대조 안 한다
 
 
     def test_tmp_write_passes(tmp_path):
@@ -419,6 +535,8 @@ def _nested(tmp_path, *args: str):
     fake = tmp_path / "realhome"
     fake.mkdir(exist_ok=True)
     (fake / "keep.txt").write_text("keep")
+    ntmp = tmp_path / "ntmp"                     # 안쪽 세션의 TMPDIR — 끝나고 `noah-test-*` 가 안 남는지 본다
+    ntmp.mkdir(exist_ok=True)
     f = tmp_path / "test_home_e2e.py"
     f.write_text(_E2E, encoding="utf-8")
     junit = tmp_path / "result.xml"
@@ -426,8 +544,10 @@ def _nested(tmp_path, *args: str):
     env = dict(os.environ, E2E_FAKE=str(fake),
                NOAH_TEST_PROTECTED_HOME=os.pathsep.join([str(fake), *_protected()]),
                NOAH_TEST_HOME_GUARD_LOG=str(outer_log),
-               XDG_CACHE_HOME=str(fake / ".cache"), XDG_RUNTIME_DIR="/run/noah-e2e",
-               XDG_DATA_HOME=str(tmp_path / "xdg_data"))
+               XDG_CACHE_HOME=str(fake / ".cache"), XDG_RUNTIME_DIR=str(fake / "run"),
+               XDG_DATA_HOME=str(tmp_path / "xdg_data"), TRADE_DATA_DIR=str(fake / ".trade"),
+               TRADINGAGENTS_DATA_DIR=str(tmp_path / "ta_data"),
+               TRADE_REL_PROBE=os.path.relpath(fake, ROOT), TMPDIR=str(ntmp))
     r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "conftest",
                         "-p", "no:cacheprovider", f"--junitxml={junit}", *args, str(f)],
                        cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=300)
@@ -439,6 +559,25 @@ def _nested(tmp_path, *args: str):
     return r, res, fake, outer_log
 
 
+def _stray_section(out: str) -> str:
+    """세션 끝 '어느 테스트에도 속하지 않은' 보고 **그 절만** — 출력 전체에서 찾으면 테스트별
+    보고가 대신 만족시킨다(#75). 없으면 빈 문자열."""
+    lines = out.splitlines()
+    i = next((k for k, ln in enumerate(lines) if "어느 테스트에도 속하지 않은" in ln), None)
+    if i is None:
+        return ""
+    body = []
+    for ln in lines[i + 1:]:
+        if not ln.startswith("  "):
+            break
+        body.append(ln)
+    return "\n".join(body)
+
+
+def _no_leftover_temp(tmp_path) -> list:
+    return sorted(p.name for p in (tmp_path / "ntmp").iterdir() if p.name.startswith("noah-test-"))
+
+
 def test_a_nested_session_fails_the_culprits_and_keeps_the_home(tmp_path):
     """⚠️ 핵심 계약 — 앱 코드가 `PermissionError` 를 **삼켜도** 그 테스트가 실패한다(#12·#315).
     삭제(mtime 으로는 안 보이던 것, #417)·자식 프로세스 쓰기(#401)도 같다. 범인은 **테스트와
@@ -447,17 +586,28 @@ def test_a_nested_session_fails_the_culprits_and_keeps_the_home(tmp_path):
     r, res, fake, outer_log = _nested(tmp_path)
     out = r.stdout + r.stderr
     assert res == {"test_swallowed_write": "error", "test_delete": "error",
-                   "test_child_write": "error", "test_home_and_env_are_isolated": "passed",
+                   "test_child_write": "error", "test_child_bare_env_write": "error",
+                   "test_home_and_env_are_isolated": "passed",
                    "test_tmp_write_passes": "passed", "test_dotenv_is_off": "passed"}, (
         res, out[-4000:])
-    assert r.returncode != 0
+    assert r.returncode == 1, (r.returncode, out[-3000:])       # TESTS_FAILED — 중단(2)이 아니다
     for name in ("direct.json", "keep.txt", "child.txt"):
         assert name in out, (name, out[-4000:])
     # 호출 **줄**까지 지목한다 — 그 기록 줄 하나를 잘라서 본다. 출력 전체에서 찾으면 pytest 의
     # 노드 이름(`test_home_e2e.py::test_delete`)이 `…py:` 를 대신 만족시킨다(#75 · 뮤테이션 실측).
     line = next((ln for ln in out.splitlines() if "direct.json" in ln and "스레드" in ln), "")
     assert re.search(r"test_home_e2e\.py:\d+$", line.strip()), (line, out[-4000:])
-    assert "자식 pid" in out, out[-4000:]                     # 자식 쓰기는 자식이라고 말한다
+    # 자식 줄은 이벤트·경로 순서로, 그 자식을 **띄운 테스트**까지 말한다(리뷰 L2)
+    assert re.search(r"open \S*/child\.txt  \[자식 pid \d+ · 띄운 테스트 \S*test_child_write", out), (
+        out[-4000:])
+    # 창 밖 쓰기는 세션 끝에서 **따로** — 테스트 전(수집 시점 자식)·마지막 테스트 뒤(프로세스·자식).
+    # 이미 테스트에 지목된 쓰기는 다시 안 센다(이중 보고면 범인이 둘로 보인다)
+    stray = _stray_section(out)
+    for name in ("stray.txt", "early_child.txt", "late_inproc.txt", "late_child.txt"):
+        assert name in stray, (name, stray, out[-3000:])
+    for name in ("direct.json", "keep.txt", "/child.txt", "bare_child.txt"):
+        assert name not in stray, (name, stray)
+    assert _no_leftover_temp(tmp_path) == [], _no_leftover_temp(tmp_path)   # 임시 홈·기록·자식 가드 정리
     assert sorted(p.name for p in fake.iterdir()) == ["keep.txt"], list(fake.iterdir())
     assert (fake / "keep.txt").read_text() == "keep"
     # 바깥 세션이 심은 자식 가드는 이 pytest 세션이 넘겨받았다 — 안 넘겨받으면 그 훅이 먼저
@@ -472,16 +622,19 @@ def test_a_write_outside_every_test_window_fails_the_session(tmp_path):
     r, res, fake, _log = _nested(tmp_path, "-k", "test_tmp_write_passes")
     out = r.stdout + r.stderr
     assert res == {"test_tmp_write_passes": "passed"}, (res, out[-3000:])
-    assert r.returncode != 0, out[-3000:]
-    assert "어느 테스트에도 속하지 않은" in out and "stray.txt" in out, out[-3000:]
-    assert not (fake / "stray.txt").exists()
+    assert r.returncode == 1, (r.returncode, out[-3000:])
+    stray = _stray_section(out)
+    for name in ("stray.txt", "early_child.txt", "late_inproc.txt", "late_child.txt"):
+        assert name in stray, (name, out[-3000:])
+    assert sorted(p.name for p in fake.iterdir()) == ["keep.txt"], list(fake.iterdir())
 
 
 # ── ④ 이 세션 ───────────────────────────────────────────────────────────────
-def test_this_session_runs_with_a_temp_home_and_dotenv_off():
+def test_this_session_runs_with_a_temp_home_and_dotenv_off(tmp_path):
     """이 프로세스 자체가 격리돼 있다 — HOME 은 conftest 가 만든 임시 디렉터리이고 지킬 홈
     밖이며, `.env` 자동 로드는 꺼져 있고, 지킬 홈 아래 쓰기는 막는 판정이다(쓰지 않고 판정만
-    본다 — 가드가 깨졌을 때 진짜 홈에 쓰면 안 된다)."""
+    본다 — 가드가 깨졌을 때 진짜 홈에 쓰면 안 된다). `.env` 는 **변수가 아니라 동작으로** 잰다 —
+    옛 python-dotenv 는 그 변수를 모른다(리뷰 M1: 변수만 보던 이 검사는 1.0.1 에서도 통과했다)."""
     cf = _conftest()
     prot = _protected()
     assert prot, "지킬 실제 홈을 모른다(대조 0건, #54)"
@@ -489,6 +642,11 @@ def test_this_session_runs_with_a_temp_home_and_dotenv_off():
     assert home == cf._HOME["home"] and pathlib.Path(home).name.startswith("noah-test-home-")
     assert not any(home == p or home.startswith(p + os.sep) for p in prot)
     assert os.environ.get("PYTHON_DOTENV_DISABLED") == "1"
+    import dotenv
+    e = tmp_path / ".env"
+    e.write_text("NOAH_SESSION_DOTENV=1\n", encoding="utf-8")
+    assert dotenv.load_dotenv(e) is False and "NOAH_SESSION_DOTENV" not in os.environ
+    assert cf._HOME["dotenv"] in ("native", "patched"), cf._HOME["dotenv"]
     t = cf._HOME["target"]
     assert all(t("open", (os.path.join(p, ".tradingagents", "x"), "w", _W)) for p in prot)
 
@@ -525,3 +683,92 @@ def test_two_guard_layers_do_not_chain_into_each_other(tmp_path):
                        env=dict(os.environ, PYTHONPATH=os.pathsep.join(dirs)))
     assert r.stdout.split() == ["True", "0"], (r.stdout, r.stderr[-2000:])
     assert "Error in sitecustomize" not in r.stderr, r.stderr[-2000:]
+
+
+# ── ⑤ 스위치를 모르는 옛 python-dotenv (리뷰 M1) ─────────────────────────────
+# 1.0.1·1.1.1 엔 `PYTHON_DOTENV_DISABLED` 가 아예 없다(리뷰 실측 — `trade/requirements.txt` 가
+# 1.0.1 을 고정하고 `~/stock-trade/.venv` 는 그걸로 만든다). 테스트 인터프리터는 1.2+ 라 그 판을
+# 못 태우므로, 스위치가 **없는** 같은 API 의 대역을 쓴다(실물 1.0.1 설치본으로도 한 번 쟀다 —
+# 옛 판에선 중첩 세션의 `test_dotenv_is_off` 가 실패했고 고친 판에선 통과했다, 2026-09-27).
+_OLD_DOTENV = {
+    "dotenv/__init__.py": "from .main import load_dotenv, dotenv_values\n",
+    "dotenv/main.py": textwrap.dedent('''
+        import os
+
+
+        def dotenv_values(dotenv_path=None, **kw):
+            out = {}
+            with open(dotenv_path, encoding="utf-8") as f:
+                for line in f:
+                    k, _, v = line.strip().partition("=")
+                    if k:
+                        out[k] = v
+            return out
+
+
+        def load_dotenv(dotenv_path=None, stream=None, verbose=False, override=False, **kw):
+            for k, v in dotenv_values(dotenv_path).items():
+                if override or k not in os.environ:
+                    os.environ[k] = v
+            return True
+    '''),
+}
+
+_DOTENV_CHILD = textwrap.dedent(r'''
+    import importlib.util, json, os, pathlib, subprocess, sys
+    root, envfile = pathlib.Path(sys.argv[1]), sys.argv[2]
+    spec = importlib.util.spec_from_file_location("root_conftest_probe", root / "conftest.py")
+    cf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cf)
+    import dotenv
+    here = [dotenv.load_dotenv(envfile), os.environ.get("NOAH_E2E_OLD_DOTENV")]
+    # 같은 프로세스에서 conftest 를 **한 번 더** — 중첩 세션처럼 이미 갈아 끼운 판을 만나도
+    # 'native' 로 잘못 읽지 않고 제 자식 가드에 패치를 싣는다
+    spec2 = importlib.util.spec_from_file_location("root_conftest_probe2", root / "conftest.py")
+    cf2 = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(cf2)
+    inner = [cf2._HOME["dotenv"], "_dotenv_force_switch" in
+             (pathlib.Path(cf2._CHILD_GUARD_DIR) / "sitecustomize.py").read_text(encoding="utf-8")]
+    code = ("import dotenv, json, os; print(json.dumps([dotenv.load_dotenv(%r), "
+            "os.environ.get('NOAH_E2E_OLD_DOTENV'), dotenv.__file__]))" % envfile)
+    g = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    print(json.dumps({"switch": cf._HOME["dotenv"], "from": dotenv.__file__, "here": here,
+                      "inner": inner, "grandchild": g.stdout.strip(), "err": g.stderr[-800:]}))
+''')
+
+
+def test_an_old_dotenv_without_the_switch_is_turned_off_here_and_in_children(tmp_path):
+    """스위치를 모르는 판이면 **이 프로세스**에선 conftest 가, **자식**에선 그 세션이 심은
+    sitecustomize 가 `load_dotenv` 를 스위치를 따르는 판으로 갈아 끼운다(같은 소스, #38).
+    판별은 판 번호가 아니라 동작이다(#25). 반대 증거: 대역은 정말 스위치를 모른다."""
+    import importlib.util
+    pkg = tmp_path / "olddotenv"
+    for rel, src in _OLD_DOTENV.items():
+        (pkg / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / rel).write_text(src, encoding="utf-8")
+    envfile = tmp_path / "e.env"
+    envfile.write_text("NOAH_E2E_OLD_DOTENV=1\n", encoding="utf-8")
+    # 반대 증거 — 대역을 그대로 부르면 스위치가 켜져 있어도(이 세션) 읽어 들인다
+    spec = importlib.util.spec_from_file_location("old_dotenv_probe", pkg / "dotenv" / "main.py")
+    raw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(raw)
+    try:
+        assert os.environ.get("PYTHON_DOTENV_DISABLED") == "1"
+        assert raw.load_dotenv(str(envfile)) is True and os.environ["NOAH_E2E_OLD_DOTENV"] == "1"
+    finally:
+        os.environ.pop("NOAH_E2E_OLD_DOTENV", None)
+    env = dict(os.environ)
+    # 가드 디렉터리(sitecustomize)는 맨 앞 그대로, 대역은 **그 바로 뒤** — 다른 dotenv 가 경로에
+    # 먼저 있으면 자식이 그걸 가져가 대역을 못 잰다(실물 1.0.1 을 경로에 얹은 재현에서 실측)
+    parts = [x for x in env.get("PYTHONPATH", "").split(os.pathsep) if x]
+    env["PYTHONPATH"] = os.pathsep.join(parts[:1] + [str(pkg)] + parts[1:])
+    r = subprocess.run([sys.executable, "-c", _DOTENV_CHILD, str(ROOT), str(envfile)],
+                       cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=180)
+    assert r.returncode == 0, r.stderr[-3000:]
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["from"].startswith(str(pkg)), out                   # 대역이 실제로 쓰였다
+    assert out["switch"] == "patched", out
+    assert out["here"] == [False, None], out
+    assert out["inner"] == ["patched", True], out
+    g = json.loads(out["grandchild"] or "null")
+    assert g and g[:2] == [False, None] and g[2].startswith(str(pkg)), out
