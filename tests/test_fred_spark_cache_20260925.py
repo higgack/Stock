@@ -322,18 +322,21 @@ def test_two_threads_writing_the_same_copy_use_separate_temp_files(spark, monkey
 
 
 def test_the_snapshot_caches_are_isolated_from_the_operator_home():
-    """루트 conftest 가 스냅샷 경로 셋을 홈 밖으로 옮긴다 — 2026-09-25 실측으로 `snapshot.json`
-    (빈 스냅샷) · `yf_batch_snapshot.json` · `fear_greed.json`(실패 도장)이 운영 홈에 구워졌다
-    (#30·#312·#344). 그 줄을 지우면 여기서 걸린다(선언을 소스에서 파생하는 회귀는 **지운** 줄을
-    못 본다 — 선언과 적용이 같이 사라지므로)."""
-    from pathlib import Path
+    """스냅샷 경로 셋이 **운영 홈 밖**이다 — 2026-09-25 실측으로 `snapshot.json`(빈 스냅샷) ·
+    `yf_batch_snapshot.json` · `fear_greed.json`(실패 도장)이 운영 홈에 구워졌다(#30·#312·#344).
+
+    ⚠️ 2026-09-27 다시 썼다(#222): 루트 conftest 가 상수를 하나씩 옮기던 목록 대신 **HOME
+    자체**를 세션 임시 디렉터리로 옮긴다(실수 #421). 그러니 비교 대상은 `Path.home()`(이제
+    임시 홈이라 그 아래가 정상이다)이 아니라 지켜야 할 **실제 홈**이다."""
+    import os
     import bot.fear_greed_client as fg
-    home = Path.home() / ".tradingagents"
+    prot = [p for p in os.environ.get("NOAH_TEST_PROTECTED_HOME", "").split(os.pathsep) if p]
+    assert prot, "지킬 실제 홈을 모른다(대조 0건, #54)"
     for label, val in (("macro_snapshot._CACHE_DIR", ms._CACHE_DIR),
                        ("market_overview._CACHE_DIR", mo._CACHE_DIR),
                        ("fear_greed_client._CACHE", fg._CACHE)):
-        val = Path(str(val))
-        assert home not in val.parents and val != home, f"{label} → {val}"
+        val = str(val)
+        assert not any(val == r or val.startswith(r + os.sep) for r in prot), f"{label} → {val}"
 
 
 def test_no_key_asks_nothing(spark, monkeypatch):

@@ -8370,3 +8370,54 @@ PTB 기본 문구만 남았다. 봇에 에러 핸들러를 달아 핸들러 예�
 처음엔 셋이 살아남았다. 그중 하나는 치환이 코드를 바꾸지 않은 내 명세 실수였고, 둘은 픽스처가
 눈이 멀어 있었다 — 짐작한 시작의 옛 사건이 옮겨 오는 경우와, 두 번 읽는 저널이 같은 줄을 돌려주는
 가짜라 수신을 좁은 창으로 세도 통과한 경우였다. 픽스처를 더해 셋 다 잡았다.
+
+### 실수 #421
+
+421. **테스트의 운영 홈 오염을 '발견한 경로 목록'으로 막고 있었다 — 재 보니 90개 테스트가
+    131가지를 쓰고 있었다**(2026-09-27 #417 후속): 가계부 갈아쓰기 · 모의투자 가짜 체결 ·
+    `auto_audit.jsonl` 삭제 · 캐시 mtime 밀기(운영 TTL 연장). 목록 대신 구조로(#24·#119): 루트
+    conftest 가 import 시점에 HOME 을 임시 디렉터리로 옮기고(모듈 상수가 따라온다 · `.env` 자동
+    로드도 끈다) 그래도 실제 홈을 쓰면 감사 훅이 막는다. ⚠️ **막았다 ≠ 보였다** — 앱의
+    `except Exception` 과 표준 라이브러리(`makedirs(exist_ok=True)`)가 그 예외를 삼킨다(실측) →
+    기록해 두고 fixture 가 실패시킨다(#12·#315). 예외로 막는 가드는 "삼키는 호출부 앞에서 무엇이
+    남나"를 물을 것. 자식은 같은 소스로(#38·#401) · 테스트 밖 쓰기는 세션 실패(#54) · 레포가 홈
+    안이면(VM) 가장 긴 루트가 이긴다. ⚠️ E2E 가 #401 의 구멍도 잡았다 — 중첩 세션에선 두 자식
+    가드가 서로를 잇다 재귀해 손자 프로세스의 가드가 0개였다.
+
+측정(2026-09-27): 테스트마다 쓰기·삭제·이름변경·sqlite 연결을 기록하는 일회성 감사 훅(`sys.addaudithook`)
+플러그인으로 세 트리를 돌렸다. (테스트, 이벤트, 경로) 131쌍 · 테스트 90개가 나왔다. `~/.tradingagents` 에선 가계부
+`budget.json` 을 갈아 썼고(`.bak`·`.tmp` 이름변경, `TestEmptyHoldingsGuard` 2건), 모의투자 `paper/portfolio.json`·
+`audit.jsonl` 에 가짜 체결을 남겼고(`TestE1KisTradingAdapter` 3건), `paper/auto_audit.jsonl` 에 줄을 더하거나
+(`TestPaperAutoSignals` 3건) 지웠고(`TestPaperTrading::test_snapshot_equity_dedupes_by_date` 의 `pt.reset()`),
+`dart_call_budget.json` 과 캐시 `kind_ir`·`krx_alert`·`twse_flow` 를 썼고, `fsc_cache` 의 KOFIA 사본 mtime 을 밀어
+운영 TTL 을 늘렸다. `~/.trade` 에선 `run_ledger.json`·`.scan_notified.json`·`.scan_probe.json`(`CoverageGuardTests`)과
+공유 페이지 `dashboard/share/2026-04.html`(`RefreshSignalsGateTests` 5건)을 썼고, 나머지 60여 건은 `hs_map`·`ignored`
+의 `mkdir(exist_ok=True)` 였다. 전후 스냅샷(크기·mtime·inode)은 감사 훅 기록과 같은 파일만 가리켰다 — 자식·C 쓰기
+누락은 없었다.
+
+`_redirect_disk_caches`(17줄 목록 + 지연 finder)는 지웠고, 그 목록을 가리키던 안내("오염을 관측하면 한 줄 추가")도
+같이 고쳤다(#286). `.env` 는 python-dotenv 1.2 의 공식 스위치 `PYTHON_DOTENV_DISABLED=1` 로 껐다 — `load_dotenv()` 만
+꺼졌고 `dotenv_values` 는 그대로였다. 판정은 가장 긴 일치 루트로 갈랐다 — VM 은 레포(`~/stock`)가 홈 안이었고, 회귀의
+가짜 홈은 허용 `/tmp` 안이었지만 더 길어서 보호됐다. 막은 쓰기는 `PermissionError`(운영체제가 거절할 때와 같은 타입)로
+막고 기록했다. 앱의 `except Exception` 과 표준 라이브러리 `os.makedirs(exist_ok=True)`·`Path.mkdir(exist_ok=True)`(이미
+있는 디렉터리)가 그 예외를 삼키는 것을 실측으로 봤다 — 테스트를 실패시킨 건 fixture 가 읽은 기록이었다. 테스트 창
+밖(수집 시점 import·테스트 사이 스레드)의 기록은 세션 끝에서 따로 말하게 했고 종료 코드도 실패로 바꿨다. 자식은
+sitecustomize 가 conftest 두 함수의 소스를 그대로 실행해 같은 가드를 걸었고, 중첩 pytest 세션은 바깥 세션이 심은 자식
+가드를 꺼서 넘겨받았다(넘겨받지 않는 뮤테이션에선 기록이 바깥 파일에 적혀 안쪽 세션이 범인을 못 봤다). 비용은
+matplotlib 폰트 캐시 재생성이 프로세스당 0.2초였고 `tests/` 전체는 269초였다.
+
+E2E 가 옛 구멍 하나를 잡았다(#401 부터): 바깥·안쪽 세션의 자식 가드 디렉터리가 둘 다 `PYTHONPATH` 에 있으면
+sitecustomize 가 서로를 `exec` 로 이어 실행하다 `RecursionError` 가 났고, `site.py` 가 그걸 삼켜 손자 프로세스엔
+네트워크 가드까지 하나도 없었다. 중첩 세션의 손자에서만 나서 그전엔 아무도 못 봤다. 첫 줄 표식으로 우리 파일은
+잇지 않게 고쳤다.
+
+셀프리뷰가 구멍 하나를 더 찾았다: 홈이 심볼릭 링크(`/home/x` → `/data/x`)면 `Path.home().resolve()` 로 만든
+실경로가 링크 표기 루트와의 문자열 비교를 빠져나갔다. 루트를 두 표기(abspath·realpath)로 두었고, 홈 안 레포는 링크
+표기로도 허용했다 — 레포 루트는 `resolve()` 로 구해 실경로만 알았다. 경로마다 `realpath` 를 푸는 판은 모든 `open` 에
+디렉터리 단계마다 lstat 을 붙여서 택하지 않았다. XDG 변수를 지우는 판정도 가드의 판정을 그대로 쓰게 바꿨다 — 홈 밖을
+가리키는 `*_HOME` 은 그대로 뒀다.
+
+결과: 세 트리가 전부 통과했다. 전후 스냅샷에서 실제 홈 변경은 0건이었다(이전 판은 17개 변경 · 2개 생성). 빈 임시
+홈에서 깨지는 숨은 의존(앞 실행이 남긴 운영 상태에 기대던 테스트)은 없었다. 못 보는 축(#274)으로 남긴 것은 레포
+체크아웃 안의 쓰기(VM 에선 운영 NOAH 체크아웃) · C 확장이 직접 여는 파일(sqlite 는 연결 시점에 잡힌다) · `dir_fd`
+상대 경로 · 파이썬이 아닌 자식과 `env=` 로 `PYTHONPATH` 를 뺀 자식 · 세션이 끝난 뒤(atexit) 쓰기 · 실제 홈 읽기 · 홈 밖에 둔 심볼릭 링크를 거친 쓰기였다.
