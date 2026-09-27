@@ -59637,62 +59637,47 @@ class TestNoOutboundHttpInTests20260911:
         teardown **뒤에** 쓴다(위 네트워크 차단과 같은 이유 · 실측: 클래스 단독
         실행에선 안 나오고 여러 클래스를 이어 돌릴 때만 파일이 생겼다).
 
-        ⚠️ 상수 이름이 바뀌면 `setattr` 이 조용히 아무 데도 안 걸린다 — 그걸
-        잡으려고 **지금 값이 정말 홈 밖인지**를 본다(#25 '있다'만 묻는 검사는
-        눈이 멀고, #54 대조 0건은 통과가 아니다)."""
+        ⚠️ 2026-09-27 계약을 다시 썼다(#222): 캐시 상수를 **하나씩** 갈아 끼우던
+        목록(`_redirect_disk_caches`, 17줄)을 **HOME 격리**로 바꿨다. 목록은 누가
+        오염을 우연히 발견할 때만 자랐고, 그 사이 90개 테스트가 운영 디렉터리에
+        131가지 쓰기를 하고 있었다(실수 #421 — 감사 훅 실측). 남는 보장:
+        ① 세션 HOME 은 지켜야 할 **실제 홈 밖**의 임시 디렉터리다(#54 지킬 홈을 모르면
+        실패) ② 홈 경로를 import 시점에 굳히는 모듈의 상수가 **그 임시 홈 아래**다 —
+        옛 목록 밖의 모듈(오늘 `paper/auto_audit.jsonl` 을 지우던 `bot.paper_trading`)을
+        골랐다. 테스트마다 갈아 끼우는 상수(`tests/conftest.py`)는 이 보장의 증거가
+        못 되므로 뺐다(#91b 재는 대상이 맞나) ③ 격리는 fixture 가 아니다(되돌리면
+        teardown 뒤 스레드가 샌다)."""
         import importlib
+        import os as _os
         import pathlib as _pl
         _cf = self._conftest()
-        home = _pl.Path.home() / ".tradingagents"
-        want = {"bot.naver_sector_client._CACHE_DIR",
-                "bot.market_timing._VOL_CACHE_DIR",
-                "bot.finviz_client._CACHE_DIR",
-                "bot.market_favorites._FAVORITES_FILE"}
-        for dotted in sorted(want):   # 대상은 import 될 때 걸린다(아래 주석) — 먼저 올린다
-            importlib.import_module(dotted.rsplit(".", 1)[0])
-        assert want <= set(_cf._REDIRECTED), (
-            f"리다이렉트가 빠졌다(상수 이름 변경?): {want - set(_cf._REDIRECTED)}")
-        # ⚠️ `want` 는 손으로 적은 목록이라 **나중에 더한 줄**을 못 본다 — 상수
-        # 이름이 바뀌면 `continue` 로 조용히 빠지고 그 캐시만 운영 경로로 샌다
-        # (#24 열거형 가드는 목록 밖을 못 잡는다). 목록을 conftest 소스에서
-        # 파생시켜 **전수**로 잰다(독립 리뷰 2026-09-17 L1).
+        prot = [p for p in _os.environ.get("NOAH_TEST_PROTECTED_HOME", "").split(_os.pathsep)
+                if p]
+        assert prot, "지킬 실제 홈을 모른다(대조 0건, #54)"
+
+        def _under(v, roots):
+            v = str(v)
+            return any(v == r or v.startswith(r + _os.sep) for r in roots)
+
+        home = _pl.Path.home()
+        assert home.name.startswith("noah-test-home-") and not _under(home, prot), home
+        assert str(home) == _cf._HOME["home"], (home, _cf._HOME["home"])
+        for dotted in ("bot.paper_trading._HOME", "bot.macro_snapshot._CACHE_DIR",
+                       "bot.chart_translate._HOME", "trade.price_provider._DATA_DIR"):
+            mod, attr = dotted.rsplit(".", 1)
+            val = getattr(importlib.import_module(mod), attr)
+            assert _under(val, [str(home)]) and not _under(val, prot), f"{dotted} → {val}"
+        # ③ 격리는 import 시점에 한 번이고 **되돌리지 않는다** — `_isolate_home` 이
+        # 제너레이터(fixture)면 teardown 에서 되돌려 늦게 끝난 스레드가 운영 경로로 쓴다.
+        # ⚠️ 계약은 "이 **함수**가 제너레이터가 아니다" 이지 "파일 어디에도 yield 가
+        # 없다" 가 아니다(#60 창으로 재면 무너진다 · #174 본문만 잘라서 볼 것 · #55).
         import ast as _ast
         _src0 = pathlib.Path(_cf.__file__).read_text(encoding="utf-8")
         _fn = next(n for n in _ast.parse(_src0).body
-                   if isinstance(n, _ast.FunctionDef)
-                   and n.name == "_redirect_disk_caches")
-        declared = set()
-        for nd in _ast.walk(_fn):
-            if (isinstance(nd, _ast.Assign) and isinstance(nd.value, _ast.Tuple)
-                    and any(getattr(t, "id", "") == "targets" for t in nd.targets)):
-                for el in nd.value.elts:
-                    if isinstance(el, _ast.Tuple) and len(el.elts) == 3:
-                        declared.add(f"{el.elts[0].value}.{el.elts[1].value}")
-        assert declared >= want, "conftest 의 targets 를 못 읽었다(대조 0건, #54)"
-        # 2026-09-25 부터 conftest 는 대상을 **import 될 때** 건다(독립 리뷰 M1 — 미리
-        # import 하면 진짜 yfinance 가 먼저 올라 `bot/tests` 의 모의가 빠진다). 그러니
-        # '걸렸나' 는 **모듈을 올린 뒤에** 본다(옛 계약 "import 시점에 이미 걸려 있다" 를
-        # 다시 썼다, #222 — 남는 보장: 선언한 것은 전부 걸리고 값은 홈 밖이다).
-        for dotted in sorted(declared):
-            importlib.import_module(dotted.rsplit(".", 1)[0])
-        assert declared == set(_cf._REDIRECTED), (
-            "선언했는데 안 걸린 대상이 있다(상수 이름 변경?): "
-            f"{sorted(declared - set(_cf._REDIRECTED))}")
-        for dotted in sorted(declared):
-            mod, attr = dotted.rsplit(".", 1)
-            val = _pl.Path(str(getattr(importlib.import_module(mod), attr)))
-            assert home not in val.parents and val != home, f"{dotted} → {val}"
-        # 그리고 conftest 가 그걸 **되돌리지 않는다** — 되돌리면 늦게 끝난
-        # 스레드가 운영 경로로 쓴다(위 `test_session_scope_is_measured…` 와 같은 계약).
-        # ⚠️ 옛 판은 `src[src.index("def _redirect_disk_caches"):]` 로 **파일
-        # 끝까지**를 본문이라 보고 `yield` 를 찾았다 — conftest 뒤에 무관한
-        # fixture 가 하나 붙자(2026-09-21 sys.modules 오염 가드) 멀쩡한 코드를
-        # 틀렸다고 했다. 계약은 "이 **함수**가 제너레이터가 아니다" 이지
-        # "파일 어디에도 yield 가 없다" 가 아니다(#60 창으로 재면 무너진다 ·
-        # #174 본문만 잘라서 볼 것 · #55).
+                   if isinstance(n, _ast.FunctionDef) and n.name == "_isolate_home")
         assert not any(isinstance(nd, (_ast.Yield, _ast.YieldFrom))
                        for nd in _ast.walk(_fn)), (
-            "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다")
+            "HOME 격리를 fixture 로 만들면 teardown 뒤 샌다")
 
     def test_root_conftest_preloads_nothing_bot_tests_mock(self):
         """루트 conftest 는 **아무 레포 모듈도 미리 올리지 않는다** — 그래야 `bot/tests`
@@ -59705,8 +59690,11 @@ class TestNoOutboundHttpInTests20260911:
         ① 루트 conftest 를 실행한 뒤 `bot`·`trade` 아래 모듈이 하나도 없다
         ② 이어서 `bot/tests/conftest.py` 를 실행하면 그 모의 목록이 **전부** 모의다.
         ⚠️ pytest 세션 안에선 이미 다 올라와 있어 못 잰다 — 새 인터프리터에서 잰다.
-        반대 증거(#25): 그 뒤 대상 모듈을 import 하면 상수가 **걸린다**(늦게 건다 ≠ 안 건다)."""
+        반대 증거(#25): 그 뒤 대상 모듈을 import 하면 상수가 **임시 홈 아래**다 — 모듈이 홈
+        경로를 import 시점에 굳히므로 HOME 격리가 어떤 레포 모듈보다 먼저라는 증거다
+        (2026-09-27 목록형 리다이렉트를 HOME 격리로 바꾸며 다시 썼다, 실수 #421 · #222)."""
         import json as _json
+        import os
         import subprocess
         import sys
         import textwrap
@@ -59728,9 +59716,11 @@ class TestNoOutboundHttpInTests20260911:
             mocks = list(bt._HEAVY_MOCKS)
             bad = [n for n in mocks if not isinstance(sys.modules.get(n), MagicMock)]
             ms = importlib.import_module("bot.macro_snapshot")
+            import os
             print(json.dumps({"pre": pre, "mocks": len(mocks), "bad": bad,
                               "ms_dir": str(ms._CACHE_DIR),
-                              "home": str(pathlib.Path.home())}))
+                              "home": str(pathlib.Path.home()),
+                              "protected": os.environ.get("NOAH_TEST_PROTECTED_HOME", "")}))
         """)
         r = subprocess.run([sys.executable, "-c", code, str(root)], cwd=str(root),
                            capture_output=True, text=True, timeout=180)
@@ -59740,11 +59730,14 @@ class TestNoOutboundHttpInTests20260911:
         assert out["mocks"] >= 10, out          # 대조 0건은 통과가 아니다(#54)
         assert out["bad"] == [], f"bot/tests 모의가 안 섰다: {out['bad']}"
         ms_dir = pathlib.Path(out["ms_dir"])
-        home = pathlib.Path(out["home"]) / ".tradingagents"
-        assert home not in ms_dir.parents and "noah-test-caches-" in str(ms_dir), out
-        # 그리고 그 임시 루트는 **프로세스가 끝나면 지워진다** — 옛 판은 안 지워
+        home = pathlib.Path(out["home"])
+        prot = [p for p in out["protected"].split(os.pathsep) if p]
+        assert prot, out                        # 지킬 홈을 모르면 판정 불가(#54)
+        assert home.name.startswith("noah-test-home-") and home in ms_dir.parents, out
+        assert not any(str(ms_dir).startswith(p + os.sep) for p in prot), out
+        # 그리고 그 임시 홈은 **프로세스가 끝나면 지워진다** — 옛 캐시 루트는 안 지워
         # `/tmp/noah-test-caches-*` 가 4,897개 쌓였다(독립 리뷰 L8)
-        assert not ms_dir.parent.exists(), f"임시 캐시 루트가 남았다: {ms_dir.parent}"
+        assert not home.exists(), f"임시 홈이 남았다: {home}"
 
 
 class TestNaverSpaProbe20260911:

@@ -371,7 +371,8 @@ class BoardRenderTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(pp, "_load_krx_master", realm))
         # JPX 목록(2026-09-23)도 같은 이유로 경계에서 막는다 — 운영자가 빌더를
         # 한 번 돌리면 `~/.trade/jpx_codes.json` 이 도쿄 코드 단언을 뒤집는다.
-        # 루트 conftest 리다이렉트가 2차 그물이다. 필요하면 `self.jp` 를 채운다.
+        # 루트 conftest 의 HOME 격리(실수 #421)가 2차 그물이다 — 운영 파일엔 안 닿지만
+        # 같은 세션의 다른 테스트가 만든 사본은 보일 수 있다. 필요하면 `self.jp` 를 채운다.
         import trade.jpx_master as jm
         self.jp: dict = {}
         self.jp_loads = 0

@@ -40,8 +40,8 @@ from trade.stock_link import _JP_CODE
 
 log = logging.getLogger(__name__)
 
-# 로컬 마스터(`build_jpx_codes` 가 원자적으로 쓴다). 테스트는 이 상수를
-# 갈아끼운다(루트 conftest 리다이렉트 · #30·#312·#344).
+# 로컬 마스터(`build_jpx_codes` 가 원자적으로 쓴다). 테스트에선 루트 conftest 가 HOME 을
+# 세션 임시 디렉터리로 옮겨 이 경로도 따라간다(실수 #421 · #30·#312·#344).
 PATH = _DATA_DIR / "jpx_codes.json"
 
 # 2026-09-23 VM 실측 — 목록 페이지가 200 이고 파일 링크가 이 경로였다.
