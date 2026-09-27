@@ -2316,7 +2316,7 @@ restart job` 줄), 배포는 봇 체크아웃의 reflog 가 안다(#86).
 작업 디렉터리 안 물음 · 크래시 안 넘김 · 예외 여러 줄 · 크래시를 설명으로)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가
 일치했다.
 
-## #421 — 테스트는 실제 홈을 못 건드린다: HOME 격리 + 쓰기 가드 (`tests/test_home_isolation_20260927.py` 14건 · 옛 회귀 3건 다시 씀 · 2026-09-27)
+## #421 — 테스트는 실제 홈을 못 건드린다: HOME 격리 + 쓰기 가드 (`tests/test_home_isolation_20260927.py` 16건 · 옛 회귀 3건 다시 씀 · 2026-09-27)
 
 #417 이 후속 과제로 남긴 것(나머지 오염 테스트 · '홈에 쓰면 실패' 가드)을 닫았다. 감사 훅으로 세 트리를 재자 **90개
 테스트가 운영 디렉터리에 131가지** 쓰기를 했다(가계부·모의투자 가짜 체결·`auto_audit.jsonl` 삭제·캐시 mtime 밀기 ·
@@ -2325,8 +2325,8 @@ restart job` 줄), 배포는 봇 체크아웃의 reflog 가 안다(#86).
 
 | 축 | 무엇을 재나 | 테스트 |
 |---|---|---|
-| ① 판정(순수) | 쓰기 계열 이벤트 전부(열기·삭제·이름변경 **양쪽**·mkdir·rmdir·rmtree·utime·chmod·chown·truncate·link·symlink·sqlite·bytes·PathLike) · 막지 않는 것(읽기·fd·dir_fd 상대 — cwd 를 홈으로 옮겨 **건너뛰기를 지우면 걸리게**·`.pyc`·메모리/읽기전용 sqlite·모르는 이벤트) · **가장 긴 루트**(홈 안 레포 허용 · 형제 체크아웃 보호 · 접두어만 같은 형제 무관 · 같은 길이면 허용 · `/` 는 보호도 허용도 안 됨) · 심볼릭 링크 홈은 **두 표기 모두**(`resolve()` 한 실경로도 막고, 홈 안 레포는 링크 표기로도 허용) · `PermissionError`(EACCES·파일명) + 기록 먼저 · 기록이 실패해도 막는다 · 지킬 홈 = 바깥 세션 값 우선, 없으면 `$HOME` 과 계정 홈 · 자식 기록 파일은 **완결된 줄만** | `::test_writes_under_the_real_home_are_named` · `::test_reads_and_unplaceable_paths_pass` · `::test_the_longest_matching_root_decides` · `::test_a_symlinked_home_is_guarded_in_both_spellings` · `::test_the_hook_records_then_raises_the_os_error_type` · `::test_a_failing_record_still_blocks` · `::test_real_homes_prefers_what_the_outer_session_said` · `::test_child_log_reads_only_complete_lines` |
-| ② 진짜 연산 | 실제 인터프리터에서 `pathlib`·`os`·`shutil`·`sqlite3` 17가지 연산을 가짜 실제 홈에 건다 — 연산마다 기록 ≥1 · 전부 막힘, 단 `os.makedirs(exist_ok=True)` 는 **표준 라이브러리가 예외를 삼킨다**(그래서 fixture 가 기록을 읽어야 한다) · 홈은 한 글자도 안 바뀐다 · 읽기와 홈 파생 경로는 통과(#155 이벤트 모양을 손으로 짓지 않는다) · ⚠️ 회귀는 **지금 인터프리터 하나**만 잰다 — VM 판을 몰라 CPython 3.10·3.11·3.12·3.13 에서 같은 연산(+`tempfile.mkstemp`)을 한 번씩 돌렸고 전부 막히고 기록됐다(2026-09-27 일회성 실측, 자동 아님) | `::test_real_operations_are_blocked_in_a_real_interpreter` |
+| ① 판정(순수) | 쓰기 계열 이벤트 전부(열기·삭제·이름변경 **양쪽**·mkdir·rmdir·rmtree·utime·chmod·chown·truncate·link·symlink·sqlite·bytes·PathLike·선두 `//` 표기 — 리눅스에선 `/` 와 같은 자리인데 `normpath` 가 남겨 루트 비교를 빠져나갔다) · 막지 않는 것(읽기·fd·dir_fd 상대 — cwd 를 홈으로 옮겨 **건너뛰기를 지우면 걸리게**·`.pyc`·`PYTHONPYCACHEPREFIX` 접두 아래 `.pyc`(이름만 겹치는 형제 디렉터리는 막는다)·메모리/읽기전용 sqlite·모르는 이벤트) · **가장 긴 루트**(홈 안 레포 허용 · 형제 체크아웃 보호 · 접두어만 같은 형제 무관 · 같은 길이면 허용 · `/` 는 보호도 허용도 안 됨) · 심볼릭 링크 홈은 **두 표기 모두**(`resolve()` 한 실경로도 막고, 홈 안 레포는 링크 표기로도 허용) · `PermissionError`(EACCES·파일명) + 기록 먼저 · 기록이 실패해도 막는다 · 지킬 홈 = 바깥 세션 값 우선, 없으면 `$HOME` 과 계정 홈 · 자식 기록 파일은 **완결된 줄만** | `::test_writes_under_the_real_home_are_named` · `::test_reads_and_unplaceable_paths_pass` · `::test_a_relocated_pycache_prefix_is_the_interpreters_cache` · `::test_the_longest_matching_root_decides` · `::test_a_symlinked_home_is_guarded_in_both_spellings` · `::test_the_hook_records_then_raises_the_os_error_type` · `::test_a_failing_record_still_blocks` · `::test_real_homes_prefers_what_the_outer_session_said` · `::test_child_log_reads_only_complete_lines` |
+| ② 진짜 연산 | 실제 인터프리터에서 `pathlib`·`os`·`shutil`·`sqlite3` 18가지 연산(선두 `//` 로 여는 쓰기 포함)을 가짜 실제 홈에 건다 — 연산마다 기록 ≥1 · 전부 막힘, 단 `os.makedirs(exist_ok=True)` 는 **표준 라이브러리가 예외를 삼킨다**(그래서 fixture 가 기록을 읽어야 한다) · 홈은 한 글자도 안 바뀐다 · 읽기와 홈 파생 경로는 통과(#155 이벤트 모양을 손으로 짓지 않는다) · `-X pycache_prefix` 를 가짜 실제 홈 안에 두고 가드가 걸린 뒤 모듈을 처음 import 해도 기록 0건·`.pyc` 는 실제로 써지고 같은 홈의 다른 쓰기는 막힌다 · ⚠️ 회귀는 **지금 인터프리터 하나**만 잰다 — VM 판을 몰라 CPython 3.10·3.11·3.12·3.13 에서 같은 연산(+`tempfile.mkstemp`)을 한 번씩 돌렸고 전부 막히고 기록됐다(2026-09-27 일회성 실측, 자동 아님 — 선두 `//` 연산은 그 뒤에 더했다) | `::test_real_operations_are_blocked_in_a_real_interpreter` · `::test_a_pycache_prefix_inside_the_home_does_not_fail_imports` |
 | ③ 중첩 pytest | 예외를 **삼킨** 쓰기·삭제·자식 쓰기가 그 테스트를 error 로 만들고 호출 **줄**(`파일:줄`)을 지목한다 · 홈 파생 경로·tmp_path·XDG(가드가 막을 자리를 가리키는 `*_HOME` 만 지운다 — **가드와 같은 판정**이고 홈 밖을 가리키면 둔다)·`.env` 차단은 통과 · 가짜 홈 무변 · 바깥 자식 가드는 넘겨받는다(바깥 기록 파일이 빈다) · 수집 시점 쓰기는 통과 테스트만 골라 돌려도 **세션이 실패**한다 | `::test_a_nested_session_fails_the_culprits_and_keeps_the_home` · `::test_a_write_outside_every_test_window_fails_the_session` |
 | ④ 이 세션 | HOME = conftest 가 만든 임시 디렉터리(지킬 홈 밖) · `PYTHON_DOTENV_DISABLED=1` · 지킬 홈 쓰기는 막는 판정(쓰지 않고 판정만) · 자식 가드가 conftest 두 함수의 **소스 그대로**(#38) · 가드 디렉터리 둘이 경로에 있어도 서로를 잇지 않는다(옛 판은 재귀로 가드 0개, #401 부터) | `::test_this_session_runs_with_a_temp_home_and_dotenv_off` · `::test_the_child_guard_runs_the_same_source` · `::test_two_guard_layers_do_not_chain_into_each_other` |
 | ⑤ 옛 계약 다시 씀(#222) | 목록 선언 대조 → 세션 HOME 이 실제 홈 밖 + 홈 경로를 import 시점에 굳히는 모듈(옛 목록 **밖**의 `bot.paper_trading` 포함)이 그 임시 홈 아래 + 격리는 fixture 가 아니다 · 새 인터프리터에서 루트 conftest 가 레포 모듈을 안 올리고 모듈 상수가 **그 프로세스의** 임시 홈 아래이며 끝나면 지워진다 · 스냅샷 경로 셋은 **실제 홈** 밖(비교 대상이 `Path.home()` 이 아니다) | `tests/test_regression.py::TestNoOutboundHttpInTests20260911::test_production_disk_caches_are_redirected` · `::test_root_conftest_preloads_nothing_bot_tests_mock` · `tests/test_fred_spark_cache_20260925.py::test_the_snapshot_caches_are_isolated_from_the_operator_home` |
@@ -2335,14 +2335,22 @@ restart job` 줄), 배포는 봇 체크아웃의 reflog 가 안다(#86).
 `test_child_write` 만 통과했다 — 그게 위 ④ 마지막 줄의 재귀였다(`PYTHONPATH` 에 가드 두 벌을 두는 독립 재현으로
 `RecursionError` 확인). 전체 실행 전후 스냅샷: 실제 홈 변경 0건(옛 판 17 변경 · 2 생성).
 
-뮤테이션 28종(HOME 안 옮김 · 훅 설치 안 함 · fixture 가 실패 안 시킴 · 자식 가드 설치 안 함 · 바깥 자식 가드 안
+뮤테이션 34종(HOME 안 옮김 · 훅 설치 안 함 · fixture 가 실패 안 시킴 · 자식 가드 설치 안 함 · 바깥 자식 가드 안
 넘겨받음 · 짧은 루트가 이김 · dir_fd 건너뛰기 삭제 · pycache 건너뛰기 삭제 · 읽기도 쓰기로 · sqlite ro 허용 삭제 ·
 XDG 안 지움 · dotenv 안 끔 · 세션 끝 침묵 · 레포 밖 호출 줄 · dir_fd -1 도 상대로 · 이름변경 대상 안 봄 · 기록 실패가
 막기를 막음 · 반쪽 줄도 읽음 · 계정 홈 안 봄 · 우리 가드도 이어 실행 · 자식 훅 설치 생략 · fixture 가 자식 기록 안 읽음 ·
-`/` 도 보호 · 같은 길이면 보호가 이김 · 기록 없이 막기만 · 실경로 표기 안 봄 · 링크 표기 레포 허용 안 함 · XDG 를 판정 없이 전부 지움)이 전부 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다.
+`/` 도 보호 · 같은 길이면 보호가 이김 · 기록 없이 막기만 · 실경로 표기 안 봄 · 링크 표기 레포 허용 안 함 · XDG 를 판정 없이 전부 지움 · 선두 `//` 안 접음 · pycache 접두 무시 · 접두 형제까지 제외 · 접두
+정규화 안 함 · 경로 정규화 안 함 · 루트 정규화 안 함) 중 33종이 겨냥한 테스트에 잡혔고 복원 md5 가 일치했다. 남은 하나
+(루트 정규화 안 함)는 **등가 뮤테이션**이다 — 루트는 `realpath` 표기도 같이 넣는데 그게 `//` 를 이미 접는다(3.10~3.13 실측,
+없는 경로 포함). 정규화 규칙을 한 벌로 두려고 코드는 그대로 뒀다.
 ⚠️ 첫 판엔 둘이 살아남았다 — '호출 줄' 단언을 pytest 노드 이름(`…py::test_x`)이 대신 만족시켰고(#75, 그 기록 줄만
 잘라서 본다), `/` 제외는 접두어 검사가 `"//"` 가 되는 우연 때문에 **발화 경로가 없었다**(#291 — 판정을 고쳐 제외가
 실제로 일하게 했다).
+
+⚠️ 리뷰를 기다리며 재서 찾은 둘(2026-09-27): (a) 운영자가 `PYTHONPYCACHEPREFIX` 를 실제 홈 안에 두면 `.pyc` 가
+`__pycache__` 없는 경로로 와서, 세션에서 모듈을 처음 import 한 테스트가 **거짓 실패**했다(실측 `1 passed, 1 error`)
+— 예외 규칙을 `__pycache__` 한 표기로만 적은 탓이다(#24) (b) `os.path.abspath('//root/x')` 는 `//root/x` 를 남겨
+실제 홈 쓰기가 루트 비교를 **빠져나갔다**(실측 판정 `None`). 둘 다 가드 함수 안에서 고쳐 자식 가드도 같은 소스로 따라온다(#38).
 
 ⚠️ 못 보는 축(#274): 레포 체크아웃 안의 쓰기(VM 에선 운영 NOAH 체크아웃) · C 확장이 직접 여는 파일(sqlite 는 연결
 시점) · `dir_fd` 상대 경로 · 파이썬이 아닌 자식과 `env=` 로 `PYTHONPATH` 를 뺀 자식 · atexit 쓰기 · 실제 홈 **읽기** · 홈 **밖**에 둔 심볼릭 링크를 거쳐 홈 안에 쓰기(경로마다 `realpath` 를 풀지 않는다 — 모든 `open` 에 디렉터리 단계마다 lstat 이 붙는다. 루트 쪽만 두 표기로 둔다).

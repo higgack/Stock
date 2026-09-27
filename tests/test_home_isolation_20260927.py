@@ -88,6 +88,8 @@ def test_writes_under_the_real_home_are_named(guard):
         "sqlite-uri-rw": ("sqlite3.connect", (f"file:{p}?mode=rw",)),
         "bytes": ("open", (p.encode(), "wb", _W)),
         "pathlike": ("os.remove", (pathlib.Path(p), -1)),
+        # 리눅스에선 `//x` 가 `/x` 다 — `normpath` 는 선두 `//` 를 남겨 루트 비교를 빠져나갔다
+        "double-slash": ("open", ("/" + p, "w", _W)),
     }
     miss = {k: guard["target"](e, a) for k, (e, a) in cases.items()
             if guard["target"](e, a) != p}
@@ -117,6 +119,31 @@ def test_reads_and_unplaceable_paths_pass(guard, monkeypatch):
     assert all(v is None for v in got.values()), got
     # 반대 증거(#25): 같은 cwd 에서 dir_fd 가 없으면(-1) 상대 이름도 홈 안으로 풀려 막힌다
     assert guard["target"]("os.remove", ("x.json", -1)) == str(h / "x.json")
+
+
+def test_a_relocated_pycache_prefix_is_the_interpreters_cache(tmp_path):
+    """`PYTHONPYCACHEPREFIX`(`-X pycache_prefix`)면 `.pyc` 가 `__pycache__` 없이 그 접두 아래에
+    온다 — 그것도 인터프리터 캐시다(2026-09-27 실측: 접두가 실제 홈 안이면 처음 import 하는
+    모듈마다 막혀 그 테스트가 실패했다). 반대 증거(#25): 접두가 없으면 같은 경로가 막히고,
+    접두와 **이름만 겹치는** 형제 디렉터리는 접두가 있어도 막힌다."""
+    cf = _conftest()
+    home = tmp_path / "home"
+    pyc = home / ".cache" / "pyc"
+    f = str(pyc / "usr" / "lib" / "python3.11" / "colorsys.cpython-311.pyc.1400")
+    sib = str(home / ".cache" / "pyc-other" / "x")
+    old = sys.pycache_prefix
+    try:
+        sys.pycache_prefix = None
+        _, bare = cf._home_write_guard([str(home)], [], lambda *a: None)
+        sys.pycache_prefix = "/" + str(pyc)       # 선두 `//` 로 줘도 같은 자리다
+        _, t = cf._home_write_guard([str(home)], [], lambda *a: None)
+    finally:
+        sys.pycache_prefix = old
+    assert bare("open", (f, None, _W)) == f
+    assert t("open", (f, None, _W)) is None
+    assert t("os.mkdir", (str(pyc), 0o777, -1)) is None
+    assert t("open", (sib, "w", _W)) == sib
+    assert t("open", (str(home / "budget.json"), "w", _W)) == str(home / "budget.json")
 
 
 def test_the_longest_matching_root_decides(guard):
@@ -232,6 +259,7 @@ _REAL_OPS = textwrap.dedent(r'''
         "copy2_in": lambda: shutil.copy2(outside / "src", fake / "c"),
         "move_in": lambda: shutil.move(str(outside / "src"), str(fake / "m")),
         "sqlite": lambda: sqlite3.connect(str(fake / "db.sqlite")),
+        "double_slash": lambda: open("/" + str(fake / "d"), "w"),
     }
     res, rec = {}, {}
     for k, fn in ops.items():
@@ -287,6 +315,49 @@ def test_real_operations_are_blocked_in_a_real_interpreter(tmp_path):
                    for p in fake.rglob("*"))
     assert after == before and (fake / "keep.txt").read_text() == "keep"
     assert (outside / "src").read_text() == "s"          # 옮기기(move_in)도 막혔다
+
+
+_PYC = textwrap.dedent(r'''
+    import importlib.util, json, pathlib, sys
+    root, fake, mods = (pathlib.Path(a) for a in sys.argv[1:4])
+    spec = importlib.util.spec_from_file_location("root_conftest_probe", root / "conftest.py")
+    cf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cf)
+    sys.path.insert(0, str(mods))
+    n0 = len(cf._HOME_WRITES)
+    import noah_pyc_probe_mod                    # noqa: F401 — 가드가 걸린 뒤 처음 import 한다
+    on_import = [w["path"] for w in cf._HOME_WRITES[n0:]]
+    try:
+        (fake / "a.json").write_text("{}")
+        other = "done"
+    except PermissionError:
+        other = "blocked"
+    pyc = sorted(p.name for p in pathlib.Path(sys.pycache_prefix).rglob("noah_pyc_probe_mod*"))
+    print(json.dumps({"on_import": on_import, "pyc": pyc, "other": other}))
+''')
+
+
+def test_a_pycache_prefix_inside_the_home_does_not_fail_imports(tmp_path):
+    """실제 인터프리터로 — 접두를 가짜 실제 홈 안에 두고 가드가 걸린 뒤 모듈을 처음 import 한다.
+    `.pyc` 가 **실제로 써지고**(막지 않았다) 가드 기록은 0건이며, 같은 홈의 다른 쓰기는 여전히
+    막힌다(#25). 옛 판은 import 가 막혀 기록이 남았다(`importlib` 가 그 예외를 삼키므로 import
+    자체는 성공한다 — 그래서 fixture 가 그 테스트를 실패시켰다)."""
+    fake, mods = tmp_path / "realhome", tmp_path / "mods"
+    fake.mkdir()
+    mods.mkdir()
+    (mods / "noah_pyc_probe_mod.py").write_text("X = 1\n")
+    pyc = fake / ".cache" / "pyc"
+    env = dict(os.environ, NOAH_TEST_PROTECTED_HOME=os.pathsep.join([str(fake), *_protected()]))
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+    r = subprocess.run([sys.executable, "-X", f"pycache_prefix={pyc}", "-c", _PYC,
+                        str(ROOT), str(fake), str(mods)],
+                       cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=180)
+    assert r.returncode == 0, r.stderr[-3000:]
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["on_import"] == [], out
+    assert out["pyc"] and all(n.endswith(".pyc") for n in out["pyc"]), out
+    assert out["other"] == "blocked" and not (fake / "a.json").exists(), out
 
 
 # ── ③ 중첩 pytest — 범인 지목 · 삼킨 예외 · 자식 · 수집 시점 ─────────────────

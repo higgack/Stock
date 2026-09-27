@@ -65,15 +65,22 @@ def _home_write_guard(protected, allowed, record):
     """
     import errno
     import os
+    import sys
     import threading
 
     sep = os.sep
+
+    def _abs(x):
+        a = os.path.abspath(x)
+        # POSIX `normpath` 는 선두 `//` **두 개만** 남긴다 — 리눅스에선 `/` 와 같은 자리라 접는다.
+        # 안 접으면 `//root/x` 가 실제 홈 `/root/x` 를 쓰면서 루트 비교를 빠져나간다(2026-09-27 실측).
+        return a[1:] if sep == "/" and a.startswith("//") else a
 
     def _roots(xs):
         out = set()
         for x in xs:
             if x:
-                a = os.path.abspath(os.fspath(x))
+                a = _abs(os.fspath(x))
                 out.update((a, os.path.realpath(a)))   # 링크 홈(`/home/x`→`/data/x`)은 두 표기로
         out.discard(sep)                        # "/" 를 지키면 모든 쓰기가 막힌다(허용도 마찬가지)
         return out
@@ -85,6 +92,10 @@ def _home_write_guard(protected, allowed, record):
         rp = os.path.realpath(p)
         allow.update(p + a[len(rp):] for a in list(allow) if rp != p and a.startswith(rp + sep))
     roots = sorted([(len(r), 0, r) for r in prot] + [(len(r), 1, r) for r in allow], reverse=True)
+    # `PYTHONPYCACHEPREFIX`(`-X pycache_prefix`)면 `.pyc` 가 `__pycache__` 없이 그 접두 아래에
+    # 모인다 — 같은 인터프리터 캐시다(2026-09-27 실측: 접두가 실제 홈 안이면 세션에서 처음
+    # import 하는 모듈마다 막혀, 그 테스트가 실패했다).
+    pyc = _abs(sys.pycache_prefix) if sys.pycache_prefix else None
     wflags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
     # 이벤트 → ((경로 인자 위치, 그 경로의 dir_fd 인자 위치), …) — CPython 3.11 실측 모양.
     # `shutil.copyfile`·`move`·`copytree` 는 안에서 아래 이벤트를 다시 내므로 뺀다.
@@ -110,7 +121,7 @@ def _home_write_guard(protected, allowed, record):
                         return None
                 if not s or s == ":memory:":
                     return None
-            return os.path.abspath(s)
+            return _abs(s)
         except Exception:                        # noqa: BLE001 — cwd 가 사라진 경우 등
             return None
 
@@ -129,7 +140,8 @@ def _home_write_guard(protected, allowed, record):
                 if isinstance(fd, int) and fd != -1:
                     continue                     # dir_fd 상대 경로 — 어디인지 모른다
             p = _path(args[pi], event)
-            if p is None or f"{sep}__pycache__{sep}" in p:
+            if (p is None or f"{sep}__pycache__{sep}" in p
+                    or (pyc is not None and (p == pyc or p.startswith(pyc + sep)))):
                 continue                         # 인터프리터의 .pyc 캐시
             for _n, kind, r in roots:
                 if p == r or p.startswith(r if r.endswith(sep) else r + sep):
