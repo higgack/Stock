@@ -2385,3 +2385,33 @@ Low: 환경을 지운 자식(`env={…}`)은 가드가 **없었다**(굽힌 값�
 (`TMPDIR=$HOME` — 같은 길이면 허용이 이긴다) · 이 이름공간 밖의 서드파티 경로 변수(`MPLCONFIGDIR` 등 — 셸이 실제 홈을
 가리키게 두면 막혀서 빨간불이 될 수 있다 · 재지 않았다, 안전은 가드가 지킨다) · 실제 홈 **읽기** · 가드 훅의 재진입 방지(`busy`)는 관측 가능한
 계약이 없어 뮤테이션에서 뺐다.
+
+## #422 — 키 조회 경합: 병렬 워커가 같은 키를 동시에 물으면 빈 값을 받았다 (`tests/test_env_key_race_20260928.py` 8건 · 2026-09-28)
+
+`fcf_audit 181710.KS` VM 출력에 `pykrx: KRX_ID/KRX_PW 미설정 — … 첫 조회가 실패해 캐시됨` 바로 뒤 `KRX 로그인 완료` 가
+찍혔다(09-07 #294 와 같은 모양). 원인은 `env_key` 가 `_TRIED` 에 **먼저 표시**하고 `.env` 를 읽은 것 — 그 사이 같은 키를
+물은 워커가 '조회했는데 없었다' 로 읽었다. 샌드박스 재현(가짜 `.env`, 16스레드 동시 · 새 프로세스 20회): 20회 전부
+15/16 빈 판정 · 경고 15번. 형제 `dart_client._dart_key_from_env_file` 15/16 빈 값 · `get_dart()` 최종 싱글턴 키 없음
+8/20 · `dart_feed._dart_api_key` 14/16 None. 고친 판은 넷 다 20회 전부 0. 운영 유닛은 `EnvironmentFile`·`load_dotenv`
+로 환경이 먼저 차 이 경로에 안 오고, 사람이 돌리는 진단·프로브에서만 난다.
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 결정적 끼어들기 | 첫 조회 **도중에** 같은 키를 문 호출이 값을 받는다 — 조회 함수를 감싸 그 안에서 두 번째 호출을 띄운다(시간 경합에 기대지 않음, #128. 0.5초 대기는 옛 판을 잡는 속도에만 쓰인다) | `::test_a_caller_that_cuts_in_during_the_lookup_gets_the_value` |
+| ② 진단의 사유 | 조회 중인 키를 `env_diag` 가 '첫 조회가 실패해 캐시됨' 으로 부르지 않는다(락 안에서 상태를 읽고 끝나기를 기다린다) · ⚠️ 반대 증거: **끝난** 조회의 실패가 캐시된 경우는 여전히 그 이름으로 부른다(#25) | `::test_diag_does_not_call_an_inflight_lookup_a_cached_failure` · `::test_a_real_cached_failure_is_still_named` |
+| ③ VM 증상 | 배리어 16스레드 + 전환 간격 1µs(선례 `test_log_redaction_20260925`)로 `krx_login_ready()` 를 동시에 — 키가 `.env` 에 있으면 전부 True · '미설정' 경고 0 | `::test_parallel_krx_gate_sees_keys_that_are_in_the_env_file` |
+| ④ '최초 1회' 경고 | 키가 정말 없으면 16스레드 전부 False 이되 경고는 **1번**(옛 판 16번) | `::test_missing_keys_warn_once_under_concurrency` |
+| ⑤ DART 형제 | `dart_client` 자체 `.env` 읽기의 끼어들기(결정적) · `get_dart()` 를 동시에 부른 **호출자 전부**가 키 있는 클라이언트를 받는다 · `dart_feed._dart_api_key` 16스레드 전부 키 | `::test_dart_key_reader_cut_in_gets_the_key` · `::test_get_dart_never_hands_out_a_keyless_client` · `::test_dart_feed_key_under_concurrency` |
+
+재현(§Pre-commit 9): base 의 세 파일(`env_keys`·`pykrx_client`·`dart_client`)로 돌리면 3회 전부 **7건 실패 · 1건
+통과**(통과한 것은 ② 의 반대 증거). 수정 한 줄씩 되돌리는 뮤테이션 6종(락 안 재확인 제거 · 조회를 락 밖으로 · 환경
+대입을 락 해제 뒤로 · 진단을 락 밖에서 · 1회 경고 락 제거 · DART 읽기 락 제거) 전부 잡힘 — 실패한 테스트도 각각
+겨냥한 그것이었다.
+⚠️ 첫 판의 싱글턴 테스트는 **마지막에 대입된 싱글턴**만 재서 옛 판에서도 통과했다(키를 읽는 첫 생성이 가장 늦게
+끝나 마지막에 대입되면 싱글턴은 멀쩡해 보인다 — 그 사이 끼어든 호출은 이미 키 없는 클라이언트를 받아 갔다). 호출자가
+받은 것 전부를 재게 고쳤다(#91b).
+
+못 보는 축(#274): `get_dart()` 의 동시 첫 호출은 여전히 클라이언트를 둘 만들 수 있다(둘 다 키가 있고 하나는 버려진다 —
+잠그지 않았다) · `dart_feed` 의 두 번째 `.env` 폴백(`_ENV_TRIED`)은 키가 정말 없을 때만 닿아 그대로 뒀다 · 스트레스형(③④ 와
+⑤ 의 뒤 둘)은 옛 판을 잡는 힘이 스케줄에 달렸다(샌드박스 20/20 · 고친 판에선 결과가 흔들리지 않는다) · `*_TRIED` 모양 밖의
+'한 번만' 플래그(`*_WARNED` 류 · `if _x is None:` 싱글턴)는 훑지 않았다.
