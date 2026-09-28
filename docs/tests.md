@@ -2435,7 +2435,7 @@ Low: 환경을 지운 자식(`env={…}`)은 가드가 **없었다**(굽힌 값�
 여섯 곳과 `_RATING_IMPORT_WARNED` 는 키가 정말 없을 때 경고를 중복으로 낼 뿐이라 그대로 뒀다 · 전역 락 안에서 파일을 읽어
 다른 키의 첫 조회도 그동안 기다린다(L-4 — 키마다 한 번이고 로컬 디스크라 재지 않았다).
 
-## #423 — 배포는 디스크만 바꾼다: 상시 프로세스의 재시작 조건이 그 import 폐포를 덮는다 (`tests/test_restart_closure_20260928.py` 52건 · 옛 #411 폐포 회귀 1건 이전 · 배포 전 독립 리뷰 반영 · 2026-09-28)
+## #423 — 배포는 디스크만 바꾼다: 상시 프로세스의 재시작 조건이 그 import 폐포를 덮는다 (`tests/test_restart_closure_20260928.py` 70건 · 옛 #411 폐포 회귀 1건 이전 · 배포 전 독립 리뷰 두 번 반영 · 2026-09-28)
 
 #422 fix(aae6ea6 — `bot/env_keys.py`·`bot/dart_client.py`)가 base 에 들어간 뒤에도 trade 대시보드는 재시작되지
 않아 사용자가 손으로 재시작했다 — 재시작 조건이 `trade/*.py` 뿐이었는데 대시보드는 기업 리포트에서 **함수 안에서**
@@ -2449,9 +2449,9 @@ bot 하위 패키지 2 · `trade/data` 1 밖) · DAJU 리스너(재시작 규칙
 | ① 유닛 파생 | 상시 유닛은 `deploy/*.service` 에서 파생한다(#24) — 정책 표에 없는 상시 유닛이 생기면 실패(재시작 규칙을 정하라는 뜻), 없어진 유닛의 정책도 실패 · 유닛이 도는 체크아웃(`WorkingDirectory`)이 정책 표가 가리키는 스크립트의 체크아웃(`REPO` 기본값)과 같다(손으로 적은 매핑의 대조, 리뷰 L8) | `::test_every_long_running_unit_has_a_restart_policy` · `::test_unit_runs_from_the_checkout_its_restart_script_updates` (유닛 7) |
 | ② 폐포 덮기 | 유닛의 import 폐포 전부가 **실효** 재시작 조건에 걸린다(trade 쪽은 `TRADE_RELEVANT` 게이트 ∧ 규칙) · 양성 대조 — trade 대시보드 폐포에 `bot/dart_client.py`(aae6ea6 경로) · BeOn 에 `tg_entities`·`listener_health`·위 패키지 `__init__` · 나쁜양파에 보증·필터·파서(20개 이상, #411 에서 이전) · NOAH 대시보드에 `trade/kg_candidates.py`·TradingAgents · DAJU 에 파서·`bot/dashboard.py` · 폐포 모듈이 **이름으로 가리키는 repo 데이터**(`trade/data/**` — 4개 전부 이름이 읽는 모듈 소스에 나온다)도 걸린다(양성 대조: 두 대시보드가 `reinforce_approved.csv` 를 읽는다) · 서버(대시보드)는 닿는 **가족 전체**(trade·bot 최상위와 그 `data/`, tradingagents 전부)를 덮는다 — NOAH 2026-06-11 선례 · 그 '가족 전체' 에 `data/` 가 실제로 들어 있다(오늘은 이름 탐지가 같은 4개를 덮어 이것만 빼면 위가 통과한다, 리뷰 H4) | `::test_restart_condition_covers_the_import_closure` (유닛 7) · `::test_family_files_cover_the_family_data_dir` |
 | ③ 끊는 간선 | 리스너만 다른 가족으로 가는 간선을 **사유와 함께** 끊는다(나쁜양파 `trade/stock_link.py → bot/market.py` · BeOn `listen_beon.py → bot/daily_kr_flow.py` = `--why` 진단 전용) · 사유가 가리키는 간선이 실제로 있어야 한다(낡은 사유는 실패) · 같은 가족 안 간선은 못 끊는다 · 서버·봇은 끊지 않는다 | `::test_cut_edges_are_real_cross_family_and_listener_only` |
-| ④ 음성 대조 | 조건부 유닛은 테스트(`*/tests/`)·문서로 재시작하지 않는다 · 리스너는 주기 백필 스크립트·`bot/market.py` 로도 안 한다 | `::test_restart_condition_ignores_what_no_process_imports` |
-| ⑤ 배선(소스) | 각 조건 변수의 `if` 블록 **then 가지**가 그 유닛을 재시작한다(직접 또는 블록이 부르는 함수를 거쳐 · 주석 줄은 빼고 · 같은 들여쓰기의 `else`/`elif` 에서 끊는다) · 조건 변수는 계산하는 곳에서만 대입된다(재대입 금지) · VM 직접 push 경로(diff 없음)도 조건부 NOAH 유닛 전부를 재시작 · `sudo -n` systemctl 명령 **전체**(인자까지)가 그 drop-in 을 쓰는 설치기 **모두**의 NOPASSWD 줄(주석 아님 · 사용자 higgack)과 글자 그대로 같다 — `install.sh` 와 `install-trade-units.sh` 가 같은 파일을 번갈아 써서 마지막에 쓴 쪽만 남는다(리뷰 L6) · 헬퍼 자체의 계약(주석 무시 · else 제외)을 합성 스크립트로 | `::test_restart_condition_is_wired_to_that_unit` · `::test_restart_condition_variable_is_assigned_only_where_it_is_computed` · `::test_vm_direct_push_restarts_every_conditional_noah_unit` · `::test_every_best_effort_restart_is_granted_by_every_writer_of_its_drop_in` · `::test_sudoers_parser_is_not_blind` · `::test_wiring_helpers_ignore_comments_and_else_branches` |
-| ⑥ 배선(동작) | 두 스크립트를 임시 bare origin + 배포 체크아웃에서 **실제로 돌린다** — 가짜 `sudo`(`-n` systemctl 은 ⑤ 의 실효 권한과 글자 그대로 대조해 아니면 `a password is required`)·`systemctl`(유닛 상태)·`sleep`·`curl`(알림 본문 기록), 운영 경로는 `STOCK_*`·`TRADE_*` 환경 변수로 갈아 끼운다(기본값이 운영 경로) · 표본 변경마다 재시작된 유닛 = `_covered` 예측(유닛마다 재시작·비재시작 표본이 다 있다 · 한글 파일 이름 = git 이 따옴표를 씌우는 경로) · 체크아웃이 새 커밋으로 반영됐다 · VM 직접 push 는 NOAH 유닛 전부 · 할 일 없는 tick 은 sudo 0회 · DAJU 네 갈래(비활성이면 되살리지 않음 · 권한 부재 · 기동에서 죽음 · 재시작 실패 원문을 HTML 이스케이프) · trade 형제가 재시작 뒤 죽으면 배포 알림에 이름이 실린다 · 설치기가 바꿀 게 없어도(SUMMARY 없음) 멈추지 않는다 | `::test_script_restarts_exactly_the_predicted_units` (noah·trade) · `::test_noah_vm_direct_push_restarts_every_noah_unit_and_an_idle_tick_restarts_none` · `::test_trade_idle_tick_restarts_nothing` · `::test_daju_restart_outcomes_are_told_apart` · `::test_trade_restarted_unit_that_dies_is_named_in_the_deploy_message` · `::test_trade_deploy_survives_an_installer_that_changed_nothing` |
+| ④ 음성 대조 · 넓은 부류 | 조건부 유닛은 테스트(`*/tests/`)·문서로 재시작하지 않는다 · **두 trade 리스너**는 주기 백필 스크립트·`bot/market.py` 로도 안 한다(DAJU 는 폐포에 `bot/market.py` 가 있어 재시작이 맞다 — 델타 리뷰 L②) · 조건이 폐포(서버는 닿는 가족 전체)보다 **넓은** 부류는 `_BROAD` 에 사유와 함께 선언한다 — 커밋될 파일 전수에서 `조건에 걸림 − (폐포 ∪ 선언)` 이 비어야 하고, 아무것도 덮지 않는 선언도 실패한다(델타 리뷰 L① B10: 하네스의 예측은 같은 정규식에서 나와 조건을 넓히는 변형은 예측도 같이 넓어져 통과했다) | `::test_restart_condition_ignores_what_no_process_imports` · `::test_restart_condition_is_no_broader_than_the_closure_and_declared_classes` (조건부 유닛 5) |
+| ⑤ 배선(소스) | 각 조건 변수의 `if` 블록 **then 가지**가 그 유닛을 재시작한다(직접 또는 블록이 부르는 함수를 거쳐 · 주석 줄은 빼고 · 같은 들여쓰기의 `else`/`elif` 에서 끊는다) · 조건 변수는 계산하는 곳에서만 대입된다(재대입 금지) · VM 직접 push 경로(diff 없음)도 조건부 NOAH 유닛 전부를 재시작 · `sudo -n` systemctl 명령 **전체**(인자까지)가 그 drop-in 을 쓰는 설치기 **모두**의 NOPASSWD 줄(주석 아님 · 사용자 higgack)과 글자 그대로 같다 — `install.sh` 와 `install-trade-units.sh` 가 같은 파일을 번갈아 써서 마지막에 쓴 쪽만 남는다(리뷰 L6) · 같은 drop-in 을 쓰는 설치기는 **같은 줄을 같은 순서로** 쓴다(델타 리뷰 M② — 옛 `install-trade-units.sh` 는 자기 NOPASSWD 줄을 빼고 덮어써, 한 번 돌고 나면 trade-auto-update.sh 가 그 설치기를 못 불렀다) · trade 설치기를 부르는 권한도 실효 권한에 남는다 · 헬퍼 자체의 계약(주석 무시 · else 제외 · `_SUDO_N` 이 `.service` 접미·`--no-block`·`try-restart` 까지 명령 전체를 잡는다 — 델타 리뷰 C8)을 합성 스크립트로 · 두 배포 스크립트가 하네스가 가로채는 명령(sudo·systemctl·sleep·curl)을 **절대 경로로 부르지 않는다**(부르면 VM 의 `make test` 가 진짜 유닛을 재시작한다 — 델타 리뷰 L⑧, 반대 증거 포함) | `::test_restart_condition_is_wired_to_that_unit` · `::test_restart_condition_variable_is_assigned_only_where_it_is_computed` · `::test_vm_direct_push_restarts_every_conditional_noah_unit` · `::test_every_best_effort_restart_is_granted_by_every_writer_of_its_drop_in` · `::test_sudoers_parser_is_not_blind` · `::test_every_writer_of_a_drop_in_writes_the_same_lines` · `::test_wiring_helpers_ignore_comments_and_else_branches` · `::test_deploy_scripts_call_faked_commands_through_path` |
+| ⑥ 배선(동작) | 두 스크립트를 임시 bare origin + 배포 체크아웃에서 **실제로 돌린다** — 가짜 `sudo`(`-n` 명령 **전부**를 ⑤ 의 실효 권한 + 운영자 1회 권한 `_OPERATOR_GRANTS` 와 글자 그대로 대조하되 임시 저장소 경로는 그 스크립트의 운영 체크아웃 경로로 되돌린다 — 옛 판은 systemctl 만 대조하고 설치기 호출은 무조건 통과시켜 설치기가 자기 권한 줄을 지우는 결함을 가렸다, 델타 리뷰 M② · 거절 문구는 로캘을 따른다: 하네스를 한국어 로캘로 돌려 `LC_ALL=C` 가 빠지면 갈래가 틀어진다, L⑤)·`systemctl`(유닛 상태)·`sleep`·`curl`(알림 본문 기록), 가짜 sleep·`is-active` 는 sudo 와 같은 사건 기록에 남아 **순서**를 잰다(L⑦), 운영 경로는 `STOCK_*`·`TRADE_*` 환경 변수로 갈아 끼우고(기본값이 운영 경로 · install.sh 로그도 `STOCK_INSTALL_LOG` 로, L⑥) 부모가 물려준 `GIT_*` 는 걷어낸다(L⑧) · 표본 변경마다 재시작된 유닛 = `_covered` 예측이고 **재시작한 유닛마다 `sleep` 을 거친 생존 확인이 뒤따른다**(유닛마다 재시작·비재시작 표본이 다 있다 · 한글 파일 이름 = git 이 따옴표를 씌우는 경로) · 체크아웃이 새 커밋으로 반영됐다 · VM 직접 push 는 NOAH 유닛 전부 · 할 일 없는 tick 은 기록 0건 · DAJU 네 갈래(비활성이면 되살리지 않음 · 권한 부재 · 기동에서 죽음 · 재시작 실패 원문을 HTML 이스케이프) · **두 trade 리스너도 돌고 있을 때만** 재시작한다(멈춰 둔 리스너를 켜지 않고 경보도 안 붙인다 — 델타 리뷰 M①, 재시작하지 않은 비활성 유닛은 생존 확인 대상도 아니다 B6) · trade 형제 **셋** 각각이 재시작 뒤 죽으면 배포 알림에 이름이 실리고 trade-bot 자체가 죽은 실패 알림에도 실린다(M③) · 형제 실패는 권한 부재(sudoers 재설치 명령)/재시작 실패(이스케이프한 원문·저널 명령)로 갈린다(L④) · 설치기가 바꿀 게 없어도(SUMMARY 없음) 멈추지 않고 알림엔 아무것도 안 붙이며, 요약도 'no changes' 도 아닌 출력은 '자동 설치 완료' 라 우기지 않는다(L③) · 설치기를 못 부르면(권한 부재/설치기 실패) 갈래를 말하고 trade-bot 은 재시작한다 · NOAH `deploy/` 변경은 install.sh 를 부르고(조건의 here-string 모양도 잰다 — A7) 권한이 없으면 실패를 알리며, 대시보드 재시작 권한이 없으면 같은 설치기로 자가 치유한다(L⑥) · 훅이 물려준 `GIT_DIR` 이 있어도 미끼 저장소를 건드리지 않는다(L⑧) | `::test_script_restarts_exactly_the_predicted_units` (noah·trade) · `::test_noah_vm_direct_push_restarts_every_noah_unit_and_an_idle_tick_restarts_none` · `::test_harness_ignores_git_env_inherited_from_a_hook` · `::test_trade_idle_tick_restarts_nothing` · `::test_daju_restart_outcomes_are_told_apart` · `::test_trade_listener_that_is_not_running_is_left_alone` (리스너 2) · `::test_trade_restarted_unit_that_dies_is_named_in_the_deploy_message` (형제 3) · `::test_trade_bot_death_carries_the_dead_siblings_into_the_failure_notice` · `::test_trade_sibling_restart_failures_are_told_apart` (형제 3) · `::test_trade_deploy_survives_an_installer_that_changed_nothing` · `::test_trade_installer_that_cannot_run_says_why` · `::test_noah_deploy_change_runs_the_installer` |
 | ⑦ 폐포 규칙 자체 | 합성 패키지로 — 자기 가족의 함수 안 import 와 상대 import 는 따라가고, 위 패키지 `__init__` 을 세고, 다른 가족 모듈은 최상위만(함수 안은 안 따라감) · `if __name__ == "__main__":` 블록은 진입점에서만 세고 그 else 가지는 import 때 센다(리뷰 L4 — `bot/dart_feed.py` 의 CLI 블록이 trade 대시보드 폐포에 3개를 넣고 있었다) · 끊은 간선은 그 아래를 통째로 뺀다 | `::test_closure_follows_own_family_lazy_imports_but_only_top_level_of_others` |
 
 재현(§Pre-commit 9): 옛 스크립트로 돌리자 trade 대시보드 폐포 중 13개와 데이터 4개가 조건 밖으로 나왔고 그 안에 aae6ea6 이 바꾼
@@ -2459,7 +2459,7 @@ bot 하위 패키지 2 · `trade/data` 1 밖) · DAJU 리스너(재시작 규칙
 SUMMARY 줄 없이 끝나는데 trade 스크립트가 그 출력을 grep 하다 `set -eo pipefail` 로 trade-bot 재시작 전에 멈췄다(`|| true` 로
 고친 뒤 옛 줄로 되돌리면 전용 회귀가 실패함을 확인).
 
-뮤테이션: 첫 판 25종(스크립트 16 · 폐포 규칙 5 · 데이터 4)에 더해 리뷰 반영분 39종을 돌렸다 — 리뷰가 옛 판을 통과시킨 스크립트 뮤테이션 20종(가드 반전 · 함수 첫 줄 `return 0` · 조건 재대입 · 호출을 else 로 · diff 범위 `"$REMOTE" "$REMOTE"` · 직접 push 호출을 실패 가지로 · `.service` 접미 · `try-restart` · 완료 직후 `exit 0` · 다른 유닛 상태 보기 · 매 tick 무조건 재시작 · 호출을 주석으로 · 권한 줄 주석·다른 사용자·다른 설치기로 옮김 · 게이트 반전 · 대시보드 조건 비우기 · `--no-block` · 대시보드 블록에서 리스너 재시작 · diff 에서 bot 제외)과 헬퍼 H4(`_family_files` 에서 `data/` 빼기), 새 가드 18종(DAJU 생존 확인·실패 갈래·이스케이프·quotePath·here-string 모양 · trade 사망 알림 셋·SUMMARY `|| true`·quotePath · `__main__` 제외 셋 · 권한 파서 둘 · 주석/else 헬퍼 둘 · 유닛→스크립트 매핑)이 **전부 겨냥한 테스트에서** 잡혔다(실패한 테스트 이름까지 대조, `-x` 없이 · 복원은 녹색 백업 + md5).
+뮤테이션: 첫 판 25종(스크립트 16 · 폐포 규칙 5 · 데이터 4)에 더해 리뷰 반영분 39종을 돌렸다 — 리뷰가 옛 판을 통과시킨 스크립트 뮤테이션 20종(가드 반전 · 함수 첫 줄 `return 0` · 조건 재대입 · 호출을 else 로 · diff 범위 `"$REMOTE" "$REMOTE"` · 직접 push 호출을 실패 가지로 · `.service` 접미 · `try-restart` · 완료 직후 `exit 0` · 다른 유닛 상태 보기 · 매 tick 무조건 재시작 · 호출을 주석으로 · 권한 줄 주석·다른 사용자·다른 설치기로 옮김 · 게이트 반전 · 대시보드 조건 비우기 · `--no-block` · 대시보드 블록에서 리스너 재시작 · diff 에서 bot 제외)과 헬퍼 H4(`_family_files` 에서 `data/` 빼기), 새 가드 18종(DAJU 생존 확인·실패 갈래·이스케이프·quotePath·here-string 모양 · trade 사망 알림 셋·SUMMARY `|| true`·quotePath · `__main__` 제외 셋 · 권한 파서 둘 · 주석/else 헬퍼 둘 · 유닛→스크립트 매핑)이 **전부 겨냥한 테스트에서** 잡혔다(실패한 테스트 이름까지 대조, `-x` 없이 · 복원은 녹색 백업 + md5). 델타 리뷰 반영분은 46종 — 델타 리뷰가 살려 보낸 11종(DAJU `sleep 3` 제거 · `DEPLOY_CHANGED` 를 파이프 grep 으로 · `DEPLOY_CHANGED` 고정 · 대시보드·나쁜양파를 재시작 목록에서 빼기 · 실패 알림에서 `DEAD_NOTE` 빼기 · trade `sleep 3` 제거 · 확인 루프를 고정 목록으로 · BeOn 조건에 `bot/scripts` 추가 · `_SUDO_N` 좁히기 · install.sh 에서 설치기 권한 줄 빼기), 새 축 18종(리스너 가드 제거 둘·다른 유닛 보기 · 설치기 자기 줄 빼기·순서 바꾸기 · 'no changes' 문구 둘 · 실패 갈래 셋 · `LC_ALL=C` 빼기 다섯 · 절대 경로 호출 · `GIT_*` 물려받기 · 넓은 부류 선언 빼기), 옛 배터리 17종 재실행 — 이 전부 겨냥한 테스트에서 잡혔다.
 
 최근 30일 실측(2026-08-31~09-28 KST, base first-parent 142커밋 — 커밋마다 부모와 `git diff --name-only`, 창 시작 커밋의 부모가
 있는지 먼저 확인했다): trade 대시보드 재시작 32→130회(폐포를 바꾼 커밋 62 · 옛 조건이 놓친 것 31) · BeOn 3→31회(4 · 1) · 나쁜양파
@@ -2468,7 +2468,8 @@ SUMMARY 줄 없이 끝나는데 trade 스크립트가 그 출력을 grep 하다 
 
 ⚠️ 폐포 규칙의 근거: 자기 가족은 함수 안 import 까지(그 코드 경로는 이 유닛의 것 — aae6ea6 이 그 경로였다), 남의 가족은
 최상위만(다른 가족의 헬퍼 하나를 부르는 유닛이 그 모듈의 다른 함수까지 부른다는 근거가 없다). 다 따라가면 허브 셋
-(`bot.dashboard`·`bot.market`·`bot.daily_kr_flow`) 때문에 모든 유닛이 bot 131 · TradingAgents 58 모듈이 된다(실측) —
+(`bot.dashboard`·`bot.market`·`bot.daily_kr_flow`) 때문에 유닛마다 bot 131~157 · TradingAgents 58(전부) 모듈이 된다(실측 —
+trade 유닛 넷은 131, NOAH 셋은 133·154·157) —
 그 판으로 규칙을 만들면 모든 상시 프로세스가 모든 배포에 재시작한다.
 
 못 보는 축(#274): 동적 import(`importlib`·`__import__` — 대시보드와 DAJU 는 가족 전체를 덮어 같은 가족 안이면 무해하고,
@@ -2477,7 +2478,11 @@ SUMMARY 줄 없이 끝나는데 trade 스크립트가 그 출력을 grep 하다 
 파일 **이름을 소스에 안 적고** 조립해 읽는 repo 데이터(`_data_read_by` 는 `trade/data`·`bot/data` 를 이름으로 찾는다 — 서버는
 가족의 `data/` 전체를 덮어 무해 · 두 trade 리스너의 폐포가 읽는 repo 파일은 `trade/scripts/requirements.txt` 하나이고
 `tg_entities.pinned_telethon` 이 부를 때마다 읽어 캐시하지 않는다, 실측) · 진짜 systemd 의 시간(재시작 뒤 생존 확인은 3초 창 —
-그 뒤에 죽는 프로세스는 배포 알림에 안 잡힌다) · 진짜 sudoers 의 의미(가짜 sudo 는 권한 줄을 글자 그대로만 대조한다) ·
+그 뒤에 죽는 프로세스는 배포 알림에 안 잡힌다) · 생존 확인이 보는 것은 **기동**뿐이다(재시작을 부른 모듈이 함수 안 import 면 —
+trade 대시보드의 `bot.dart_client`, DAJU 의 `bot.dashboard` — 첫 요청·메시지 때 올라와, 그 모듈이 깨져도 확인은 통과한다, 델타
+리뷰 L⑨) · `-n` 없는 sudo(stock-bot·trade-bot 재시작)는 레포가 쓰지 않는 운영자 권한에 기댄다(SETUP.md 의 `stock-bot` 줄 —
+trade-bot 줄은 레포에 적힌 곳이 없다) — 가짜 sudo 는 대조하지 않고, 없으면 "배포 실패" 알림이 나가 조용하지는 않다 ·
+진짜 sudoers 의 의미(가짜 sudo 는 권한 줄을 글자 그대로만 대조한다) ·
 DAJU 는 **돌고 있을 때만** 재시작한다 — 재시작 사이에 온 알림은 백필 경로가 없어 놓칠 수 있다(형제 trade 리스너는
 주기 sync 가 회수한다).
 
@@ -2493,3 +2498,13 @@ DAJU 는 **돌고 있을 때만** 재시작한다 — 재시작 사이에 온 �
 (L2·L3·L5) `echo | grep -q` 는 pipefail 아래 목록이 파이프 버퍼를 넘으면 SIGPIPE 로 조건이 0 이 된다(실측 57KB 에서 10회 중 1회 ·
 190KB 에서 전부 — here-string 은 전부 잡았다) · git 은 비ASCII 경로를 따옴표로 감싼다 · 실패 알림이 모든 실패를 '권한 부재' 로
 적었다. 그 이스케이프를 bash 치환으로 쓰자 bash 5.2 의 patsub_replacement 가 `&lt;` 를 `<lt;` 로 만들어 sed 로 바꿨다(실측).
+
+⚠️ 델타 독립 리뷰(`cb01fe7..eabe181`)가 잡은 것: (M①) 두 trade 리스너에 DAJU 의 '돌고 있을 때만' 가드가 없어, 멈춰 둔
+리스너를 배포가 다시 켜고 새 생존 확인이 그때마다 경보를 붙였을 판이었다 — 같은 가드를 옮겼다(#38). (M②) `install-trade-units.sh`
+가 자기 NOPASSWD 줄을 빼고 같은 drop-in 을 덮어써, 한 번 돌고 나면 trade 배포가 그 설치기를 못 불렀다(NOAH `install.sh` 가
+되살릴 때까지 · 두 타이머의 순서는 우연) — 그런데 하네스의 가짜 sudo 가 설치기 호출을 무조건 통과시켜 **이 결함을 가렸다**
+(#291 — 가짜가 진짜보다 관대하면 그 차이만큼 눈이 먼다). 두 설치기가 같은 줄을 같은 순서로 쓰고, 가짜 sudo 는 `-n` 명령
+전부를 대조한다. (M③) trade 형제 셋 중 BeOn 사망만 태워 나머지 둘의 재시작 목록 줄과 실패 알림의 `DEAD_NOTE` 가 무가드였다.
+(Low) 실패 갈래를 형제·설치기에 옮김 · `LC_ALL=C` · 'no changes' 를 '자동 설치 완료' 라 적던 것 · NOAH `deploy/` 경로 ·
+sleep 순서 · 절대 경로 가드 · `GIT_*` · 넓은 부류 선언 · `_SUDO_N` 반대 증거 · 문서 수치(유닛마다 bot 131~157 · DAJU 정적 폐포
+bot 최상위 123/192 — 첫 판은 'bot 전부' 라 적었다 · 리뷰 실측 30일 136회 중 35회가 정적 폐포 밖 변경).

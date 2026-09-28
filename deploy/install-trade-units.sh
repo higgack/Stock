@@ -12,7 +12,9 @@
 # tick. Safe to run by hand too. Reads $TRADE_REPO if set, else
 # defaults to /home/higgack/stock-trade.
 #
-# Sudoers entry (one-time, see trade/README.md):
+# Sudoers entry — the first line of SUDOERS_LINES below. NOAH `deploy/install.sh` (run as root
+# through the operator's one-time `higgack-stock-deploy` grant) plants it in $SUDOERS_DEST, and
+# this script re-plants the same lines once it runs:
 #   higgack ALL=(ALL) NOPASSWD: /home/higgack/stock-trade/deploy/install-trade-units.sh
 
 set -euo pipefail
@@ -24,7 +26,15 @@ SUDOERS_DEST="/etc/sudoers.d/higgack-trade-services"
 # Lines this script owns in $SUDOERS_DEST. Each must independently pass
 # `visudo -cf` to land. Extend the array when a new sibling restart
 # needs to run via `sudo -n` from trade-auto-update.sh.
+# ⚠️ NOAH `deploy/install.sh` writes the **same file** — both writers must write these lines in
+# the same order, byte for byte (실수 #423 독립 리뷰 M②). The old array left out the installer's
+# own line, so each run of this script deleted the grant that lets trade-auto-update.sh call it
+# (`sudo -n`), and the next unit-file deploy was refused until a NOAH deploy/ change re-ran
+# install.sh. Identical content also stops the two writers from rewriting the file on every run.
+# `tests/test_restart_closure_20260928.py` checks that every writer of a drop-in writes the same
+# lines, and the deploy harness refuses any `sudo -n` call no longer granted.
 SUDOERS_LINES=(
+    "higgack ALL=(ALL) NOPASSWD: /home/higgack/stock-trade/deploy/install-trade-units.sh"
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard"
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-beon-listener"
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-badonion-listener"
@@ -42,8 +52,8 @@ NEW_SERVICES=()
 SUDOERS_INSTALLED=0
 
 # Idempotent sudoers self-management. install-trade-units.sh itself is
-# bootstrapped via an operator-installed sudoers entry, but once running
-# as root it owns the entries needed for trade-auto-update.sh to do
+# bootstrapped by NOAH deploy/install.sh (see the header), and once running
+# as root it keeps its own grant plus the entries trade-auto-update.sh needs to do
 # `sudo -n /bin/systemctl restart trade-bot-dashboard` etc. Adding a new
 # sibling-service restart now means appending to SUDOERS_LINES — no more
 # manual /etc/sudoers.d edits per deploy.

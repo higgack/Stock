@@ -10,6 +10,9 @@ set -euo pipefail
 REPO="${STOCK_REPO:-/home/higgack/stock}"
 BRANCH="${STOCK_BRANCH:-claude/stock-trading-automation-xqYf7}"
 BUSY_MARKER="${STOCK_BUSY_MARKER:-/home/higgack/.tradingagents/.busy}"
+# install.sh 출력 로그 — 회귀가 이 경로를 임시 디렉터리로 돌려 `deploy/` 변경 경로를 실제로 태운다
+# (실수 #423 독립 리뷰 L⑥ — 옛 판은 /tmp 고정이라, 태우면 호스트에 쓰게 돼 회귀가 그 경로를 피했다).
+INSTALL_LOG="${STOCK_INSTALL_LOG:-/tmp/stock-bot-install.log}"
 # If the busy marker is older than this, treat it as stale (bot crashed
 # without cleaning up) and proceed with the restart anyway.
 STALE_AFTER_MINUTES=20
@@ -80,7 +83,7 @@ restart_dashboard() {
     # 이후 직접 restart 가 영구 작동. 실패도 더는 조용히 넘기지 않고 notify.
     echo "stock-bot-update: dashboard direct restart denied — install.sh self-heal 시도"
     if [ -x "$REPO/deploy/install.sh" ] \
-            && sudo -n "$REPO/deploy/install.sh" >/tmp/stock-bot-install.log 2>&1 \
+            && sudo -n "$REPO/deploy/install.sh" >"$INSTALL_LOG" 2>&1 \
             && systemctl is-active --quiet stock-bot-dashboard; then
         notify "✅ <b>대시보드 재시작</b>: sudoers self-heal (install.sh 재설치로 권한 복구·이후 자동)"
     else
@@ -99,14 +102,16 @@ restart_dashboard() {
 # 재시작 뒤엔 **살아 있는지** 본다(독립 리뷰 #423 M1): 옛 판은 배포가 이 프로세스를 안
 # 건드려 '낡았지만 살아 있음' 이었는데, 재시작하면 새 코드가 기동에서 죽는 경우가 생긴다
 # — `Restart=on-failure`·`RestartSec=15` 라 systemd 는 계속 다시 띄우고 아무도 알리지 않는다.
-# 실패는 갈래로 말한다(L5): 권한 줄이 없는 것과 재시작 자체가 실패한 것은 처방이 다르다.
+# 실패는 갈래로 말한다(L5): 권한 줄이 없는 것과 재시작 자체가 실패한 것은 처방이 다르다. 판정이
+# sudo 의 영어 문구에 기대므로 `LC_ALL=C` 로 부른다(델타 리뷰 L⑤ — 로캘이 번역하면 권한 부재가
+# "재시작 실패" 로 분류된다).
 restart_daju_listener() {
     if ! systemctl is-active --quiet daju-listener 2>/dev/null; then
         echo "stock-bot-update: daju-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
         return 0
     fi
     local err
-    if err=$(sudo -n /bin/systemctl restart daju-listener 2>&1); then
+    if err=$(LC_ALL=C sudo -n /bin/systemctl restart daju-listener 2>&1); then
         sleep 3
         if systemctl is-active --quiet daju-listener 2>/dev/null; then
             echo "stock-bot-update: also restarted daju-listener"
@@ -254,10 +259,10 @@ fi
 if [ "$DEPLOY_CHANGED" = "1" ]; then
     INSTALL_SH="$REPO/deploy/install.sh"
     if [ -x "$INSTALL_SH" ]; then
-        if sudo -n "$INSTALL_SH" >/tmp/stock-bot-install.log 2>&1; then
+        if sudo -n "$INSTALL_SH" >"$INSTALL_LOG" 2>&1; then
             notify "✅ <b>stock-bot systemd 자동 재설치</b>: install.sh 성공 (deploy/* 변경 감지)"
         else
-            notify "⚠️ <b>stock-bot systemd 재설치 실패</b> (NOPASSWD 미설정 또는 install.sh error). 로그: /tmp/stock-bot-install.log"
+            notify "⚠️ <b>stock-bot systemd 재설치 실패</b> (NOPASSWD 미설정 또는 install.sh error). 로그: ${INSTALL_LOG}"
         fi
     fi
 fi

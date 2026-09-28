@@ -42,6 +42,23 @@ notify() {
     echo "trade-bot-update: notify response: ${response:0:200}"
 }
 
+# sudo 로 부른 명령이 실패했을 때 알림 한 줄(앞에 줄바꿈). 권한 줄이 없는 것과 명령 자체가 실패한
+# 것은 처방이 다르다 — 옛 판은 원인과 상관없이 "권한 없음" 이라 적었다(실수 #423 독립 리뷰 L④:
+# NOAH `restart_daju_listener` 의 갈래(L5)를 옮겼다). 판정이 sudo 의 영어 문구에 기대므로 호출부는
+# `LC_ALL=C` 로 부른다(L⑤). 원문은 HTML 이스케이프해 싣는다(실수 #7 — sed 인 이유는 auto-update.sh
+# 의 같은 줄 주석). 로그 줄은 stderr 로 낸다 — 알림 줄은 호출부가 `$(…)` 로 받는다.
+sudo_failure_note() {
+    local what="$1" err="$2" check="$3"
+    if grep -q 'password is required' <<<"$err"; then
+        echo "trade-bot-update: ${what} 권한 없음(sudoers NOPASSWD 줄 부재)" >&2
+        printf '\n<i>⚠️ %s 권한 없음 — sudoers 를 다시 심는다: <code>sudo /home/higgack/stock/deploy/install.sh</code></i>' "$what"
+    else
+        err=$(printf '%s' "${err:0:200}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+        echo "trade-bot-update: ${what} 실패: ${err}" >&2
+        printf '\n<i>⚠️ %s 실패: <code>%s</code> — 확인: %s</i>' "$what" "$err" "$check"
+    fi
+}
+
 git fetch --quiet origin "$BRANCH"
 
 LOCAL=$(git rev-parse HEAD)
@@ -85,7 +102,10 @@ fi
 # Auto-install any new / changed systemd unit files. install-trade-units.sh
 # is idempotent — copies what differs, daemon-reloads, enables new timers,
 # restarts running services with changed unit files. Requires a sudoers
-# entry (one-time, see trade/README.md); gracefully degrades when missing.
+# entry; gracefully degrades when missing. 그 권한 줄은 NOAH `deploy/install.sh`(운영자 1회
+# 권한으로 root 실행)와 이 설치기가 **같은 drop-in 에 같은 줄을 같은 순서로** 심는다 — 옛 판은
+# 설치기가 자기 줄을 빼고 덮어써, 한 번 돌고 나면 다음 유닛 변경 배포에서 설치기를 못 불렀다
+# (실수 #423 독립 리뷰 M②).
 INSTALL_NOTE=""
 # install-trade-units.sh itself is in the trigger set so that updating
 # the installer (e.g. adding a new sudoers line or auto-enable rule)
@@ -93,20 +113,26 @@ INSTALL_NOTE=""
 # file.
 UNIT_FILES_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^deploy/(trade-bot[^/]*\.(service|timer)|install-trade-units\.sh)$' || true)
 if [ -n "$UNIT_FILES_CHANGED" ]; then
-    if INSTALL_OUTPUT=$(sudo -n "$REPO/deploy/install-trade-units.sh" 2>&1); then
+    if INSTALL_OUTPUT=$(LC_ALL=C sudo -n "$REPO/deploy/install-trade-units.sh" 2>&1); then
         echo "$INSTALL_OUTPUT"
         # `|| true` — 설치기는 바꿀 게 없으면 SUMMARY 줄 없이 "no changes" 로 끝난다. 그때 grep 이
         # 1 을 내면 `set -eo pipefail` 이 이 스크립트를 **trade-bot 재시작 전에** 끝내고, 다음
-        # tick 은 LOCAL==REMOTE 라 새 코드가 영영 안 실린다(실수 #423 동작 회귀가 찾았다).
-        SUMMARY=$(echo "$INSTALL_OUTPUT" | grep -oE 'SUMMARY .*$' | head -1 || true)
+        # tick 은 LOCAL==REMOTE 라 다음 trade 관련 배포가 올 때까지 새 코드가 안 실린다(실수 #423
+        # 동작 회귀가 찾았다).
+        SUMMARY=$(grep -oE 'SUMMARY .*$' <<<"$INSTALL_OUTPUT" | head -1 || true)
         if [ -n "$SUMMARY" ]; then
             INSTALL_NOTE=$'\n'"<i>+ systemd: ${SUMMARY}</i>"
-        else
-            INSTALL_NOTE=$'\n'"<i>+ systemd: 자동 설치 완료</i>"
+        elif ! grep -qx 'install-trade-units: no changes' <<<"$INSTALL_OUTPUT"; then
+            # 바꿀 게 없었으면(위 줄) 알림에 붙이지 않는다 — 저널엔 위 echo 가 남는다(#25). 요약 줄도
+            # "no changes" 도 아닌 출력은 모르는 모양이라 사실만 적는다(독립 리뷰 #423 L③ — 옛 판은
+            # 둘 다 "자동 설치 완료" 라 적었다, #165).
+            INSTALL_NOTE=$'\n'"<i>+ systemd: 설치기는 돌았는데 요약 줄이 없다 — 확인: journalctl -u trade-bot-update -n 30</i>"
         fi
     else
+        echo "$INSTALL_OUTPUT"
         echo "trade-bot-update: install-trade-units.sh failed"
-        INSTALL_NOTE=$'\n'"<i>⚠️ systemd 자동 설치 권한 없음 — sudoers에 install-trade-units.sh 추가</i>"
+        INSTALL_NOTE=$(sudo_failure_note "systemd 자동 설치(install-trade-units.sh)" "$INSTALL_OUTPUT" \
+            "journalctl -u trade-bot-update -n 30")
     fi
 fi
 
@@ -124,19 +150,25 @@ fi
 # FloodWait 처리)·`trade/listener_health.py`·패키지 `__init__.py` 만 바뀐 배포는 옛 코드로
 # 계속 돌았다 — 형제 나쁜양파 리스너가 #411 에서 고친 그 병이다, #38). 규칙은 나쁜양파와
 # 같다. `bot.daily_kr_flow` 는 `--why` 진단(`_why`)에서만 부르므로 재시작 조건 밖이다.
+# ⚠️ 두 리스너는 **돌고 있을 때만** 재시작한다(실수 #423 독립 리뷰 M① — NOAH DAJU 리스너와 같은
+# 이유, #38): 미설치·세션 미인증(exit 78 → failed)·운영자 중지 상태를 배포가 되살리면 안 된다(그
+# 경우 새 코드는 다음 기동 때 로드된다). 옛 판은 멈춰 둔 리스너를 배포마다 다시 켰고, 이 PR 이 더한
+# 생존 확인이 그때마다 "active 아님" 경보를 붙였을 것이다. 대시보드는 이 가드를 두지 않는다 —
+# 세션 인증 단계가 없는 서버라 멈춰 있으면 띄우는 게 맞다(NOAH `install.sh` 도 무조건 재시작한다).
 BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
 LISTENER_NOTE=""
 # 재시작한 상시 유닛 — 아래 `sleep 3` 뒤 trade-bot 과 함께 살아 있는지 본다(실수 #423 독립
 # 리뷰 M1 의 형제: 새 코드가 기동에서 죽으면 systemd 가 조용히 다시 띄우고 있을 뿐이다).
 RESTARTED_UNITS=""
 if [ -n "$BEON_LISTENER_RELEVANT" ]; then
-    if sudo -n /bin/systemctl restart trade-bot-beon-listener 2>/dev/null; then
+    if ! systemctl is-active --quiet trade-bot-beon-listener 2>/dev/null; then
+        echo "trade-bot-update: trade-bot-beon-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
+    elif err=$(LC_ALL=C sudo -n /bin/systemctl restart trade-bot-beon-listener 2>&1); then
         echo "trade-bot-update: also restarted trade-bot-beon-listener"
         LISTENER_NOTE=$'\n'"<i>+ BeOn 리스너 재시작</i>"
         RESTARTED_UNITS="${RESTARTED_UNITS} trade-bot-beon-listener"
     else
-        echo "trade-bot-update: beon-listener restart skipped (no sudoers entry)"
-        LISTENER_NOTE=$'\n'"<i>⚠️ 리스너 재시작 권한 없음 — 다음 배포에서 sudoers 자동 설치 후 재시도</i>"
+        LISTENER_NOTE=$(sudo_failure_note "BeOn 리스너 재시작" "$err" "journalctl -u trade-bot-beon-listener -n 30")
     fi
 fi
 
@@ -154,13 +186,15 @@ fi
 # 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
 BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
-    if sudo -n /bin/systemctl restart trade-bot-badonion-listener 2>/dev/null; then
+    if ! systemctl is-active --quiet trade-bot-badonion-listener 2>/dev/null; then
+        echo "trade-bot-update: trade-bot-badonion-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
+    elif err=$(LC_ALL=C sudo -n /bin/systemctl restart trade-bot-badonion-listener 2>&1); then
         echo "trade-bot-update: also restarted trade-bot-badonion-listener"
         LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>+ 나쁜양파 리스너 재시작</i>"
         RESTARTED_UNITS="${RESTARTED_UNITS} trade-bot-badonion-listener"
     else
-        echo "trade-bot-update: badonion-listener restart skipped (no sudoers entry)"
-        LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>⚠️ 나쁜양파 리스너 재시작 권한 없음 — 다음 배포에서 sudoers 자동 설치 후 재시도</i>"
+        LISTENER_NOTE="${LISTENER_NOTE}$(sudo_failure_note "나쁜양파 리스너 재시작" "$err" \
+            "journalctl -u trade-bot-badonion-listener -n 30")"
     fi
 fi
 
@@ -184,13 +218,12 @@ fi
 DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/[^/]+\.py$|^trade/scripts/[^/]+\.py$|^trade/data/|^bot/[^/]+\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
 DASH_NOTE=""
 if [ -n "$DASHBOARD_RELEVANT" ]; then
-    if sudo -n /bin/systemctl restart trade-bot-dashboard 2>/dev/null; then
+    if err=$(LC_ALL=C sudo -n /bin/systemctl restart trade-bot-dashboard 2>&1); then
         echo "trade-bot-update: also restarted trade-bot-dashboard"
         DASH_NOTE=$'\n'"<i>+ trade-bot-dashboard 재시작</i>"
         RESTARTED_UNITS="${RESTARTED_UNITS} trade-bot-dashboard"
     else
-        echo "trade-bot-update: trade-bot-dashboard restart skipped (no sudoers entry)"
-        DASH_NOTE=$'\n'"<i>⚠️ dashboard 재시작 권한 없음 — sudoers에 'restart trade-bot-dashboard' 추가 필요</i>"
+        DASH_NOTE=$(sudo_failure_note "trade-bot-dashboard 재시작" "$err" "journalctl -u trade-bot-dashboard -n 30")
     fi
 fi
 
