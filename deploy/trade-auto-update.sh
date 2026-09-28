@@ -59,7 +59,9 @@ SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
 # its runtime files. Doc-only / stock-bot / shared-infra updates pull
 # SILENTLY — 채널 알림 없음 (사용자 2026-06-11: NOAH 쪽 변경이 수출입
 # 채널로 알람 오던 것 차단). 추적은 journald 로그로만.
-CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
+# `core.quotePath=false` — git 이 비ASCII 경로를 따옴표로 감싸면 아래 `^trade/…` 앵커가
+# 빗나간다(독립 리뷰 #423 L3).
+CHANGED_FILES=$(git -c core.quotePath=false diff --name-only "$LOCAL" "$REMOTE")
 TRADE_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(trade/|bot/|deploy/(trade-auto-update\.sh|trade-watchdog\.sh|trade-bot[^/]*\.(service|timer))$)' || true)
 if [ -z "$TRADE_RELEVANT" ]; then
     echo "trade-bot-update: non-trade-bot changes (${LOCAL_SHORT} → ${REMOTE_SHORT}: ${SUBJECT}) — silent pull, no restart/notify"
@@ -93,7 +95,10 @@ UNIT_FILES_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^deploy/(trade-bot[^/]*\.(
 if [ -n "$UNIT_FILES_CHANGED" ]; then
     if INSTALL_OUTPUT=$(sudo -n "$REPO/deploy/install-trade-units.sh" 2>&1); then
         echo "$INSTALL_OUTPUT"
-        SUMMARY=$(echo "$INSTALL_OUTPUT" | grep -oE 'SUMMARY .*$' | head -1)
+        # `|| true` — 설치기는 바꿀 게 없으면 SUMMARY 줄 없이 "no changes" 로 끝난다. 그때 grep 이
+        # 1 을 내면 `set -eo pipefail` 이 이 스크립트를 **trade-bot 재시작 전에** 끝내고, 다음
+        # tick 은 LOCAL==REMOTE 라 새 코드가 영영 안 실린다(실수 #423 동작 회귀가 찾았다).
+        SUMMARY=$(echo "$INSTALL_OUTPUT" | grep -oE 'SUMMARY .*$' | head -1 || true)
         if [ -n "$SUMMARY" ]; then
             INSTALL_NOTE=$'\n'"<i>+ systemd: ${SUMMARY}</i>"
         else
@@ -121,10 +126,14 @@ fi
 # 같다. `bot.daily_kr_flow` 는 `--why` 진단(`_why`)에서만 부르므로 재시작 조건 밖이다.
 BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
 LISTENER_NOTE=""
+# 재시작한 상시 유닛 — 아래 `sleep 3` 뒤 trade-bot 과 함께 살아 있는지 본다(실수 #423 독립
+# 리뷰 M1 의 형제: 새 코드가 기동에서 죽으면 systemd 가 조용히 다시 띄우고 있을 뿐이다).
+RESTARTED_UNITS=""
 if [ -n "$BEON_LISTENER_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-beon-listener 2>/dev/null; then
         echo "trade-bot-update: also restarted trade-bot-beon-listener"
         LISTENER_NOTE=$'\n'"<i>+ BeOn 리스너 재시작</i>"
+        RESTARTED_UNITS="${RESTARTED_UNITS} trade-bot-beon-listener"
     else
         echo "trade-bot-update: beon-listener restart skipped (no sudoers entry)"
         LISTENER_NOTE=$'\n'"<i>⚠️ 리스너 재시작 권한 없음 — 다음 배포에서 sudoers 자동 설치 후 재시도</i>"
@@ -141,13 +150,14 @@ fi
 # 이고, 리스너의 trade.* import 폐포(진입점 `-m trade.scripts.listen_badonion` 이 실행하는
 # `trade/scripts/__init__.py` 포함 — 독립 리뷰 #411 L9)가 이 정규식에 걸리는지 회귀가 잰다
 # (`tests/test_restart_closure_20260928.py` — 상시 유닛 전부 공용, #423). ⚠️ `trade/*.py` 는
-# 폐포보다 넓다(대시보드 모듈도 걸린다) — 리스너 재시작은 몇 초라 그 사이 올라온 글은 주기
-# sync 가 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
+# 폐포보다 넓다(대시보드 모듈도 걸린다) — 리스너가 재시작하는 사이 올라온 글은 주기 sync 가
+# 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
 BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-badonion-listener 2>/dev/null; then
         echo "trade-bot-update: also restarted trade-bot-badonion-listener"
         LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>+ 나쁜양파 리스너 재시작</i>"
+        RESTARTED_UNITS="${RESTARTED_UNITS} trade-bot-badonion-listener"
     else
         echo "trade-bot-update: badonion-listener restart skipped (no sudoers entry)"
         LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>⚠️ 나쁜양파 리스너 재시작 권한 없음 — 다음 배포에서 sudoers 자동 설치 후 재시도</i>"
@@ -168,7 +178,7 @@ fi
 # bot/dart_client · bot/env_keys)가 base 에 들어간 뒤에도 이 서버는 재시작되지 않아 옛
 # 코드로 돌았고 사용자가 손으로 재시작했다. `trade/data/` 는 코드는 아니지만 메모리에
 # 캐시된다(`mti_companies._REINFORCE_APPROVED_CACHE` 는 오버레이 mtime 만 보고 repo CSV
-# 의 변경은 안 본다). NOAH 대시보드와 같은 정책(무상태·몇 초라 닿는 가족 전체 — 코드와
+# 의 변경은 안 본다). NOAH 대시보드와 같은 정책(무상태라 닿는 가족 전체 — 코드와
 # `data/` — 를 덮는다)이고, 이 프로세스의 import 폐포가 규칙에 걸리는지
 # `tests/test_restart_closure_20260928.py` 가 소스에서 잰다.
 DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/[^/]+\.py$|^trade/scripts/[^/]+\.py$|^trade/data/|^bot/[^/]+\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
@@ -177,6 +187,7 @@ if [ -n "$DASHBOARD_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-dashboard 2>/dev/null; then
         echo "trade-bot-update: also restarted trade-bot-dashboard"
         DASH_NOTE=$'\n'"<i>+ trade-bot-dashboard 재시작</i>"
+        RESTARTED_UNITS="${RESTARTED_UNITS} trade-bot-dashboard"
     else
         echo "trade-bot-update: trade-bot-dashboard restart skipped (no sudoers entry)"
         DASH_NOTE=$'\n'"<i>⚠️ dashboard 재시작 권한 없음 — sudoers에 'restart trade-bot-dashboard' 추가 필요</i>"
@@ -184,15 +195,22 @@ if [ -n "$DASHBOARD_RELEVANT" ]; then
 fi
 
 sleep 3
+DEAD_NOTE=""
+for unit in $RESTARTED_UNITS; do
+    if ! systemctl is-active --quiet "$unit"; then
+        echo "trade-bot-update: ${unit} 재시작 뒤 active 아님"
+        DEAD_NOTE="${DEAD_NOTE}"$'\n'"<i>⚠️ ${unit} 재시작 후 active 아님 — 확인: journalctl -u ${unit} -n 30</i>"
+    fi
+done
 if systemctl is-active --quiet trade-bot; then
     msg="✅ <b>배포 완료</b>: <code>${LOCAL_SHORT}</code> → <code>${REMOTE_SHORT}</code>"
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
-    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}${LISTENER_NOTE}"
+    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}${LISTENER_NOTE}${DEAD_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else
-    notify "❌ <b>배포 실패</b>: trade-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})"
+    notify "❌ <b>배포 실패</b>: trade-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})${DEAD_NOTE}"
     exit 1
 fi

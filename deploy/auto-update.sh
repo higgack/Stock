@@ -4,9 +4,12 @@
 
 set -euo pipefail
 
-REPO=/home/higgack/stock
-BRANCH=claude/stock-trading-automation-xqYf7
-BUSY_MARKER=/home/higgack/.tradingagents/.busy
+# 기본값이 운영 경로다. 환경 변수는 회귀가 임시 저장소에서 이 스크립트를 실제로
+# 돌려 보려고 둔 것(`tests/test_restart_closure_20260928.py`, 실수 #423 — 형제
+# trade-auto-update.sh 의 TRADE_REPO/TRADE_BRANCH 와 같은 방식). 유닛은 설정하지 않는다.
+REPO="${STOCK_REPO:-/home/higgack/stock}"
+BRANCH="${STOCK_BRANCH:-claude/stock-trading-automation-xqYf7}"
+BUSY_MARKER="${STOCK_BUSY_MARKER:-/home/higgack/.tradingagents/.busy}"
 # If the busy marker is older than this, treat it as stale (bot crashed
 # without cleaning up) and proceed with the restart anyway.
 STALE_AFTER_MINUTES=20
@@ -90,19 +93,37 @@ restart_dashboard() {
 # 파서로 판정해 새 형식 알림을 '무관 메시지' 로 버리고, 메시지마다 부르는 블로그
 # 재생성(`bot.dashboard`)도 옛 렌더러로 blog.html 을 덮는다. **돌고 있을 때만**
 # 재시작한다 — 미설치·세션 미인증(exit 78)·운영자 중지 상태를 배포가 되살리면 안
-# 된다(그 경우 새 코드는 다음 기동 때 로드된다). 재시작 몇 초 사이에 온 알림은
-# 백필 경로가 없어 놓칠 수 있다(형제 trade 리스너와 달리 주기 sync 가 없다) — 옛
-# 코드가 새 형식을 영영 버리는 것보다 작은 위험이라 이쪽을 택했다.
+# 된다(그 경우 새 코드는 다음 기동 때 로드된다). 재시작 사이에 온 알림은 백필 경로가
+# 없어 놓칠 수 있다(형제 trade 리스너와 달리 주기 sync 가 없다) — 옛 코드가 새 형식을
+# 영영 버리는 것보다 작은 위험이라 이쪽을 택했다.
+# 재시작 뒤엔 **살아 있는지** 본다(독립 리뷰 #423 M1): 옛 판은 배포가 이 프로세스를 안
+# 건드려 '낡았지만 살아 있음' 이었는데, 재시작하면 새 코드가 기동에서 죽는 경우가 생긴다
+# — `Restart=on-failure`·`RestartSec=15` 라 systemd 는 계속 다시 띄우고 아무도 알리지 않는다.
+# 실패는 갈래로 말한다(L5): 권한 줄이 없는 것과 재시작 자체가 실패한 것은 처방이 다르다.
 restart_daju_listener() {
     if ! systemctl is-active --quiet daju-listener 2>/dev/null; then
         echo "stock-bot-update: daju-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
         return 0
     fi
-    if sudo -n /bin/systemctl restart daju-listener 2>/dev/null; then
-        echo "stock-bot-update: also restarted daju-listener"
-    else
+    local err
+    if err=$(sudo -n /bin/systemctl restart daju-listener 2>&1); then
+        sleep 3
+        if systemctl is-active --quiet daju-listener 2>/dev/null; then
+            echo "stock-bot-update: also restarted daju-listener"
+        else
+            echo "stock-bot-update: daju-listener 재시작 뒤 active 아님"
+            notify "⚠️ <b>DAJU 리스너 재시작 후 active 아님</b> — 새 코드가 기동에서 실패했을 수 있습니다. 확인: <code>journalctl -u daju-listener -n 30</code>"
+        fi
+    elif grep -q 'password is required' <<<"$err"; then
         echo "stock-bot-update: daju-listener restart 권한 없음 — install.sh 가 sudoers 를 설치해야 한다"
         notify "⚠️ <b>DAJU 리스너 재시작 실패</b>: restart NOPASSWD 권한 부재 — 다음 deploy/ 변경 때 install.sh 가 설치한다(즉시: <code>sudo /home/higgack/stock/deploy/install.sh</code>)"
+    else
+        # parse_mode=HTML 이라 `<`·`>`·`&` 를 이스케이프한다(실수 #7). `${err//</&lt;}` 는 쓰지
+        # 않는다 — bash 5.2 의 patsub_replacement 가 치환 문자열의 `&` 를 일치한 글자로 바꿔
+        # `<lt;` 를 만든다(실측). sed 의 `\&` 는 판에 상관없이 글자 그대로다.
+        err=$(printf '%s' "${err:0:200}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+        echo "stock-bot-update: daju-listener restart 실패: ${err}"
+        notify "⚠️ <b>DAJU 리스너 재시작 실패</b>: <code>${err}</code> — 확인: <code>journalctl -u daju-listener -n 30</code>"
     fi
 }
 
@@ -190,9 +211,15 @@ notify "$start_msg"
 # 설정 후 deploy/ 변경 시도 SSH 진입 없이 자동 install + daemon-reload
 # + enable. Quiet skip when install.sh missing NOPASSWD (legacy bot
 # 호환).
+# 변경 목록은 한 번만 구하고 here-string 으로 grep 한다(독립 리뷰 #423 L2·L3): `set -o
+# pipefail` 아래 `echo … | grep -q` 는 grep 이 첫 일치에서 끝나면 echo 가 SIGPIPE 로 죽어
+# 파이프라인이 실패로 읽힌다 — 목록이 파이프 버퍼(64KiB) 근처를 넘는 배포에서 조건이 조용히
+# 0 이 된다(실측: 57KB 에서 10회 중 1회 · 190KB 에서 10회 전부 · here-string 은 전부 잡았다).
+# `core.quotePath=false` 는 git 이 비ASCII 경로를 따옴표로 감싸 `^bot/…` 앵커를 빗나가게
+# 하지 않으려고다.
+PULLED_FILES=$(git -c core.quotePath=false diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null || true)
 DEPLOY_CHANGED=0
-if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
-        | grep -qE '^deploy/.*\.(service|timer|sh)$'; then
+if grep -qE '^deploy/.*\.(service|timer|sh)$' <<<"$PULLED_FILES"; then
     DEPLOY_CHANGED=1
 fi
 
@@ -210,8 +237,7 @@ fi
 # 재시작한다(옛 판은 배포가 그 프로세스를 한 번도 재시작하지 않았다). 두 프로세스의
 # import 폐포가 이 정규식에 걸리는지 `tests/test_restart_closure_20260928.py` 가 잰다.
 CODE_CHANGED=0
-if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
-        | grep -qE '^bot/[^/]+\.py$|^bot/(scripts|screener_themes)/[^/]+\.py$|^trade/[^/]+\.py$|^trade/data/|^TradingAgents/tradingagents/.+\.py$'; then
+if grep -qE '^bot/[^/]+\.py$|^bot/(scripts|screener_themes)/[^/]+\.py$|^trade/[^/]+\.py$|^trade/data/|^TradingAgents/tradingagents/.+\.py$' <<<"$PULLED_FILES"; then
     CODE_CHANGED=1
 fi
 
