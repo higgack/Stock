@@ -85,11 +85,14 @@ systemctl daemon-reload
 # 2026-06-03: dashboard 서버 코드 변경(Cache-Control 등) 자동 배포를 위해
 # stock-bot-dashboard restart 권한 추가. visudo -c 로 검증 후에만 설치 →
 # 문법 오류로 sudo 잠기는 사고 방지. Idempotent (동일 내용이면 no-op).
+# 2026-09-28(실수 #423): daju-listener restart 권한 — auto-update.sh 가 상시 프로세스
+# 코드가 바뀐 배포에서 그 리스너가 돌고 있으면 재시작한다.
 SUDOERS_DROPIN=/etc/sudoers.d/higgack-stock-restart
 SUDOERS_TMP="$(mktemp)"
 cat > "$SUDOERS_TMP" <<'SUDOERS'
 higgack ALL=(root) NOPASSWD: /bin/systemctl restart stock-bot
 higgack ALL=(root) NOPASSWD: /bin/systemctl restart stock-bot-dashboard
+higgack ALL=(root) NOPASSWD: /bin/systemctl restart daju-listener
 SUDOERS
 if visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
     if ! cmp -s "$SUDOERS_TMP" "$SUDOERS_DROPIN" 2>/dev/null; then

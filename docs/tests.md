@@ -2040,7 +2040,7 @@ Low 로는 원자적 쓰기·번호 상한·재시작 전 예외 필터가 무�
 최상위만 가상환경 판정)이 전부 잡혔다 — 마지막 것은 첫 픽스처(최상위 가상환경뿐)에서 살아남아
 하위 가상환경 픽스처를 더했다(#91c).
 
-## #411 — 재게시 글은 원래 출처로 온다: 릴레이가 그 글을 보증한다 (`trade/tests/test_relay_origins.py` 34건 · `test_listen_badonion_vouch.py` 9건 · `test_backfill_badonion_sync.py` +9 · `test_bot_drop_log.py` +5 · `test_bot_health.py` +18 · 2026-09-25 배포 전 독립 리뷰까지 반영한 뒤 실측)
+## #411 — 재게시 글은 원래 출처로 온다: 릴레이가 그 글을 보증한다 (`trade/tests/test_relay_origins.py` 34건 · `test_listen_badonion_vouch.py` 9건(재시작 폐포 1건은 #423 공용 회귀로 이전해 지금 8건) · `test_backfill_badonion_sync.py` +9 · `test_bot_drop_log.py` +5 · `test_bot_health.py` +18 · 2026-09-25 배포 전 독립 리뷰까지 반영한 뒤 실측)
 
 VM 실측(2026-09-25 `trade.bot_health`): 봇은 40일 회수 27건을 **다 받았고** 출처 게이트가
 `다른 출처 포워드 27: -1003901069327` 로 버렸다 — 나쁜양파가 다른 채널에서 퍼 온 글이라
@@ -2053,7 +2053,7 @@ VM 실측(2026-09-25 `trade.bot_health`): 봇은 40일 회수 27건을 **다 받
 | ① 보증 기록 | 없으면 정상(사유 "") · 빈 파일·깨진 JSON·비UTF-8·목록 뿌리·`chats` 없음·모르는 판·디렉터리 자리는 **안 던지고** 사유를 돌려준다(#331 — 봇 게이트가 부른다) · 못 읽은 항목만 빼고 나머지는 살려 그 수를 말한다 · 시간대 없는 시각은 None · 처음 보증한 시각·릴레이를 지킨다(진단이 '보증 **뒤의** 버림' 을 가르는 기준) · 제목은 채널 단위 · 안 바뀌면 안 쓴다(쓰기 횟수로 잰다 — inode 는 지우고 다시 만든 파일이 같은 번호를 받아 눈이 멀었다, 뮤테이션 R2) · 보증할 것이 없으면 디렉터리도 안 만든다 · `KEEP_DAYS` 지난 보증은 쓸 때 걷어낸다(경계는 남긴다) · 못 읽은 파일 위에 쓰면 경고하고 새로 쓴다 · 쓰기 실패는 **던진다**(부르는 쪽이 포워드하지 않는다) · 원자적 교체(교체가 실패하면 원본 그대로 · **임시 파일도 안 남는다**) · 임시 파일 이름에 PID · **락을 잡은 뒤에** 다시 읽어 합친다(락 순간에 다른 쓰기가 끝난 상태를 결정적으로 만든다 — 시간·스레드 금지, #128) · 실제 프로세스 둘이 30건씩 번갈아 써도 60건 · 락을 못 걸면 진행하되 경고 · 락 대기는 **상한**이 있다(쥔 채 멈춘 프로세스가 리스너 이벤트 루프를 세우면 안 된다 — 스레드로 돌려 끝나는지 잰다) · 깊게 중첩된 JSON(`RecursionError`)도 안 던지고 형식 오류다 · **일시적 읽기 실패·모르는 판이면 덮어쓰지 않고 던진다**(옛 판은 EIO 한 번에 봇이 아직 안 받은 보증을 지웠다 — 깨진 기록만 새로 쓴다) · 판은 **구조보다 먼저** 본다(`chats` 가 없는 새 판을 '깨졌다' 로 읽어 덮어쓰지 않는다) · 판 표시(`v`)가 **없는** 파일은 우리가 쓴 적 없는 모양이라 깨진 것으로 새로 쓴다(모르는 판으로 두면 보증이 영영 막힌다) | `test_relay_origins.py` 전부 |
 | ② 재게시 판정 | `fwd_from.from_id` 가 **채널**이고 `channel_post` 가 있을 때만 — 원천 채널 자신의 글은 보증할 것이 없고 개인 계정·출처를 숨긴 포워드·번호 없는 포워드는 센다 · 키는 **부르는 쪽의** `get_peer_id`(백필 중복 제거 키와 같은 함수, #38) · 그 함수가 못 읽으면 지어내지 않고 센다 · 제목 조회가 던져도 안 죽는다 | `::test_repost_pairs_takes_only_channel_origins_and_counts_the_rest` · `::test_repost_pairs_uses_the_callers_peer_id` · `::test_a_title_lookup_that_raises_is_not_fatal` |
 | ③ 백필 배선 | 가짜 클라이언트의 포워드가 불리는 **순간** 보증 기록에 그 글이 있다(앨범은 멤버 전부) · 원천 채널 자신의 글은 파일을 안 만든다 · dry-run 은 보증도 안 쓴다(#264) — 대신 `to-forward`·`find` 줄이 원래 출처를 말한다 · 보증을 못 쓰면 그 유닛만 포워드하지 않고 알림이 삭제·포워드 실패와 **갈라** 센다(#82) · 둘이 섞여도 각자 센다 · 사람이 연 창의 연속 실패 중단 사유가 보증 실패를 이름으로 대되 **그 연속 구간 안의** 것만 센다(보증 실패만 이어졌으면 '포워드 실패' 라 부르지 않는다 · 사이의 성공이 구간을 끊는다) · 보증할 수 없는 포워드는 옛 동작 그대로 포워드하고 봇이 버린다고 적는다 | `test_backfill_badonion_sync.py::test_a_repost_is_vouched_before_it_is_forwarded` · `::test_an_album_vouches_every_repost_member_before_the_one_forward` · `::test_a_native_post_writes_no_vouch` · `::test_a_dry_run_names_the_repost_origin_but_vouches_nothing` · `::test_a_repost_that_cannot_be_vouched_is_not_forwarded` · `::test_a_forward_failure_and_a_vouch_failure_are_counted_apart` · `::test_consecutive_vouch_failures_abort_and_name_the_cause` · `::test_the_abort_reason_counts_only_the_vouch_failures_in_the_streak` · `::test_an_unvouchable_forward_is_named_and_forwarded_as_before` |
-| ④ 리스너 배선 | 리스너를 **실제 이벤트로** 태운다(가짜 클라이언트가 핸들러를 받아 두고 글을 흘린다) — 단일·앨범 모두 포워드 순간 보증돼 있다 · 원천 글은 보증 없이 · 무관한 재게시는 보증도 포워드도 안 한다 · 보증을 못 쓰면 큐에 안 넣고 알리며(같은 사유는 **전달이 확인되면** 프로세스당 한 번 — 건마다는 로그 · 못 간 알림은 '알렸다' 로 적지 않고 `_VOUCH_ALERT_RETRY_S` 뒤 같은 사유가 다시 나면 다시 알린다 · 전달은 텔레그램 응답의 `ok` 로 잰다, `curl -s` 는 429 에도 종료코드 0) 같은 흐름의 다른 글은 간다 · 보증할 수 없는 포워드는 옛 동작 · 리스너 재시작 트리거(`deploy/trade-auto-update.sh`)가 리스너의 `trade.*` import **폐포 전부**를 덮는다(소스에서 폐포를 따라가 잰다 — 진입점이 실행하는 **위 패키지의 `__init__.py`** 포함 · 옛 트리거 `listen_badonion.py` 만으로 되돌리면 실패함을 확인 · 폐포 밖 파일·NOAH 쪽으론 재시작하지 않는다) | `test_listen_badonion_vouch.py` 전부 |
+| ④ 리스너 배선 | 리스너를 **실제 이벤트로** 태운다(가짜 클라이언트가 핸들러를 받아 두고 글을 흘린다) — 단일·앨범 모두 포워드 순간 보증돼 있다 · 원천 글은 보증 없이 · 무관한 재게시는 보증도 포워드도 안 한다 · 보증을 못 쓰면 큐에 안 넣고 알리며(같은 사유는 **전달이 확인되면** 프로세스당 한 번 — 건마다는 로그 · 못 간 알림은 '알렸다' 로 적지 않고 `_VOUCH_ALERT_RETRY_S` 뒤 같은 사유가 다시 나면 다시 알린다 · 전달은 텔레그램 응답의 `ok` 로 잰다, `curl -s` 는 429 에도 종료코드 0) 같은 흐름의 다른 글은 간다 · 보증할 수 없는 포워드는 옛 동작 · 리스너 재시작 트리거(`deploy/trade-auto-update.sh`)가 리스너의 `trade.*` import **폐포 전부**를 덮는다(소스에서 폐포를 따라가 잰다 — 진입점이 실행하는 **위 패키지의 `__init__.py`** 포함 · 옛 트리거 `listen_badonion.py` 만으로 되돌리면 실패함을 확인 · 폐포 밖 파일·NOAH 쪽으론 재시작하지 않는다 — 이 회귀는 상시 유닛 전부 공용으로 옮겼다, #423) | `test_listen_badonion_vouch.py` 전부 · 재시작 트리거는 `tests/test_restart_closure_20260928.py` |
 | ⑤ 봇 게이트 | 핸들러를 태운다 — 보증된 그 글은 받고 `accepted … reason=relay_vouch` 줄을 남긴다 · **같은 채널의 다른 글**은 버린다(글 단위 — 채널 단위로 열리는 변형을 잡는다) · 못 읽은 기록이면 버리고 건마다 `vouch=unreadable`, 사유 경고는 한 번 · 목록·BeOn 머리글로 받는 글은 파일을 안 읽고 원래 채널이 없는 글은 `vouch=n/a` · 시작 줄에 `relay_vouch=on` · 버림 줄은 원래 글번호·`vouch=`·줄 끝 `origin_title` 을 싣는다 · 봇 데이터 디렉터리는 테스트 임시 경로(운영 `~/.trade` 를 안 읽는다, #373) | `test_bot_drop_log.py::RelayVouchGateTests` · `::OriginDropLogTests` |
 | ⑥ 생산자↔소비자 | 버림·수신 줄을 봇 소스의 **실제 형식**으로 채워 진단이 읽는다 — 제목에 따옴표·가짜 칸(`vouch=…`)이 섞여도 안 뒤틀린다 · **분류는 봇이 쓴 칸까지만** 본다 — 채널 제목(남이 쓴 글)에 수신 줄·정상 폴링·수용 줄·버림 줄 문구가, 예외 문구에 수신 줄 문구가 들어 있어도 다른 사실이 되지 않는다 · 옛 줄은 새 칸이 None · 봇이 실제로 찍은 레코드를 실제 포매터로(보증 수용 줄 포함) · 예외 줄도 원래 글번호를 싣는다 | `test_bot_health.py::test_drop_and_accept_lines_from_the_bot_source_parse_every_new_field` · `::test_a_channel_title_cannot_become_another_journal_fact` · `test_bot_drop_log.py::DropLogIsReadByBotHealthTests` · `::ErrorHandlerTests` · `test_bot_health.py::test_exception_line_from_the_bot_source_parses_with_its_origin` |
 | ⑦ 진단 판정 | 보증 **뒤의** 버림 = ❌(처방: 보증 기록·데이터 디렉터리 — .env 아님) — 단 **그 뒤** 같은 원래 글의 수용 줄이 있으면 받은 것이라 메모(같은 초·다른 글은 회복이 아니다 — 안 풀면 고친 뒤에도 `&&` 가 막힌다) · 보증 **전의** 버림 = ⚠️(보증 수용 줄로 다시 받았는지까지 · 누가 포워드했는지는 단정하지 않는다) · 저널 시각은 초로 잘린다(같은 초는 '전') · 모르면 None · 원천 이름 버림이 먼저 · 보증을 모르는 판 봇은 ❓(rc 2 — `&&` 를 막는다) · 더 옛 판은 그 ❓ 하나만 · 못 읽은 보증 기록은 ⚠️(❓ 면 그 기록을 새로 쓸 재포워드를 막는다) · ③ 에 보증 받음/모름 · ④ 에 보증 수용 수 · 보증 기록 한 줄 · 수집기가 봇과 같은 디렉터리에서 같은 함수로 읽는다(#35) · 다른 출처 메모는 옛 처방(.env 에 채널 더하기)을 권하지 않는다 | `test_bot_health.py::test_vouch_order_is_by_time_with_the_journals_one_second_grain` · `::test_a_drop_after_the_vouch_is_red_with_the_bots_own_reason` · `::test_a_vouched_drop_that_came_back_later_is_a_note_not_red` · `::test_an_accept_of_the_same_number_in_another_channel_does_not_heal`(글번호는 채널마다 따로 — 다른 채널의 같은 번호는 회복이 아니다) · `::test_a_healed_drop_now_does_not_hide_the_previous_process_relay_drop`(치유된 버림은 ❌ 가 아니므로 재시작 전 프로세스의 릴레이 버림 메모를 가리지 않고, 그 메모는 재시작 전 몫만 센다) · `::test_a_drop_before_the_vouch_is_a_note_that_says_whether_it_came_back` · `::test_a_bot_that_does_not_know_vouches_blocks_the_reforward_chain` · `::test_an_unreadable_vouch_record_is_a_note_not_a_block` · `::test_render_names_the_vouch_state_and_the_accepted_count` · `::test_collect_reads_the_vouch_record_where_the_bot_does` · `::test_other_origin_drops_are_not_called_benign_and_say_how_to_tell` · `::test_start_line_parser_reads_the_real_bot_format` · `::test_an_exception_on_a_vouched_repost_is_a_lost_relay_post`(보증된 재게시 글을 예외로 놓치면 버림과 **같은 규칙**으로 릴레이 글의 손실 ❌) · `::test_the_deployed_bot_lets_the_reforward_chain_through`(배포 **직후**엔 옛 프로세스가 버린 27건이 창에 있어도 rc 0 — 막으면 그 글을 돌려받을 재포워드가 영영 안 나간다 · 대조군: 옛 판이 돌면 rc 2) |
@@ -2434,3 +2434,46 @@ Low: 환경을 지운 자식(`env={…}`)은 가드가 **없었다**(굽힌 값�
 값 캐시는 `env_keys._TRIED`·`dart_client._ENV_KEY_TRIED`·`dart_feed._ENV_TRIED` 셋이 전부이고, 리뷰가 더 훑은 `*_WARNED`
 여섯 곳과 `_RATING_IMPORT_WARNED` 는 키가 정말 없을 때 경고를 중복으로 낼 뿐이라 그대로 뒀다 · 전역 락 안에서 파일을 읽어
 다른 키의 첫 조회도 그동안 기다린다(L-4 — 키마다 한 번이고 로컬 디스크라 재지 않았다).
+
+## #423 — 배포는 디스크만 바꾼다: 상시 프로세스의 재시작 조건이 그 import 폐포를 덮는다 (`tests/test_restart_closure_20260928.py` 30건 · 옛 #411 폐포 회귀 1건 이전 · 2026-09-28)
+
+#422 fix(aae6ea6 — `bot/env_keys.py`·`bot/dart_client.py`)가 base 에 들어간 뒤에도 trade 대시보드는 재시작되지
+않아 사용자가 손으로 재시작했다 — 재시작 조건이 `trade/*.py` 뿐이었는데 대시보드는 기업 리포트에서 **함수 안에서**
+`bot.dart_client` 를 부른다. 상시 유닛(`deploy/*.service` 중 oneshot 이 아닌 7개)을 전부 재 보니 넷이 같은 병이었다:
+trade 대시보드(bot 12 · `trade/scripts` 4 모듈 밖 · 메모리에 캐시하는 `trade/data/` 도 밖 — `mti_companies._REINFORCE_APPROVED_CACHE` 는 오버레이 mtime 만 보고 repo CSV 변경은 안 본다) · BeOn 리스너(자기가 최상위에서 import 하는 `trade/tg_entities.py`·
+`trade/listener_health.py`·패키지 `__init__.py` 밖 — #411 을 형제에 안 옮김) · NOAH 대시보드(trade 8 · TradingAgents 41 ·
+bot 하위 패키지 2 밖) · DAJU 리스너(재시작 규칙이 **아예** 없었다).
+
+| 축 | 무엇을 재나 | 테스트 |
+|---|---|---|
+| ① 유닛 파생 | 상시 유닛은 `deploy/*.service` 에서 파생한다(#24) — 정책 표에 없는 상시 유닛이 생기면 실패(재시작 규칙을 정하라는 뜻), 없어진 유닛의 정책도 실패 | `::test_every_long_running_unit_has_a_restart_policy` |
+| ② 폐포 덮기 | 유닛의 import 폐포 전부가 **실효** 재시작 조건에 걸린다(trade 쪽은 `TRADE_RELEVANT` 게이트 ∧ 규칙) · 양성 대조 — trade 대시보드 폐포에 `bot/dart_client.py`(aae6ea6 경로) · BeOn 에 `tg_entities`·`listener_health`·위 패키지 `__init__` · 나쁜양파에 보증·필터·파서(20개 이상, #411 에서 이전) · NOAH 대시보드에 `trade/kg_candidates.py`·TradingAgents · DAJU 에 파서·`bot/dashboard.py` · 폐포 모듈이 **이름으로 가리키는 repo 데이터**(`trade/data/**` — 코드가 아니라 폐포엔 안 잡히지만 메모리에 캐시된다, 4개 전부 이름이 읽는 모듈 소스에 나온다)도 조건에 걸린다(양성 대조: 두 대시보드가 `reinforce_approved.csv` 를 읽는다) · 서버(대시보드)는 닿는 **가족 전체**(trade·bot 최상위와 그 `data/`, tradingagents 전부)를 덮는다 — NOAH 2026-06-11 선례 | `::test_restart_condition_covers_the_import_closure` (유닛 7) |
+| ③ 끊는 간선 | 리스너만 다른 가족으로 가는 간선을 **사유와 함께** 끊는다(나쁜양파 `trade/stock_link.py → bot/market.py` · BeOn `listen_beon.py → bot/daily_kr_flow.py` = `--why` 진단 전용) · 사유가 가리키는 간선이 실제로 있어야 한다(낡은 사유는 실패) · 같은 가족 안 간선은 못 끊는다 · 서버·봇은 끊지 않는다 | `::test_cut_edges_are_real_cross_family_and_listener_only` |
+| ④ 음성 대조 | 조건부 유닛은 테스트(`*/tests/`)·문서·데이터로 재시작하지 않는다 · 리스너는 주기 백필 스크립트·`bot/market.py` 로도 안 한다 | `::test_restart_condition_ignores_what_no_process_imports` |
+| ⑤ 배선 | 각 조건 변수의 `if` 블록이 **그 유닛을** 재시작한다(직접 또는 블록이 부르는 함수를 거쳐) · VM 직접 push 경로(diff 없음)도 조건부 NOAH 유닛 전부를 재시작 · `sudo -n` 재시작마다 설치기(`install.sh`·`install-trade-units.sh`)에 NOPASSWD 줄이 있다 | `::test_restart_condition_is_wired_to_that_unit` · `::test_vm_direct_push_restarts_every_conditional_noah_unit` · `::test_every_best_effort_restart_has_a_provisioned_sudoers_line` |
+| ⑥ 폐포 규칙 자체 | 합성 패키지로 — 자기 가족의 함수 안 import 와 상대 import 는 따라가고, 위 패키지 `__init__` 을 세고, 다른 가족 모듈은 최상위만(함수 안은 안 따라감) · 끊은 간선은 그 아래를 통째로 뺀다 | `::test_closure_follows_own_family_lazy_imports_but_only_top_level_of_others` |
+
+재현(§Pre-commit 9): 옛 스크립트로 돌리자 trade 대시보드 폐포 중 16개가 조건 밖으로 나왔고 그 안에 aae6ea6 이 바꾼
+`bot/dart_client.py`·`bot/env_keys.py` 가 둘 다 있었다. 뮤테이션 25종(스크립트 16 — 옛 규칙 되돌리기 넷 · 가족 하나씩 빼기
+넷 · daju 호출·직접 push 호출·sudoers 줄 빼기 · 다른 유닛 재시작 둘 · 테스트까지 넓히기 둘 · 대시보드를 정확히 폐포로 좁히기
+· 폐포 규칙 5 — 남의 가족 함수 안까지 · 자기 가족 함수 안 안 봄 · 위 `__init__` 안 셈 · 상대 import 계산 틀림 · 끊는 간선
+무시 · 데이터 4 — 두 스크립트에서 `trade/data/` 빼기 · 탐지를 눈멀게 · NOAH 가 `trade/` 전체(README 까지))이 전부 **겨냥한 테스트에서** 잡혔다(실패한 테스트 이름까지 대조, `-x` 없이 · #384). 지난 30일 base 72커밋 실측:
+대시보드 재시작 20→66회 · BeOn 2→19회 · NOAH 대시보드 56→69회 · DAJU 0→69회(그동안 DAJU 폐포가 바뀐 커밋 52개가
+그 프로세스에 한 번도 안 실렸다).
+
+⚠️ 폐포 규칙의 근거: 자기 가족은 함수 안 import 까지(그 코드 경로는 이 유닛의 것 — aae6ea6 이 그 경로였다), 남의 가족은
+최상위만(다른 가족의 헬퍼 하나를 부르는 유닛이 그 모듈의 다른 함수까지 부른다는 근거가 없다). 다 따라가면 허브 셋
+(`bot.dashboard`·`bot.market`·`bot.daily_kr_flow`) 때문에 모든 유닛이 bot 131 · TradingAgents 58 모듈이 된다(실측) —
+그 판으로 규칙을 만들면 모든 상시 프로세스가 모든 배포에 재시작한다.
+
+못 보는 축(#274): 동적 import(`importlib`·`__import__` — 대시보드와 DAJU 는 가족 전체를 덮어 같은 가족 안이면 무해하고,
+두 trade 리스너의 폐포엔 지금 없다, 실측) · 다른 가족 모듈의 **함수 안** import 가 실제 경로에 있는 경우(유닛이 덮는 가족 안에
+머물면 무해 — 덮지 않는 가족으로 번지면 못 본다 · 리스너는 그 간선을 끊을 때 적는 사유가 그 판단이다) ·
+파일 **이름을 소스에 안 적고** 조립해 읽는 repo 데이터(`_data_read_by` 는 이름으로 찾는다 — 서버는 가족의 `data/` 전체를 덮어 무해하고, 두 trade 리스너의 폐포 모듈은 repo 데이터를 안 읽고 `~/.trade` 를 읽는다, 실측) · 재시작 명령 자체의 실패(sudoers — 스크립트가
+로그·알림으로 말한다) · 재시작 뒤 프로세스가 실제로 뜨는지(스크립트의 `is-active` 확인은 봇·NOAH 대시보드만 한다) ·
+DAJU 는 **돌고 있을 때만** 재시작한다 — 재시작 몇 초 사이에 온 알림은 백필 경로가 없어 놓칠 수 있다(형제 trade 리스너는
+주기 sync 가 회수한다).
+
+⚠️ 셀프리뷰가 잡은 것: 첫 판은 음성 대조에 `trade/data/reinforce_approved.csv` 를 넣어 '데이터로 재시작하면 소음' 이라고
+**재지 않고 단정**했다(#165) — 코드를 읽으니 그 CSV 는 메모리에 캐시되고 repo 파일의 변경은 안 본다. 그대로 뒀으면 회귀가
+실재하는 낡음을 축복했다(#19). 데이터 축을 측정으로 바꿨다.

@@ -8520,3 +8520,80 @@ import 때 `load_dotenv()` 를 불렀다 — 환경이 먼저 차 있어 `env_ke
 폴백(`_ENV_TRIED`)은 `env_key` 가 빈 값을 낸 뒤에만 도는 두 번째 읽기라 그대로 뒀다. 값 캐시는
 `env_keys._TRIED`·`dart_client._ENV_KEY_TRIED`·`dart_feed._ENV_TRIED` 셋이 전부였고, 리뷰가 더 훑은
 `*_WARNED` 여섯 곳과 `_RATING_IMPORT_WARNED` 는 키가 정말 없을 때 경고를 중복으로 낼 뿐이었다.
+
+### 실수 #423
+
+423. **배포는 디스크만 바꾼다 — 상시 프로세스의 재시작 조건이 그 import 폐포를 안 덮으면 옛 코드로
+    돈다**(2026-09-28 #422 fix 뒤 trade 대시보드를 손으로 재시작): 조건이 `trade/*.py` 뿐이라 함수 안에서
+    부르는 `bot.dart_client` 가 바뀐 배포에 재시작되지 않았다(#11). 상시 유닛 7개를 재 보니 넷이 같았다 —
+    BeOn 리스너(#411 을 형제에 안 옮김, #38) · NOAH 대시보드(trade·TradingAgents) · DAJU 리스너(규칙이 아예
+    없었다). 유닛은 `deploy/*.service` 에서 파생하고(#24) 조건이 폐포를 덮는지 회귀가 잰다. 폐포는 자기
+    가족만 함수 안 import 까지 — 남의 가족까지 따라가면 허브 셋 때문에 모든 유닛이 레포 전체가 된다.
+    리스너가 남의 가족으로 가는 간선은 사유와 함께 끊는다(새 간선이 생기면 실패). 코드가 아닌
+    repo 데이터(`trade/data/`)도 메모리에 캐시되므로 폐포 모듈이 읽는 것은 같이 건다.
+    ⚠️ 조건을 넓히기 전에 **재시작 빈도**를 셀 것 — 30일 72배포에 DAJU 0→69회 · trade 대시보드 20→66회로 늘었다.
+
+2026-09-28 #422 fix(aae6ea6 — `bot/env_keys.py`·`bot/dart_client.py`·`bot/pykrx_client.py`)를 배포한 뒤 사용자가
+VM 에서 `sudo /bin/systemctl restart trade-bot-dashboard` 를 손으로 쳤다. trade 체크아웃의 auto-update 는 그 커밋을
+받았는데(`merge-base --is-ancestor aae6ea6 HEAD` → 반영됨) 대시보드 재시작 조건이 `^trade/[^/]+\.py$` 뿐이었고, 그
+커밋은 trade 파일을 하나도 안 바꿨다. 대시보드는 기업 리포트(`trade/company_report.py`)와 DART 매출
+(`trade/dart_revenue.py`)에서 **함수 안에서** `bot.dart_client` 를 불러서 그 서버는 옛 경합 코드로 계속 돌았다.
+2026-06-12 에 대시보드 조건을 `trade/*.py` 전체로 넓힌 이유와 같은 병이 한 층 옆(bot)에 남아 있었다.
+`RuntimeMaxSec=86400` 이라 하루 안에는 저절로 풀렸겠지만, 그 하루는 '배포했는데 안 고쳐졌다' 로 보였다.
+
+같은 질문을 상시 유닛 전부에 던졌다. `deploy/*.service` 중 oneshot 이 아닌 것은 7개였다 — 봇 둘(stock-bot ·
+trade-bot, 게이트를 넘은 배포마다 무조건 재시작) · 대시보드 둘 · 리스너 셋이었다. 각 진입 모듈에서 import 를 AST 로
+따라가 재시작 조건과 대조하자 넷이 새고 있었다. trade 대시보드는 bot 모듈 12개와 `trade/scripts` 의 4개(리포트·DART 매출
+경로의 `customs_alert`·`probe_dart_revenue` 등)가 조건 밖이었다. BeOn 리스너는 스크립트 한 파일만 봐서 자기가 최상위에서 import 하는
+`trade/tg_entities.py`(#258 FloodWait 처리) · `trade/listener_health.py` · 패키지 `__init__.py` 가 조건 밖이었다.
+#411 에서 나쁜양파 리스너만 고치고 형제는 안 봤다. NOAH 대시보드는 `trade.kg_candidates` 등 trade 8개 ·
+TradingAgents 41개 · bot 하위 패키지 2개(`bot/scripts/probe_progress.py` · `bot/screener_themes/`)가 조건 밖이었다.
+DAJU 리스너(`bot.daju_watch`)는 재시작 조건이 **아예** 없었다. 파서(`bot/daju_parse.py`)가 바뀌어도 옛 파서로 새
+형식 알림을 '무관 메시지' 로 버릴 수 있었고, 메시지마다 부르는 블로그 재생성(`bot.dashboard.regenerate_blog_index`)이
+옛 렌더러로 blog.html 을 덮을 수 있었다. 지난 30일 base 72커밋 중 52개가 DAJU 의 폐포를 바꿨는데 그 프로세스에는 한
+번도 안 실렸다.
+
+폐포를 어디까지 따라갈지가 설계의 대부분이었다. 함수 안 import 까지 전부 따라가자 허브 셋(`bot.dashboard`·
+`bot.market`·`bot.daily_kr_flow`)의 함수 안 import 때문에 모든 유닛이 bot 131 · TradingAgents 58 모듈이 됐다. 그
+판으로 조건을 만들었다면 모든 상시 프로세스가 모든 배포에 재시작했고, TradingAgents 만 바뀐 배포까지 trade 채널에
+배포 알림이 갔을 판이었다 — 사용자가 2026-06-11 에 막은 그 알림이었다. 최상위 import 만 따라가면 aae6ea6 의
+경로(함수 안의 `bot.dart_client`)를 놓쳤다. 그래서 **자기 가족**(진입 모듈이 사는 trade·bot·tradingagents)의 모듈은
+함수 안까지, **남의 가족** 모듈은 최상위만 따라가기로 했다. 그 코드 경로는 이 유닛의 것이었고, 남의 헬퍼 하나를
+부르는 유닛이 그 모듈의 다른 함수까지 부른다는 근거는 없었다. 이 판에서 trade 대시보드는 trade 68 · bot 12 모듈이었다.
+
+정책은 유닛 종류마다 달랐다. 대시보드는 재시작이 무상태·몇 초라 닿는 가족 전체를 덮게 했다 — NOAH 대시보드의
+2026-06-11 선례('bot/*.py 전체로 넓혀 클래스 자체 제거')를 따랐다. 리스너는 재시작마다 텔레그램 연결을 다시
+맺으므로 폐포를 덮되, 다른 가족으로 가는 간선은 사유와 함께 끊을 수 있게 했다. 나쁜양파의 `trade/stock_link.py →
+bot/market.py`(종목 링크 렌더, 리스너 경로가 안 부름 · #411 의 `bot_mods == {"bot/market.py"}` 를 옮긴 것)와 BeOn 의
+`listen_beon.py → bot/daily_kr_flow.py`(`--why` 진단에서만 부름)가 그 둘이었다. 새 간선이 생기면 폐포가 조건 밖으로
+나가 실패하게 해서 결정을 강제했다. DAJU 는 폐포가 bot 전부(블로그 재생성이 `bot.dashboard` 를 거친다) · trade 일부 ·
+TradingAgents 일부라 NOAH 대시보드와 같은 조건을 쓰게 했다. 대신 **돌고 있을 때만** 재시작하게 했다 — 미설치·세션
+미인증(exit 78)·운영자 중지 상태를 배포가 되살리지 않게 했다. 재시작 몇 초 사이에 온 알림은 형제 trade 리스너와
+달리 주기 sync 가 없어 놓칠 수 있었다. 30일에 69회 재시작이면 하루 몇 초였고, 옛 코드가 새 형식을 영영 버리는
+위험보다 작아서 이쪽을 택했다.
+
+`deploy/trade-auto-update.sh` 의 대시보드 조건에 `bot/*.py`·`trade/scripts/*.py` 를 더했고 BeOn 조건은 나쁜양파와
+같게 했다. 셀프리뷰가 데이터 축을 하나 더 찾았다 — 첫 판의 음성 대조는 `trade/data/reinforce_approved.csv` 로는
+재시작하지 않는다고 적었는데, 코드를 읽어 보니 `mti_companies._REINFORCE_APPROVED_CACHE` 가 그 CSV 를 메모리에
+캐시하고 오버레이의 mtime 만 봤다. repo CSV 만 바뀐 배포에도 대시보드는 옛 목록을 쥐고 있었을 판이었고, 그
+판정은 재지 않은 단정이었다. `trade/data/` 의 파일 4개는 전부 읽는 모듈 소스에 이름이 그대로 나왔으므로 폐포 모듈이
+이름으로 가리키는 데이터를 조건에 걸게 했고, 두 대시보드(NOAH 쪽은 `trade/kg_candidates.py` 가 같은 CSV 를
+읽었다)와 DAJU 의 조건에 `trade/data/` 를 더했다. 두 trade 리스너의 폐포 모듈은 repo 데이터를 안 읽고 `~/.trade` 를
+읽었다. `deploy/auto-update.sh` 는 `DASHBOARD_CHANGED` 를 `CODE_CHANGED` 로 바꿔 trade 최상위·TradingAgents·bot
+하위 패키지까지 넓혔고, 그 조건과 VM 직접 push 경로에서 `restart_daju_listener` 를 부르게 했다. `deploy/install.sh`
+의 sudoers drop-in 에 `restart daju-listener` 줄을 더했다. 이 배포 자체가 `deploy/*.sh` 를 바꿔서 설치기가 drop-in 을
+심게 돼 있었고, 이 배포를 처리하는 건 옛 스크립트라 새 조건은 다음 배포부터였다.
+
+`tests/test_restart_closure_20260928.py` 30건을 두었다. 유닛 파생(정책 표와 양방향) · 폐포 덮기와 양성 대조(유닛마다
+실제 실행 경로의 모듈) · 서버의 가족 전체 덮기 · 끊는 간선(실재·교차 가족·리스너만) · 음성 대조(테스트·문서·데이터·
+주기 백필) · 배선(변수의 if 블록이 그 유닛을 재시작 · 직접 push 경로 · sudoers 줄) · 합성 패키지로 폐포 계산 자체를
+쟀다. 옛 스크립트로 돌리자 trade 대시보드 폐포 중 16개가 조건 밖으로 나왔고 그 안에 aae6ea6 의 두 파일이 다 있었다.
+뮤테이션 25종이 전부 겨냥한 테스트에서 잡혔다. #411 의 나쁜양파 폐포 회귀(`trade/tests/test_listen_badonion_vouch.py`)는
+폐포 계산이 두 벌이 되지 않게(#38) 이 파일로 옮겼고, 그 단언(양성 대조 · 20개 이상 · 음성 대조 · bot 은 한 간선뿐)은
+전부 여기로 왔다.
+
+고치지 않은 것도 있었다. 동적 import(`importlib`·`__import__`)는 폐포에 안 잡혔다 — 대시보드와 DAJU 는 가족 전체를
+덮어 같은 가족 안이면 무해했고, 두 trade 리스너의 폐포엔 없었다. 다른 가족 모듈의 함수 안 import 가 유닛이 덮지
+않는 가족으로 번지는 경우도 못 봤다. 데이터 파일은 이름으로 찾으므로 이름을 조립해 읽는 모듈은 못 봤다.
+trade 대시보드와 리스너는 재시작 뒤 `is-active` 를 확인하지 않았다 — 옛 동작 그대로 뒀다. trade-bot 게이트는
+`trade/tests/` 만 바뀐 배포에도 봇을 재시작했다 — 이번 범위 밖이라 그대로 뒀다.

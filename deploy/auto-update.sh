@@ -85,6 +85,27 @@ restart_dashboard() {
     fi
 }
 
+# DAJU 리스너(daju-listener.service — Telethon 상시). 옛 판은 배포가 이 프로세스를
+# 한 번도 재시작하지 않았다(실수 #423): 파서(`bot/daju_parse.py`)가 바뀌어도 옛
+# 파서로 판정해 새 형식 알림을 '무관 메시지' 로 버리고, 메시지마다 부르는 블로그
+# 재생성(`bot.dashboard`)도 옛 렌더러로 blog.html 을 덮는다. **돌고 있을 때만**
+# 재시작한다 — 미설치·세션 미인증(exit 78)·운영자 중지 상태를 배포가 되살리면 안
+# 된다(그 경우 새 코드는 다음 기동 때 로드된다). 재시작 몇 초 사이에 온 알림은
+# 백필 경로가 없어 놓칠 수 있다(형제 trade 리스너와 달리 주기 sync 가 없다) — 옛
+# 코드가 새 형식을 영영 버리는 것보다 작은 위험이라 이쪽을 택했다.
+restart_daju_listener() {
+    if ! systemctl is-active --quiet daju-listener 2>/dev/null; then
+        echo "stock-bot-update: daju-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
+        return 0
+    fi
+    if sudo -n /bin/systemctl restart daju-listener 2>/dev/null; then
+        echo "stock-bot-update: also restarted daju-listener"
+    else
+        echo "stock-bot-update: daju-listener restart 권한 없음 — install.sh 가 sudoers 를 설치해야 한다"
+        notify "⚠️ <b>DAJU 리스너 재시작 실패</b>: restart NOPASSWD 권한 부재 — 다음 deploy/ 변경 때 install.sh 가 설치한다(즉시: <code>sudo /home/higgack/stock/deploy/install.sh</code>)"
+    fi
+}
+
 git fetch --quiet origin "$BRANCH"
 
 LOCAL=$(git rev-parse HEAD)
@@ -127,6 +148,7 @@ if [ "$LOCAL" = "$REMOTE" ]; then
                 # 가릴 수 없음 → 비용 거의 0 인 stateless 재시작을 항상 동반해
                 # 서버-레이어 변경(예: Cache-Control)도 확실히 반영.
                 restart_dashboard
+                restart_daju_listener
             else
                 notify "❌ <b>배포 실패</b>: 재시작 후 active 아님 (${HEAD_SHORT})"
             fi
@@ -180,10 +202,17 @@ fi
 # 코드가 서버 프로세스에 로드되지 않는 drift 발생 (#259/#262 신고저
 # fix 가 페이지에 반영 안 되던 실사례 — 실수기록 #11 클래스). 대시보드
 # 재시작은 stateless·수 초라 bot/*.py 전체로 넓혀 클래스 자체 제거.
-DASHBOARD_CHANGED=0
+# 2026-09-28(실수 #423): 대시보드는 `trade.kg_candidates` 등 trade 모듈과
+# TradingAgents(`tradingagents.agents.utils…`), bot 하위 패키지(`bot/scripts/
+# probe_progress.py` · `bot/screener_themes/`)도 import 한다 — 그 변경도 옛 서버에
+# 안 실리던 것. trade 가족에 닿으므로 그 가족이 메모리에 캐시하는 `trade/data/` 도
+# 덮는다(trade 대시보드와 같은 정책). 같은 체크아웃의 DAJU 리스너(상시)도 이 조건으로
+# 재시작한다(옛 판은 배포가 그 프로세스를 한 번도 재시작하지 않았다). 두 프로세스의
+# import 폐포가 이 정규식에 걸리는지 `tests/test_restart_closure_20260928.py` 가 잰다.
+CODE_CHANGED=0
 if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
-        | grep -qE '^bot/[^/]+\.py$'; then
-    DASHBOARD_CHANGED=1
+        | grep -qE '^bot/[^/]+\.py$|^bot/(scripts|screener_themes)/[^/]+\.py$|^trade/[^/]+\.py$|^trade/data/|^TradingAgents/tradingagents/.+\.py$'; then
+    CODE_CHANGED=1
 fi
 
 if ! git reset --hard "origin/${BRANCH}" --quiet; then
@@ -221,12 +250,12 @@ if systemctl is-active --quiet stock-bot; then
     fi
     notify "$msg"
     echo "stock-bot-update: restart complete"
-    # Dashboard server-layer change → cycle the dashboard too (gated on
-    # bot/dashboard*.py / archive.py diff to avoid a needless blip on
-    # pure bot-only deploys).
-    if [ "$DASHBOARD_CHANGED" = "1" ]; then
-        echo "stock-bot-update: dashboard files changed — restarting dashboard"
+    # 상시 프로세스가 import 하는 코드가 바뀌었으면 대시보드·DAJU 리스너도 재시작
+    # (문서·테스트만 바뀐 배포는 건드리지 않는다 — 위 CODE_CHANGED).
+    if [ "$CODE_CHANGED" = "1" ]; then
+        echo "stock-bot-update: long-running code changed — restarting dashboard + daju-listener"
         restart_dashboard
+        restart_daju_listener
     fi
 else
     notify "❌ <b>배포 실패</b>: stock-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})"

@@ -114,9 +114,14 @@ fi
 # 리스너는 별도 상시 서비스라 trade-bot 재시작으로는 새 코드가 로드되지
 # 않음 ('배포 완료 ≠ 프로세스에 로드' 클래스, FloodWait fix 가 안 실리던
 # 케이스). sudoers 항목은 install-trade-units.sh 가 자기확장 설치.
-LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$' || true)
+# ⚠️ 리스너가 **import 하는** trade 모듈이 바뀌어도 재시작한다(실수 #423 — 옛 규칙은
+# 스크립트 파일만 봐서, 리스너가 최상위에서 import 하는 `trade/tg_entities.py`(#258
+# FloodWait 처리)·`trade/listener_health.py`·패키지 `__init__.py` 만 바뀐 배포는 옛 코드로
+# 계속 돌았다 — 형제 나쁜양파 리스너가 #411 에서 고친 그 병이다, #38). 규칙은 나쁜양파와
+# 같다. `bot.daily_kr_flow` 는 `--why` 진단(`_why`)에서만 부르므로 재시작 조건 밖이다.
+BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
 LISTENER_NOTE=""
-if [ -n "$LISTENER_RELEVANT" ]; then
+if [ -n "$BEON_LISTENER_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-beon-listener 2>/dev/null; then
         echo "trade-bot-update: also restarted trade-bot-beon-listener"
         LISTENER_NOTE=$'\n'"<i>+ BeOn 리스너 재시작</i>"
@@ -132,11 +137,12 @@ fi
 # ⚠️ 리스너가 **import 하는** 모듈(관련성 필터 `badonion_sources` 와 그 파서들 ·
 # 재게시 보증 `relay_origins` · `tg_entities`)이 바뀌어도 재시작한다(실수 #411 —
 # 옛 판은 스크립트 파일만 봐서, 보증 형식이 바뀌면 리스너가 옛 형식으로 쓰고 새
-# 봇이 못 읽어 재게시 글을 버렸을 것이다). dashboard 와 같은 규칙(`^trade/[^/]+\.py$`)
+# 봇이 못 읽어 재게시 글을 버렸을 것이다). trade 최상위 모듈 규칙(`^trade/[^/]+\.py$`)
 # 이고, 리스너의 trade.* import 폐포(진입점 `-m trade.scripts.listen_badonion` 이 실행하는
 # `trade/scripts/__init__.py` 포함 — 독립 리뷰 #411 L9)가 이 정규식에 걸리는지 회귀가 잰다
-# (`trade/tests/test_listen_badonion_vouch.py`). ⚠️ `trade/*.py` 는 폐포보다 넓다(대시보드
-# 모듈도 걸린다) — 리스너 재시작은 몇 초라 그 사이 올라온 글은 주기 sync 가 회수한다.
+# (`tests/test_restart_closure_20260928.py` — 상시 유닛 전부 공용, #423). ⚠️ `trade/*.py` 는
+# 폐포보다 넓다(대시보드 모듈도 걸린다) — 리스너 재시작은 몇 초라 그 사이 올라온 글은 주기
+# sync 가 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
 BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-badonion-listener 2>/dev/null; then
@@ -155,7 +161,17 @@ fi
 # industry/customs_provisional/heatmap/customs_scan 등 top-level 모듈을
 # import 하므로 dashboard.py 만 감시하면 그 모듈 변경(MoM 컬럼·(잠정)
 # 라벨·히트맵)이 장기실행 서버에 영원히 미적용되던 것.
-DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/[^/]+\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
+# 2026-09-28(실수 #423): `bot/*.py` · `trade/scripts/*.py` · `trade/data/` 도. 대시보드는
+# 함수 안에서 `bot.dart_client`(기업 리포트·DART 매출) · `bot.market` · `bot.daily_kr_flow` 를,
+# `trade/llm_usage.py` 를 거쳐 `bot.usage_tracker` 를, 리포트·DART 매출 경로에서
+# `trade.scripts.customs_alert`·`probe_dart_revenue` 등을 부른다 — #422 fix(aae6ea6:
+# bot/dart_client · bot/env_keys)가 base 에 들어간 뒤에도 이 서버는 재시작되지 않아 옛
+# 코드로 돌았고 사용자가 손으로 재시작했다. `trade/data/` 는 코드는 아니지만 메모리에
+# 캐시된다(`mti_companies._REINFORCE_APPROVED_CACHE` 는 오버레이 mtime 만 보고 repo CSV
+# 의 변경은 안 본다). NOAH 대시보드와 같은 정책(무상태·몇 초라 닿는 가족 전체 — 코드와
+# `data/` — 를 덮는다)이고, 이 프로세스의 import 폐포가 규칙에 걸리는지
+# `tests/test_restart_closure_20260928.py` 가 소스에서 잰다.
+DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/[^/]+\.py$|^trade/scripts/[^/]+\.py$|^trade/data/|^bot/[^/]+\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
 DASH_NOTE=""
 if [ -n "$DASHBOARD_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-dashboard 2>/dev/null; then
