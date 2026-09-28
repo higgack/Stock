@@ -68,6 +68,9 @@ SITES: tuple[Site, ...] = (
     # '네이버증권'. Sites 는 추가안해줘도 되고 대시보드에만 연결해주면 돼."
     # → nav 전용(in_sites=False).
     Site("네이버증권", "네이버증권", "https://stock.naver.com/", in_sites=False),
+    # 사용자 2026-09-28: "Sites 와 메인대시보드에 이 주소추가, 제목은 둘다
+    # 'Axis'" — 두 표면 명시라 nav 등재.
+    Site("Axis", "Axis", "https://dashboard.camelresearch.com/"),
 )
 
 

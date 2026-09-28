@@ -8520,3 +8520,137 @@ import 때 `load_dotenv()` 를 불렀다 — 환경이 먼저 차 있어 `env_ke
 폴백(`_ENV_TRIED`)은 `env_key` 가 빈 값을 낸 뒤에만 도는 두 번째 읽기라 그대로 뒀다. 값 캐시는
 `env_keys._TRIED`·`dart_client._ENV_KEY_TRIED`·`dart_feed._ENV_TRIED` 셋이 전부였고, 리뷰가 더 훑은
 `*_WARNED` 여섯 곳과 `_RATING_IMPORT_WARNED` 는 키가 정말 없을 때 경고를 중복으로 낼 뿐이었다.
+
+### 실수 #423
+
+423. **배포는 디스크만 바꾼다 — 상시 프로세스의 재시작 조건이 그 import 폐포를 안 덮으면 옛 코드로
+    돈다**(2026-09-28 #422 fix 뒤 trade 대시보드를 손으로 재시작): 조건이 `trade/*.py` 뿐이라 함수 안에서
+    부르는 `bot.dart_client` 가 바뀐 배포에 재시작되지 않았다(#11). 상시 유닛 7개 중 넷이 같았다(#38).
+    유닛은 `deploy/*.service` 에서 파생하고(#24) 조건이 폐포를 덮는지 회귀가 잰다 — 폐포는 자기 가족만
+    함수 안 import 까지(남의 가족까지면 유닛마다 200여 파일), 리스너가 남의 가족으로 가는 간선은 사유와
+    함께 끊고, 폐포보다 넓은 부류는 사유와 함께 선언한다. 메모리에 캐시되는 repo 데이터도 같이 건다.
+    ⚠️ 재시작을 늘리면 **살아 있는지도** 볼 것 · 멈춰 둔 리스너는 되살리지 말 것(리스너 셋에 같은 가드).
+    ⚠️ 한 파일을 두 설치기가 쓰면 **같은 줄을 같은 순서로** — 설치기가 자기 sudo 권한 줄을 지우고 있었고,
+    설치기 호출을 무조건 통과시킨 가짜 sudo 가 그걸 가렸다(가짜는 진짜만큼 엄격할 것, #291).
+    ⚠️ 빈도는 얕은 클론에서 세지 말 것(독립 리뷰). 소스로 재는 배선 회귀는 셸 동작을 못 본다 — 가짜
+    sudo 로 돌리자 설치기가 바꿀 게 없으면 trade-bot 재시작 전에 끝나는 결함이 나왔다.
+
+2026-09-28 #422 fix(aae6ea6 — `bot/env_keys.py`·`bot/dart_client.py`·`bot/pykrx_client.py`)를 배포한 뒤 사용자가
+VM 에서 `sudo /bin/systemctl restart trade-bot-dashboard` 를 손으로 쳤다. trade 체크아웃의 auto-update 는 그 커밋을
+받았는데(`merge-base --is-ancestor aae6ea6 HEAD` → 반영됨) 대시보드 재시작 조건이 `^trade/[^/]+\.py$` 뿐이었고, 그
+커밋은 trade 파일을 하나도 안 바꿨다. 대시보드는 기업 리포트(`trade/company_report.py`)와 DART 매출
+(`trade/dart_revenue.py`)에서 **함수 안에서** `bot.dart_client` 를 불러서 그 서버는 옛 경합 코드로 계속 돌았다.
+2026-06-12 에 대시보드 조건을 `trade/*.py` 전체로 넓힌 이유와 같은 병이 한 층 옆(bot)에 남아 있었다.
+`RuntimeMaxSec=86400` 이라 하루 안에는 저절로 풀렸겠지만, 그 하루는 '배포했는데 안 고쳐졌다' 로 보였다.
+
+같은 질문을 상시 유닛 전부에 던졌다. `deploy/*.service` 중 oneshot 이 아닌 것은 7개였다 — 봇 둘(stock-bot ·
+trade-bot, 게이트를 넘은 배포마다 무조건 재시작) · 대시보드 둘 · 리스너 셋이었다. 각 진입 모듈에서 import 를 AST 로
+따라가 재시작 조건과 대조하자 넷이 새고 있었다. trade 대시보드는 bot 모듈 9개와 `trade/scripts` 의 4개(리포트·DART 매출
+경로의 `customs_alert`·`probe_dart_revenue` 등)가 조건 밖이었다. BeOn 리스너는 스크립트 한 파일만 봐서 자기가 최상위에서 import 하는
+`trade/tg_entities.py`(#258 FloodWait 처리) · `trade/listener_health.py` · 패키지 `__init__.py` 가 조건 밖이었다.
+#411 에서 나쁜양파 리스너만 고치고 형제는 안 봤다. NOAH 대시보드는 `trade.kg_candidates` 등 trade 7개 ·
+TradingAgents 41개 · bot 하위 패키지 2개(`bot/scripts/probe_progress.py` · `bot/screener_themes/`)가 조건 밖이었다.
+DAJU 리스너(`bot.daju_watch`)는 재시작 조건이 **아예** 없었다. 파서(`bot/daju_parse.py`)가 바뀌어도 옛 파서로 새
+형식 알림을 '무관 메시지' 로 버릴 수 있었고, 메시지마다 부르는 블로그 재생성(`bot.dashboard.regenerate_blog_index`)이
+옛 렌더러로 blog.html 을 덮을 수 있었다. 최근 30일 base 142커밋 중 101개가 DAJU 의 폐포를 바꿨는데 그 프로세스에는 한
+번도 안 실렸다.
+
+폐포를 어디까지 따라갈지가 설계의 대부분이었다. 함수 안 import 까지 전부 따라가자 허브 셋(`bot.dashboard`·
+`bot.market`·`bot.daily_kr_flow`)의 함수 안 import 때문에 유닛마다 bot 131~157 · TradingAgents 58(전부) 모듈이 됐다
+(trade 유닛 넷은 131, NOAH 셋은 133·154·157). 그
+판으로 조건을 만들었다면 모든 상시 프로세스가 모든 배포에 재시작했고, TradingAgents 만 바뀐 배포까지 trade 채널에
+배포 알림이 갔을 판이었다 — 사용자가 2026-06-11 에 막은 그 알림이었다. 최상위 import 만 따라가면 aae6ea6 의
+경로(함수 안의 `bot.dart_client`)를 놓쳤다. 그래서 **자기 가족**(진입 모듈이 사는 trade·bot·tradingagents)의 모듈은
+함수 안까지, **남의 가족** 모듈은 최상위만 따라가기로 했다. 그 코드 경로는 이 유닛의 것이었고, 남의 헬퍼 하나를
+부르는 유닛이 그 모듈의 다른 함수까지 부른다는 근거는 없었다. 이 판에서 trade 대시보드는 trade 68 · bot 9 모듈이었다.
+
+정책은 유닛 종류마다 달랐다. 대시보드는 재시작해도 잃는 게 메모리 캐시뿐이라 닿는 가족 전체를 덮게 했다 — NOAH 대시보드의
+2026-06-11 선례('bot/*.py 전체로 넓혀 클래스 자체 제거')를 따랐다. 리스너는 재시작마다 텔레그램 연결을 다시
+맺으므로 폐포를 덮되, 다른 가족으로 가는 간선은 사유와 함께 끊을 수 있게 했다. 나쁜양파의 `trade/stock_link.py →
+bot/market.py`(종목 링크 렌더, 리스너 경로가 안 부름 · #411 의 `bot_mods == {"bot/market.py"}` 를 옮긴 것)와 BeOn 의
+`listen_beon.py → bot/daily_kr_flow.py`(`--why` 진단에서만 부름)가 그 둘이었다. 새 간선이 생기면 폐포가 조건 밖으로
+나가 실패하게 해서 결정을 강제했다. DAJU 는 정적 폐포에 bot 최상위 192개 중 123개가 들어(블로그 재생성이 `bot.dashboard`
+를 거쳤다) NOAH 대시보드와 같은 조건을 쓰게 했다 — 첫 판은 이것을 'bot 전부' 라 적었고 델타 리뷰가 재서 바로잡았다. 대신 **돌고 있을 때만** 재시작하게 했다 — 미설치·세션
+미인증(exit 78)·운영자 중지 상태를 배포가 되살리지 않게 했다. 재시작하는 사이에 온 알림은 형제 trade 리스너와
+달리 주기 sync 가 없어 놓칠 수 있었다. 최근 30일이면 136회 재시작이었고 그 공백의 길이는 재지 않았는데, 옛 코드가
+새 형식을 영영 버리는 위험보다 작다고 보고 이쪽을 택했다.
+
+`deploy/trade-auto-update.sh` 의 대시보드 조건에 `bot/*.py`·`trade/scripts/*.py` 를 더했고 BeOn 조건은 나쁜양파와
+같게 했다. 셀프리뷰가 데이터 축을 하나 더 찾았다 — 첫 판의 음성 대조는 `trade/data/reinforce_approved.csv` 로는
+재시작하지 않는다고 적었는데, 코드를 읽어 보니 `mti_companies._REINFORCE_APPROVED_CACHE` 가 그 CSV 를 메모리에
+캐시하고 오버레이의 mtime 만 봤다. repo CSV 만 바뀐 배포에도 대시보드는 옛 목록을 쥐고 있었을 판이었고, 그
+판정은 재지 않은 단정이었다. `trade/data/` 의 파일 4개는 전부 읽는 모듈 소스에 이름이 그대로 나왔으므로 폐포 모듈이
+이름으로 가리키는 데이터를 조건에 걸게 했고, 두 대시보드(NOAH 쪽은 `trade/kg_candidates.py` 가 같은 CSV 를
+읽었다)와 DAJU 의 조건에 `trade/data/` 를 더했다. 두 trade 리스너의 폐포가 읽는 repo 파일은 `trade/scripts/requirements.txt`
+하나였고(`tg_entities.pinned_telethon` 이 부를 때마다 읽었다), 나머지는 `~/.trade` 였다. `deploy/auto-update.sh` 는 `DASHBOARD_CHANGED` 를 `CODE_CHANGED` 로 바꿔 trade 최상위·TradingAgents·bot
+하위 패키지까지 넓혔고, 그 조건과 VM 직접 push 경로에서 `restart_daju_listener` 를 부르게 했다. `deploy/install.sh`
+의 sudoers drop-in 에 `restart daju-listener` 줄을 더했다. 이 배포 자체가 `deploy/*.sh` 를 바꿔서 설치기가 drop-in 을
+심게 돼 있었고, 이 배포를 처리하는 건 옛 스크립트라 새 조건은 다음 배포부터였다.
+
+`tests/test_restart_closure_20260928.py` 30건을 두었다. 유닛 파생(정책 표와 양방향) · 폐포 덮기와 양성 대조(유닛마다
+실제 실행 경로의 모듈) · 서버의 가족 전체 덮기 · 끊는 간선(실재·교차 가족·리스너만) · 음성 대조(테스트·문서·데이터·
+주기 백필) · 배선(변수의 if 블록이 그 유닛을 재시작 · 직접 push 경로 · sudoers 줄) · 합성 패키지로 폐포 계산 자체를
+쟀다. 옛 스크립트로 돌리자 trade 대시보드 폐포 중 13개와 데이터 4개가 조건 밖으로 나왔고 그 안에 aae6ea6 의 두 파일이 다 있었다.
+뮤테이션 25종이 전부 겨냥한 테스트에서 잡혔다. #411 의 나쁜양파 폐포 회귀(`trade/tests/test_listen_badonion_vouch.py`)는
+폐포 계산이 두 벌이 되지 않게(#38) 이 파일로 옮겼고, 그 단언(양성 대조 · 20개 이상 · 음성 대조 · bot 은 한 간선뿐)은
+전부 여기로 왔다.
+
+고치지 않은 것도 있었다. 동적 import(`importlib`·`__import__`)는 폐포에 안 잡혔다 — 대시보드와 DAJU 는 가족 전체를
+덮어 같은 가족 안이면 무해했고, 두 trade 리스너의 폐포엔 없었다. 다른 가족 모듈의 함수 안 import 가 유닛이 덮지
+않는 가족으로 번지는 경우도 못 봤다. 데이터 파일은 이름으로 찾으므로 이름을 조립해 읽는 모듈은 못 봤다.
+재시작 뒤 생존 확인은 3초 창이라 그 뒤에 죽는 프로세스는 배포 알림에 안 잡혔다. 생존 확인은 기동만 봤다 — 재시작을 부른
+모듈이 함수 안 import 면(trade 대시보드의 `bot.dart_client`, DAJU 의 `bot.dashboard`) 첫 요청·메시지 때 올라와서, 그 모듈이
+깨져도 확인은 통과했다. trade-bot 게이트는
+`trade/tests/` 만 바뀐 배포에도 봇을 재시작했다 — 이번 범위 밖이라 그대로 뒀다.
+
+배포 전 독립 리뷰가 셋을 잡았다. 첫째로 문서의 재시작 빈도가 얕은 클론에서 센 값이었다. `git log --since=30.days`
+가 shallow 경계에서 잘려 창이 18.4일이었고, 경계 커밋은 `git show --name-only` 에 전 파일을 추가한 커밋으로 잡혀 모든
+수가 1씩 부풀었다. 경계를 넘도록 이력을 더 받고 창 시작 커밋의 부모가 있는지 확인한 뒤 커밋마다 부모와 diff 해
+다시 셌다. 최근 30일(2026-08-31~09-28 KST) base 142커밋에서 trade 대시보드는 32→130회(폐포를 바꾼 커밋 62 · 옛
+조건이 놓친 것 31), BeOn 은 3→31회(4 · 1), NOAH 대시보드는 114→136회(100 · 0), DAJU 는 0→136회(101 · 101)였다.
+NOAH 대시보드는 이 창에서 놓친 배포가 없었다 — 폐포를 바꾼 100커밋이 전부 `bot/*.py` 도 바꿨다. BeOn 은 폐포를
+바꾼 커밋이 4개뿐인데 31회 재시작하게 됐다. 나쁜양파(#411)와 같은 넓은 조건이라 정적 폐포가 못 보는 경로까지 덮었고,
+재시작 사이 글은 2시간 주기 sync 가 회수했다.
+
+둘째로 DAJU 는 재시작 뒤 살아 있는지 보지 않았다. 옛 판은 배포가 그 프로세스를 안 건드려 낡았지만 살아 있었는데, 새
+판은 새 코드가 기동에서 죽으면 `Restart=on-failure` 로 조용히 다시 뜨기만 했을 판이었다. 3초 뒤 `is-active` 를 보고
+알리게 했고, 실패 사유는 권한 부재와 재시작 자체의 실패로 갈랐다. 형제 trade 재시작(대시보드·리스너 둘)에도 같은
+확인을 붙였다 — 이미 있던 `sleep 3` 한 번을 같이 썼다.
+
+셋째로 배선 회귀가 소스 텍스트만 읽어서 리뷰가 만든 스크립트 뮤테이션 20종이 전부 통과했다. 주석을 매칭했고, if
+블록이 else 가지까지 포함했고, 조건 변수의 재대입이나 diff 범위는 안 봤고, sudoers 는 인자를 잘라 비교하면서 두
+설치기의 권한을 합집합으로 봤다. 두 스크립트를 임시 bare 저장소에서 가짜 sudo·systemctl 로 돌리는 하네스를 두고
+재시작된 유닛이 예측과 같은 집합인지 보게 했다. 가짜 sudo 는 `-n` systemctl 을 설치기의 권한 줄과 글자 그대로
+대조했다. 그 하네스가 첫 실행에서 운영 결함을 하나 찾았다. 설치기(`install-trade-units.sh`)는 바꿀 게 없으면 SUMMARY
+줄 없이 끝났는데, trade 스크립트가 그 출력에서 SUMMARY 를 grep 하다 `set -eo pipefail` 로 trade-bot 재시작 전에 멈췄다.
+다음 tick 은 LOCAL==REMOTE 라 다음 trade 관련 배포가 올 때까지 새 코드가 안 실릴 수 있었고, `|| true` 한 줄로 고쳤다. 리뷰 반영분은 뮤테이션
+39종(리뷰가 옛 판에서 통과시킨 20종 포함)이 전부 겨냥한 테스트에서 잡혔다.
+
+같은 리뷰가 작은 것들도 짚었다. `echo | grep -q` 는 pipefail 아래에서 목록이 파이프 버퍼를 넘으면 SIGPIPE 로 조건이
+0 이 됐고(57KB 에서 10회 중 1회 · 190KB 에서 10회 전부), git 은 비ASCII 경로를 따옴표로 감쌌다. 변경 목록을 한 번 구해
+here-string 으로 grep 하고 `core.quotePath=false` 를 붙였다. DAJU 실패 알림의 HTML 이스케이프를 bash 치환으로 쓰자
+bash 5.2 의 patsub_replacement 가 `&lt;` 를 `<lt;` 로 만들어서 sed 로 바꿨다. 진입점이 아닌 모듈의 `__main__` 블록을
+최상위로 세던 과대추정도 고쳤고, trade 대시보드의 bot 모듈은 12개가 아니라 9개였다.
+
+배포 직전 델타 독립 리뷰(`cb01fe7..eabe181`)가 Medium 셋과 Low 열을 더 짚었다. 뮤테이션 35종 중 11종이 살아남았고
+그중 넷은 문서가 '잡힌다' 고 적은 축이었다. 첫째로 두 trade 리스너에는 DAJU 의 '돌고 있을 때만' 가드가 없었다 — 멈춰 둔
+리스너를 배포가 다시 켰고, 이 PR 이 붙인 생존 확인이 그때마다 '재시작 후 active 아님' 을 보냈을 판이었다. 같은 가드를
+두 리스너에 옮겼다. 둘째로 `install-trade-units.sh` 는 자기 NOPASSWD 줄을 빼고 `higgack-trade-services` 를 덮어썼다.
+한 번 돌고 나면 trade-auto-update.sh 가 `sudo -n` 으로 그 설치기를 못 불렀고, NOAH `install.sh` 가 넷째 줄을 되살릴 때까지
+trade 유닛 변경 배포는 '설치 권한 없음' 으로 끝났다. 두 타이머 중 어느 쪽이 먼저 도는지는 커밋마다 우연이었다. 하네스의
+가짜 sudo 는 systemctl 만 권한과 대조하고 설치기 호출은 무조건 통과시켜서 그 결함을 가렸다. 설치기가 install.sh 와 같은
+네 줄을 같은 순서로 쓰게 했고(내용이 같아져 두 설치기가 파일을 번갈아 다시 쓰는 일도 없어졌다), 가짜 sudo 는 `-n` 명령
+전부를 운영 경로로 되돌려 대조하게 했다. 레포가 쓰지 않는 운영자 1회 권한(NOAH 설치기를 root 로 부르는 줄)만 하네스에
+따로 적었다. 셋째로 형제 셋의 생존 확인 중 BeOn 하나만 테스트가 태웠고 trade-bot 자체가 죽는 실패 알림은 비어 있었다.
+
+Low 열도 반영했다. trade 형제와 설치기의 실패 알림은 원인과 상관없이 '권한 없음' 이라 적었는데, DAJU 처럼 권한 부재
+(sudoers 를 다시 심는 명령)와 명령 자체의 실패(이스케이프한 원문)로 갈랐다. 권한 갈래는 sudo 의 영어 문구로 판정하므로
+두 스크립트가 sudo 를 `LC_ALL=C` 로 부르게 했고, 하네스는 한국어 로캘로 돌아 그 접두가 빠지면 갈래가 틀어졌다. 설치기가
+'no changes' 로 끝나면 알림이 '자동 설치 완료' 라 적던 것을 없앴다. NOAH 의 `deploy/` 변경 경로는 install.sh 로그가 `/tmp`
+에 박혀 테스트가 피했는데, 경로를 `STOCK_INSTALL_LOG` 로 열고 실행 가능한 가짜 install.sh 를 커밋해 태웠다. 가짜 sleep·
+`is-active` 가 sudo 와 한 사건 기록에 남아서 재시작 뒤 기다렸다가 확인하는 순서를 쟀다. 배포 스크립트가 하네스가 가로채는
+명령을 절대 경로로 부르지 않는지, 하네스가 훅에서 물려받은 `GIT_*` 를 걷어내는지도 쟀다. 재시작 조건이 폐포보다 넓은
+부류는 사유와 함께 선언하게 했다 — 리뷰가 BeOn 조건에 `bot/scripts` 를 더한 변형이 예측과 같이 넓어져 통과했었다. 델타
+리뷰가 잰 바로는 DAJU 의 30일 136회 재시작 중 35회가 정적 폐포 밖 변경 때문이었고, 폐포 안 동적 import(`highlow_render`·
+`screener_themes` 레지스트리·`audit_sweep`·`daily_kr_flow`)가 그 넓은 조건의 근거로 남았다. 반영분은 뮤테이션 46종(리뷰가
+살려 보낸 11종 · 새 축 18종 · 옛 배터리 17종 재실행)이 전부 겨냥한 테스트에서 잡혔다.

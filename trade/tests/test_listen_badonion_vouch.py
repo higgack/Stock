@@ -10,11 +10,9 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import importlib.util
 import logging
-import re
 import sys
 import types
 from pathlib import Path
@@ -25,7 +23,6 @@ from trade import relay_origins as ro
 from trade import tg_entities as _tg  # noqa: F401 — 가짜 telethon 을 꽂기 전에 진짜로 올린다
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "listen_badonion.py"
-_ROOT = Path(__file__).resolve().parents[2]
 _REPOST = -1009990000001        # 합성 — 운영 재게시 채널 ID 를 쓰지 않는다(#393)
 _KRI = ("**🇰🇷 8월 수입 한국**\n\n**▶️ 텔레칩스 — 차량용 AP·프로세서**\n\n"
         "**26년08월: $2,175.2M  (+49.4% YoY)  (+7.3% MoM)**")
@@ -261,87 +258,9 @@ def test_an_unvouchable_forward_is_forwarded_as_before_and_counted(listener, cap
 
 
 # ── 배포: 리스너는 자기가 import 하는 모듈이 바뀌어도 재시작한다 ──────────────
-def _listener_restart_regex() -> re.Pattern:
-    """`deploy/trade-auto-update.sh` 가 나쁜양파 리스너를 재시작하는 조건(grep -E)."""
-    sh = (_ROOT / "deploy" / "trade-auto-update.sh").read_text(encoding="utf-8")
-    m = re.search(r"""^BADONION_LISTENER_RELEVANT=\$\(echo "\$CHANGED_FILES" \| grep -E '([^']+)' """
-                  r"""\|\| true\)""", sh, re.M)
-    assert m, "재시작 조건 줄의 모양이 바뀌었다 — 이 회귀를 같이 고칠 것"
-    return re.compile(m.group(1))
-
-
-def _import_closure(start: Path) -> tuple[set[str], set[str]]:
-    """`start` 가 (함수 안의 늦은 import 까지) 닿는 trade.* 모듈 파일 · bot.* 모듈 파일.
-    소스를 AST 로 훑는다 — 이름을 적어 두면 새 파서를 더할 때 빠진다(#24). 모듈을 import 하면
-    그 **위 패키지들의 `__init__.py`** 도 실행되므로 같이 센다 — 진입점이 `-m
-    trade.scripts.listen_badonion` 이라 `trade/scripts/__init__.py` 는 어느 import 문에도 안
-    나오는데도 돈다(독립 리뷰 #411 L9)."""
-    def path_of(mod: str) -> Path | None:
-        f = _ROOT.joinpath(*mod.split(".")).with_suffix(".py")
-        if f.is_file():
-            return f
-        d = _ROOT.joinpath(*mod.split(".")) / "__init__.py"
-        return d if d.is_file() else None
-
-    def add(p: Path) -> None:
-        rel = p.relative_to(_ROOT).as_posix()
-        (bot_mods if rel.startswith("bot/") else trade_mods).add(rel)
-        if rel.startswith("trade/"):
-            todo.append(p)
-
-    done: set = set()
-    todo, trade_mods, bot_mods = [start], set(), set()
-    while todo:
-        f = todo.pop()
-        if f in done:
-            continue
-        done.add(f)
-        pkg = f.relative_to(_ROOT).parent.parts
-        for i in range(1, len(pkg) + 1):                   # 위 패키지들의 __init__.py
-            init = _ROOT.joinpath(*pkg[:i]) / "__init__.py"
-            if init.is_file() and pkg[0] in ("trade", "bot"):
-                add(init)
-        for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
-            if isinstance(n, ast.Import):
-                mods = [a.name for a in n.names]
-            elif isinstance(n, ast.ImportFrom):
-                base = n.module or ""
-                if n.level:
-                    up = list(pkg[:len(pkg) - (n.level - 1)])
-                    base = ".".join(up + ([base] if base else []))
-                mods = [base] + [f"{base}.{a.name}" for a in n.names]
-            else:
-                continue
-            for m in mods:
-                top = m.split(".")[0]
-                p = path_of(m) if top in ("trade", "bot") else None
-                if p is not None:
-                    add(p)
-    return trade_mods, bot_mods
-
-
-def test_the_listener_restarts_when_any_module_it_imports_changes():
-    """실수 #411 — 옛 규칙은 `listen_badonion.py` 한 파일만 봐서, 리스너가 import 하는 보증
-    모듈(`relay_origins`)이나 관련성 필터(`badonion_sources` 와 그 파서들)만 바뀐 배포는
-    리스너를 재시작하지 않았다(다른 이유로 재시작되기 전까지 **옛 코드**) — 보증 형식이
-    바뀌면 옛 리스너가 옛 형식으로 쓰고 새 봇이 못 읽어 재게시 글을 다시 버린다. 리스너의
-    trade.* import 폐포(위 패키지의 `__init__.py` 포함)가 전부 재시작 조건에 걸리는지 소스에서
-    잰다(새 파서를 더해도 이름을 적을 필요가 없다)."""
-    rx = _listener_restart_regex()
-    trade_mods, bot_mods = _import_closure(_SCRIPT)
-    # 반대 증거 — 폐포가 눈멀지 않았다(#54): 보증·필터·세션 가드와 파서들이 실제로 잡힌다
-    assert {"trade/relay_origins.py", "trade/badonion_sources.py", "trade/tg_entities.py",
-            "trade/kr_stock_imports.py", "trade/__init__.py",
-            "trade/scripts/__init__.py"} <= trade_mods, sorted(trade_mods)
-    assert len(trade_mods) >= 20, sorted(trade_mods)
-    missing = sorted(m for m in trade_mods | {"trade/scripts/listen_badonion.py"}
-                     if not rx.search(m))
-    assert missing == [], f"바뀌어도 리스너가 재시작하지 않는 모듈: {missing}"
-    # 폐포 밖의 파일로는 재시작하지 않는다 — 테스트·주기 백필(oneshot)·NOAH 쪽
-    for other in ("trade/tests/test_relay_origins.py", "trade/scripts/backfill_badonion.py",
-                  "bot/market.py", "docs/tests.md"):
-        assert not rx.search(other), other
-    # ⚠️ bot.* 의존은 재시작 조건 **밖**이다(못 보는 축, #274) — NOAH 배포마다 텔레톤 리스너를
-    # 재시작하지 않으려고다. 지금은 `trade/stock_link.py` 의 링크 렌더가 **함수 안에서** 부르는
-    # 하나뿐이고 리스너 경로(관련성 판정·보증)는 그걸 부르지 않는다. 늘면 여기서 다시 물을 것.
-    assert bot_mods == {"bot/market.py"}, sorted(bot_mods)
+# 상시 유닛 전부 공용 회귀로 옮겼다(실수 #423 — 같은 병이 trade 대시보드·BeOn 리스너·NOAH
+# 대시보드·DAJU 리스너에도 있었다, #38): `tests/test_restart_closure_20260928.py`. 이 리스너의
+# 계약은 거기 그대로다 — 폐포 전부가 재시작 조건에 걸린다 · 양성 대조(보증·필터·세션 가드·
+# 파서·위 패키지 `__init__.py`, 폐포 20개 이상) · 음성 대조(테스트·주기 백필·`bot/market.py`·
+# 문서) · bot.* 는 `trade/stock_link.py → bot/market.py` 한 간선만 사유와 함께 끊는다(옛
+# `bot_mods == {"bot/market.py"}` — 새 간선이 생기면 폐포가 규칙 밖으로 나가 실패한다).

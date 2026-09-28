@@ -42,14 +42,14 @@
 | `reddit-insider-watch.timer` | 1분 | `bot.reddit_insider_watch` | 레딧 인사이더 감시 |
 | `portfolio-watch.timer` | 2분 | `bot.portfolio_watch` | 업로드 포트폴리오 변동 감시 |
 | `watchlist-check.timer` | 30분 | `bot.watchlist` | 조건 알림(rsi/price/sma/52w/earnings) 체크 |
-| `stock-bot-update.timer` | 1분 | `deploy/auto-update.sh` | git 폴링 → 코드 변경 시 재배포(base 브랜치만 감시, **squash merge = 배포**) |
+| `stock-bot-update.timer` | 1분 | `deploy/auto-update.sh` | git 폴링 → 코드 변경 시 재배포(base 브랜치만 감시, **squash merge = 배포**) · 봇은 가져온 변경마다 재시작 · 대시보드·DAJU 리스너는 그 프로세스가 import 하는 코드(`bot/*.py` · `bot/scripts/`·`bot/screener_themes/` · `trade/*.py` · `trade/data/` · `TradingAgents/tradingagents/**`)가 바뀐 배포에서 재시작(#423 — 옛 조건은 대시보드 `bot/*.py` 뿐 · DAJU 는 **돌고 있을 때만**: 미설치·세션 미인증·중지 상태를 되살리지 않는다 · 재시작 뒤 3초에 살아 있는지 보고 아니면 알린다 · 실패 알림은 권한 부재/재시작 실패를 가른다(sudo 는 `LC_ALL=C` — 권한 문구가 번역되면 갈래가 틀어진다) · `deploy/` 가 바뀐 배포는 install.sh 를 부르고 출력은 `STOCK_INSTALL_LOG`(기본 `/tmp/stock-bot-install.log`)에 남긴다 · 재시작 사이의 알림은 백필이 없어 놓칠 수 있다 · 최근 30일 142배포 실측: 대시보드 114→136회 · DAJU 0→136회) |
 | `stock-bot-watchdog.timer` | 1분 | `deploy/watchdog.sh` | 12분 무응답 시 봇 재시작(180초 polling-hang + `.busy` marker 이중 체크 — 무거운 작업은 `_busy_acquire`/`_busy_release` 필수) |
 
 ## systemd timer — trade/ (VM `~/stock-trade`, 독립 체크아웃)
 
 | Timer | 주기 | 실행 | 하는 일 |
 |---|---|---|---|
-| `trade-bot-update.timer` | 1분 | `deploy/trade-auto-update.sh` | 같은 base 브랜치 추적, 독립 재배포 · 나쁜양파 리스너는 `listen_badonion.py` · `trade/scripts/__init__.py` **또는 `trade/*.py`** 변경 시 재시작(#411 — 옛 규칙은 그 파일만 봐 import 한 모듈(필터·보증)만 바뀐 배포는 리스너를 재시작하지 않았다 · 폐포(진입점이 실행하는 위 패키지 `__init__.py` 포함)가 규칙에 걸리는지 `trade/tests/test_listen_badonion_vouch.py` 가 소스에서 잰다 · ⚠️ 규칙은 폐포보다 넓다(대시보드 모듈도 걸린다 — 지난 한 달 base 커밋 66개 실측: 옛 규칙 1회 → 새 규칙 15회) · 재시작은 몇 초라 그 사이 올라온 글은 주기 sync 가 회수) |
+| `trade-bot-update.timer` | 1분 | `deploy/trade-auto-update.sh` | 같은 base 브랜치 추적, 독립 재배포 · 상시 프로세스는 자기가 import 하는 코드가 바뀐 배포에서 재시작한다(#411·#423 — 대시보드 = `trade/*.py`·`trade/scripts/*.py`·`trade/data/`(메모리 캐시)·`bot/*.py` · 나쁜양파·BeOn 리스너 = 자기 스크립트·`trade/scripts/__init__.py`·`trade/*.py`, bot 은 리스너 경로가 부르지 않아 조건 밖 · 옛 조건은 대시보드 `trade/*.py` 뿐 · BeOn 스크립트 한 파일뿐이라 #422 fix(`bot/dart_client`) 뒤 대시보드를 손으로 재시작했다) · 두 리스너는 **돌고 있을 때만** 재시작한다(미설치·세션 미인증·운영자 중지 상태를 되살리지 않는다 — NOAH DAJU 와 같은 가드) · 재시작한 형제 유닛이 3초 뒤 살아 있지 않으면 배포 알림에 그 이름을 적는다(trade-bot 자체가 죽은 실패 알림에도) · 형제·설치기 실패 알림은 권한 부재(sudoers 재설치 명령)와 명령 자체의 실패(원문)를 가른다(sudo 는 `LC_ALL=C`) · 설치기가 바꿀 게 없어도(SUMMARY 없음) 멈추지 않고 알림에도 안 붙인다 · 설치기(`install-trade-units.sh`)는 NOAH `install.sh` 와 **같은 sudoers 줄을 같은 순서로** 쓴다 — 옛 판은 자기 권한 줄을 빼고 덮어써, 한 번 돌고 나면 다음 유닛 변경 배포에서 설치기를 못 불렀다(#423 델타 리뷰 M②) · 폐포가 조건에 걸리는지 `tests/test_restart_closure_20260928.py` 가 소스에서 재고, 두 스크립트를 가짜 sudo·systemctl 로 실제로 돌려 재시작 집합을 대조한다(유닛은 `deploy/*.service` 에서 파생) · ⚠️ 조건은 폐포보다 넓다 — 최근 30일 base 142커밋 실측: 대시보드 재시작 32→130회(폐포를 바꾼 커밋 62) · BeOn 3→31회(4) · 나쁜양파 31회(14, 이번에 안 바뀜) — 리스너가 재시작하는 사이 올라온 글은 주기 sync 가 회수) |
 | `trade-bot-watchdog.timer` | 1분 | `deploy/trade-watchdog.sh` | 무응답 재시작 |
 | `trade-bot-customs-probe.timer` | 10분 | `trade.scripts.scan_customs --if-changed` | 관세청 변경 감지 스캔 |
 | `trade-bot-prov-fetch.timer` | 월 1-3/11-13/21-23일 30분 | `trade.scripts.fetch_provisional` | 잠정치 수집(발표 몰린 기간 집중) |
@@ -90,7 +90,7 @@
 
 | 서비스 | 소스 | 하는 일 | Kill-switch |
 |---|---|---|---|
-| `daju-listener.service` | `bot.daju_watch` | DAJU(다주) 실적 예정 알림 실시간 포워드 → 블로그 대시보드 아카이브 | 세션 미인증(exit 78) → RestartPreventExitStatus 로 hot-loop 방지 |
+| `daju-listener.service` | `bot.daju_watch` | DAJU(다주) 실적 예정 알림 실시간 포워드 → 블로그 대시보드 아카이브 · 배포: `deploy/auto-update.sh` 가 상시 코드 변경 시 **돌고 있을 때만** 재시작하고 3초 뒤 살아 있는지 본다(#423 — 옛 판은 배포가 한 번도 재시작하지 않아 파서·블로그 렌더러가 옛 코드였다) | 세션 미인증(exit 78) → RestartPreventExitStatus 로 hot-loop 방지 |
 | `trade-bot-beon-listener.service` | `trade.scripts.listen_beon` | BeOn_BeClear(대만·중국·일본 수출통계) 실시간 forward | 위와 동일 패턴 + 세션 형식 불일치도 알리고 exit 78(#404) |
 | `trade-bot-beon-sync.timer`(2h) | `trade.scripts.backfill_beon` | 리스너 다운타임 안전망(--lookback-days 2 기본) | 없음(idempotent 재스캔) · 세션 형식 불일치는 생성 전에 멈추고 알린다(#404) |
 | `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward — 재게시 글은 큐에 넣기 **전에** 원래 출처를 보증(#411 · 못 쓰면 큐에 안 넣고 알림 — 같은 사유는 **전달이 확인되면** 프로세스당 한 번, 못 간 알림은 10분 뒤 같은 사유가 다시 나면 다시 — → 주기 sync 가 회수) | 세션 미인증·세션 형식 불일치(exit 78, #404) |
