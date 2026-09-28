@@ -42,8 +42,12 @@ _CACHE_TTL_HOURS = 12  # KRX flow updates once a day; 12h is generous
 # 폭주를 일으킨다. 호출 전 krx_login_ready() 로 차단해 단 한 번만
 # actionable 경고를 남기고 graceful skip → None.
 import os as _os
+import threading as _threading
 
 _KRX_CRED_WARNED = False
+# ⚠️ '최초 1회' 는 확인과 표시가 **한 번에** 일어나야 참이다 — 병렬 워커가 동시에 게이트를
+# 치면 표시가 서기 전의 스레드가 전부 경고를 낸다(2026-09-28 재현: 16스레드에 경고 15번).
+_KRX_WARN_LOCK = _threading.Lock()
 
 
 def krx_login_ready() -> bool:
@@ -55,20 +59,25 @@ def krx_login_ready() -> bool:
     # 파일마다 복제하면 새 키를 붙일 때 또 하나를 빠뜨린다(실측: FRED).
     from bot.env_keys import env_diag, env_ready
     ready = env_ready("KRX_ID", "KRX_PW")
-    if not ready and not _KRX_CRED_WARNED:
+    if ready:
+        return True
+    with _KRX_WARN_LOCK:
+        first = not _KRX_CRED_WARNED
+        _KRX_CRED_WARNED = True
+    if first:
         # ⚠️ '미설정' 만 적으면 그다음을 운영자가 짐작한다(#82) — 어느 키가
         # 왜 없는지 `env_diag` 가 갈래로 말한다(값은 안 찍고 길이까지만,
-        # §Secrets). 2026-09-07 VM 실측에서 이 경고 **바로 뒤에** 라이브러리
-        # 가 `KRX 로그인 완료` 를 찍어 둘 중 무엇이 맞는지 알 수 없었다 —
-        # 그 모순도 `env_diag` 가 이름으로 부른다(#187b 틀린 로그는 헛걸음).
+        # §Secrets). 2026-09-28 VM 실측에서 이 경고 **바로 뒤에** 라이브러리가
+        # `KRX 로그인 완료` 를 찍었다 — 키 조회 경합이었고 `env_keys._TRIED_LOCK`
+        # 으로 막았다(09-07 도 같은 모양 — 그날 실행은 따로 재지 못했다, #165 ·
+        # #187b 틀린 로그는 헛걸음).
         log.warning(
             "pykrx: KRX_ID/KRX_PW 미설정 — %s. KRX 가 2025-12-27 부터 로그인 "
             "필수(KRX Data Marketplace, 무료). Naver/Kakao 로 가입 후 .env "
             "에 KRX_ID/KRX_PW 추가 필요. 그때까지 KR pykrx 수급 데이터 skip.",
             env_diag("KRX_ID", "KRX_PW"),
         )
-        _KRX_CRED_WARNED = True
-    return ready
+    return False
 
 
 def _quiet_pykrx_logging() -> None:

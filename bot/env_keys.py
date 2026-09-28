@@ -26,6 +26,16 @@ import threading
 _log = logging.getLogger("bot.env_keys")
 
 _TRIED: set[str] = set()
+# ⚠️ '조회했음' 표시와 그 조회 결과는 **한 번에** 보여야 한다. 옛 `env_key` 는 `_TRIED` 에
+# 먼저 표시하고 `.env` 를 읽어, 그 사이 같은 키를 물은 다른 스레드가 '이미 조회했는데
+# 없었다' 로 읽고 "" 를 받았다 — 2026-09-28 실측: 16스레드 동시 호출 20회 전부 15개가 빈
+# 값(pykrx 게이트가 막히고 '미설정' 경고 15번). 스냅샷 수집처럼 병렬 워커가 같은 키를 동시에
+# 묻는 곳에서 난다 — 사람이 돌리는 진단 스크립트(`bot` 모듈 유닛은 EnvironmentFile·load_dotenv
+# 로 환경이 먼저 차 있어 안 온다), 그리고 **다른 `.env` 를 싣고 뜨는 스레드 서버**(trade 대시보드는
+# `stock-trade/.env` 만 싣고 `~/stock/.env` 의 키를 이 경로로 읽을 수 있다 — 독립 리뷰 M-2).
+# 재진입해도 멈추지 않게 RLock. ⚠️ 락 안에서 파일을 읽으므로 그동안 **다른 키**의 첫 조회도
+# 기다린다(키마다 한 번 · 로컬 디스크라 무시할 만하다 — 옛 판은 그 키의 첫 호출자만 기다렸다).
+_TRIED_LOCK = threading.RLock()
 
 # ── 여기서 건넨 비밀값은 어느 로그에도 평문으로 남지 않는다(실수 #416) ─────────────
 # ⚠️ 왜 여기인가. 키를 URL 에 싣는 클라이언트(data.go.kr `serviceKey` · FRED `api_key` ·
@@ -150,12 +160,21 @@ def env_key(name: str) -> str:
     말할 수 있었다(#38).
     """
     v = (os.environ.get(name) or "").strip()
-    if v or name in _TRIED:
-        if v:
-            _remember(v)
+    if v:
+        _remember(v)
         return v
-    _TRIED.add(name)
-    got, _why, err = _dotenv_lookup(name)
+    err = ""
+    with _TRIED_LOCK:
+        # ⚠️ 락을 잡은 뒤 **다시** 본다 — 기다리는 사이 앞 스레드가 채웠을 수 있다.
+        got = (os.environ.get(name) or "").strip()
+        if not got:
+            if name in _TRIED:
+                return ""
+            _TRIED.add(name)
+            got, _why, err = _dotenv_lookup(name)
+            got = got or ""
+            if got:
+                os.environ[name] = got
     if err:
         # ⚠️ 여기서 삼키면 "키가 .env 에 **있는데** 미설정으로 보고" 가
         # 원인 불명이 된다(2026-08-21 실측: VM 의 `grep -c` 는 1 인데
@@ -163,10 +182,8 @@ def env_key(name: str) -> str:
         # 조용히 묻힌다). silent-except 금지(실수 #12).
         _log.warning("env_key(%s): .env 폴백 실패 — %s", name, err)
     if got:
-        os.environ[name] = got
         _remember(got)
-        return got
-    return ""
+    return got
 
 
 def env_ready(*names: str) -> bool:
@@ -261,9 +278,13 @@ def env_diag(*names: str) -> str:
     ⚠️ 그리고 갈래가 하나 더 있다: `env_key` 는 **첫 조회 실패를 `_TRIED`
     에 기록하고 다시 안 읽는다**. 그 뒤에 `.env` 가 읽히게 되면(cwd 가
     바뀌거나 파일이 나중에 생기거나) **경고는 남고 값은 있는** 모순이
-    생긴다 — 2026-09-07 VM 실측에서 `pykrx: KRX_ID/KRX_PW 미설정` 바로
-    뒤에 라이브러리가 `KRX 로그인 완료` 를 찍었다. 그 상태를 추측이 아니라
-    **재서** 이름으로 부른다(#165 안 잰 것을 단정하지 말 것 · #279).
+    생긴다. 그 상태를 추측이 아니라 **재서** 이름으로 부른다(#165 안 잰
+    것을 단정하지 말 것 · #279).
+    ⚠️ 2026-09-07·09-28 VM `fcf_audit` 에서 본 같은 모양(`pykrx: KRX_ID/KRX_PW
+    미설정` 바로 뒤 `KRX 로그인 완료`)은 이 갈래가 아니라 **조회 중 경합**으로
+    설명된다 — 병렬 워커가 조회가 끝나기 전의 `_TRIED` 표시를 읽었다(09-28
+    샌드박스 재현, 09-07 실행을 따로 잰 것은 아니다). `_TRIED_LOCK` 으로 막았고,
+    여기선 상태를 락 안에서 읽어 '조회 중' 을 이 갈래로 부르지 않는다.
 
     ⚠️ **진단은 자기가 잴 것을 바꾸지 않는다**(#30·#264) — `env_key` 를 부르면
     `_TRIED`·`os.environ` 이 바뀐다. 여기선 환경만 읽고 `.env` 는 캐시를
@@ -271,7 +292,14 @@ def env_diag(*names: str) -> str:
     """
     out: list[str] = []
     for n in names:
-        if (os.environ.get(n) or "").strip():
+        # ⚠️ 상태는 **락 안에서** 읽는다 — 다른 스레드가 이 키를 조회하는 중이면 끝날
+        # 때까지 기다린다. 안 기다리면 '조회 중' 을 '첫 조회가 실패해 캐시됨' 으로
+        # 오진한다(2026-09-28 VM 실측 — 그 문구 바로 뒤에 `KRX 로그인 완료`). 읽기만
+        # 하므로 진단이 잴 것을 바꾸지 않는다(#30·#264).
+        with _TRIED_LOCK:
+            pre = (os.environ.get(n) or "").strip()
+            tried = n in _TRIED
+        if pre:
             continue                       # 이 키는 정상 — 적을 게 없다
         val, why, _err = _dotenv_lookup(n)
         if val is not None:
@@ -280,7 +308,7 @@ def env_diag(*names: str) -> str:
             # 가 `.env` 를 안 읽은 것이다(호출 순서·지연 load_dotenv 확인).
             why += (" — ⚠️ 지금 다시 읽으면 있다("
                     + ("첫 조회가 실패해 캐시됨: 실행 cwd·.env 생성 시점 확인"
-                       if n in _TRIED else "이 프로세스에서 아직 조회 전")
+                       if tried else "이 프로세스에서 아직 조회 전")
                     + ")")
         out.append(f"{n}: {why}")
     return " · ".join(out)
