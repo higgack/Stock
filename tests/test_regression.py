@@ -49559,8 +49559,12 @@ class TestEnvDiagNamesTheBranch20260907:
         **반환 조건**부터 대조할 것(#7a 기존 함수 반환형·동작 확인).
         """
         import bot.env_keys as ek
-        ek._TRIED.clear()
-        monkeypatch.delenv("KRX_ID", raising=False)
+        # ⚠️ 전역은 **복원되게** 갈아 끼우고, 환경은 setenv→delenv 로 원래 상태를 기록한다 —
+        # 옛 판(`_TRIED.clear()` + `delenv(raising=False)`)은 기록이 안 남아 `env_key` 가 채운
+        # `KRX_ID='realval'` 이 세션 끝까지 샜다(2026-09-28 독립 리뷰 L-7 실측, #30·#130).
+        monkeypatch.setattr(ek, "_TRIED", set())
+        monkeypatch.setenv("KRX_ID", "")
+        monkeypatch.delenv("KRX_ID")
         cwd, home = tmp_path / "cwd", tmp_path / "home"
         cwd.mkdir()
         (home / "stock").mkdir(parents=True)

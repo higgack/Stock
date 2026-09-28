@@ -67,9 +67,10 @@ def krx_login_ready() -> bool:
     if first:
         # ⚠️ '미설정' 만 적으면 그다음을 운영자가 짐작한다(#82) — 어느 키가
         # 왜 없는지 `env_diag` 가 갈래로 말한다(값은 안 찍고 길이까지만,
-        # §Secrets). 2026-09-07·09-28 VM 실측에서 이 경고 **바로 뒤에**
-        # 라이브러리가 `KRX 로그인 완료` 를 찍었다 — 키 조회 경합이었고
-        # `env_keys._TRIED_LOCK` 으로 막았다(#187b 틀린 로그는 헛걸음).
+        # §Secrets). 2026-09-28 VM 실측에서 이 경고 **바로 뒤에** 라이브러리가
+        # `KRX 로그인 완료` 를 찍었다 — 키 조회 경합이었고 `env_keys._TRIED_LOCK`
+        # 으로 막았다(09-07 도 같은 모양 — 그날 실행은 따로 재지 못했다, #165 ·
+        # #187b 틀린 로그는 헛걸음).
         log.warning(
             "pykrx: KRX_ID/KRX_PW 미설정 — %s. KRX 가 2025-12-27 부터 로그인 "
             "필수(KRX Data Marketplace, 무료). Naver/Kakao 로 가입 후 .env "

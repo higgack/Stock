@@ -892,8 +892,10 @@ def _dart_key_from_env_file() -> str:
     global _ENV_KEY_TRIED, _ENV_KEY_CACHED
     # ⚠️ 표시와 읽기를 **한 번에**(락) — 표시만 먼저 세우면 읽는 동안 들어온 다른 스레드가
     # 빈 캐시를 받는다. 그 스레드가 `get_dart()` 싱글턴을 만들면 **프로세스 내내 키 없는
-    # 클라이언트**가 된다(2026-09-28 재현: 16스레드 동시 호출 20회 중 8회). `env_keys.env_key`
-    # 와 같은 경합이다(형제 — #38·#147).
+    # 클라이언트**가 된다(2026-09-28 재현: 16스레드 동시 호출, 재현마다 20회 중 1~10회).
+    # `env_keys.env_key` 와 같은 경합이다(형제 — #38·#147). 운영 경로다: trade 대시보드
+    # (스레드 서버, `stock-trade/.env` 만 싣는다)의 회사 리포트가 여기서 `~/stock/.env` 를
+    # 읽을 수 있다(독립 리뷰 M-2).
     with _ENV_KEY_LOCK:
         if _ENV_KEY_TRIED:
             return _ENV_KEY_CACHED
