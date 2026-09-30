@@ -25,9 +25,10 @@ KST 달력일로 ``NEW_DAYS`` 일을 렌더 시각에 판정한다.
   바뀐 배포 뒤에는 40일을 한 번 훑는다(#403) — 새 소스를 붙인 날이 그렇다.
 - 나쁜양파가 다른 채널의 글을 재게시하면(#411) posted_at 은 재게시 시각이 아니라 **원래
   채널의 게시 시각**이다. 재게시가 며칠 늦으면 NEW 가 짧게 붙거나 안 붙는다.
-- ingest 는 5분마다 inbox 전체를 도착 순서대로 다시 upsert 하고, 한 행의 posted_at 은
-  그 행에 마지막으로 쓴 글의 값이다. 같은 (키, 월)의 옛 글이 회수로 늦게 들어오면 그
-  행의 posted_at 이 옛 값으로 돌아갈 수 있다(이 기능 이전부터의 동작).
+- ingest 는 5분마다 inbox 전체를 다시 upsert 하고(앨범을 먼저, 단독 글을 나중에 —
+  도착 순서가 아니다), 한 행의 posted_at 은 그 행에 마지막으로 쓴 글의 값이다. 같은
+  (키, 월)을 옛 글이 나중에 쓰면 — 회수로 늦게 들어왔거나, 옛 글이 단독이고 새 글이
+  앨범일 때 — 그 행의 posted_at 이 옛 값으로 돌아간다(이 기능 이전부터의 동작).
 """
 from __future__ import annotations
 
@@ -77,20 +78,32 @@ def parse_ts(value) -> datetime | None:
 
 
 def _latest(values, now: datetime | None, where: str) -> datetime | None:
-    """원 게시 시각 문자열들 중 가장 늦은 시각. 지금보다 ``FUTURE_SLACK`` 넘게 미래인
-    값은 빼고 몇 건을 뺐는지 경고한다 — 먼 미래 값 하나가 최댓값으로 굳으면 NEW 가
-    영원히 켜지고, 진짜 마지막 게시 시각은 툴팁에서 사라진다."""
+    """원 게시 시각 문자열들 중 가장 늦은 시각. 판정할 수 없는 값(ISO 시각이 아니거나
+    KST 로 못 옮기는 달력 끝 값)과 지금보다 ``FUTURE_SLACK`` 넘게 미래인 값은 빼고,
+    몇 건을 뺐는지 경고한다(#12 — 그 값이 한 페이지의 유일한 최신 행이면 NEW 가
+    흔적 없이 사라진다). 먼 미래 값 하나가 최댓값으로 굳으면 NEW 가 영원히 켜지고
+    진짜 마지막 게시 시각은 툴팁에서 사라진다. 빈 값(None·'')은 '없음' 이라 안 센다.
+
+    경고는 그 값이 DB 에 남아 있는 동안 렌더마다(5분마다) 한 줄씩 찍힌다 — 고칠
+    때까지 사라지지 않는 것이 의도다(원천 시각이 아니므로 누군가 봐야 한다)."""
     limit = _aware(now if now is not None else now_utc()) + FUTURE_SLACK
     best: datetime | None = None
     future: list[datetime] = []
+    bad: list = []
     for v in values:
         dt = parse_ts(v)
         if dt is None:
+            if v is not None and v != "":
+                bad.append(v)
             continue
         if dt > limit:
             future.append(dt)
         elif best is None or dt > best:
             best = dt
+    if bad:
+        log.warning("NEW 판정: %s 에 판정할 수 없는 게시 시각 %d건(예: %s)은 빼고 판정합니다 — "
+                    "ISO 시각이 아니거나 KST 로 옮길 수 없는 값",
+                    where, len(bad), repr(bad[0])[:60])
     if future:
         log.warning("NEW 판정: %s 에 지금보다 %d일 넘게 미래인 게시 시각 %d건(가장 늦은 값 "
                     "%s)은 원 게시 시각으로 볼 수 없어 빼고 판정합니다",
@@ -148,7 +161,8 @@ def latest_report_ts(*, now: datetime | None = None) -> datetime | None:
     """AI 보고서 아카이브에 마지막으로 보고서가 쌓인 시각 — 색인 페이지가 읽는 그
     jsonl(``report_archive.load_runs``)에서 구한다. 레코드는 유료 AI 보고서
     (company_report·period_report 의 ``render_llm``)가 성공할 때만 쌓인다 — 대시보드의
-    유료 보고서 요청(기간 보고서는 채널 발송도)이나 CLI ``--llm`` 이고, 이걸 부르는 타이머는 없다."""
+    유료 보고서 요청(``mode=llm``)이나 CLI ``--llm`` 이다. 채널 발송(``send_to_channel``)은
+    LLM 을 따로 불러 아카이브에 안 남고, 이걸 부르는 타이머도 없다."""
     from trade import report_archive
     return _latest((rec.get("ts") for rec in report_archive.load_runs()
                     if isinstance(rec, dict)),      # load_runs 는 JSON 이기만 하면 싣는다
@@ -183,13 +197,23 @@ def is_new(ts: datetime | None, now: datetime, *, days: int | None = None) -> bo
     return (_aware(now).astimezone(KST).date() - ts.astimezone(KST).date()).days < days
 
 
-def badge_html(ts: datetime | None, now: datetime, *, days: int | None = None) -> str:
+# 툴팁의 낱말(무엇이 · 며칠째를 세는 날) — 판정 원천마다 '무엇이 새로 생겼나'가 다르다.
+# AI 보고서 아카이브는 원천의 게시가 아니라 새 유료 보고서의 저장이다(#34 한 라벨이
+# 두 뜻을 대표하면 한쪽은 거짓말 · 가이드 문구와 같은 말을 한다).
+_BADGE_WORDS: dict[str, tuple[str, str]] = {"report_archive": ("새 보고서 저장", "저장일")}
+_DEFAULT_WORDS = ("새 데이터 게시", "게시일")
+
+
+def badge_html(ts: datetime | None, now: datetime, *, days: int | None = None,
+               source: str | None = None) -> str:
     """NEW 배지 조각 — 새 게시가 창 안이면 앞에 공백을 둔 ``<span>``, 아니면 빈 문자열.
     배지에 마우스를 올리면 마지막 게시 시각(KST)이 보인다. ``days`` 기본값은 호출
-    시점의 ``NEW_DAYS`` 다(가이드 문구도 같은 값을 읽는다)."""
+    시점의 ``NEW_DAYS`` 다(가이드 문구도 같은 값을 읽는다). ``source`` 는 그 링크의
+    판정 원천(``latest_for`` 와 같은 값) — 툴팁의 낱말을 고른다."""
     days = NEW_DAYS if days is None else days
     if not is_new(ts, now, days=days):
         return ""
+    what, day_word = _BADGE_WORDS.get(source, _DEFAULT_WORDS)
     when = ts.astimezone(KST).strftime("%Y-%m-%d %H:%M")
-    title = f"새 데이터 게시 {when} KST · 게시일 포함 {days}일간 표시"
+    title = f"{what} {when} KST · {day_word} 포함 {days}일간 표시"
     return f' <span class="link-new" title="{html.escape(title)}">NEW</span>'

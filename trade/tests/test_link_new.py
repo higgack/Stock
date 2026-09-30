@@ -156,6 +156,17 @@ def test_badge_html_shows_kst_post_time_in_tooltip():
     assert f"게시일 포함 {link_new.NEW_DAYS}일간" in m.group(1)
 
 
+def test_badge_html_words_follow_the_source():
+    """AI 보고서 아카이브의 NEW 는 원천의 게시가 아니라 새 유료 보고서의 저장이다 — 툴팁이
+    '새 데이터 게시' 라고 하면 가이드와 두 말을 한다(delta 리뷰 L10 · #34)."""
+    now = datetime(2026, 10, 1, 3, 0, tzinfo=UTC)
+    arch = link_new.badge_html(POSTED, now, source="report_archive")
+    assert "새 보고서 저장 2026-09-29 00:30 KST" in arch and "저장일 포함" in arch, arch
+    for src in (None, "db:tw.db"):
+        b = link_new.badge_html(POSTED, now, source=src)
+        assert "새 데이터 게시 2026-09-29 00:30 KST" in b and "게시일 포함" in b, (src, b)
+
+
 def test_badge_html_empty_when_not_new():
     assert link_new.badge_html(None, datetime(2026, 10, 1, tzinfo=UTC)) == ""
     assert link_new.badge_html(POSTED, datetime(2026, 10, 20, tzinfo=UTC)) == ""
@@ -236,12 +247,13 @@ def test_latest_posted_at_skips_far_future_values_and_says_so(tmp_path, caplog):
     conn = tw_exports.open_tw_db(db)
     _tw_row(conn, "반도체", "2026-09-28T12:00:00+00:00")
     _tw_row(conn, "디스플레이", "2099-01-01T00:00:00+00:00")
+    _tw_row(conn, "메모리", "2090-01-01T00:00:00+00:00")       # 먼 미래가 둘 — 경고는 가장 늦은 값
     _tw_row(conn, "배터리", (now + link_new.FUTURE_SLACK).isoformat())     # 경계 — 받는다
     conn.close()
     with caplog.at_level("WARNING", logger="trade.link_new"):
         assert link_new.latest_posted_at(db, now=now) == now + link_new.FUTURE_SLACK
     msgs = [r.getMessage() for r in caplog.records]
-    assert any("tw.db" in m and "1건" in m and "2099-01-01" in m for m in msgs), msgs
+    assert any("tw.db" in m and "2건" in m and "2099-01-01" in m for m in msgs), msgs
 
     # 경계를 1초 넘으면 뺀다 — 남는 건 과거 값.
     conn = tw_exports.open_tw_db(db)
@@ -251,15 +263,64 @@ def test_latest_posted_at_skips_far_future_values_and_says_so(tmp_path, caplog):
 
 
 def test_far_future_limit_reads_the_link_new_clock_by_default(tmp_path, monkeypatch):
-    # now 를 안 주면 link_new.now_utc() 가 기준이다 — 렌더와 같은 시계.
+    # now 를 안 주면 link_new.now_utc() 가 기준이다 — 렌더와 같은 시계. 값은 지금 시계에서
+    # 파생한다(리터럴 연도는 그 해가 오면 깨진다).
     from trade import tw_exports
+    posted = (datetime.now(UTC) + timedelta(days=30)).replace(microsecond=0)
     db = tmp_path / "tw.db"
     conn = tw_exports.open_tw_db(db)
-    _tw_row(conn, "반도체", "2099-01-01T00:00:00+00:00")
+    _tw_row(conn, "반도체", posted.isoformat())
     conn.close()
     assert link_new.latest_posted_at(db) is None              # 지금 기준으론 먼 미래
-    monkeypatch.setattr(link_new, "now_utc", lambda: datetime(2098, 12, 31, 12, tzinfo=UTC))
-    assert link_new.latest_posted_at(db) == datetime(2099, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(link_new, "now_utc", lambda: posted - timedelta(hours=12))
+    assert link_new.latest_posted_at(db) == posted
+
+
+@pytest.mark.parametrize("hours,kept", [(9, True), (23, True), (25, False)])
+def test_future_slack_keeps_a_timezone_slip_and_drops_a_day_ahead(tmp_path, hours, kept):
+    """여유의 **크기**를 리터럴로 — KST 벽시계에 +00:00 을 붙인 실수(9시간 미래)와 하루
+    안(23시간)은 받고, 하루 넘게 미래(25시간)는 뺀다. 상수를 테스트가 그대로 읽으면 그 값을
+    7일·12시간으로 바꿔도 통과한다(delta 리뷰 L20·L21 생존 · #66). 9시간만 재면 12시간
+    여유도 통과하므로 23시간을 같이 둔다."""
+    from trade import tw_exports
+    now = datetime(2026, 9, 30, 3, 0, tzinfo=UTC)
+    db = tmp_path / "tw.db"
+    conn = tw_exports.open_tw_db(db)
+    _tw_row(conn, "반도체", (now + timedelta(hours=hours)).isoformat())
+    conn.close()
+    want = now + timedelta(hours=hours) if kept else None
+    assert link_new.latest_posted_at(db, now=now) == want
+
+
+def test_far_future_limit_reads_a_naive_now_as_utc(tmp_path):
+    # 먼 미래 거르기의 기준 시각도 시간대가 없으면 UTC 로 본다(is_new 와 같은 규칙).
+    from trade import tw_exports
+    now = datetime(2026, 9, 30, 3, 0, tzinfo=UTC)
+    db = tmp_path / "tw.db"
+    conn = tw_exports.open_tw_db(db)
+    _tw_row(conn, "반도체", (now + timedelta(hours=20)).isoformat())
+    conn.close()
+    naive = now.replace(tzinfo=None)
+    assert link_new.latest_posted_at(db, now=naive) == link_new.latest_posted_at(db, now=now)
+    assert link_new.latest_posted_at(db, now=naive) is not None
+
+
+def test_latest_posted_at_warns_about_values_it_cannot_judge(tmp_path, caplog):
+    """판정할 수 없는 값(ISO 가 아니거나 KST 로 못 옮기는 달력 끝)도 빼면서 몇 건인지
+    말한다 — 첫 판은 먼 미래만 세고 나머지는 조용히 버려, 그런 값이 한 페이지의 유일한
+    최신 행이면 NEW 가 흔적 없이 사라졌다(delta 리뷰 M1 · #12). 빈 값은 '없음' 이라 안 센다."""
+    db = tmp_path / "edge.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE a (k TEXT, posted_at TEXT)")
+    conn.executemany("INSERT INTO a VALUES (?, ?)", [
+        ("x", "9999-12-31T23:59:59+00:00"), ("y", "0001-01-01T00:00:00+10:00"),
+        ("z", "쓰레기"), ("b", ""), ("n", None)])
+    conn.commit()
+    conn.close()
+    with caplog.at_level("WARNING", logger="trade.link_new"):
+        assert link_new.latest_posted_at(db) is None
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("edge.db" in m and "판정할 수 없는" in m and "3건" in m for m in msgs), msgs
 
 
 def test_latest_posted_at_opens_the_db_read_only(tmp_path, monkeypatch):
@@ -321,6 +382,25 @@ def test_latest_for_resolves_every_declared_source(tmp_path, monkeypatch):
         2026, 9, 28, 12, 0, tzinfo=UTC)
 
 
+def test_latest_for_passes_the_clock_to_both_kinds_of_source(tmp_path, monkeypatch):
+    """넣은 시각은 DB 원천과 아카이브 원천 모두의 먼 미래 거르기에 쓰인다 — 한 렌더 안에서
+    시계가 둘이면 안 된다(delta 리뷰 L12·L13: 아카이브 경로에서 now 를 떨어뜨려도 통과했다)."""
+    from trade import tw_exports
+    ra = _archive_to(monkeypatch, tmp_path)
+    now = datetime(2026, 9, 20, 0, 0, tzinfo=UTC)
+    later = datetime(2026, 9, 28, 12, 0, tzinfo=link_new.KST)       # now 보다 8일 뒤
+    ra.record(kind="company", title="삼성전자", html_body="<p>x</p>", summary="s", now=later)
+    conn = tw_exports.open_tw_db(tmp_path / "tw.db")
+    _tw_row(conn, "반도체", later.isoformat())
+    conn.close()
+    assert link_new.latest_for("report_archive", tmp_path, now=now) is None
+    assert link_new.latest_for("db:tw.db", tmp_path, now=now) is None
+    # 그 시각 뒤에서 보면 둘 다 정상 게시다.
+    after = datetime(2026, 9, 30, 0, 0, tzinfo=UTC)
+    assert link_new.latest_for("report_archive", tmp_path, now=after) == later
+    assert link_new.latest_for("db:tw.db", tmp_path, now=after) == later
+
+
 @pytest.mark.parametrize("bad", ["db:", "tw.db", "archive", "db"])
 def test_latest_for_rejects_unknown_source(bad, tmp_path):
     with pytest.raises(ValueError):
@@ -348,16 +428,19 @@ def _links(html: str) -> dict[str, str]:
     return dict(re.findall(r'<a href="([^"]+)">(.*?)</a>', m.group(1)))
 
 
-def _seed_fixture(tmp_path, monkeypatch, *, extra_tw=()) -> dict[str, datetime]:
+def _seed_fixture(tmp_path, monkeypatch, *, extra_tw=(),
+                  tw_only=False) -> dict[str, datetime]:
     """store.db 옆에 형제 DB 를 제품 삽입 경로로 심는다 — 게시 시각은 지금 시계에서
     파생(날짜 리터럴은 며칠 뒤 창 밖으로 나가 무관한 커밋에서 빨간불이 된다).
-    심은 게시 시각을 돌려준다. ``extra_tw`` 는 tw.db 에 더 심을 posted_at 원문들."""
+    심은 게시 시각을 돌려준다. ``extra_tw`` 는 tw.db 에 더 심을 posted_at 원문들,
+    ``tw_only`` 면 tw.db 에는 그것만 심는다(하루 전 정상 행 없이)."""
     from trade import cn_exports, jp_exports, tw_exports
     from trade.store import open_db
     now = datetime.now(UTC)
     open_db(tmp_path / "store.db").close()
     conn = tw_exports.open_tw_db(tmp_path / "tw.db")               # 하루 전 → NEW
-    _tw_row(conn, "반도체", (now - timedelta(days=1)).isoformat())
+    if not tw_only:
+        _tw_row(conn, "반도체", (now - timedelta(days=1)).isoformat())
     for i, raw in enumerate(extra_tw):
         _tw_row(conn, f"극단값{i}", raw)
     conn.close()
@@ -450,13 +533,30 @@ def test_one_failing_link_does_not_break_the_dashboard(tmp_path, monkeypatch, ca
 @pytest.mark.parametrize("edge", ["9999-12-31T23:59:59+00:00", "0001-01-01T00:00:00+10:00",
                                   "2099-01-01T00:00:00+00:00"])
 def test_an_extreme_posted_at_does_not_break_the_dashboard(tmp_path, monkeypatch, edge):
-    """리뷰 F1 실측 재현 — tw.db 에 이 값 한 행이 있으면 render_html 이 OverflowError 로
-    멈춰 index.html 도 형제 페이지도 5분마다 갱신에 실패했다. 이제 그 값만 빼고 판정한다:
-    tw 는 하루 전 게시로 그대로 NEW, 나머지 링크도 그대로."""
+    """극단값이 정상 행과 **함께** 있을 때 — 그 값만 빼고 판정한다: tw 는 하루 전 게시로
+    그대로 NEW, 나머지 링크도 그대로, 툴팁의 '마지막 게시 시각' 도 먼 미래 값이 아니다.
+    (옛 판은 9999 값이 함께 있어도 OverflowError 로 멈췄다 — 리뷰 F1 실측. 0001 값은 정상
+    행보다 옛날이라 함께일 땐 안 멈췄다 — 혼자인 경우는 아래 테스트가 잰다.)"""
     links = _links(_render_fixture(tmp_path, monkeypatch, extra_tw=[edge]))
     new = {h for h, inner in links.items() if 'class="link-new"' in inner}
     assert new == {"tw.html", "jp.html", "report_archive.html"}, new
     assert "2099" not in links["tw.html"], "먼 미래 값이 툴팁의 '마지막 게시 시각'이 됐다"
+
+
+@pytest.mark.parametrize("edge", ["9999-12-31T23:59:59+00:00", "0001-01-01T00:00:00+10:00",
+                                  "2099-01-01T00:00:00+00:00"])
+def test_an_extreme_posted_at_alone_is_dropped_where_it_is_read(tmp_path, monkeypatch, caplog, edge):
+    """그 값이 페이지의 **유일한** 게시일 때 — 옛 판은 0001 값 혼자에도 OverflowError 로
+    멈췄다(delta 리뷰 L2: 정상 행과 함께 심은 E2E 는 0001 을 한 번도 최댓값으로 못 만들어
+    아무것도 안 쟀다). 값은 **읽는 자리**에서 걸러지고 말해져야 한다 — 배지 단계의 안전망
+    (_nb)이 대신 삼키면 그 사실이 'NEW 배지 실패' 로만 남아 원인을 못 가른다."""
+    with caplog.at_level("WARNING"):
+        links = _links(_render_fixture(tmp_path, monkeypatch, extra_tw=[edge], tw_only=True))
+    new = {h for h, inner in links.items() if 'class="link-new"' in inner}
+    assert new == {"jp.html", "report_archive.html"}, new
+    msgs = [(r.name, r.getMessage()) for r in caplog.records]
+    assert any(n == "trade.link_new" and "tw.db" in m for n, m in msgs), msgs
+    assert not any("NEW 배지 실패" in m for _n, m in msgs), msgs
 
 
 def test_a_failing_badge_does_not_break_the_dashboard(tmp_path, monkeypatch, caplog):
@@ -500,6 +600,29 @@ def test_every_judged_link_gets_its_badge_right_before_the_arrow(tmp_path, monke
             assert _badge_ok(inner, labels[href]), (href, inner)
 
 
+def test_link_row_order_and_separators_are_unchanged(tmp_path, monkeypatch):
+    """고정 링크를 표에서 만들게 바꾼 뒤에도 링크 줄은 옛 손글씨 앵커와 같아야 한다 —
+    구분자를 바꾸거나 표의 순서를 바꾸는 변형이 통과했다(delta 리뷰 L9). 고정 링크의
+    순서는 사용자 결정 이력이라 리터럴로 못박는다."""
+    from trade import dashboard as td
+    from trade.store import open_db
+    _archive_to(monkeypatch, tmp_path)
+    open_db(tmp_path / "store.db").close()
+    html = td.render_html(tmp_path / "store.db", now=datetime(2026, 9, 30, 3, 0, tzinfo=UTC))
+    row = re.search(r'<div class="report-archive-link">(.*?)</div>', html, re.S).group(1)
+    assert [h for h, _l, _s in td._FIXED_LINKS] == [
+        "report_archive.html", "reference.html", "jp.html"]
+    fixed = " &nbsp;·&nbsp; ".join(f'<a href="{h}">{l} →</a>' for h, l, _s in td._FIXED_LINKS)
+    assert row == fixed + srcs.nav_html(), row[:300]
+
+
+def test_archive_badge_tooltip_says_saved_not_posted(tmp_path, monkeypatch):
+    # 화면 E2E — 아카이브 배지만 '저장', 나머지는 '게시'(delta 리뷰 L10).
+    links = _links(_render_fixture(tmp_path, monkeypatch))
+    assert "새 보고서 저장" in links["report_archive.html"], links["report_archive.html"]
+    assert "새 데이터 게시" in links["tw.html"] and "새 보고서 저장" not in links["tw.html"]
+
+
 def test_render_reads_the_link_new_clock_when_now_is_not_given(tmp_path, monkeypatch):
     """운영 경로(render_html 에 now 없음)는 link_new.now_utc() 를 쓴다 — 렌더가 제 시계를
     따로 읽으면(datetime.now() 등) 호스트 시간대에 따라 배지가 9시간 일찍 꺼질 수 있고
@@ -523,12 +646,14 @@ def test_render_window_boundary_with_an_injected_clock(tmp_path, monkeypatch):
     from trade import tw_exports
     from trade.dashboard import render_html
     from trade.store import open_db
-    _archive_to(monkeypatch, tmp_path)
+    ra = _archive_to(monkeypatch, tmp_path)
     open_db(tmp_path / "store.db").close()
     conn = tw_exports.open_tw_db(tmp_path / "tw.db")
     _tw_row(conn, "반도체", "2026-09-27T15:00:00+00:00")              # KST 09-28 00:00
     conn.close()
     kst = link_new.KST
+    ra.record(kind="company", title="삼성전자", html_body="<p>x</p>", summary="s",
+              now=datetime(2026, 9, 30, 12, 0, tzinfo=kst))
     last = _links(render_html(tmp_path / "store.db",
                               now=datetime(2026, 10, 2, 23, 59, tzinfo=kst)))
     off = _links(render_html(tmp_path / "store.db",
@@ -541,6 +666,9 @@ def test_render_window_boundary_with_an_injected_clock(tmp_path, monkeypatch):
     early = _links(render_html(tmp_path / "store.db",
                                now=datetime(2026, 9, 20, 0, 0, tzinfo=kst)))
     assert 'class="link-new"' not in early["tw.html"], early["tw.html"]
+    # 아카이브 원천도 같은 시계로 거른다(09-30 저장은 09-20 에서 보면 10일 뒤).
+    assert 'class="link-new"' not in early["report_archive.html"], early["report_archive.html"]
+    assert 'class="link-new"' in last["report_archive.html"], last["report_archive.html"]
 
 
 def test_latest_report_ts_picks_the_latest_of_many(tmp_path, monkeypatch, caplog):
@@ -559,12 +687,16 @@ def test_latest_report_ts_picks_the_latest_of_many(tmp_path, monkeypatch, caplog
                for r in caplog.records), caplog.text
 
 
-def test_latest_report_ts_skips_lines_that_are_not_records(tmp_path, monkeypatch):
+def test_latest_report_ts_skips_lines_that_are_not_records(tmp_path, monkeypatch, caplog):
     ra = _archive_to(monkeypatch, tmp_path)
     ra.ARCHIVE_JSONL.write_text(
-        '[1, 2]\n"문자열"\n{"ts": "2026-09-27T21:00:00+09:00", "title": "x"}\n',
+        '[1, 2]\n"문자열"\n{"title": "ts 없는 레코드"}\n'
+        '{"ts": "2026-09-27T21:00:00+09:00", "title": "x"}\n',
         encoding="utf-8")
-    assert link_new.latest_report_ts() == datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    with caplog.at_level("WARNING", logger="trade.link_new"):
+        assert link_new.latest_report_ts() == datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    # ts 가 없는 레코드는 '없음' 이지 '판정할 수 없는 값' 이 아니다 — 세면 매 렌더 거짓 경고.
+    assert not any("판정할 수 없는" in r.getMessage() for r in caplog.records), caplog.text
 
 
 def test_guide_and_badge_read_the_same_window(tmp_path, monkeypatch):
@@ -648,7 +780,7 @@ def _ingest_one(tmp_path, caption: str, *, origin: str | None) -> dict:
 def test_ingest_stores_the_original_post_time_not_the_receive_time(tmp_path, caption, db_file):
     """화면 가이드가 "같은 글을 다시 받거나 다시 파싱해도 켜지지 않는다" 고 약속하는
     근거는 ingest 가 원 게시 시각(forward_origin_date)을 받은 시각(date)보다 먼저 쓰는
-    것 하나다. 그 순서를 뒤집어도 trade/tests 1,834건이 통과했다(리뷰 F2 — 그러면 모든
+    것 하나다. 그 순서를 뒤집어도 trade/tests 전체가 통과했다(리뷰 F2 — 그러면 모든
     재포워드·40일 회수가 5일간 거짓 NEW 를 띄운다). 세 경로 모두 ingest 를 태워 잰다."""
     counters = _ingest_one(tmp_path, caption, origin=_ORIGIN)
     latest = link_new.latest_posted_at(tmp_path / db_file)
@@ -663,3 +795,51 @@ def test_ingest_falls_back_to_the_receive_time_and_counts_it(tmp_path):
     counters = _ingest_one(tmp_path, _TW_CAP, origin=None)
     assert link_new.latest_posted_at(tmp_path / "tw.db") == datetime(2026, 9, 30, tzinfo=UTC)
     assert counters["posted_at_from_date"] == 1, dict(counters)
+
+
+def test_posted_at_treats_an_empty_origin_as_missing():
+    """원 게시 시각이 빈 문자열이어도 '없음' 이다 — 빈 값을 게시 시각으로 쓰면 그 글은
+    판정에서 빠지고, `is not None` 으로 바꾸는 변형이 통과했다(delta 리뷰 I9). 둘 다
+    없으면 빈 문자열(NULL 이 아니다 — I8)."""
+    from trade.scripts import ingest_inbox as ii
+    c: dict = {}
+    assert ii._posted_at({"forward_origin_date": "", "date": _RECEIVED}, c) == _RECEIVED
+    assert c == {"posted_at_from_date": 1}
+    assert ii._posted_at({}, c) == ""
+    assert c == {"posted_at_from_date": 2}
+    assert ii._posted_at({"forward_origin_date": _ORIGIN, "date": _RECEIVED}, c) == _ORIGIN
+    assert c == {"posted_at_from_date": 2}
+
+
+def test_ingest_main_logs_the_fallback_count_even_when_zero(tmp_path, monkeypatch, caplog):
+    """ingest counters 로그가 이 수를 **항상** 싣는다 — 0 이 보여야 '늘어나는 것' 을 볼 수
+    있다(delta 리뷰 I7: main 의 초기 키를 지워도 통과했다). main 을 실제로 태운다."""
+    import json
+    import sys
+    from trade.scripts import ingest_inbox as ii
+    inbox = tmp_path / "inbox.jsonl"
+    rows = [
+        {"caption_present": True, "caption": _TW_CAP, "chat_id": -100, "message_id": 1,
+         "media_group_id": None, "date": _RECEIVED, "forward_origin_date": _ORIGIN},
+    ]
+    inbox.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                     encoding="utf-8")
+
+    def run() -> str:
+        monkeypatch.setattr(sys, "argv", ["ingest_inbox", "--inbox", str(inbox),
+                                          "--db", str(tmp_path / "store.db"),
+                                          "--media-root", str(tmp_path / "media")])
+        caplog.clear()
+        with caplog.at_level("INFO", logger="ingest"):
+            assert ii.main() == 0
+        got = [r.getMessage() for r in caplog.records
+               if r.getMessage().startswith("ingest counters:")]
+        assert len(got) == 1, got
+        return got[0]
+
+    assert "'posted_at_from_date': 0" in run()
+    rows.append({"caption_present": True, "caption": _TW_CAP.replace("테스트", "다른 품목"),
+                 "chat_id": -100, "message_id": 2, "media_group_id": None, "date": _RECEIVED})
+    inbox.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                     encoding="utf-8")
+    assert "'posted_at_from_date': 1" in run()

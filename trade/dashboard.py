@@ -738,7 +738,9 @@ def _build_html(
         # 곁들이는 배지를 만드는 단계에서도 본체를 못 죽인다 — 던지면 그 링크만 배지
         # 없이 그린다(실수 #315, 격리를 조회 단계에만 걸었던 것을 리뷰가 잡았다).
         try:
-            return _ln.badge_html(_link_ts.get(href), _now)
+            # source 는 툴팁 낱말을 고른다(AI 보고서 아카이브는 '게시'가 아니라 '저장').
+            return _ln.badge_html(_link_ts.get(href), _now,
+                                  source=_FIXED_LINK_NEW_SRC.get(href))
         except Exception as exc:
             import logging          # 이 파일의 기존 관례(로컬 임포트)
             logging.getLogger("trade-dashboard").warning(

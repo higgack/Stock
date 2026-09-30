@@ -162,7 +162,12 @@ def _posted_at(primary: dict, counters: dict) -> str:
     순서가 계약이다: 같은 글을 다시 포워드하거나(#405) 회수해도(#403) posted_at 이
     그대로여야 수출입 대시보드의 NEW(형제 링크 `trade.link_new` · 알림 카드
     `isAlertNew`)가 재수신에 켜지지 않는다. date 로 떨어지면(포워드가 아닌 글 — 릴레이가
-    forward 대신 copy 를 쓰면 전부 이렇게 된다) 받은 시각이 게시 시각이 되므로 센다."""
+    forward 대신 copy 를 쓰면 전부 이렇게 된다) 받은 시각이 게시 시각이 되므로 센다.
+    원 게시 시각이 빈 문자열이어도 없는 것으로 본다.
+
+    ingest 는 매번 inbox 전체를 다시 돌므로 이 수는 이번 실행에 새로 온 글이 아니라
+    **inbox 안에 그런 글이 몇 건인가**다(inbox 는 로테이션이 없어 한 번 생기면 계속
+    보인다) — 신호는 값 자체가 아니라 **늘어나는 것**이다."""
     origin = primary.get("forward_origin_date")
     if origin:
         return origin
@@ -375,8 +380,9 @@ def main() -> int:
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
-        # 원 게시 시각(forward_origin_date)이 없어 받은 시각으로 posted_at 을 쓴 글 —
-        # 0 이 아니면 그 글들은 재수신 때 NEW 가 다시 켜질 수 있다(_posted_at).
+        # inbox 안에서 원 게시 시각(forward_origin_date) 없이 받은 시각으로 posted_at 을
+        # 쓰는 글 수 — 매 실행 inbox 전체를 다시 돌아 누적이 아니라 지금 수다. 늘어나면
+        # (릴레이가 copy 로 바뀌는 등) 그 글들은 다시 받을 때 NEW 가 다시 켜질 수 있다.
         "posted_at_from_date": 0,
     }
     unparsed: list = [] if args.show_unparsed else None
