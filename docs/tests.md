@@ -2508,3 +2508,38 @@ DAJU 는 **돌고 있을 때만** 재시작한다 — 재시작 사이에 온 �
 (Low) 실패 갈래를 형제·설치기에 옮김 · `LC_ALL=C` · 'no changes' 를 '자동 설치 완료' 라 적던 것 · NOAH `deploy/` 경로 ·
 sleep 순서 · 절대 경로 가드 · `GIT_*` · 넓은 부류 선언 · `_SUDO_N` 반대 증거 · 문서 수치(유닛마다 bot 131~157 · DAJU 정적 폐포
 bot 최상위 123/192 — 첫 판은 'bot 전부' 라 적었다 · 리뷰 실측 30일 136회 중 35회가 정적 폐포 밖 변경).
+
+## 수출입 형제 링크 NEW — 원천이 최근 5일 안에 새 데이터를 게시한 페이지 (`trade/tests/test_link_new.py` 28건 · `test_badonion_sources` 소스 문자열 단언 1건 다시 씀 · 2026-09-30)
+
+사용자 "수출입에 여기 대시보드쪽에 업데이트가 되는것이 있으면 5일간 New 라는 표시가 있어서 체크해야한다는걸 내가
+알아볼수 있게해줘" — 수출입 대시보드 상단 형제 링크 줄(고정 3개 + 나쁜양파 레지스트리 17개)에 NEW 를 붙인다.
+기준은 **원천의 원 게시 시각**(`posted_at` — ingest_inbox 가 `forward_origin_date` 를 싣는다)이고, 창은 KST 달력일로
+게시일 포함 5일(`trade.link_new.NEW_DAYS`)이다. 같은 대시보드 알림 카드의 NEW(`isAlertNew` — posted_at 기준 7일)와
+같은 축이다. `updated_at` 은 매 upsert(재포워드·재파싱 포함)마다 지금 시각으로 바뀌어 기준이 될 수 없다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 창은 KST 달력일 · 게시일 = 1일째 · 6일째엔 꺼진다 | ✅ 자동 | `test_is_new_counts_kst_calendar_days_including_post_day` — UTC 날짜로 세는 변형·`<=` 변형 발화 |
+| 시간대 없는 now 는 UTC — 호스트 로컬 시간대가 아니다(규칙 10a) | ✅ 자동 | `test_naive_now_is_utc_not_the_host_local_zone` — 테스트 중에만 TZ 를 뉴욕으로 바꿔 잰다(샌드박스·VM 이 마침 UTC 면 안 보이는 결함) |
+| 가이드 문구의 'N일' 과 배지 창이 같은 상수를 **호출 시점에** 읽는다 | ✅ 자동 | `test_default_window_is_read_at_call_time` · `test_guide_and_badge_read_the_same_window` |
+| 툴팁 = 마지막 게시 시각(KST) · 게시일 포함 N일 | ✅ 자동 | `test_badge_html_shows_kst_post_time_in_tooltip` |
+| 게시 시각은 **파싱해** 비교한다(문자열 MAX 는 오프셋이 섞이면 틀린다) | ✅ 자동 | `test_latest_posted_at_parses_instead_of_string_max` |
+| 읽기 전용 — DB 가 없으면 만들지 않고 경고도 안 남긴다(데이터 없는 소스는 정상) | ✅ 자동 | `test_latest_posted_at_missing_file_is_none_and_not_created` |
+| 못 읽는 DB 는 그 링크만 판정하지 않고 경고를 남긴다(#12) · WAL 쓰기 연결이 열려 있어도 읽힌다 | ✅ 자동 | `test_latest_posted_at_corrupt_file_warns_and_returns_none` · `test_latest_posted_at_reads_while_a_wal_writer_is_open` |
+| 렌더 경로 배선 — 게시가 창 안인 페이지에만 NEW(대만·비온·AI 보고서 아카이브 ✓ · 30일 전 중국 · 레퍼런스북 ✗) | ✅ 자동(E2E) | `test_render_puts_new_only_on_recently_posted_pages` — 픽스처는 제품 삽입 경로(`upsert_*`·`record`), 게시 시각은 지금 시계에서 파생 |
+| 링크 줄의 모든 href 가 판정 원천을 갖는다 · 판정하지 않는 링크는 `reference.html` 하나(크기 고정) | ✅ 자동 | `test_every_link_in_the_row_has_a_declared_new_source` — 렌더된 링크 줄 = `_link_latest()` 키 집합(#24) |
+| NEW 배지 셋(링크·카드·섹션)이 한 토큰(`--new`/`--new-on`)을 쓰고 흰 글씨 대비가 AA(5.38:1) | ✅ 자동 | `test_new_badge_css_is_defined_and_meets_aa` — 옛 리터럴 `#ff3b30` 은 3.55:1 이었다(#355) |
+
+뮤테이션 20종(KST→UTC 날짜 · 창 `<=` · 문자열 MAX · 파일 존재 가드 · 레지스트리/고정 링크/`links_dir` 배선 · 판정 원천 표 ·
+CSS · 옛 리터럴 · 가이드 리터럴 · 기본 창 고정 · 툴팁 UTC · 아카이브 원천 · naive now ×2 · 손상 DB 경고 · nav 배지 무시)이
+전부 겨냥한 테스트에서 잡혔다(`-x` 없이 · 복원은 녹색 백업 + md5). 첫 실행에서 둘이 살아남아 고쳤다 — DB **여는** 단계의
+실패 분기는 sqlite 가 비-DB 파일도 connect 에선 안 던져 테스트가 한 번도 안 탔다(열기·읽기를 한 분기로 합쳤다, #291),
+naive now 변형은 샌드박스 로컬 시간대가 UTC 라 티가 안 났다(TZ 를 바꿔 잰다).
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **회수(백필)된 옛 글** — 놓쳤던 글을 나중에 받아도 게시 시각이 5일보다 오래됐으면 NEW 가 안 붙는다. 자동 회수의
+  기본 창이 3일이라 대개 창 안이지만, 40일 회수(#403)로 들어온 글은 페이지에 새 행이 생겨도 조용하다.
+- (b) **레퍼런스북**은 판정하지 않는다 — 원천이 '게시'하는 데이터가 아니라 연계표·큐레이션 참조표라 게시 시각이 없다.
+  미매칭 후보가 새로 생길 때 NEW 를 원하면 후보 큐의 첫 등록 시각이 필요하다(지금은 안 기록한다).
+- (c) 배지는 렌더 시각으로 판정한다 — 대시보드가 5분마다 다시 그려지므로 NEW 가 붙고 떨어지는 것도 그 주기를 따르고,
+  렌더가 멈추면 배지도 그 자리에 멈춘다(헤더의 렌더 시각이 그걸 말한다).

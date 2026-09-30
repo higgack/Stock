@@ -201,8 +201,21 @@ class ConsumersUseRegistryTests(unittest.TestCase):
                    if by_key[k].country == country]
             self.assertEqual(pos, list(range(min(pos), max(pos) + 1)),
                              f"{country} 소스가 nav 에서 흩어졌다: {order}")
-        self.assertIn("_srcs_nav_html()", Path("trade/dashboard.py").read_text(
-            encoding="utf-8"), "대시보드가 nav 를 레지스트리에서 안 받음")
+        # 대시보드가 nav 를 레지스트리에서 받는가 — 옛 판은 dashboard.py 소스에
+        # "_srcs_nav_html()" 문자열이 있는지 봤는데(실수 #19 소스 문자열 단언),
+        # 2026-09-30 NEW 배지를 넘기느라 호출이 `_srcs_nav_html(badge_for=…)` 가
+        # 되자 멀쩡한 배선을 틀렸다고 했다. 렌더 결과로 잰다(test_link_new 가 같은
+        # 링크 줄을 NEW 판정 표와 함께 전수로 잰다).
+        import tempfile
+        from trade.dashboard import render_html
+        from trade.store import open_db
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "store.db"
+            open_db(db).close()
+            html = render_html(db)
+        for s in srcs.nav_sources():
+            self.assertIn(f'<a href="{s.html_file}">{s.nav_label}', html,
+                          f"대시보드가 nav 를 레지스트리에서 안 받음: {s.key}")
 
     def test_no_flag_emoji_in_display_labels(self):
         """국기 이모지(regional indicator)는 **표시 문자열에 금지**.

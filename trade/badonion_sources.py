@@ -762,11 +762,15 @@ def nav_sources() -> list[Source]:
     return [s for s in out if s is not None and s.html_file]
 
 
-def nav_html() -> str:
+def nav_html(*, badge_for=None) -> str:
     """index.html 상단 형제 대시보드 링크. 하드코딩 9줄을 대체해, 소스를
     추가하면 nav 도 자동으로 따라오게 한다(옛 코드는 nav 만 빠뜨리면 페이지가
-    생성돼도 도달 불가였다)."""
+    생성돼도 도달 불가였다).
+
+    ``badge_for(html_file)`` 를 주면 그 반환값을 라벨 뒤에 붙인다 — 대시보드의
+    NEW 표시(``trade.link_new``)가 이 자리로 들어온다."""
     return "".join(
-        f' &nbsp;·&nbsp; <a href="{s.html_file}">{s.nav_label} →</a>'
+        f' &nbsp;·&nbsp; <a href="{s.html_file}">{s.nav_label}'
+        f'{badge_for(s.html_file) if badge_for else ""} →</a>'
         for s in nav_sources()
     )
