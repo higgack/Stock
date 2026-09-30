@@ -155,6 +155,21 @@ def _row_head(row: dict, width: int = 160) -> str:
     return f"{when} · msg {row.get('message_id')} · {head}"
 
 
+def _posted_at(primary: dict, counters: dict) -> str:
+    """저장할 posted_at — 포워드면 **원래 글의 게시 시각**(forward_origin_date), 아니면
+    봇이 받은 시각(date).
+
+    순서가 계약이다: 같은 글을 다시 포워드하거나(#405) 회수해도(#403) posted_at 이
+    그대로여야 수출입 대시보드의 NEW(형제 링크 `trade.link_new` · 알림 카드
+    `isAlertNew`)가 재수신에 켜지지 않는다. date 로 떨어지면(포워드가 아닌 글 — 릴레이가
+    forward 대신 copy 를 쓰면 전부 이렇게 된다) 받은 시각이 게시 시각이 되므로 센다."""
+    origin = primary.get("forward_origin_date")
+    if origin:
+        return origin
+    counters["posted_at_from_date"] = counters.get("posted_at_from_date", 0) + 1
+    return primary.get("date") or ""
+
+
 def _ingest_group(
     conn,
     group: list[dict],
@@ -208,8 +223,7 @@ def _ingest_group(
             stored = _jp.ingest(
                 jp_conn, caption_text,
                 source_message_id=primary.get("message_id"),
-                posted_at=primary.get("forward_origin_date")
-                or primary.get("date") or "",
+                posted_at=_posted_at(primary, counters),
                 media_paths=jp_media)
             counters["jp_inserted"] = counters.get("jp_inserted", 0) + (1 if stored else 0)
             return
@@ -234,8 +248,7 @@ def _ingest_group(
             stored = _src.ingest(
                 _conn, caption_text,
                 source_message_id=primary.get("message_id"),
-                posted_at=primary.get("forward_origin_date")
-                or primary.get("date") or "",
+                posted_at=_posted_at(primary, counters),
                 media_paths=_media)
             _ck = f"{_src.key}_inserted"
             counters[_ck] = counters.get(_ck, 0) + (1 if stored else 0)
@@ -262,7 +275,7 @@ def _ingest_group(
         media_group_id=primary.get("media_group_id"),
         ingested_at=primary.get("ingested_at")
         or datetime.now(timezone.utc).isoformat(),
-        posted_at=primary.get("forward_origin_date") or primary.get("date") or "",
+        posted_at=_posted_at(primary, counters),
         raw_text=caption_text,
         media_paths=media_paths,
     )
@@ -362,6 +375,9 @@ def main() -> int:
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
+        # 원 게시 시각(forward_origin_date)이 없어 받은 시각으로 posted_at 을 쓴 글 —
+        # 0 이 아니면 그 글들은 재수신 때 NEW 가 다시 켜질 수 있다(_posted_at).
+        "posted_at_from_date": 0,
     }
     unparsed: list = [] if args.show_unparsed else None
     for grp in groups:

@@ -222,10 +222,10 @@ def sources_with_grammar(grammar: str) -> tuple[Source, ...]:
 _BASIS_RANK = {"item": 0, "company": 1}
 _FLOW_RANK = {"export": 0, "import": 1, "index": 2, "revenue": 3}
 
-# 레지스트리 **밖**에서 nav 에 실리는 대시보드 수. dashboard.py 가 jp.html
-# (일본/비온)을 직접 하드코딩하는데, 나라별 개수 판정에 이게 빠지면 일본이
-# 2개로 세어져 순위가 틀어진다. 테스트가 dashboard.py 의 jp.html 링크와
-# 이 상수를 함께 고정한다(한쪽만 사라지면 계수가 조용히 어긋난다).
+# 레지스트리 **밖**에서 nav 에 실리는 대시보드 수. dashboard.py 의 고정 링크 표
+# (_FIXED_LINKS)에 jp.html(일본/비온)이 있는데, 나라별 개수 판정에 이게 빠지면
+# 일본이 2개로 세어져 순위가 틀어진다. 테스트가 그 표의 jp.html 과 이 상수를
+# 함께 고정한다(한쪽만 사라지면 계수가 조용히 어긋난다).
 _EXTRA_COUNTRY_PAGES: dict[str, int] = {"일본": 1}
 
 

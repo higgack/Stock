@@ -426,9 +426,13 @@ class TestNavOrderRule20260820(unittest.TestCase):
 
     def test_extra_country_pages_matches_dashboard_hardcoded_link(self):
         """일본은 레지스트리 밖 jp.html(비온)까지 3개다. dashboard.py 에서
-        그 링크가 사라지면 계수가 조용히 어긋나므로 함께 고정한다."""
-        dash = Path("trade/dashboard.py").read_text(encoding="utf-8")
-        self.assertIn('href="jp.html"', dash,
+        그 링크가 사라지면 계수가 조용히 어긋나므로 함께 고정한다.
+
+        ⚠️ 옛 판은 dashboard.py **소스**에서 'href="jp.html"' 문자열을 찾았다 —
+        고정 링크를 표(_FIXED_LINKS)에서 만들게 바꾸자(2026-09-30 NEW 배지) 멀쩡한
+        링크를 사라졌다고 했다(실수 #19). 링크 줄을 만드는 그 표를 본다."""
+        from trade import dashboard as td
+        self.assertIn("jp.html", {href for href, _label, _src in td._FIXED_LINKS},
                       "비온 일본 링크가 사라짐 — _EXTRA_COUNTRY_PAGES 갱신 필요")
         self.assertEqual(srcs._EXTRA_COUNTRY_PAGES, {"일본": 1})
         # ⚠️ 옛 판은 "그 결과 일본이 1순위" 였는데, 중국이 3페이지가 되며
