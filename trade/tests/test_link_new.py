@@ -288,9 +288,40 @@ def test_every_link_in_the_row_has_a_declared_new_source(tmp_path, monkeypatch):
         sorted(set(links) ^ set(td._link_latest(tmp_path))))
     # 판정하지 않는 링크는 사유와 함께 선언한 것만 — 늘리려면 이 테스트를 고쳐야 한다.
     assert {h for h, s in td._FIXED_LINK_NEW_SRC.items() if s is None} == {"reference.html"}
+    # _link_latest 는 링크마다 예외를 삼키므로(곁들이가 본체를 죽이면 안 된다) 판정 원천
+    # 표의 오타는 렌더로는 안 보인다 — 표의 값을 직접 불러 잡는다.
+    for src in td._FIXED_LINK_NEW_SRC.values():
+        link_new.latest_for(src, tmp_path)
     # 나쁜양파 레지스트리의 모든 페이지가 링크 줄에 있다(옛 판의 소스 문자열 검사를
     # 렌더 결과로 옮긴 것 — test_badonion_sources 참고).
     assert {s.html_file for s in srcs.nav_sources()} <= set(links)
+
+
+def test_one_failing_link_does_not_break_the_dashboard(tmp_path, monkeypatch, caplog):
+    """NEW 는 곁들이다 — 한 링크의 판정이 던져도 그 링크만 배지를 잃고, 대시보드와
+    나머지 링크의 NEW 는 그대로 그려져야 한다(실수 #315 곁들이 하나가 본체를 지운다)."""
+    real = link_new.latest_posted_at
+
+    def flaky(db_path):
+        if Path(db_path).name == "tw.db":
+            raise RuntimeError("boom")
+        return real(db_path)
+
+    monkeypatch.setattr(link_new, "latest_posted_at", flaky)
+    with caplog.at_level("WARNING", logger="trade-dashboard"):
+        links = _links(_render_fixture(tmp_path, monkeypatch))
+    new = {h for h, inner in links.items() if 'class="link-new"' in inner}
+    assert new == {"jp.html", "report_archive.html"}, new
+    assert any("tw.html" in r.getMessage() and "RuntimeError" in r.getMessage()
+               for r in caplog.records), caplog.text
+
+
+def test_latest_report_ts_skips_lines_that_are_not_records(tmp_path, monkeypatch):
+    ra = _archive_to(monkeypatch, tmp_path)
+    ra.ARCHIVE_JSONL.write_text(
+        '[1, 2]\n"문자열"\n{"ts": "2026-09-27T21:00:00+09:00", "title": "x"}\n',
+        encoding="utf-8")
+    assert link_new.latest_report_ts() == datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
 
 
 def test_guide_and_badge_read_the_same_window(tmp_path, monkeypatch):

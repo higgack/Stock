@@ -671,13 +671,24 @@ _FIXED_LINK_NEW_SRC: dict[str, str | None] = {
 
 def _link_latest(data_dir: Path | str) -> dict[str, datetime | None]:
     """형제 링크(href) → 그 페이지에 원천이 마지막으로 새 데이터를 게시한 시각.
-    고정 링크(``_FIXED_LINK_NEW_SRC``) + 나쁜양파 레지스트리 전부."""
+    고정 링크(``_FIXED_LINK_NEW_SRC``) + 나쁜양파 레지스트리(``db:<db_file>``) 전부.
+
+    NEW 는 곁들이다 — 한 링크의 판정이 던지면 그 링크만 None(배지 없음)으로 두고
+    경고를 남긴다. 판정 하나 때문에 대시보드 본체가 같이 죽으면 안 된다(실수 #315)."""
+    import logging          # 이 파일의 기존 관례(로컬 임포트)
     from trade import badonion_sources as _srcs
     from trade import link_new
-    out = {href: link_new.latest_for(src, data_dir)
-           for href, src in _FIXED_LINK_NEW_SRC.items()}
-    for s in _srcs.nav_sources():
-        out[s.html_file] = link_new.latest_posted_at(Path(data_dir) / s.db_file)
+    pairs = list(_FIXED_LINK_NEW_SRC.items()) + [
+        (s.html_file, "db:" + s.db_file) for s in _srcs.nav_sources()]
+    out: dict[str, datetime | None] = {}
+    for href, src in pairs:
+        try:
+            out[href] = link_new.latest_for(src, data_dir)
+        except Exception as exc:
+            logging.getLogger("trade-dashboard").warning(
+                "NEW 판정 실패 — %s 은(는) 배지 없이 그립니다: %s: %s",
+                href, type(exc).__name__, exc)
+            out[href] = None
     return out
 
 

@@ -99,6 +99,8 @@ def latest_report_ts() -> datetime | None:
     from trade import report_archive
     best: datetime | None = None
     for rec in report_archive.load_runs():
+        if not isinstance(rec, dict):      # load_runs 는 JSON 이기만 하면 싣는다
+            continue
         dt = parse_ts(rec.get("ts"))
         if dt is not None and (best is None or dt > best):
             best = dt

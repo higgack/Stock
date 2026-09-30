@@ -2509,7 +2509,7 @@ DAJU 는 **돌고 있을 때만** 재시작한다 — 재시작 사이에 온 �
 sleep 순서 · 절대 경로 가드 · `GIT_*` · 넓은 부류 선언 · `_SUDO_N` 반대 증거 · 문서 수치(유닛마다 bot 131~157 · DAJU 정적 폐포
 bot 최상위 123/192 — 첫 판은 'bot 전부' 라 적었다 · 리뷰 실측 30일 136회 중 35회가 정적 폐포 밖 변경).
 
-## 수출입 형제 링크 NEW — 원천이 최근 5일 안에 새 데이터를 게시한 페이지 (`trade/tests/test_link_new.py` 28건 · `test_badonion_sources` 소스 문자열 단언 1건 다시 씀 · 2026-09-30)
+## 수출입 형제 링크 NEW — 원천이 최근 5일 안에 새 데이터를 게시한 페이지 (`trade/tests/test_link_new.py` 30건 · `test_badonion_sources` 소스 문자열 단언 1건 다시 씀 · 2026-09-30)
 
 사용자 "수출입에 여기 대시보드쪽에 업데이트가 되는것이 있으면 5일간 New 라는 표시가 있어서 체크해야한다는걸 내가
 알아볼수 있게해줘" — 수출입 대시보드 상단 형제 링크 줄(고정 3개 + 나쁜양파 레지스트리 17개)에 NEW 를 붙인다.
@@ -2527,14 +2527,17 @@ bot 최상위 123/192 — 첫 판은 'bot 전부' 라 적었다 · 리뷰 실측
 | 읽기 전용 — DB 가 없으면 만들지 않고 경고도 안 남긴다(데이터 없는 소스는 정상) | ✅ 자동 | `test_latest_posted_at_missing_file_is_none_and_not_created` |
 | 못 읽는 DB 는 그 링크만 판정하지 않고 경고를 남긴다(#12) · WAL 쓰기 연결이 열려 있어도 읽힌다 | ✅ 자동 | `test_latest_posted_at_corrupt_file_warns_and_returns_none` · `test_latest_posted_at_reads_while_a_wal_writer_is_open` |
 | 렌더 경로 배선 — 게시가 창 안인 페이지에만 NEW(대만·비온·AI 보고서 아카이브 ✓ · 30일 전 중국 · 레퍼런스북 ✗) | ✅ 자동(E2E) | `test_render_puts_new_only_on_recently_posted_pages` — 픽스처는 제품 삽입 경로(`upsert_*`·`record`), 게시 시각은 지금 시계에서 파생 |
-| 링크 줄의 모든 href 가 판정 원천을 갖는다 · 판정하지 않는 링크는 `reference.html` 하나(크기 고정) | ✅ 자동 | `test_every_link_in_the_row_has_a_declared_new_source` — 렌더된 링크 줄 = `_link_latest()` 키 집합(#24) |
+| 링크 줄의 모든 href 가 판정 원천을 갖는다 · 판정하지 않는 링크는 `reference.html` 하나(크기 고정) · 판정 원천 표의 오타는 직접 불러 잡는다 | ✅ 자동 | `test_every_link_in_the_row_has_a_declared_new_source` — 렌더된 링크 줄 = `_link_latest()` 키 집합(#24) |
+| NEW 는 곁들이 — 한 링크의 판정이 던져도 그 링크만 배지를 잃고 대시보드·나머지 링크는 그대로, 사유는 경고로(#315·#12) | ✅ 자동(E2E) | `test_one_failing_link_does_not_break_the_dashboard` |
+| AI 보고서 아카이브 jsonl 에 dict 가 아닌 줄(리스트·문자열)이 섞여도 건너뛴다 — `load_runs` 는 JSON 이기만 하면 싣는다 | ✅ 자동 | `test_latest_report_ts_skips_lines_that_are_not_records` |
 | NEW 배지 셋(링크·카드·섹션)이 한 토큰(`--new`/`--new-on`)을 쓰고 흰 글씨 대비가 AA(5.38:1) | ✅ 자동 | `test_new_badge_css_is_defined_and_meets_aa` — 옛 리터럴 `#ff3b30` 은 3.55:1 이었다(#355) |
 
-뮤테이션 20종(KST→UTC 날짜 · 창 `<=` · 문자열 MAX · 파일 존재 가드 · 레지스트리/고정 링크/`links_dir` 배선 · 판정 원천 표 ·
-CSS · 옛 리터럴 · 가이드 리터럴 · 기본 창 고정 · 툴팁 UTC · 아카이브 원천 · naive now ×2 · 손상 DB 경고 · nav 배지 무시)이
-전부 겨냥한 테스트에서 잡혔다(`-x` 없이 · 복원은 녹색 백업 + md5). 첫 실행에서 둘이 살아남아 고쳤다 — DB **여는** 단계의
+뮤테이션 24종(KST→UTC 날짜 · 창 `<=` · 문자열 MAX · 파일 존재 가드 · 레지스트리/고정 링크/`links_dir` 배선 · 판정 원천 표 ·
+CSS · 옛 리터럴 · 가이드 리터럴 · 기본 창 고정 · 툴팁 UTC · 아카이브 원천 · naive now ×2 · 손상 DB 경고 · nav 배지 무시 ·
+링크 격리를 좁히기 · 격리 경고 제거 · dict 아닌 줄 · 판정 원천 오타)이 전부 겨냥한 테스트에서 잡혔다(`-x` 없이 · 복원은 녹색 백업 + md5). 첫 실행에서 둘이 살아남아 고쳤다 — DB **여는** 단계의
 실패 분기는 sqlite 가 비-DB 파일도 connect 에선 안 던져 테스트가 한 번도 안 탔다(열기·읽기를 한 분기로 합쳤다, #291),
-naive now 변형은 샌드박스 로컬 시간대가 UTC 라 티가 안 났다(TZ 를 바꿔 잰다).
+naive now 변형은 샌드박스 로컬 시간대가 UTC 라 티가 안 났다(TZ 를 바꿔 잰다). 셀프리뷰가 하나를 더 찾았다 — 판정 하나가
+예상 밖으로 던지면(아카이브 jsonl 의 dict 아닌 줄 등) **대시보드 렌더 전체**가 죽었다. 링크마다 따로 감싸 그 링크만 배지를 잃게 했다.
 
 **이 검사들이 못 보는 축**(#274):
 - (a) **회수(백필)된 옛 글** — 놓쳤던 글을 나중에 받아도 게시 시각이 5일보다 오래됐으면 NEW 가 안 붙는다. 자동 회수의
