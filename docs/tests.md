@@ -2508,3 +2508,115 @@ DAJU 는 **돌고 있을 때만** 재시작한다 — 재시작 사이에 온 �
 (Low) 실패 갈래를 형제·설치기에 옮김 · `LC_ALL=C` · 'no changes' 를 '자동 설치 완료' 라 적던 것 · NOAH `deploy/` 경로 ·
 sleep 순서 · 절대 경로 가드 · `GIT_*` · 넓은 부류 선언 · `_SUDO_N` 반대 증거 · 문서 수치(유닛마다 bot 131~157 · DAJU 정적 폐포
 bot 최상위 123/192 — 첫 판은 'bot 전부' 라 적었다 · 리뷰 실측 30일 136회 중 35회가 정적 폐포 밖 변경).
+
+## 수출입 형제 링크 NEW — 원천이 최근 5일 안에 새 데이터를 게시한 페이지 (`trade/tests/test_link_new.py` 63건 · `test_badonion_sources` 소스 문자열 단언 2건 다시 씀 · 2026-09-30)
+
+사용자 "수출입에 여기 대시보드쪽에 업데이트가 되는것이 있으면 5일간 New 라는 표시가 있어서 체크해야한다는걸 내가
+알아볼수 있게해줘" — 수출입 대시보드 상단 형제 링크 줄(고정 3개 + 나쁜양파 레지스트리 17개)에 NEW 를 붙인다.
+기준은 **원천의 원 게시 시각**(`posted_at` — ingest_inbox 가 `forward_origin_date` 를 싣는다)이고, 창은 KST 달력일로
+게시일 포함 5일(`trade.link_new.NEW_DAYS`)이다. 같은 대시보드 알림 카드의 NEW(`isAlertNew`)와 **같은 축**(posted_at)이지만
+창과 날짜 계산은 다르다(카드는 posted_at 문자열의 앞 10자를 브라우저의 KST 오늘과 비교해 7일). `updated_at` 은 매 upsert
+(재포워드·재파싱 포함)마다 지금 시각으로 바뀌어 기준이 될 수 없다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 창은 KST 달력일 · 게시일 = 1일째 · 6일째엔 꺼진다 — 헬퍼와 **렌더 경로 둘 다**(렌더에 시각을 넣어 5일째 23:59 / 6일째 00:00 KST 를 E2E 로) | ✅ 자동 | `test_is_new_counts_kst_calendar_days_including_post_day` · `test_render_window_boundary_with_an_injected_clock` |
+| 시간대 없는 시각(now·posted_at·먼 미래 거르기의 기준 셋 다)은 UTC — 호스트 로컬 시간대가 아니다(규칙 10a). 호스트 시간대를 **POSIX 문자열**로 바꿔 잰다(tzdata 없는 호스트에서도 동작 · 바뀐 오프셋을 재서 확인) | ✅ 자동 | `test_naive_now_is_utc_not_the_host_local_zone` · `test_parse_ts_naive_is_utc_not_the_host_local_zone` · `test_far_future_limit_reads_a_naive_now_as_utc` |
+| 렌더의 기본 시계는 `link_new.now_utc()`(시간대가 붙은 UTC) — 렌더가 제 시계를 따로 읽으면 KST 호스트에서 배지가 9시간 일찍 꺼진다. 넣은 시각은 DB 원천과 아카이브 원천의 먼 미래 거르기에도 쓰인다(한 렌더에 시계는 하나) | ✅ 자동 | `test_now_utc_is_aware_utc_whatever_the_host_zone` · `test_render_reads_the_link_new_clock_when_now_is_not_given` · `test_latest_for_passes_the_clock_to_both_kinds_of_source` · 경계 E2E 의 `early` |
+| 가이드 문구의 'N일' 과 배지 창이 같은 상수를 **호출 시점에** 읽는다 | ✅ 자동 | `test_default_window_is_read_at_call_time` · `test_guide_and_badge_read_the_same_window` |
+| 툴팁 = 마지막 게시 시각(KST) · 게시일 포함 N일 — AI 보고서 아카이브는 '새 보고서 저장 · 저장일 포함'(가이드와 같은 말) | ✅ 자동 | `test_badge_html_shows_kst_post_time_in_tooltip` · `test_badge_html_words_follow_the_source` · `test_archive_badge_tooltip_says_saved_not_posted` |
+| 게시 시각은 **파싱해** 비교하고 가장 늦은 것을 고른다(문자열 MAX 는 오프셋이 섞이면 틀린다 · 아카이브도 여러 건 중 최댓값) | ✅ 자동 | `test_latest_posted_at_parses_instead_of_string_max` · `test_latest_report_ts_picks_the_latest_of_many` |
+| 판정할 수 없는 값(ISO 가 아닌 값 · KST 로 못 옮기는 달력 끝 0001·9999년)은 빼고 **몇 건인지 경고** — 그런 값 한 행이 렌더 전체를 OverflowError 로 멈췄다. 빈 값(None·'')은 '없음' 이라 안 센다 | ✅ 자동 | `test_parse_ts_rejects_values_kst_cannot_hold` · `test_latest_posted_at_warns_about_values_it_cannot_judge` · `test_latest_report_ts_skips_lines_that_are_not_records` |
+| 극단값이 페이지의 **유일한** 게시여도 렌더는 그려지고, 값은 배지 단계의 안전망이 아니라 **읽는 자리**에서 걸러지고 말해진다 · 정상 행과 함께면 정상 행이 이긴다 | ✅ 자동(E2E) | `test_an_extreme_posted_at_alone_is_dropped_where_it_is_read` · `test_an_extreme_posted_at_does_not_break_the_dashboard` |
+| 지금보다 1일(`FUTURE_SLACK`) 넘게 미래인 값은 원 게시 시각이 아니다 — 빼고 몇 건·가장 늦은 값을 경고. 여유의 **크기**는 리터럴로(9·23시간은 받고 25시간은 뺀다) · 경계는 받는다 | ✅ 자동 | `test_latest_posted_at_skips_far_future_values_and_says_so` · `test_future_slack_keeps_a_timezone_slip_and_drops_a_day_ahead` · `test_far_future_limit_reads_the_link_new_clock_by_default` |
+| 읽기 전용 — DB 가 없으면 만들지 않고 경고도 안 남긴다 · 연결이 실제로 쓰기를 거절한다(`mode=ro`) | ✅ 자동 | `test_latest_posted_at_missing_file_is_none_and_not_created` · `test_latest_posted_at_opens_the_db_read_only` |
+| 못 읽는 DB 는 그 링크만 판정하지 않고 경고를 남긴다(#12) · WAL 쓰기 연결이 열려 있어도 읽힌다 | ✅ 자동 | `test_latest_posted_at_corrupt_file_warns_and_returns_none` · `test_latest_posted_at_reads_while_a_wal_writer_is_open` |
+| 렌더 경로 배선 — 게시가 창 안인 페이지에만 NEW(대만·비온·AI 보고서 아카이브 ✓ · 30일 전 중국 · 레퍼런스북 ✗), 배지는 붙은 모든 링크에서 라벨 뒤·화살표 앞 | ✅ 자동(E2E) | `test_render_puts_new_only_on_recently_posted_pages` — 픽스처는 제품 삽입 경로(`upsert_*`·`record`), 게시 시각은 지금 시계에서 파생 |
+| 판정 원천이 있는 **모든** 링크가 새 게시가 있으면 배지를 받는다(고정 링크는 `_FIXED_LINKS` 표에서 만든다) · 링크 줄의 순서·구분자는 손글씨 앵커 때와 같다(고정 링크 순서는 리터럴) | ✅ 자동(E2E) | `test_every_judged_link_gets_its_badge_right_before_the_arrow` · `test_link_row_order_and_separators_are_unchanged` |
+| 링크 줄의 모든 href 가 판정 원천을 갖는다 · 판정하지 않는 링크는 `reference.html` 하나(크기 고정) · 판정 원천 표의 오타는 직접 불러 잡는다 | ✅ 자동 | `test_every_link_in_the_row_has_a_declared_new_source` — 렌더된 링크 줄 = `_link_latest()` 키 집합(#24) |
+| NEW 는 곁들이 — 조회든 **배지 생성**이든 한 링크가 던져도 그 링크만 배지를 잃고 대시보드·나머지 링크는 그대로, 사유는 경고로(#315·#12) | ✅ 자동(E2E) | `test_one_failing_link_does_not_break_the_dashboard` · `test_a_failing_badge_does_not_break_the_dashboard` |
+| AI 보고서 아카이브 jsonl 에 dict 가 아닌 줄(리스트·문자열)이 섞여도 건너뛴다 — `load_runs` 는 JSON 이기만 하면 싣는다 | ✅ 자동 | `test_latest_report_ts_skips_lines_that_are_not_records` |
+| **ingest 가 원 게시 시각(`forward_origin_date`)을 받은 시각(`date`)보다 먼저 쓴다** — 화면 가이드의 "다시 받거나 다시 파싱해도 켜지지 않는다" 는 이것 하나에 기댄다. 세 경로(나쁜양파·비온·한국 알림)를 `_ingest_group` 으로 태우고, 빈 원 게시 시각은 '없음', 둘 다 없으면 빈 문자열 | ✅ 자동(E2E) | `test_ingest_stores_the_original_post_time_not_the_receive_time`(3경로) · `test_posted_at_treats_an_empty_origin_as_missing` |
+| 받은 시각으로 떨어진 글 수(`posted_at_from_date`)가 ingest counters 로그에 **항상**(0 이어도) 실린다 — inbox 전체를 매번 다시 돌아 누적이 아니라 지금 수이고, 신호는 늘어나는 것 | ✅ 자동(E2E, `main`) | `test_ingest_falls_back_to_the_receive_time_and_counts_it` · `test_ingest_main_logs_the_fallback_count_even_when_zero` |
+| NEW 배지 셋(링크·카드·섹션)이 한 토큰(`--new`/`--new-on`)을 쓰고 흰/검 글씨 대비가 AA(라이트 5.38 · 다크 6.16) · 배지 면이 카드·페이지 배경과 비텍스트 3:1 이상(다크 `#d70015` 는 2.59 였다) | ✅ 자동 | `test_new_badge_css_is_defined_and_meets_aa` — 문턱은 리터럴(#66·#355) |
+
+뮤테이션: 첫 판 24종이 전부 잡혔다(첫 실행에서 둘이 살아남아 고쳤다 — DB **여는** 단계의 실패 분기는 sqlite 가 비-DB 파일도
+connect 에선 안 던져 한 번도 안 탔고(#291), naive now 변형은 샌드박스 로컬 시간대가 UTC 라 티가 안 났다). 셀프리뷰가
+하나를 더 찾았다 — 판정 하나가 예외를 던지면 **대시보드 렌더 전체**가 죽었다(링크마다 따로 감쌌다). 독립 리뷰(뮤테이션
+50종 중 7종이 실제 공백)가 그 격리가 **조회에만** 걸려 배지 생성 단계가 밖에 있다는 것, 화면 가이드가 약속한 전제
+(ingest 우선순위)를 지키는 테스트가 없다는 것, 먼 미래 값·호스트 시간대·렌더 시계·고정 링크 위치를 아무도 안 잰다는
+것을 잡았다 — 반영 후 45종이 전부 잡혔다. 반영분만 본 delta 리뷰(51종 중 11종 생존)가 또 셋을 잡았다: 판정할 수 없는
+값을 **조용히** 버리고 있었고(지시서 #424 는 "몇 건인지 말한다" 고 약속했다), 극단값을 정상 행과 **함께** 심은 E2E 는 그
+값을 최댓값으로 못 만들어 0001 경우를 아무것도 안 쟀고(#91c), 여유 상수를 테스트가 그대로 읽어 **크기**를 못 박았다(#66
+— 9시간만 재면 12시간 여유도 통과해 23시간을 더했다). 반영 후 28종(리뷰 생존 11 + 새 코드 6 + 옛 가드 재확인 11)이 전부
+겨냥한 테스트에서 잡혔다(`-x` 없이 · 베이스라인 초록 확인 후 · 복원은 녹색 백업 + md5).
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **회수(백필)된 옛 글** — 놓쳤던 글을 나중에 받아도 게시 시각이 5일보다 오래됐으면 NEW 가 안 붙는다. 자동 회수는
+  평소 최근 3일을 훑지만, 관련성 필터가 바뀐 배포 뒤엔 40일을 한 번 훑는다(#403) — 그때 들어온 글은 페이지에 새 행이
+  생겨도 조용하다.
+- (b) **재게시 글** — 나쁜양파가 다른 채널의 글을 재게시하면(#411) posted_at 은 재게시 시각이 아니라 원래 채널의 게시
+  시각이다. 재게시가 며칠 늦으면 NEW 가 짧게 붙거나 안 붙는다(그 지연은 재지 않았다). 화면 가이드에 적었다.
+- (c) **ingest 처리 순서** — ingest 는 5분마다 inbox 전체를 다시 upsert 하고(앨범을 먼저, 단독 글을 나중에 — 도착 순서가
+  아니다) 한 행의 posted_at 은 마지막으로 쓴 글의 값이다. 같은 (키, 월)을 옛 글이 나중에 쓰면 — 회수로 늦게 들어왔거나,
+  옛 글이 단독이고 새 글이 앨범일 때 — 그 행의 posted_at 이 옛 값으로 돌아간다(delta 리뷰가 두 번째 경로를 실측 · 이 기능
+  이전부터의 동작이라 별도 과제로 제안했다).
+- (d) **레퍼런스북**은 판정하지 않는다 — 원천이 '게시'하는 데이터가 아니라 연계표·큐레이션 참조표라 게시 시각이 없다.
+  미매칭 후보 큐(`kg_candidates.csv`)는 첫 등록 **날짜**(`추출일` — `write_candidates_csv` 가 서버 로컬
+  `datetime.now()` 로 적는다, 시각·시간대 없음)를 남기지만 쓰지 않았다: 블로그·DART 자동발굴 후보와 한 큐라 출처
+  (`미매칭자동발굴`)로 걸러야 하고, 시간대 없는 날짜를 KST 창에 맞추려면 서버 시간대를 가정해야 하며(규칙 10a),
+  뜻도 '새 데이터가 게시됐다'가 아니라 '검토할 후보가 생겼다'다.
+- (e) **AI 보고서 아카이브**의 NEW 는 원천의 게시가 아니라 **새 유료 보고서가 저장됐다**는 뜻이다(`render_llm` 이
+  성공할 때만 쌓인다 — 대시보드의 유료 보고서 요청(`mode=llm`)이나 CLI `--llm`. 채널 발송은 LLM 을 따로 불러
+  아카이브에 안 남고, 부르는 타이머도 없다) — 가이드와 툴팁이 그렇게 밝힌다.
+- (f) 배지는 렌더 시각으로 판정한다 — 대시보드가 5분마다 다시 그려지므로 NEW 가 붙고 떨어지는 것도 그 주기를 따르고,
+  렌더가 멈추면 배지도 그 자리에 멈춘다(헤더의 렌더 시각이 그걸 말한다). 툴팁은 NEW 배지에만 있어, NEW 가 없는
+  링크의 마지막 게시 시각은 화면에서 안 보이고 터치 기기는 툴팁을 안 보여준다. 판정할 수 없는 값·먼 미래 값 경고는
+  그 값이 DB 에 남아 있는 동안 렌더마다(5분마다) 한 줄씩 찍힌다 — 고칠 때까지 사라지지 않는 것이 의도다.
+- (g) WAL DB 는 읽기 전용으로 열어도 `-shm`·`-wal` 사이드카가 생기고 닫은 뒤에도 남는다(독립 리뷰 실측) — DB 파일
+  자체는 안 바뀐다.
+
+## #425 — 달을 키로 박은 미국채 테스트는 시계를 묶는다 (`tests/test_regression.py` 새 3건 · 기존 10건에 시계 묶음 · 1건에 갈래 단언 · 2026-10-01 · 배포 전 독립 리뷰 반영)
+
+수출입 NEW 배포 게이트(`make test`)가 이번 변경과 무관한 `test_treasury_curve_spans_month_boundary` 하나에 막혔다 — 픽스처는
+2026-09 곡선을 **달 키**로 박았는데 `bot/treasury_yield_client.py` 는 물어볼 달을 `date.today()` 로 고른다(`curve_for`·
+`fetch_daily_curve`·`last_fail`). 미국채 모듈의 `date.today()` 만 강제로 옮기는 pytest 플러그인으로 관련 테스트 46건(선택자:
+본문 AST 에 `treasury` · `fresher_diag` · `curve_for` · `fetch_daily_curve` · `fresher_than` · `last_fail` · `month_failed` ·
+`macro_staleness_audit` · `_ust_stub` 중 하나가 나오는 테스트 함수 — 이번에 새로 넣은 3건을 더해 49건)을 여러 날짜에 돌렸다:
+2026-09-08 전부 통과 · 10-01 1건 · 11-02 부터 6건(`_ust_stub` 사용 3 · `TestFlowTrendDiagnosis20260818` 의 202609 실패 스텁 3).
+그리고 빨간불이 안 나는 쪽이 하나 더 있었다 — `test_why_does_not_bury_a_failed_probe_under_a_green_verdict` 는 11월부터
+`month_failed` 대신 `no_overlap` 을 타고도 단언이 두 갈래 모두 '대조 실패' 라서 초록이었다(#91b — 10월엔 `curve_for` 가 직전
+달로 아직 202609 를 물어 갈래가 안 바뀐다, 독립 리뷰가 실측으로 정정).
+
+기존 10건의 내역: 실제로 미래에 깨질 7건(빨간불 6 + 조용히 갈래를 바꾸던 1) · 지난 달(2026-07·08)에만 시계에 기대던 1건
+(`test_month_failed_needs_the_month_to_have_been_queried`) · **시계를 아예 안 읽는데** 가드가 달 리터럴을 보고 요구한 2건
+(`fresher_diag` 를 통째로 스텁한 `test_treasury_verdict_names_the_series_and_carries_its_reason` · 달을 인자로 넘기는
+`test_diagnostics_do_not_trust_a_stale_failure_cache` — 묶어도 무해하고, 주석이 그렇다고 말한다).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 미국채 클라이언트를 건드리는 테스트(본문이 `treasury_yield_client` 를 import·참조 · **모듈 맨 위**에서 import 한 그 모듈의 별칭·이름을 씀 · `_ust_stub` 를 부름)가 `YYYYMM` 리터럴을 **키·비교의 직접 피연산자**(딕셔너리 키 · 첨자 · 비교식, 묶음 표시 포함)로 쓰면 시계를 묶는다(`_freeze_ust_today` 또는 `_ust_stub`). 세 테스트 트리 전수 — 세 트리를 실제로 읽었는지 센다 · 대조 0건이면 실패(하한 5, 지금 11) | ✅ 자동 | `test_treasury_month_fixtures_freeze_the_clock` |
+| 가드가 실제로 문다 — 비교·딕셔너리 키·첨자·묶음 소속 각각 · 맨 위 import 네 모양(별칭 · `from … import 이름` · `from bot import 모듈` · 별칭 없는 `import bot.…` 의 속성) · 본문 안 `from bot.treasury_yield_client import 이름` · 2027 년 달 · 클래스 메서드는 클래스 이름까지 · 묶었으면 면죄(헬퍼 둘) · 반대 증거: 달을 **호출 인자로** 넘기면(비교식 안이어도) 시계와 무관하다 · 미국채를 안 건드리면 대상이 아니다 · 남의 '트레저리'(자사주 `treasury_shares`)와 KRX 코드 모양 `200710` 은 대상이 아니다 · 맨 위에서 다른 모듈을 import 한 별칭도 아니다 · 달이 아닌 값(`202613`·`2026-09`)은 달 키가 아니다 | ✅ 자동 | `test_treasury_month_fixture_guard_fires` — 본 테스트와 같은 함수(#286) |
+| 묶음이 이름뿐이 아니다 — 제품이 달을 고르는 그 경로(`curve_for` 의 첫 조회 달)가 묶인 날을 보고, `date` 의 나머지 동작은 그대로이며, `_ust_stub` 도 **넘긴 날로** 묶고(다른 테스트가 안 쓰는 날로 잰다), 테스트가 끝나면 묶기 전의 `date` 로 돌아온다 | ✅ 자동 | `test_freeze_ust_today_really_moves_the_products_clock` |
+| 재려던 갈래를 못박는다 — 위 초록 테스트에 `month_failed` 단언을 더했다(시계를 안 묶은 옛 판은 11월부터 이 단언에서 실패) | ✅ 자동 | `TestFlowTrendDiagnosis20260818::test_why_does_not_bury_a_failed_probe_under_a_green_verdict` |
+
+검증: 같은 플러그인으로 49건을 2026-08-03 · 10-01 · 10-31 · 11-02 · 12-31 · 2027-01-04 · 02-01 · 03-01 · 2030-07-15 에 돌려 전부
+통과. 뮤테이션: 20종 — 묶음 무력화(헬퍼·`_ust_stub` 각각) · 되돌리지 않는 묶음 · `_ust_stub` 가 `today` 를 무시 · 가드가 비교/딕셔너리 키/첨자/묶음 소속을 안 봄(넷) · 호출 인자 안의 달까지 셈 · 늘 '묶었다' · 감지 끔 · 기존 테스트 하나에서 묶음 제거 ·
+맨 위 import 해석 끔 · 속성/본문 `from … import`/본문 import 별칭 규칙 각각 끔 · 2026 년만 달로 · 세 트리를 한 트리로 · '트레저리' 낱말로 넓힘 · 맨 위 아무 import 나 셈 — 이 전부 겨냥한 테스트에서 잡혔다 (`-x` 없이 · 녹색 백업 + md5 복원). 하한 단언 하나만 지우는 변형은 단독으로는 살아남는다 — 하한은
+감지가 눈멀 때만 무는 그물이고, '감지 끔' 변형에서 실제로 물었다(리뷰도 같은 결과).
+
+배포 전 독립 리뷰(읽기 전용, ff17702): Blocking·High 없음 · Medium 1 · Low 5 — 반영: 맨 위 import 사각(M1) · 못 보는 축 문서화(L2)
+· 무해한 묶음 두 곳의 주석과 '트레저리' 오탐 부류 — 감지를 이 모듈로 좁혔다(L3) · '10월부터' → '11월부터'(L4) · 발화 공백(2027 달 ·
+`from … import` · 속성 · `_ust_stub` 의 `today` · 세 트리 범위, L5) · 46/49 선택자 명시(L6). 리뷰가 제안한 '헬퍼를 `tests/conftest.py`
+로' 는 하지 않았다 — 감지를 이 모듈로 좁혀 다른 트리의 오탐 경로가 사라졌고, 지금 그 시계를 쓰는 테스트는 이 파일에만 있다.
+
+**이 검사가 못 보는 축**(#274):
+- (a) 미국채 모듈을 안 부르고 바깥 함수(`macro_staleness_audit._treasury_status` · `market_overview._fred_fetch_series` 등)로만
+  타면서 달 키 응답을 심는 테스트 — 감지를 이 모듈로 좁히며 이 축이 넓어졌다(대신 남의 '트레저리' 오탐이 사라졌다).
+- (b) 키를 함수 인자로 심는 모양(`monkeypatch.setitem(ty._FAIL, "202609", …)`) · 변수에 담은 달(`SEP = "202609"; ym == SEP`) ·
+  f-string 으로 만든 달.
+- (c) 테스트 함수 **밖**의 헬퍼·픽스처·모듈 수준 딕셔너리에 박은 달.
+- (d) 묶음을 제품 호출 **뒤에** 부른 테스트 — 있기만 하면 묶었다고 센다.
+- (e) **미국채 밖 모듈**의 같은 병 — 이 가드는 이 모듈의 시계만 본다. 날짜를 옮기는 플러그인도 이 모듈의 `date` 만 옮겼다.
+- (f) 제품 쪽 — `_why` 의 `오늘(KST)` 은 서버 로컬 `date.today()` 라 UTC 서버에선 KST 자정~09시 사이 하루 전 날짜를 찍는다
+  (규칙 10a). 이번 배포 범위 밖이라 별도 과제로 남겼다.

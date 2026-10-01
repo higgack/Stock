@@ -66,6 +66,7 @@ def render_html(
     heatmap_out: Path | str | None = None,
     industry_csv_out: Path | str | None = None,
     history_out: Path | str | None = None,
+    now: datetime | None = None,
 ) -> str:
     """Render the dashboard HTML from store.db.
 
@@ -81,6 +82,9 @@ def render_html(
     visible at a glance instead of only appearing in the daily ⚠️.
     None / missing file / empty file render nothing — the meta line
     is hidden by the `:empty` CSS rule.
+
+    now = 형제 링크 NEW 판정의 기준 시각. None 이면 ``trade.link_new.now_utc()``
+    (운영 경로). 테스트가 창 경계를 고정 시각으로 잴 때 넘긴다.
     """
     conn = open_db(db_path)
     try:
@@ -163,6 +167,10 @@ def render_html(
         industry_html, heatmap_html, industry_src=industry_src,
         industry_csv=industry_csv, heatmap_src=heatmap_src,
         industry_csv_src=industry_csv_src, history_out=history_out,
+        # 형제 DB(tw.db·jp.db …)는 store.db 옆에 산다 — main() 이 형제 페이지를
+        # 만들 때 쓰는 `args.db.parent / db_file` 과 같은 자리.
+        links_dir=Path(db_path).parent,
+        now=now,
     )
 
 
@@ -644,11 +652,60 @@ def _customs_panel_html(rows: list[dict]) -> str:
     return pins_block + surge_block
 
 
-def _srcs_nav_html() -> str:
+def _srcs_nav_html(*, badge_for=None) -> str:
     """나쁜양파 형제 대시보드 nav 링크 — 단일 레지스트리에서 조립.
     로컬 임포트는 이 파일의 기존 관례(순환 임포트 회피)."""
     from trade import badonion_sources as _srcs
-    return _srcs.nav_html()
+    return _srcs.nav_html(badge_for=badge_for)
+
+
+# 형제 링크 줄에서 레지스트리 **밖** 고정 링크 — (href, 라벨, NEW 판정 원천). 링크 줄은
+# 이 표에서 만든다 — 앵커를 손으로 적으면 새 링크에 NEW 배지(_nb)를 빠뜨려도 아무도 모른다.
+#   "db:<파일>"       그 DB 의 posted_at(원 게시 시각) 최댓값
+#   "report_archive"  AI 보고서 아카이브 색인의 ts 최댓값
+#   None              NEW 를 판정하지 않는다 — 사유를 옆에 적는다.
+# 나쁜양파 소스는 badonion_sources 레지스트리가 링크를 만들고 그 db_file 이 원천이다.
+# 회귀가 "링크 줄의 모든 href 가 판정 원천을 갖는가"·"판정하는 링크마다 배지가
+# 화살표 앞에 붙는가"·None 목록의 크기를 잰다(trade/tests/test_link_new.py).
+_FIXED_LINKS: tuple[tuple[str, str, str | None], ...] = (
+    # 🤖 유료 AI 보고서 아카이브 (사용자 2026-06-18 '돈내고 분석한건 대시보드에 아카이브').
+    # nav 한줄 유지 위해 앵커 단어까지 전부 삭제(사용자 2026-07-11).
+    ("report_archive.html", "🤖 AI 보고서 아카이브", "report_archive"),
+    # 📖 품목 레퍼런스북 (사용자 2026-06-18 '품목↔HS↔관련기업 레퍼런스북'). 원천이
+    # '게시'하는 데이터가 아니라 연계표·큐레이션을 합친 참조표라 게시 시각이 없다.
+    ("reference.html", "📖 품목 레퍼런스북", None),
+    # 🗾 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지. 🇯🇵 flag 는 일부
+    # 폰트에서 'JP' 텍스트로 렌더 → 항상 보이는 🗾(일본 지도) 사용(사용자 2026-06-28).
+    # 소스 라벨 "(비온)" 부착(사용자 2026-07-11 — 나쁜양파發 일본(jp2.html)과 구분).
+    ("jp.html", "🗾 일본 수출 데이터(비온)", "db:jp.db"),
+)
+_FIXED_LINK_NEW_SRC: dict[str, str | None] = {
+    href: src for href, _label, src in _FIXED_LINKS}
+
+
+def _link_latest(data_dir: Path | str, *,
+                 now: datetime | None = None) -> dict[str, datetime | None]:
+    """형제 링크(href) → 그 페이지에 원천이 마지막으로 새 데이터를 게시한 시각.
+    고정 링크(``_FIXED_LINKS``) + 나쁜양파 레지스트리(``db:<db_file>``) 전부.
+    ``now`` 는 먼 미래 값을 거르는 기준이다(``trade.link_new.FUTURE_SLACK``).
+
+    NEW 는 곁들이다 — 한 링크의 판정이 던지면 그 링크만 None(배지 없음)으로 두고
+    경고를 남긴다. 판정 하나 때문에 대시보드 본체가 같이 죽으면 안 된다(실수 #315)."""
+    import logging          # 이 파일의 기존 관례(로컬 임포트)
+    from trade import badonion_sources as _srcs
+    from trade import link_new
+    pairs = list(_FIXED_LINK_NEW_SRC.items()) + [
+        (s.html_file, "db:" + s.db_file) for s in _srcs.nav_sources()]
+    out: dict[str, datetime | None] = {}
+    for href, src in pairs:
+        try:
+            out[href] = link_new.latest_for(src, data_dir, now=now)
+        except Exception as exc:
+            logging.getLogger("trade-dashboard").warning(
+                "NEW 판정 실패 — %s 은(는) 배지 없이 그립니다: %s: %s",
+                href, type(exc).__name__, exc)
+            out[href] = None
+    return out
 
 
 def _build_html(
@@ -665,10 +722,31 @@ def _build_html(
     heatmap_src: str = "",
     industry_csv_src: str = "",
     history_out: Path | str | None = None,
+    links_dir: Path | str | None = None,
+    now: datetime | None = None,
 ) -> str:
     # industry_src(있을 때) = 산업트렌드를 별도 파일로 빼고 탭 열 때 lazy fetch
     # (초기 11MB→~3MB, 사용자 2026-06-16). industry_html 인라인과 양립 — src 우선.
     _has_industry = bool(industry_html) or bool(industry_src)
+    # 형제 링크 NEW — 원천이 최근 NEW_DAYS 일 안에 새 데이터를 게시한 페이지(trade.link_new,
+    # 사용자 2026-09-30). links_dir(형제 DB 들이 있는 디렉토리) 없이 부르면 판정하지 않는다.
+    from trade import link_new as _ln
+    _now = now if now is not None else _ln.now_utc()
+    _link_ts = _link_latest(links_dir, now=_now) if links_dir is not None else {}
+
+    def _nb(href: str) -> str:
+        # 곁들이는 배지를 만드는 단계에서도 본체를 못 죽인다 — 던지면 그 링크만 배지
+        # 없이 그린다(실수 #315, 격리를 조회 단계에만 걸었던 것을 리뷰가 잡았다).
+        try:
+            # source 는 툴팁 낱말을 고른다(AI 보고서 아카이브는 '게시'가 아니라 '저장').
+            return _ln.badge_html(_link_ts.get(href), _now,
+                                  source=_FIXED_LINK_NEW_SRC.get(href))
+        except Exception as exc:
+            import logging          # 이 파일의 기존 관례(로컬 임포트)
+            logging.getLogger("trade-dashboard").warning(
+                "NEW 배지 실패 — %s 은(는) 배지 없이 그립니다: %s: %s",
+                href, type(exc).__name__, exc)
+            return ""
     full_payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     # ALERTS 인라인 = **최신만**(latest-per-dedup_key), 모달 히스토리(siblings)는
     # 별도 alerts_history.json 으로 빼 모달 첫 클릭 때만 fetch (사용자 2026-06-16
@@ -770,6 +848,14 @@ def _build_html(
         '레퍼런스북이 같은 소스 공유). <b>별칭 검색</b>(예: MLCC)도 HS 연계로 실제 '
         '품목명(고정식축전기)·수출입 숫자를 함께 표시 — 품목명 클릭 시 재검색. '
         '<b>히트맵 셀 클릭</b>도 그 HS/품목의 관련 상장사·보고서로 연결.<br>'
+        # 🆕 형제 링크 NEW(사용자 2026-09-30) — 판정 규약은 trade.link_new 가 단일 출처다.
+        '<b>🆕 링크 옆 NEW</b> — 아래 형제 대시보드 링크 옆 <b>NEW</b> 는 그 페이지에 '
+        '원천이 최근 ' + str(_ln.NEW_DAYS) + '일 안(게시일 포함, KST 날짜)에 새 데이터를 '
+        '게시했다는 뜻(AI 보고서 아카이브는 새 유료 보고서가 저장됐다는 뜻) — <b>NEW</b> 에 '
+        '마우스를 올리면 마지막 게시 시각. 기준은 원 게시 시각이라 같은 글을 다시 받거나 '
+        '다시 파싱해도 켜지지 않고, 나쁜양파가 다른 채널 글을 다시 올린 것은 원래 채널의 '
+        '게시 시각을 따릅니다. 품목 레퍼런스북은 게시되는 데이터가 아닌 참조표라 붙지 '
+        '않습니다.<br>'
         '→ <b>모든 표면이 방문 없이 서버 스케줄로 자동 신선</b>하게 유지됩니다. '
         '외부 API(관세청·DART)는 무료, LLM(Gemini 🔍산업 추가신호)은 데이터 변동 '
         '시에만 호출 — 비용은 위 헤더 💰 줄에 집계(메인 대시보드에도 합산).'
@@ -872,24 +958,18 @@ def _build_html(
         'ym.addEventListener("input",function(){if(!(ym.value||"").trim())res.innerHTML="";});'
         'ym.addEventListener("search",function(){if(!(ym.value||"").trim())res.innerHTML="";});'
         '})();</script>'
-        # 🤖 유료 AI 보고서 아카이브 링크 (사용자 2026-06-18 '돈내고 분석한건 대시보드에 아카이브').
-        # nav 한줄 유지 위해 앵커 단어까지 전부 삭제(사용자 2026-07-11).
-        + '<div class="report-archive-link"><a href="report_archive.html">'
-        '🤖 AI 보고서 아카이브 →</a>'
-        # 📖 품목 레퍼런스북 (사용자 2026-06-18 '품목↔HS↔관련기업 레퍼런스북').
-        ' &nbsp;·&nbsp; <a href="reference.html">'
-        '📖 품목 레퍼런스북 →</a>'
-        # 🗾 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지. 🇯🇵 flag 는
-        # 일부 폰트에서 'JP' 텍스트로 렌더 → 항상 보이는 🗾(일본 지도) 사용(사용자
-        # 2026-06-28). 소스 라벨 "(비온)" 부착(사용자 2026-07-11 — 나쁜양파發
-        # 일본(jp2.html)과 구분).
-        ' &nbsp;·&nbsp; <a href="jp.html">'
-        '🗾 일본 수출 데이터(비온) →</a>'
+        # 형제 링크 줄 — 고정 링크(AI 보고서 아카이브·품목 레퍼런스북·비온 일본)는
+        # _FIXED_LINKS 표에서 만들고(출처·사용자 결정 이력은 그 표에), 링크마다 _nb(href) 가
+        # NEW 배지를 라벨 뒤·화살표 앞에 붙인다.
+        + '<div class="report-archive-link">'
+        + ' &nbsp;·&nbsp; '.join(
+            f'<a href="{href}">{label}{_nb(href)} →</a>'
+            for href, label, _src in _FIXED_LINKS)
         # 나쁜양파 소스 링크는 badonion_sources 레지스트리가 만든다 — 옛 코드는
         # 9개를 여기 하드코딩해서, 소스를 추가해도 nav 를 빠뜨리면 페이지는
         # 생성되는데 **도달 불가**였다(게다가 is_relevant 가 미매칭 알림까지
         # 눌러 조용한 유실). 표시 순서·라벨·이모지 규칙은 그 파일에 있다.
-        + _srcs_nav_html() + '</div>'
+        + _srcs_nav_html(badge_for=_nb) + '</div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -981,6 +1061,7 @@ _CSS = """
   --b-prelim-bg:#eee;--b-prelim-fg:#6e6e73;
   --b-final-bg:#c8e6ff;--b-final-fg:#003e7e;
   --b-comp-bg:#ffe0e0;--b-comp-fg:#8a2020;
+  --new:#d70015;--new-on:#fff;
   --shadow:0 1px 3px rgba(0,0,0,.06);
   --img-placeholder:#e5e5e7;
 }
@@ -994,6 +1075,7 @@ body.dark{
   --b-prelim-bg:#3a3a3c;--b-prelim-fg:#98989d;
   --b-final-bg:#0a2a4d;--b-final-fg:#7ab6ff;
   --b-comp-bg:#4a1a1a;--b-comp-fg:#ff7b7b;
+  --new:#ff453a;--new-on:#000;
   --shadow:0 1px 3px rgba(0,0,0,.4);
   --img-placeholder:#1f1f21;
 }
@@ -1278,6 +1360,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .report-archive-link{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 18px}
 .report-archive-link a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
 .report-archive-link a:hover{text-decoration:underline}
+.report-archive-link .link-new{display:inline-block;margin-left:2px;padding:0 5px;font-size:10px;font-weight:700;letter-spacing:.5px;line-height:16px;background:var(--new);color:var(--new-on);border-radius:3px;vertical-align:1px}
 #q{width:100%;padding:9px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;font-size:14px;margin-bottom:8px}
 .chips{display:flex;gap:14px;flex-wrap:wrap}
 .chip-group{display:flex;gap:3px;flex-wrap:wrap}
@@ -1312,8 +1395,8 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .mini-card .mini-text strong{display:block;margin-bottom:2px;font-size:13.5px;font-weight:600;word-break:keep-all;color:var(--text)}
 .mini-card .mini-text span{color:var(--text-sub);font-size:12.5px}
 .mini-card .dot{position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:4px;background:#999}
-.mini-card .mini-new{position:absolute;top:5px;left:5px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:.5px;background:#ff3b30;color:#fff;border-radius:3px;z-index:1;box-shadow:0 1px 3px rgba(0,0,0,.3)}
-.section-header .section-new{display:inline-block;margin-left:6px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;background:#ff3b30;color:#fff;border-radius:3px;vertical-align:middle}
+.mini-card .mini-new{position:absolute;top:5px;left:5px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:.5px;background:var(--new);color:var(--new-on);border-radius:3px;z-index:1;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.section-header .section-new{display:inline-block;margin-left:6px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;background:var(--new);color:var(--new-on);border-radius:3px;vertical-align:middle}
 .mini-card.export .dot{background:var(--tone-export)}
 .mini-card.import .dot{background:var(--tone-import)}
 .badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;margin-right:3px;letter-spacing:.3px}
