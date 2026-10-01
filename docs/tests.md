@@ -2576,31 +2576,47 @@ connect 에선 안 던져 한 번도 안 탔고(#291), naive now 변형은 샌�
 - (g) WAL DB 는 읽기 전용으로 열어도 `-shm`·`-wal` 사이드카가 생기고 닫은 뒤에도 남는다(독립 리뷰 실측) — DB 파일
   자체는 안 바뀐다.
 
-## #425 — 달을 키로 박은 미국채 테스트는 시계를 묶는다 (`tests/test_regression.py` 새 3건 · 기존 10건에 시계 묶음 · 1건에 갈래 단언 · 2026-10-01)
+## #425 — 달을 키로 박은 미국채 테스트는 시계를 묶는다 (`tests/test_regression.py` 새 3건 · 기존 10건에 시계 묶음 · 1건에 갈래 단언 · 2026-10-01 · 배포 전 독립 리뷰 반영)
 
 수출입 NEW 배포 게이트(`make test`)가 이번 변경과 무관한 `test_treasury_curve_spans_month_boundary` 하나에 막혔다 — 픽스처는
 2026-09 곡선을 **달 키**로 박았는데 `bot/treasury_yield_client.py` 는 물어볼 달을 `date.today()` 로 고른다(`curve_for`·
-`fetch_daily_curve`·`last_fail`). 미국채 모듈의 `date.today()` 만 강제로 옮기는 pytest 플러그인으로 그 모듈을 건드리는 테스트
-46건을 여러 날짜에 돌렸다: 2026-09-08 전부 통과 · 10-01 1건 · 11-02 부터 6건(`_ust_stub` 사용 3 · `TestFlowTrendDiagnosis20260818`
-의 202609 실패 스텁 3). 그리고 빨간불이 안 나는 쪽이 하나 더 있었다 — `test_why_does_not_bury_a_failed_probe_under_a_green_verdict`
-는 10월부터 `month_failed` 대신 `no_overlap` 을 타고도 단언이 두 갈래 모두 '대조 실패' 라서 초록이었다(#91b).
+`fetch_daily_curve`·`last_fail`). 미국채 모듈의 `date.today()` 만 강제로 옮기는 pytest 플러그인으로 관련 테스트 46건(선택자:
+본문 AST 에 `treasury` · `fresher_diag` · `curve_for` · `fetch_daily_curve` · `fresher_than` · `last_fail` · `month_failed` ·
+`macro_staleness_audit` · `_ust_stub` 중 하나가 나오는 테스트 함수 — 이번에 새로 넣은 3건을 더해 49건)을 여러 날짜에 돌렸다:
+2026-09-08 전부 통과 · 10-01 1건 · 11-02 부터 6건(`_ust_stub` 사용 3 · `TestFlowTrendDiagnosis20260818` 의 202609 실패 스텁 3).
+그리고 빨간불이 안 나는 쪽이 하나 더 있었다 — `test_why_does_not_bury_a_failed_probe_under_a_green_verdict` 는 11월부터
+`month_failed` 대신 `no_overlap` 을 타고도 단언이 두 갈래 모두 '대조 실패' 라서 초록이었다(#91b — 10월엔 `curve_for` 가 직전
+달로 아직 202609 를 물어 갈래가 안 바뀐다, 독립 리뷰가 실측으로 정정).
+
+기존 10건의 내역: 실제로 미래에 깨질 7건(빨간불 6 + 조용히 갈래를 바꾸던 1) · 지난 달(2026-07·08)에만 시계에 기대던 1건
+(`test_month_failed_needs_the_month_to_have_been_queried`) · **시계를 아예 안 읽는데** 가드가 달 리터럴을 보고 요구한 2건
+(`fresher_diag` 를 통째로 스텁한 `test_treasury_verdict_names_the_series_and_carries_its_reason` · 달을 인자로 넘기는
+`test_diagnostics_do_not_trust_a_stale_failure_cache` — 묶어도 무해하고, 주석이 그렇다고 말한다).
 
 | 계약 | 강제 | 테스트 |
 |---|---|---|
-| 미국채 코드를 건드리고(식별자에 `treasury` · `_ust_stub`) `YYYYMM` 리터럴을 **키·비교의 직접 피연산자**(딕셔너리 키 · 첨자 · 비교식, 묶음 표시 포함)로 쓰는 테스트는 시계를 묶는다(`_freeze_ust_today` 또는 `_ust_stub`). 세 테스트 트리 전수 · 대조 0건이면 실패(하한 5, 지금 11) | ✅ 자동 | `test_treasury_month_fixtures_freeze_the_clock` |
-| 가드가 실제로 문다 — 비교·딕셔너리 키·첨자·묶음 소속 각각 · 클래스 메서드는 클래스 이름까지 · 묶었으면 면죄(헬퍼 둘) · 반대 증거: 달을 **호출 인자로** 넘기면(비교식 안이어도) 시계와 무관하다 · 미국채를 안 건드리면 대상이 아니다 · 달이 아닌 값(`202613`·`2026-09`)은 달 키가 아니다 | ✅ 자동 | `test_treasury_month_fixture_guard_fires` — 본 테스트와 같은 함수(#286) |
-| 묶음이 이름뿐이 아니다 — 제품이 달을 고르는 그 경로(`curve_for` 의 첫 조회 달)가 묶인 날을 보고, `date` 의 나머지 동작은 그대로이며, `_ust_stub` 도 묶고, 테스트가 끝나면 묶기 전의 `date` 로 돌아온다 | ✅ 자동 | `test_freeze_ust_today_really_moves_the_products_clock` |
-| 재려던 갈래를 못박는다 — 위 초록 테스트에 `month_failed` 단언을 더했다(시계를 안 묶은 옛 판은 10월부터 이 단언에서 실패) | ✅ 자동 | `TestFlowTrendDiagnosis20260818::test_why_does_not_bury_a_failed_probe_under_a_green_verdict` |
+| 미국채 클라이언트를 건드리는 테스트(본문이 `treasury_yield_client` 를 import·참조 · **모듈 맨 위**에서 import 한 그 모듈의 별칭·이름을 씀 · `_ust_stub` 를 부름)가 `YYYYMM` 리터럴을 **키·비교의 직접 피연산자**(딕셔너리 키 · 첨자 · 비교식, 묶음 표시 포함)로 쓰면 시계를 묶는다(`_freeze_ust_today` 또는 `_ust_stub`). 세 테스트 트리 전수 — 세 트리를 실제로 읽었는지 센다 · 대조 0건이면 실패(하한 5, 지금 11) | ✅ 자동 | `test_treasury_month_fixtures_freeze_the_clock` |
+| 가드가 실제로 문다 — 비교·딕셔너리 키·첨자·묶음 소속 각각 · 맨 위 import 네 모양(별칭 · `from … import 이름` · `from bot import 모듈` · 별칭 없는 `import bot.…` 의 속성) · 본문 안 `from bot.treasury_yield_client import 이름` · 2027 년 달 · 클래스 메서드는 클래스 이름까지 · 묶었으면 면죄(헬퍼 둘) · 반대 증거: 달을 **호출 인자로** 넘기면(비교식 안이어도) 시계와 무관하다 · 미국채를 안 건드리면 대상이 아니다 · 남의 '트레저리'(자사주 `treasury_shares`)와 KRX 코드 모양 `200710` 은 대상이 아니다 · 맨 위에서 다른 모듈을 import 한 별칭도 아니다 · 달이 아닌 값(`202613`·`2026-09`)은 달 키가 아니다 | ✅ 자동 | `test_treasury_month_fixture_guard_fires` — 본 테스트와 같은 함수(#286) |
+| 묶음이 이름뿐이 아니다 — 제품이 달을 고르는 그 경로(`curve_for` 의 첫 조회 달)가 묶인 날을 보고, `date` 의 나머지 동작은 그대로이며, `_ust_stub` 도 **넘긴 날로** 묶고(다른 테스트가 안 쓰는 날로 잰다), 테스트가 끝나면 묶기 전의 `date` 로 돌아온다 | ✅ 자동 | `test_freeze_ust_today_really_moves_the_products_clock` |
+| 재려던 갈래를 못박는다 — 위 초록 테스트에 `month_failed` 단언을 더했다(시계를 안 묶은 옛 판은 11월부터 이 단언에서 실패) | ✅ 자동 | `TestFlowTrendDiagnosis20260818::test_why_does_not_bury_a_failed_probe_under_a_green_verdict` |
 
-검증: 같은 플러그인으로 49건(46 + 새 3)을 2026-08-03 · 10-01 · 11-02 · 12-31 · 2027-01-04 · 03-01 · 2030-07-15 에 돌려 전부 통과.
-뮤테이션 11종 — 묶음 무력화(헬퍼·`_ust_stub` 각각) · 가드가 비교/딕셔너리 키/첨자/묶음 소속을 안 봄 · 늘 '묶었다' · 미국채 감지 끔 ·
-기존 테스트 하나에서 묶음 제거 · 호출 인자 안의 달까지 셈(오탐) · 되돌리지 않는 묶음 — 이 전부 겨냥한 테스트에서 잡혔다(`-x` 없이 ·
-녹색 백업 + md5 복원). 하한 단언 하나를 지우는 변형은 단독으로는 살아남는다 — 하한은 감지가 눈멀 때(위 '미국채 감지 끔')만 무는
-그물이고, 그 변형에서 실제로 물었다.
+검증: 같은 플러그인으로 49건을 2026-08-03 · 10-01 · 10-31 · 11-02 · 12-31 · 2027-01-04 · 02-01 · 03-01 · 2030-07-15 에 돌려 전부
+통과. 뮤테이션: 20종 — 묶음 무력화(헬퍼·`_ust_stub` 각각) · 되돌리지 않는 묶음 · `_ust_stub` 가 `today` 를 무시 · 가드가 비교/딕셔너리 키/첨자/묶음 소속을 안 봄(넷) · 호출 인자 안의 달까지 셈 · 늘 '묶었다' · 감지 끔 · 기존 테스트 하나에서 묶음 제거 ·
+맨 위 import 해석 끔 · 속성/본문 `from … import`/본문 import 별칭 규칙 각각 끔 · 2026 년만 달로 · 세 트리를 한 트리로 · '트레저리' 낱말로 넓힘 · 맨 위 아무 import 나 셈 — 이 전부 겨냥한 테스트에서 잡혔다 (`-x` 없이 · 녹색 백업 + md5 복원). 하한 단언 하나만 지우는 변형은 단독으로는 살아남는다 — 하한은
+감지가 눈멀 때만 무는 그물이고, '감지 끔' 변형에서 실제로 물었다(리뷰도 같은 결과).
+
+배포 전 독립 리뷰(읽기 전용, ff17702): Blocking·High 없음 · Medium 1 · Low 5 — 반영: 맨 위 import 사각(M1) · 못 보는 축 문서화(L2)
+· 무해한 묶음 두 곳의 주석과 '트레저리' 오탐 부류 — 감지를 이 모듈로 좁혔다(L3) · '10월부터' → '11월부터'(L4) · 발화 공백(2027 달 ·
+`from … import` · 속성 · `_ust_stub` 의 `today` · 세 트리 범위, L5) · 46/49 선택자 명시(L6). 리뷰가 제안한 '헬퍼를 `tests/conftest.py`
+로' 는 하지 않았다 — 감지를 이 모듈로 좁혀 다른 트리의 오탐 경로가 사라졌고, 지금 그 시계를 쓰는 테스트는 이 파일에만 있다.
 
 **이 검사가 못 보는 축**(#274):
-- (a) 미국채를 이름으로 안 부르고 바깥 함수(`market_overview._fred_fetch_series` 등)로만 타면서 달 키 응답을 심는 테스트.
-- (b) 키를 함수 인자로 심는 모양(`monkeypatch.setitem(ty._FAIL, "202609", …)`) · f-string 으로 만든 달.
-- (c) **미국채 밖 모듈**의 같은 병 — 이 가드는 이 모듈의 시계만 본다. 날짜를 옮기는 플러그인도 이 모듈의 `date` 만 옮겼다.
-- (d) 제품 쪽 — `_why` 의 `오늘(KST)` 은 서버 로컬 `date.today()` 라 UTC 서버에선 KST 자정~09시 사이 하루 전 날짜를 찍는다
-  (규칙 10a). 이번 배포 범위 밖이라 별도 과제로 남긴다.
+- (a) 미국채 모듈을 안 부르고 바깥 함수(`macro_staleness_audit._treasury_status` · `market_overview._fred_fetch_series` 등)로만
+  타면서 달 키 응답을 심는 테스트 — 감지를 이 모듈로 좁히며 이 축이 넓어졌다(대신 남의 '트레저리' 오탐이 사라졌다).
+- (b) 키를 함수 인자로 심는 모양(`monkeypatch.setitem(ty._FAIL, "202609", …)`) · 변수에 담은 달(`SEP = "202609"; ym == SEP`) ·
+  f-string 으로 만든 달.
+- (c) 테스트 함수 **밖**의 헬퍼·픽스처·모듈 수준 딕셔너리에 박은 달.
+- (d) 묶음을 제품 호출 **뒤에** 부른 테스트 — 있기만 하면 묶었다고 센다.
+- (e) **미국채 밖 모듈**의 같은 병 — 이 가드는 이 모듈의 시계만 본다. 날짜를 옮기는 플러그인도 이 모듈의 `date` 만 옮겼다.
+- (f) 제품 쪽 — `_why` 의 `오늘(KST)` 은 서버 로컬 `date.today()` 라 UTC 서버에선 KST 자정~09시 사이 하루 전 날짜를 찍는다
+  (규칙 10a). 이번 배포 범위 밖이라 별도 과제로 남겼다.

@@ -26653,7 +26653,7 @@ class TestFlowTrendDiagnosis20260818:
             assert "✅ 최선(2026-09-11)까지 왔다" in out, out   # 화면은 사실
             assert "이번 대조는 실패했다" in out, f"실패를 ✅ 가 덮었다\n{out}"
             # ⚠️ 이 테스트가 재는 갈래를 못박는다 — 시계가 안 묶였던 옛 판은
-            # 10월부터 `no_overlap` 을 타고도 위 단언이 그대로 초록이었다
+            # 11월부터 `no_overlap` 을 타고도 위 단언이 그대로 초록이었다
             # (두 갈래 다 '대조 실패' 라서, #425 · #91b 재는 대상이 맞나).
             assert "month_failed" in out, f"재려던 갈래가 아니다\n{out}"
             assert "대조 실패 1건" in out, out
@@ -27309,7 +27309,9 @@ class TestFlowTrendDiagnosis20260818:
         from bot import treasury_yield_client as ty
         from bot.scripts.macro_staleness_audit import _treasury_status
         from bot.audit_sweep import _findings
-        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
+        # #425 가드가 달 리터럴을 보고 요구한다 — 이 테스트는 `fresher_diag` 를
+        # 통째로 스텁해 시계를 안 읽는다(묶어도 무해).
+        _freeze_ust_today(monkeypatch, "2026-09-13")
 
         d = tmp_path / "fred"
         d.mkdir(parents=True)
@@ -50055,34 +50057,77 @@ def _ust_stub(monkeypatch, by_month, *, today):
 _UST_YM = re.compile(r"20\d{2}(?:0[1-9]|1[0-2])")
 
 
+_UST_MOD = "treasury_yield_client"
+_UST_HELPERS = frozenset({"_ust_stub", "_freeze_ust_today"})
+
+
 def _treasury_month_fixtures(src):
     """미국채 시계에 기대는 테스트 [(이름, 줄, 달들, 시계를 묶었나)] — #425.
 
-    대상: 미국채 코드를 건드리고(식별자에 `treasury` · `_ust_stub`) `YYYYMM`
+    대상: 미국채 클라이언트(`bot.treasury_yield_client`)를 건드리고 `YYYYMM`
     리터럴을 **키·비교**로 쓰는 테스트(딕셔너리 키 · 첨자 · 비교식). 그 리터럴은
     제품이 그 달을 물어 주기를 **기다리는** 픽스처라, 실제 시계가 달을 넘기면
     빗나간다. 달을 **함수 인자로** 넘기는 것(`fetch_daily_curve("202609")`)은
     시계와 무관하므로 대상이 아니다. 묶음 = 본문이 `_freeze_ust_today` 또는
     `_ust_stub`(시계를 같이 묶는다)를 부른다.
 
-    ⚠️ 못 보는 축(#274): 미국채를 이름으로 안 부르고 바깥 함수로만 타는 테스트 ·
-    키를 함수 인자로 심는 모양(`setitem(ty._FAIL, "202609", …)`) · f-string 으로
-    만든 달 · 미국채 밖 모듈의 같은 병(이 가드는 이 모듈의 시계만 본다).
+    '건드린다' = 본문이 그 모듈을 import·참조하거나, **모듈 맨 위에서** import 한
+    그 모듈의 별칭·이름을 쓰거나, `_ust_stub` 를 부른다. 맨 위 import 를 안 보면
+    새 테스트 파일이 대개 쓰는 모양을 통째로 놓친다(배포 전 리뷰 M1). 그리고
+    '`treasury` 가 들어간 이름' 으로 넓히지 않는다 — 자사주(treasury shares)·
+    비트코인 트레저리 같은 남의 '트레저리' 가 KRX 코드처럼 생긴 `200710` 과 만나면
+    엉뚱한 테스트를 막는다(같은 리뷰 L3).
+
+    ⚠️ 못 보는 축(#274): 미국채 모듈을 안 부르고 바깥 함수(`_treasury_status`·
+    `_fred_fetch_series`)로만 타는 테스트 · 키를 함수 인자로 심는 모양(`setitem(
+    ty._FAIL, "202609", …)`) · 변수에 담은 달(`SEP = "202609"; ym == SEP`)과
+    f-string 달 · 테스트 함수 **밖**의 헬퍼·픽스처·모듈 수준 딕셔너리 · 묶음을
+    제품 호출 **뒤에** 부른 테스트(있기만 하면 묶었다고 센다) · 미국채 밖 모듈의
+    같은 병(이 가드는 이 모듈의 시계만 본다).
     """
     out = []
+    tree = ast.parse(src)
 
-    def idents(fn):
-        got = set()
+    def outside_defs(node):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef, ast.Lambda)):
+                continue
+            yield ch
+            yield from outside_defs(ch)
+
+    # 모듈 맨 위(함수·클래스 밖)에서 미국채 모듈에 묶인 이름 —
+    # `import bot.treasury_yield_client as ty` → ty ·
+    # `from bot import treasury_yield_client [as t]` → treasury_yield_client|t ·
+    # `from bot.treasury_yield_client import fresher_diag` → fresher_diag.
+    # (`import bot.treasury_yield_client` 는 `bot` 을 묶으므로 쓰는 자리의
+    #  속성 `treasury_yield_client` 가 잡는다.)
+    top = set()
+    for n in outside_defs(tree):
+        if isinstance(n, ast.Import):
+            top.update(a.asname for a in n.names if _UST_MOD in a.name and a.asname)
+        elif isinstance(n, ast.ImportFrom):
+            from_ust = _UST_MOD in (n.module or "")
+            top.update(a.asname or a.name for a in n.names
+                       if from_ust or a.name == _UST_MOD)
+
+    def touches(fn):
         for n in ast.walk(fn):
-            if isinstance(n, ast.Name):
-                got.add(n.id)
-            elif isinstance(n, ast.Attribute):
-                got.add(n.attr)
-            elif isinstance(n, ast.alias):
-                got.update({n.name, n.asname or ""})
-            elif isinstance(n, ast.ImportFrom):
-                got.add(n.module or "")
-        return got
+            if isinstance(n, ast.Name) and (n.id in top or n.id in _UST_HELPERS
+                                            or n.id == _UST_MOD):
+                return True
+            if isinstance(n, ast.Attribute) and n.attr == _UST_MOD:
+                return True
+            if isinstance(n, ast.alias) and _UST_MOD in n.name:
+                return True
+            if isinstance(n, ast.ImportFrom) and _UST_MOD in (n.module or ""):
+                return True
+        return False
+
+    def frozen(fn):
+        return any((isinstance(n, ast.Name) and n.id in _UST_HELPERS)
+                   or (isinstance(n, ast.Attribute) and n.attr in _UST_HELPERS)
+                   for n in ast.walk(fn))
 
     def keyed_months(fn):
         # **직접** 피연산자만 본다 — `last_fail("202609") == "timeout"` 처럼
@@ -50111,17 +50156,14 @@ def _treasury_month_fixtures(src):
                 visit(ch, prefix + [ch.name])
             elif (isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef))
                   and ch.name.startswith("test")):
-                ids = idents(ch)
-                if not ("_ust_stub" in ids
-                        or any("treasury" in i.lower() for i in ids)):
+                if not touches(ch):
                     continue
                 months = keyed_months(ch)
                 if months:
                     out.append(("::".join(prefix + [ch.name]), ch.lineno,
-                                sorted(months),
-                                bool({"_freeze_ust_today", "_ust_stub"} & ids)))
+                                sorted(months), frozen(ch)))
 
-    visit(ast.parse(src), [])
+    visit(tree, [])
     return out
 
 
@@ -50196,12 +50238,16 @@ def test_treasury_month_fixtures_freeze_the_clock():
     테스트에서 또 진다(#249·#291·#342·#377 이 같은 시한폭탄) — 새 테스트가
     달 리터럴을 키로 박고 시계를 안 묶으면 여기서 걸린다(#119).
     """
-    found = []
+    found, read = [], {}
     for root in ("tests", "bot/tests", "trade/tests"):
         for f in sorted(pathlib.Path(root).rglob("test_*.py")):
             src = f.read_text(encoding="utf-8")
-            if "treasury" in src or "_ust_stub" in src:
+            read[root] = read.get(root, 0) + 1
+            if _UST_MOD in src or "_ust_stub" in src:
                 found += [(str(f), *row) for row in _treasury_month_fixtures(src)]
+    # 세 트리를 실제로 읽었는지 센다 — 범위를 한 트리로 좁히는 변형은 오늘
+    # 결과가 같아 조용히 통과한다(리뷰 L5). 새 시한폭탄은 어느 트리에서든 온다.
+    assert all(read.get(r) for r in ("tests", "bot/tests", "trade/tests")), read
     loose = [r[:4] for r in found if not r[4]]
     assert not loose, (
         "달 리터럴을 키로 박고 미국채 시계를 안 묶은 테스트 — 달이 바뀌면 "
@@ -50252,6 +50298,29 @@ def test_treasury_month_fixture_guard_fires():
     assert rows("def test_g():\n    ok = {'202609': 1}\n") == []
     assert rows("def test_h():\n    import bot.treasury_yield_client as ty\n"
                 "    ok = {'202613': 1, '2026-09': 2}\n") == []
+    # 모듈 **맨 위** import 도 따라간다(리뷰 M1) — 별칭 · `from … import 이름` ·
+    # `from bot import 모듈` · 별칭 없는 `import bot.…`(속성으로 잡힌다). 달은
+    # 2027 로 — 2026 만 달로 보는 변형이 내년에 눈멀지 않게.
+    assert rows("import bot.treasury_yield_client as ty\n\n"
+                "def test_m():\n    ty._FAIL['202701'] = 'x'\n") == [("test_m", False)]
+    assert rows("from bot.treasury_yield_client import curve_for\n\n"
+                "def test_n():\n    ok = curve_for('x')[1] == ['202701']\n"
+                "    ok2 = {'202701': curve_for}\n") == [("test_n", False)]
+    assert rows("from bot import treasury_yield_client\n\n"
+                "def test_o():\n"
+                "    treasury_yield_client._FAIL['202701'] = 'x'\n") == [("test_o", False)]
+    assert rows("import bot.treasury_yield_client\n\n"
+                "def test_p():\n"
+                "    bot.treasury_yield_client._FAIL['202701'] = 'x'\n") == [("test_p", False)]
+    # 본문 안의 `from bot.treasury_yield_client import 이름` 도 건드린 것이다.
+    assert rows("def test_s():\n"
+                "    from bot.treasury_yield_client import last_fail\n"
+                "    ok = {'202701': last_fail}\n") == [("test_s", False)]
+    # 반대 증거 — 남의 '트레저리'(자사주·비트코인)는 미국채가 아니다 · 맨 위에서
+    # 다른 모듈을 import 한 별칭은 대상이 아니다(KRX 코드 `200710` 이 달 모양이어도).
+    assert rows("def test_q():\n    treasury_shares = {'200710': 1}\n") == []
+    assert rows("import bot.market_overview as mo\n\n"
+                "def test_r():\n    mo._X['202609'] = 1\n") == []
 
 
 def test_freeze_ust_today_really_moves_the_products_clock(monkeypatch):
@@ -50270,9 +50339,11 @@ def test_freeze_ust_today_really_moves_the_products_clock(monkeypatch):
         assert asked and asked[0] == "202609", asked
         # 날 말고 나머지 `date` 동작은 그대로다.
         assert t.date(2026, 9, 2) < t.date.fromisoformat("2026-09-03")
-        # `_ust_stub` 도 묶는다 — 가드가 그걸 '묶음' 으로 세므로.
-        t2 = _ust_stub(mp, {"202609": {}}, today="2026-09-08")
-        assert t2.date.today().isoformat() == "2026-09-08"
+        # `_ust_stub` 도 **넘긴 날로** 묶는다 — 가드가 그걸 '묶음' 으로 센다.
+        # 다른 테스트가 쓰지 않는 날로 재야 `today` 를 무시하고 한 날로 굳힌
+        # 변형이 잡힌다(리뷰 L5 — 09-08 로 굳히면 13건이 전부 통과했다).
+        t2 = _ust_stub(mp, {"202609": {}}, today="2026-09-21")
+        assert t2.date.today().isoformat() == "2026-09-21"
     assert t.date is before, "테스트가 끝났는데 제품 시계가 묶인 채다"
 
 
@@ -65865,7 +65936,9 @@ class TestTreasurySpreadAndRetry20260914:
         import time as _t
 
         from bot import treasury_yield_client as ty
-        _freeze_ust_today(monkeypatch, "2026-09-15")   # #425 픽스처의 달
+        # #425 가드가 달 리터럴(캐시 키)을 보고 요구한다 — 이 테스트는 달을 인자로
+        # 넘겨 시계를 안 읽는다(묶어도 무해).
+        _freeze_ust_today(monkeypatch, "2026-09-15")
         monkeypatch.setattr(ty.time, "sleep", lambda *_a: None)
         calls: list[str] = []
 
