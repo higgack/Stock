@@ -26542,7 +26542,7 @@ class TestFlowTrendDiagnosis20260818:
             out2 = capsys.readouterr().out
             assert "❌" not in out2, f"정상인데 결함으로 찍는다\n{out2}"
 
-    def test_month_fetch_failure_is_not_called_missing_from_the_source(self):
+    def test_month_fetch_failure_is_not_called_missing_from_the_source(self, monkeypatch):
         """실수 #361 — VM 에서 같은 명령을 **두 번 연달아** 돌리자 갈렸다:
         1회차 `no_newer`(표 2026-09-01~09-11), 2회차 `fetch 202609
         failed(timeout)` → 표 2026-08-03~08-31 → **`no_overlap`**.
@@ -26554,6 +26554,7 @@ class TestFlowTrendDiagnosis20260818:
         이 바로 이것이었다.
         """
         import bot.treasury_yield_client as ty
+        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
 
         def _fail_sep(ym, **kw):
@@ -26595,6 +26596,7 @@ class TestFlowTrendDiagnosis20260818:
         import bot.market_timing as mt
         import bot.treasury_yield_client as ty
         from bot.scripts.macro_staleness_audit import _treasury_status
+        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
 
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
 
@@ -26617,7 +26619,7 @@ class TestFlowTrendDiagnosis20260818:
         assert "다만 이번 대조는 실패했다" in out, f"✅ 가 실패를 덮었다\n{out}"
         assert "month_failed" in out, out
 
-    def test_why_does_not_bury_a_failed_probe_under_a_green_verdict(self):
+    def test_why_does_not_bury_a_failed_probe_under_a_green_verdict(self, monkeypatch):
         """실수 #361 — VM 2회차는 3건 전부 202609 timeout 이었는데 최종 판정이
         `✅ 대조 3건 전부 원천의 최선까지 왔다` 였다. 화면 값이 이미 최선이면
         `✅` 가 찍히면서 **재무부를 못 받았다는 사실이 덮인 것**이다(#41 여유·
@@ -26626,6 +26628,7 @@ class TestFlowTrendDiagnosis20260818:
         import bot.market_timing as mt
         import bot.market_overview as mo
         import bot.treasury_yield_client as ty
+        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
         saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
                  mt._expected_session, dict(ty._FAIL))
@@ -26649,6 +26652,10 @@ class TestFlowTrendDiagnosis20260818:
             out = buf.getvalue()
             assert "✅ 최선(2026-09-11)까지 왔다" in out, out   # 화면은 사실
             assert "이번 대조는 실패했다" in out, f"실패를 ✅ 가 덮었다\n{out}"
+            # ⚠️ 이 테스트가 재는 갈래를 못박는다 — 시계가 안 묶였던 옛 판은
+            # 10월부터 `no_overlap` 을 타고도 위 단언이 그대로 초록이었다
+            # (두 갈래 다 '대조 실패' 라서, #425 · #91b 재는 대상이 맞나).
+            assert "month_failed" in out, f"재려던 갈래가 아니다\n{out}"
             assert "대조 실패 1건" in out, out
             # 화면이 최선이므로 사용자에겐 문제가 없다 — rc 는 0 이고
             # **최종 ✅ 문장은 찍지 않는다**(둘 다 찍으면 자기모순).
@@ -27080,7 +27087,7 @@ class TestFlowTrendDiagnosis20260818:
         src = open("bot/blog_watch.py", encoding="utf-8").read()
         assert "필명" in src and "hempt" in src, "번복 근거가 코드에 없다"
 
-    def test_probe_failure_notice_only_speaks_where_it_can_be_true(self):
+    def test_probe_failure_notice_only_speaks_where_it_can_be_true(self, monkeypatch):
         """#361c 독립 리뷰 — 통지를 `✅ 최선` 분기 **밖**에 두었더니 둘이
         깨졌다: (a) 화면이 뒤처진 줄 바로 아래에 "우연히 최선이었을 뿐"이
         붙어 두 줄이 **서로 모순**했고(그 줄은 이미 갈래·사유를 말한다)
@@ -27091,6 +27098,7 @@ class TestFlowTrendDiagnosis20260818:
         import bot.market_timing as mt
         import bot.market_overview as mo
         import bot.treasury_yield_client as ty
+        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
         saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
                  mt._expected_session, dict(ty._FAIL))
@@ -27188,13 +27196,14 @@ class TestFlowTrendDiagnosis20260818:
         assert "다만 이번 대조는 실패했다(mismatch)" in out, \
             f"mismatch 가 ✅ 아래에서 조용하다\n{out}"
 
-    def test_month_failed_needs_the_month_to_have_been_queried(self):
+    def test_month_failed_needs_the_month_to_have_been_queried(self, monkeypatch):
         """#361b 독립 리뷰 — `last_fail` 은 **모듈 전역**이라 오래전 실패가
         남아 있다. 이번 호출이 그 달을 조회조차 안 했으면(FRED 최신일이 두 달
         전) 그 기록은 무관한데, 그걸 믿으면 `no_overlap` 을 `month_failed` 로
         찍어 운영자를 **정반대 처방**으로 보낸다(#82 갈래는 이름으로).
         """
         import bot.treasury_yield_client as ty
+        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
         saved = (ty.fetch_daily_curve, dict(ty._FAIL))
         try:
             # 곡선은 멀쩡히 오지만 7월 날짜는 없다 → no_overlap 이 정답.
@@ -27300,6 +27309,7 @@ class TestFlowTrendDiagnosis20260818:
         from bot import treasury_yield_client as ty
         from bot.scripts.macro_staleness_audit import _treasury_status
         from bot.audit_sweep import _findings
+        _freeze_ust_today(monkeypatch, "2026-09-13")   # #425 픽스처의 달
 
         d = tmp_path / "fred"
         d.mkdir(parents=True)
@@ -50005,18 +50015,122 @@ def test_market_timing_why_probe_dispatches_and_is_read_only():
 
 # ── 미국채 신선도: 보강 판정 갈래 + 달 경계 + `--why` (사용자 2026-09-08) ──
 # "미국채는 오늘 9/8 일인데 이게 가져올수 있는 최선인거야?" — 화면 기준 09-03.
-def _ust_stub(monkeypatch, by_month):
+def _freeze_ust_today(monkeypatch, day):
+    """`bot.treasury_yield_client` 가 보는 '오늘'을 그 테스트의 날에 묶는다.
+
+    실수 #425 — 제품은 물어볼 달을 `date.today()` 로 고르는데(`curve_for`·
+    `fetch_daily_curve`·`last_fail`) 이 픽스처들은 곡선·실패를 **2026-09 같은
+    달 키**로 박아 둔다. 시계를 안 묶으면 달이 바뀌는 날 무관한 커밋에서
+    빨간불이 된다 — 날짜를 강제로 옮겨 재 보니 2026-10-01 에 1건, 11월부터
+    6건이었다. 빨간불이 안 나는 쪽이 더 나쁘다: 한 건은 단언이 느슨해 **다른
+    갈래**(`month_failed` → `no_overlap`)를 타고도 초록이었다(#91b).
+
+    날 하나만 갈아 끼우고 `date` 의 나머지 동작은 그대로 둔다. 어느 테스트가
+    이걸 불러야 하는지는 `test_treasury_month_fixtures_freeze_the_clock` 이
+    정한다(#119 규율이 아니라 회귀).
+    """
+    import datetime as _dt
+
     from bot import treasury_yield_client as t
+    y, m, d = map(int, day.split("-"))
+
+    class _Frozen(_dt.date):
+        @classmethod
+        def today(cls):
+            return cls(y, m, d)
+
+    monkeypatch.setattr(t, "date", _Frozen)
+    return t
+
+
+def _ust_stub(monkeypatch, by_month, *, today):
+    """달 키 곡선 스텁 — 달을 키로 박으므로 **시계도 같이 묶는다**(#425).
+    `today` 를 필수로 둬 호출부가 그 테스트의 날을 적게 한다."""
+    t = _freeze_ust_today(monkeypatch, today)
     monkeypatch.setattr(t, "fetch_daily_curve",
                         lambda ym=None, **kw: dict(by_month.get(ym or "", {})))
     return t
+
+
+_UST_YM = re.compile(r"20\d{2}(?:0[1-9]|1[0-2])")
+
+
+def _treasury_month_fixtures(src):
+    """미국채 시계에 기대는 테스트 [(이름, 줄, 달들, 시계를 묶었나)] — #425.
+
+    대상: 미국채 코드를 건드리고(식별자에 `treasury` · `_ust_stub`) `YYYYMM`
+    리터럴을 **키·비교**로 쓰는 테스트(딕셔너리 키 · 첨자 · 비교식). 그 리터럴은
+    제품이 그 달을 물어 주기를 **기다리는** 픽스처라, 실제 시계가 달을 넘기면
+    빗나간다. 달을 **함수 인자로** 넘기는 것(`fetch_daily_curve("202609")`)은
+    시계와 무관하므로 대상이 아니다. 묶음 = 본문이 `_freeze_ust_today` 또는
+    `_ust_stub`(시계를 같이 묶는다)를 부른다.
+
+    ⚠️ 못 보는 축(#274): 미국채를 이름으로 안 부르고 바깥 함수로만 타는 테스트 ·
+    키를 함수 인자로 심는 모양(`setitem(ty._FAIL, "202609", …)`) · f-string 으로
+    만든 달 · 미국채 밖 모듈의 같은 병(이 가드는 이 모듈의 시계만 본다).
+    """
+    out = []
+
+    def idents(fn):
+        got = set()
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Name):
+                got.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                got.add(n.attr)
+            elif isinstance(n, ast.alias):
+                got.update({n.name, n.asname or ""})
+            elif isinstance(n, ast.ImportFrom):
+                got.add(n.module or "")
+        return got
+
+    def keyed_months(fn):
+        # **직접** 피연산자만 본다 — `last_fail("202609") == "timeout"` 처럼
+        # 호출 인자로 들어간 달은 달을 직접 고정한 것이라 시계와 무관하다.
+        found = set()
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Dict):
+                spots = [k for k in n.keys if k is not None]
+            elif isinstance(n, ast.Subscript):
+                spots = [n.slice]
+            elif isinstance(n, ast.Compare):
+                spots = [n.left, *n.comparators]
+            else:
+                continue
+            for sp in spots:
+                elts = sp.elts if isinstance(sp, (ast.Tuple, ast.List, ast.Set)) else [sp]
+                for c in elts:
+                    if (isinstance(c, ast.Constant) and isinstance(c.value, str)
+                            and _UST_YM.fullmatch(c.value)):
+                        found.add(c.value)
+        return found
+
+    def visit(node, prefix):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, ast.ClassDef):
+                visit(ch, prefix + [ch.name])
+            elif (isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and ch.name.startswith("test")):
+                ids = idents(ch)
+                if not ("_ust_stub" in ids
+                        or any("treasury" in i.lower() for i in ids)):
+                    continue
+                months = keyed_months(ch)
+                if months:
+                    out.append(("::".join(prefix + [ch.name]), ch.lineno,
+                                sorted(months),
+                                bool({"_freeze_ust_today", "_ust_stub"} & ids)))
+
+    visit(ast.parse(src), [])
+    return out
 
 
 def test_treasury_fresher_names_the_branch(monkeypatch):
     """'없음'만 말하는 판정은 추측을 부른다(#82). 옛 판은 네 갈래 중 **셋이
     조용**해서 화면이 왜 안 당겨졌는지 로그로도 알 수 없었다(#12)."""
     t = _ust_stub(monkeypatch, {"202609": {"2026-09-03": {"DGS2": 4.34},
-                                           "2026-09-04": {"DGS2": 4.29}}})
+                                           "2026-09-04": {"DGS2": 4.29}}},
+                  today="2026-09-08")
     assert t.fresher_diag("2026-09-03", 4.34, "DGS2")[0] == "ok"
     assert t.fresher_than("2026-09-03", 4.34, "DGS2") == ("2026-09-04", 4.29)
     # 원천이 이미 최선 — 우리 문제가 아니다(❌ 로 세면 진짜 결함을 가린다 #260)
@@ -50026,7 +50140,8 @@ def test_treasury_fresher_names_the_branch(monkeypatch):
     assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_curve"
     # 태그 오집(만기가 다른 값) — 이 검산이 이 모듈의 존재 이유다
     _ust_stub(monkeypatch, {"202609": {"2026-09-03": {"DGS2": 3.90},
-                                       "2026-09-04": {"DGS2": 3.88}}})
+                                       "2026-09-04": {"DGS2": 3.88}}},
+              today="2026-09-08")
     code, d = t.fresher_diag("2026-09-03", 4.34, "DGS2")
     assert code == "mismatch" and d["overlap_gap"] > d["tol"], (code, d)
     assert t.fresher_than("2026-09-03", 4.34, "DGS2") is None
@@ -50039,7 +50154,8 @@ def test_treasury_curve_spans_month_boundary(monkeypatch):
     영원히 빈다).
     """
     t = _ust_stub(monkeypatch, {"202609": {"2026-09-01": {"DGS2": 4.30}},
-                                "202608": {"2026-08-31": {"DGS2": 4.28}}})
+                                "202608": {"2026-08-31": {"DGS2": 4.28}}},
+                  today="2026-09-02")    # 달 초 — FRED 최신일은 아직 지난달
     code, d = t.fresher_diag("2026-08-31", 4.28, "DGS2")
     assert code == "ok", (code, d)
     assert d["newer"] == ("2026-09-01", 4.30)
@@ -50055,7 +50171,8 @@ def test_treasury_fresher_logs_the_branch_not_silence(monkeypatch, caplog):
     검산된다(#202). ⚠️ 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20)."""
     import logging as _lg
 
-    t = _ust_stub(monkeypatch, {"202609": {"2026-09-04": {"DGS2": 4.29}}})
+    t = _ust_stub(monkeypatch, {"202609": {"2026-09-04": {"DGS2": 4.29}}},
+                  today="2026-09-08")
     with caplog.at_level(_lg.INFO, logger="bot.treasury_yield"):
         assert t.fresher_than("2026-09-04", 4.29, "DGS2") is None
     blob = "\n".join(r.getMessage() for r in caplog.records)
@@ -50067,6 +50184,96 @@ def test_treasury_fresher_logs_the_branch_not_silence(monkeypatch, caplog):
                                  "overlap_value": 3.9, "overlap_gap": 0.44})
             for c in ("no_curve", "no_overlap", "mismatch", "no_newer", "ok")}
     assert len(seen) == 5, seen
+
+
+def test_treasury_month_fixtures_freeze_the_clock():
+    """실수 #425 — 미국채 시계에 기대는 테스트는 시계를 묶어야 한다.
+
+    2026-10-01 배포 게이트가 이번 변경과 무관한 테스트 하나에 막혔다
+    (`test_treasury_curve_spans_month_boundary` — 픽스처는 2026-09 곡선인데
+    제품은 '이번 달' 을 실제 시계로 고른다). 날짜를 강제로 옮겨 재 보니
+    11월부터 6건이 터지고 1건은 조용히 다른 갈래를 탔다. 규율로 막으면 다음
+    테스트에서 또 진다(#249·#291·#342·#377 이 같은 시한폭탄) — 새 테스트가
+    달 리터럴을 키로 박고 시계를 안 묶으면 여기서 걸린다(#119).
+    """
+    found = []
+    for root in ("tests", "bot/tests", "trade/tests"):
+        for f in sorted(pathlib.Path(root).rglob("test_*.py")):
+            src = f.read_text(encoding="utf-8")
+            if "treasury" in src or "_ust_stub" in src:
+                found += [(str(f), *row) for row in _treasury_month_fixtures(src)]
+    loose = [r[:4] for r in found if not r[4]]
+    assert not loose, (
+        "달 리터럴을 키로 박고 미국채 시계를 안 묶은 테스트 — 달이 바뀌면 "
+        "무관한 커밋에서 터진다. `_freeze_ust_today(monkeypatch, '<그 테스트의 날>')`"
+        f" 를 부를 것: {loose}")
+    # 대조 0건은 통과가 아니다(#54) — 감지가 눈멀면 위 단언은 늘 참이다.
+    # 지금 11건이다. 하한을 바싹 붙이면 테스트 하나 지우는 커밋이 막힌다(#67).
+    assert len(found) >= 5, f"미국채 달 픽스처를 {len(found)}건밖에 못 찾았다"
+
+
+def test_treasury_month_fixture_guard_fires():
+    """가드가 실제로 무는지 — 본 테스트와 **같은 함수**를 태운다(#286)."""
+    def rows(src):
+        return [(r[0], r[3]) for r in _treasury_month_fixtures(src)]
+
+    bomb = ("def test_a():\n"
+            "    import bot.treasury_yield_client as ty\n"
+            "    def _f(ym, **kw):\n"
+            "        return {} if ym == '202609' else {'x': 1}\n"
+            "    ty.fetch_daily_curve = _f\n")
+    assert rows(bomb) == [("test_a", False)]
+    # 딕셔너리 키 · 첨자도 '그 달을 기다리는' 같은 모양이다.
+    assert rows("def test_b():\n    from bot import treasury_yield_client as ty\n"
+                "    by = {'202609': {}}\n") == [("test_b", False)]
+    assert rows("def test_c():\n    from bot import treasury_yield_client as ty\n"
+                "    ty._FAIL['202607'] = 'x'\n") == [("test_c", False)]
+    # 클래스 안 메서드는 클래스 이름까지 남긴다(어디를 고칠지 말한다).
+    assert rows("class T:\n    def test_d(self):\n"
+                "        import bot.treasury_yield_client as ty\n"
+                "        ok = 'x' == '202609'\n") == [("T::test_d", False)]
+    # 묶었으면 면죄 — 헬퍼 둘 다.
+    tied = bomb.replace("    ty.fetch", "    _freeze_ust_today(mp, '2026-09-13')\n"
+                                       "    ty.fetch")
+    assert rows(tied) == [("test_a", True)]
+    # 달 묶음과의 소속 비교도 '그 달을 기다리는' 모양이다.
+    assert rows("def test_i():\n    import bot.treasury_yield_client as ty\n"
+                "    ok = lambda ym: ym in ('202609', '202608')\n") == [
+        ("test_i", False)]
+    assert rows("def test_e(mp):\n"
+                "    _ust_stub(mp, {'202609': {}}, today='2026-09-08')\n") == [
+        ("test_e", True)]
+    # 반대 증거(#25) — 달을 인자로 넘기면 시계와 무관하다(비교식 안의 호출
+    # 인자여도) · 미국채를 안 건드리면 대상이 아니다 · 달이 아닌 숫자·날짜는
+    # 달 키가 아니다.
+    assert rows("def test_f():\n    import bot.treasury_yield_client as ty\n"
+                "    ty.fetch_daily_curve('202609')\n"
+                "    assert ty.last_fail('202609') == 'timeout'\n") == []
+    assert rows("def test_g():\n    ok = {'202609': 1}\n") == []
+    assert rows("def test_h():\n    import bot.treasury_yield_client as ty\n"
+                "    ok = {'202613': 1, '2026-09': 2}\n") == []
+
+
+def test_freeze_ust_today_really_moves_the_products_clock(monkeypatch):
+    """묶음이 이름뿐이면 가드는 거짓 안심이다 — 제품이 달을 고르는 **그
+    경로**가 묶인 시계를 보는지 값으로 잰다(#20). 끝나면 묶기 전의 `date` 로."""
+    from bot import treasury_yield_client as t0
+    before = t0.date          # 되돌림은 '이 테스트 전의 것' 과 대조한다
+
+    with monkeypatch.context() as mp:
+        t = _freeze_ust_today(mp, "2026-09-02")
+        assert t.date.today().isoformat() == "2026-09-02"
+        asked = []
+        mp.setattr(t, "fetch_daily_curve",
+                   lambda ym=None, **kw: asked.append(ym) or {})
+        t.curve_for("2026-09-01")
+        assert asked and asked[0] == "202609", asked
+        # 날 말고 나머지 `date` 동작은 그대로다.
+        assert t.date(2026, 9, 2) < t.date.fromisoformat("2026-09-03")
+        # `_ust_stub` 도 묶는다 — 가드가 그걸 '묶음' 으로 세므로.
+        t2 = _ust_stub(mp, {"202609": {}}, today="2026-09-08")
+        assert t2.date.today().isoformat() == "2026-09-08"
+    assert t.date is before, "테스트가 끝났는데 제품 시계가 묶인 채다"
 
 
 def test_treasury_why_probe_dispatches_and_reports_the_best(monkeypatch):
@@ -65658,6 +65865,7 @@ class TestTreasurySpreadAndRetry20260914:
         import time as _t
 
         from bot import treasury_yield_client as ty
+        _freeze_ust_today(monkeypatch, "2026-09-15")   # #425 픽스처의 달
         monkeypatch.setattr(ty.time, "sleep", lambda *_a: None)
         calls: list[str] = []
 
