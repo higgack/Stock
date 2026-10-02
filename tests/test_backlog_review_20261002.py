@@ -128,13 +128,25 @@ class TestStaleObservations:
         assert val == 4015e6 and why == "정상", (val, why)
         assert _rows(log) == [], "값이 나왔는데 개선 여지 줄이 남았다"
 
+    def test_the_uncached_probe_path_also_clears_it(self, tmp_path,
+                                                     monkeypatch):
+        """`out=` 을 넘기는 프로브(CLI `--ticker`·재조회)는 캐시를 안 탄다 —
+        그 경로의 성공도 해소 줄을 지워야 한다(리뷰 생존 뮤테이션 P4)."""
+        bl, log = _ledger(tmp_path, monkeypatch)
+        bl._log_miss("391710", 2026, "11012", "형식미지원",
+                     "헤더에 기초·수주총액 열 없음", EX_391710)
+        _docs(monkeypatch, {"391710": EX_391710})
+        val, _w = bl.backlog_probe(_Dart(), "391710", 2026, "11012", out={})
+        assert val == 4015e6 and _rows(log) == [], (val, _rows(log))
+
     def test_a_success_keeps_rows_it_does_not_refute(self, tmp_path,
                                                      monkeypatch):
         """반대 증거(#25) — 다른 분기·다른 종목, 그리고 원문 없이 기록되는
         `시계열이상`(파싱 성공이 그 신호를 반증하지 않는다)은 남는다."""
         bl, log = _ledger(tmp_path, monkeypatch)
-        # ⚠️ 분기를 위 테스트와 **다르게** 둔다 — 파싱 캐시(24h)는 세션 안에서
-        # 살아 있어, 같은 분기면 캐시 히트로 지우기 경로를 아예 안 탄다.
+        # 파싱 캐시는 테스트마다 새 디렉터리다(tests/conftest.py) — 분기를
+        # 위 테스트와 다르게 둔 건 캐시 때문이 아니라, 지울 분기(2026/11014)와
+        # 남길 줄(다른 분기·종목)을 가르기 위해서다.
         bl._log_miss("391710.KQ", 2025, "11011", "형식미지원", "다른 분기")
         bl._log_miss("005930.KS", 2026, "11014", "형식미지원", "다른 종목")
         bl._log_miss("391710.KQ", 2026, "11014", bl.MISS_SERIES_ANOMALY)
@@ -303,6 +315,62 @@ class TestEmptyTableReadsOnlyTheTable:
         assert diagnose(won) == "형식미지원", diagnose(won)
 
 
+class TestTheTotalRowIsLookedUpInTheTable:
+    """`합계없음` 판정만 **안 잘린** 원문을 봐서, 다음 절의 `합계` 가 사유를
+    `형식미지원` 으로 만들고 상세는 `합계행 없음` 이라 둘이 갈렸다(리뷰 L3,
+    #38 — 파서·관문 진단·빈 표 판정은 이미 잘린 표를 본다). 합성."""
+
+    def test_reason_and_detail_agree(self):
+        from bot.dart_backlog import diagnose, diagnose_detail
+        t = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+             "A 1,000 400 650 5. 위험관리 가. 시장위험 (단위 : 백만원) 구분 금액 "
+             "합 계 9,999")
+        assert diagnose(t) == "합계없음", diagnose(t)
+        assert diagnose_detail(t) == "헤더는 통과 · 합계행 없음"
+
+
+class TestFingerprintIsTakenAtImport:
+    """처음 부를 때 재면 배포가 파일을 바꾼 뒤 재시작에 실패한 프로세스(옛
+    코드)가 **새 지문**을 찍는다 — 옛 파서의 관측이 '지금 파서' 로 둔갑한다
+    (리뷰 L1 · #365). 레포 파일은 건드리지 않는다 — 사본을 import 한 뒤 그
+    사본을 바꾼다(#365 테스트가 추적 파일에 쓰면 mtime 이 거짓 drift 를 만든다)."""
+
+    def test_a_file_changed_after_import_does_not_change_it(self, tmp_path):
+        import hashlib
+        import importlib.util
+        from pathlib import Path
+
+        src = Path("bot/dart_backlog.py").read_bytes()
+        f = tmp_path / "bl_copy_1002.py"
+        f.write_bytes(src)
+        spec = importlib.util.spec_from_file_location("bl_copy_1002", f)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        f.write_bytes(src + b"\n# deployed later\n")
+        assert m._parse_sig() == hashlib.sha1(src).hexdigest()[:10]
+
+
+class TestOneEmptyTableDoesNotHideAnother:
+    """빈 표 판정은 **모든** 자리가 빈 표일 때만 미공시다 — 본사 표가 비고
+    종속 표가 못 읽히면 그건 파서 갭이다(#385, 리뷰 생존 뮤테이션 D1, 합성)."""
+
+    def test_an_empty_and_a_filled_table(self):
+        from bot.dart_backlog import diagnose
+        t = ("가. 수주상황(본사) (단위 : 백만원) 품목 수주일자 납기 수주총액 "
+             "기납품액 수주잔고 수량 금액 수량 금액 수량 금액 - - - - - - "
+             "합 계 - - - - - - 나. 수주상황(종속) (단위 : 백만원) 품목 "
+             "수주총액 기납품액 수주잔고 B 1,000 400 650 합 계 1,000 400 650 "
+             "※ 끝")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
+    def test_a_total_label_with_neither_values_nor_dashes_is_not_empty(self):
+        """`-` 가 없으면 빈 표가 아니라 **값을 못 찾은** 것이다(생존 T2)."""
+        from bot.dart_backlog import diagnose
+        t = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+             "A 1,000 400 650 합 계 ※ 금액은 부가세 포함")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
+
 # ── 195870 — 영업기밀 생략 선언 ───────────────────────────────────────
 class TestTradeSecretNonDisclosure:
     """"수주잔고에 대한 공개는 … 영업기밀에 해당되어 … 기재를 생략합니다" —
@@ -333,6 +401,57 @@ class TestTradeSecretNonDisclosure:
         assert not _NO_DATA_RE.search(
             "수주잔고는 아래와 같습니다. 단가 정보는 영업기밀이라 생략합니다.")
 
+    # 독립 리뷰 H1(2026-10-02) — 표 본문엔 마침표가 없어 `[^.]` 창이 머리행의
+    # `수주잔고` 부터 표 밑 **각주**까지 이어졌다. 각주가 **다른 것**(고객사명·
+    # 발주처·프로젝트명)을 영업비밀이라 하면 못 읽은 표가 '미공시' 로 숨고,
+    # `_log_miss` 가 그 분기의 개선 여지 줄까지 지운다(#385 숨기는 쪽이 더
+    # 나쁘다). 리뷰가 재현한 세 문장이다.
+    TABLE = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+             "A사 1,000 400 650 합 계 1,000 400 650 ")
+
+    @pytest.mark.parametrize("note", [
+        "※ 고객사명은 영업비밀에 해당하여 기재를 생략하였습니다",
+        "※ 당사의 수주잔고는 위와 같으며, 개별 계약의 발주처 및 계약금액 등 "
+        "세부 내역은 고객사와의 비밀유지 약정 및 영업비밀 보호를 위하여 기재를 "
+        "생략합니다",
+        "※ 수주잔고 상위 프로젝트는 발주처와 체결한 계약상 영업상 비밀 유지 "
+        "조항에 따라 프로젝트명을 공개하지 않았습니다"])
+    def test_a_footnote_about_other_details_does_not_hide_the_table(self, note):
+        from bot.dart_backlog import diagnose
+        t = self.TABLE + note
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
+    @pytest.mark.parametrize("sentence", [
+        # 조사(의 · 에 대한 · 없음) · 공개/공시/기재 · 기밀/비밀 · 영업상 ·
+        # 동사 셋을 한 번씩 — 갈래를 지우는 변형이 각자 걸리게(#91c).
+        # ⚠️ 문장마다 **영업기밀 갈래만** 맞아야 한다 — 첫 판의 짧은 예문은
+        # `수주잔고 … 기재하지 않`(40자 창) 갈래에도 걸려 `의`·`공시` 를
+        # 지우는 변형이 살아남았다(2026-10-02 뮤테이션 실측, #91b).
+        "수주잔고의 공시는 당사와 고객사 사이의 계약 조건상 영업비밀에 해당하여 "
+        "이번 보고서에는 기재하지 않습니다.",
+        "수주잔고에 대한 기재는 발주처와의 계약에 따라 영업상 기밀에 해당되어 "
+        "공개하지 않습니다.",
+        "수주잔고 공개는 당사의 영업 비밀에 해당하여 생략합니다."])
+    def test_the_backlog_itself_declared_a_trade_secret(self, sentence):
+        """반대 증거(#25) — 공개 대상이 **수주잔고 자신**이면 미공시다."""
+        import re
+
+        from bot.dart_backlog import _NO_DATA_RE, _TRADE_SECRET_PAT, diagnose
+        assert diagnose(sentence) == "명시적미공시", sentence
+        others = _NO_DATA_RE.pattern.replace("|" + _TRADE_SECRET_PAT, "")
+        assert others != _NO_DATA_RE.pattern, "영업기밀 갈래가 정규식에 없다"
+        assert not re.search(others, sentence), "다른 갈래가 맞는다"
+
+    def test_a_trade_secret_far_from_the_disclosure_clause_does_not_count(self):
+        """창은 유계다 — 같은 문장이라도 멀리 떨어진 영업기밀 언급은 그
+        공개 어구의 사유가 아니다(195870 실측은 공개→영업기밀 16자 ·
+        영업기밀→생략 37자)."""
+        from bot.dart_backlog import diagnose
+        far = "가" * 120
+        t = (self.TABLE + "※ 수주잔고에 대한 공개 기준은 " + far
+             + " 영업기밀 자료는 생략합니다")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
 
 # ── 000670 — 혼합 단위 캡션 · 음수 잔고 ──────────────────────────────
 class TestMixedUnitCaption:
@@ -352,7 +471,12 @@ class TestMixedUnitCaption:
         ("(단위 : 백만원)", 1e6), ("(단위 : 백만)", 1e6), ("(단위 : 억, %)", 1e8),
         ("(단위 : 백만, 천주)", 1e6), ("(단위 : 천원)", 1e3),
         ("(단위 : 개, 백만원)", 1e6), ("(단위 : 천주, 백만)", 1e6),
-        ("(단위 : 천, 백만원)", 1e6)])
+        ("(단위 : 천, 백만원)", 1e6),
+        # 뒤의 `원` 토큰이 이긴다 — 띄어 쓴 `백만 원` 도, 사이가 먼 것도.
+        # 이건 **의미 규칙**이다(맨 스케일은 통화를 말하지 않는다) — 실측
+        # 캡션이 요구한 게 아니므로 픽스처도 합성이다(#165).
+        ("(단위 : 천, 백만 원)", 1e6), ("(단위 : 수량 천, 금액 백만원)", 1e6),
+        ("(단위 : 백만, 천원)", 1e3)])
     def test_money_captions_still_read(self, cap, mult):
         """반대 증거(#25·#57) — 기호 차단이 정상 캡션을 죽이지 않는다."""
         from bot.dart_backlog import _unit_mult
@@ -360,12 +484,20 @@ class TestMixedUnitCaption:
         assert _unit_mult(t, t.index("수주잔고")) == mult, cap
 
     @pytest.mark.parametrize("cap", ["(단위 : 천㎡)", "(단위 : 백만㎥)",
-                                     "(단위 : 천㎏)", "(단위 : 백만%)"])
+                                     "(단위 : 천㎏)", "(단위 : 백만%)",
+                                     "(단위 : 천‰)"])
     def test_a_scale_glued_to_a_unit_symbol_is_not_money(self, cap):
         from bot.dart_backlog import _cap_kind, _unit_mult
         t = cap + " 구분 수주총액 기납품액 수주잔고"
         assert _unit_mult(t, t.index("수주잔고")) is None, cap
         assert _cap_kind(cap) != "금액캡션", (cap, _cap_kind(cap))
+
+    def test_a_won_token_outside_the_caption_does_not_veto_its_scale(self):
+        """뒤의 `원` 을 찾는 창은 **캡션 안**이다 — 괄호를 넘어 머리행의
+        `(천원 미만 절사)` 를 보면 맨 `백만` 캡션이 통째로 죽는다(합성)."""
+        from bot.dart_backlog import _unit_mult
+        t = ("(단위 : 백만) 구분 수주총액(천원 미만 절사) 기납품액 수주잔고")
+        assert _unit_mult(t, t.index("수주잔고")) == 1e6
 
     # 합성 표 — 품목·수량 행과 합계 숫자 모두 지어낸 것이다(양수 잔고).
     ROWS_POS = ("㈜영풍 아연괴 2026.01.01~2026.12.31 2026.01.01~2026.12.31 "
@@ -454,6 +586,46 @@ class TestNonPositiveBalance:
              "A사 100 200 -100 합 계 100 200 -100 ※ 주석")
         assert diagnose(t) == "형식미지원", diagnose(t)
 
+    @pytest.mark.parametrize("head", [
+        "구 분 수주총액 비고 수주잔고",        # 납품 열이 없다(생존 N5)
+        "구 분 계약금액 기납품액 수주잔고"])   # 시작 열이 없다(생존 N4)
+    def test_each_half_of_the_header_gate(self, head):
+        """관문 둘 중 **하나만** 빠져도 파서는 안 들어간다 — 기존 픽스처는
+        둘 다 없어 한쪽을 지우는 변형이 살아남았다(#91c)."""
+        from bot.dart_backlog import diagnose
+        t = ("나. 수주상황 (단위 : 백만원) " + head
+             + " A 100 300 -200 합 계 100 300 -200 ※ 끝")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
+    def test_a_foreign_unit_table_is_not_called_negative(self):
+        """단위 관문도 같다 — 외화 표의 음수는 원화 잔고의 원천 값이 아니다
+        (생존 N2, 합성)."""
+        from bot.dart_backlog import diagnose
+        t = ("가. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+             "A 100 300 -200 합 계 100 300 -200 ※ 끝 나. 수주상황(해외) "
+             "(단위 : 천USD) 품목 수주총액 기납품액 수주잔고 B 50 80 -30 "
+             "합 계 50 80 -30 ※ 끝")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
+    def test_extra_count_columns_do_not_hide_a_negative_balance(self):
+        """건수·수량 열이 끼어 5값이면 파서가 쓰는 **부분열 탐색**으로 같은
+        항등식을 본다(생존 V3, 합성)."""
+        from bot.dart_backlog import MISS_NON_POSITIVE, diagnose
+        t = self._yp("합 계 12 3 245,858 264,255 -18,396")
+        assert diagnose(t) == MISS_NON_POSITIVE, diagnose(t)
+
+    def test_a_fully_delivered_pair_row_is_not_given_a_spurious_balance(self):
+        """금액쌍 항등식이 **0 으로** 성립하면 그게 답이다 — 부분열 탐색으로
+        넘어가면 `[1,000, 5, 1,000]` 이 1% 안에 맞아 잔고 1,000(10억원)을
+        지어냈다(리뷰 L8, base 부터 있던 결함 · 합성)."""
+        from bot.dart_backlog import (MISS_NON_POSITIVE, diagnose,
+                                      parse_backlog)
+        t = ("나. 수주상황 (단위 : 개, 백만원) 품목 수주총액 기납품액 수주잔고 "
+             "수량 금액 수량 금액 수량 금액 A 5 1,000 5 1,000 0 0 "
+             "합 계 5 1,000 5 1,000 0 0 ※ 끝")
+        assert parse_backlog(t) is None
+        assert diagnose(t) == MISS_NON_POSITIVE, diagnose(t)
+
     def test_a_zero_balance_is_also_not_a_parser_gap(self):
         """다 납품해 잔고가 0 인 표도 같은 결론 — 파서는 0 이하를 안 싣는다."""
         from bot.dart_backlog import MISS_NON_POSITIVE, diagnose
@@ -492,6 +664,70 @@ class TestCaptionIsNotBorrowedAcrossTables:
         from bot.dart_backlog import parse_backlog
         got = parse_backlog(self._doc("(단위 : 백만원)"))
         assert got and got["value"] == 6000e6, got
+
+    # ── 독립 리뷰 M1(2026-10-02) — 첫 판은 금액 캡션과 라벨 **사이의 아무
+    # 콜론 캡션**이나 '자기 캡션' 으로 봐서 base 가 맞게 읽던 표를 빈칸으로
+    # 만들었다. 캡션 귀속은 **표 경계**(숫자 행·합계·각주·윗 절 제목)로 가른다.
+    ROW = (" 수주총액 기납품액 수주잔고 A 10,000 4,000 6,000 "
+           "합 계 10,000 4,000 6,000")
+
+    @pytest.mark.parametrize("t, want", [
+        # 머리행의 소캡션 — 같은 표의 수량 열 단위다(합성).
+        ("나. 수주상황 (단위 : 백만원) 품목 수량(단위 : 대) 수주총액 기납품액 "
+         "수주잔고 A 10 10,000 4,000 6,000 합 계 10 10,000 4,000 6,000", 6000e6),
+        # 연속 캡션 — 금액·수량 단위를 따로 적은 한 표(합성).
+        ("나. 수주상황 (단위 : 백만원)(단위 : 대) 구 분" + ROW, 6000e6),
+        ("나. 수주상황 (단위 : 천원) 구 분 건수(단위 : 건) 수주총액 기납품액 "
+         "수주잔고 A 3 10,000 4,000 6,000 합 계 3 10,000 4,000 6,000", 6000e3),
+        # 사이 표의 비금액 캡션은 **그 표**의 것이다 — 자기 캡션이 없는 수주
+        # 표는 앞 원화 캡션을 쓴다(base 와 같은 규약, 합성).
+        ("가. 매출실적 (단위 : 백만원) 매출 합계 9,999 나. 판매경로 (단위 : %) "
+         "국내 60 해외 40 다. 수주상황 구 분" + ROW, 6000e6),
+        # 사이 표가 빈 표(`-`)여도 윗 절 제목(`다.`)이 그 캡션을 끊는다.
+        ("가. 매출실적 (단위 : 백만원) 매출 합계 9,999 나. 판매경로 (단위 : %) "
+         "국내 - 해외 - 다. 수주상황 구 분" + ROW, 6000e6),
+        # 머리행 각주 표식(`(주1)`·`(1)`)은 아래 항목 머리가 아니다 — 첫 판의
+        # `_SUBITEM` 은 앞 글자를 안 봐서 `수주총액(주1)` 의 `1)` 에 걸렸다
+        # (2026-10-02 셀프리뷰 재현, 합성).
+        ("나. 수주상황 (단위 : 백만원) 구분 수주총액(주1) 수량(단위 : 대) 기납품액 "
+         "수주잔고 A 10,000 4,000 6,000 합 계 10,000 4,000 6,000", 6000e6),
+        ("나. 수주상황 (단위 : 백만원) 구분 수주총액(1) 수량(단위 : 대) 기납품액 "
+         "수주잔고 A 10,000 4,000 6,000 합 계 10,000 4,000 6,000", 6000e6),
+    ])
+    def test_captions_of_the_same_or_another_table_do_not_veto(self, t, want):
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(t)
+        assert got and got["value"] == want, (got, t[:60])
+
+    def test_a_long_mixed_caption_reads_its_won_token(self):
+        """금액 토큰 앞이 20자를 넘는 혼합 캡션 — 옛 창(20)은 못 읽어 그
+        캡션을 '비금액 자기 캡션' 으로 보고 빈칸을 냈다. 다른 두 창(40)과
+        맞춘다(합성)."""
+        from bot.dart_backlog import parse_backlog
+        t = ("나. 수주상황 (단위 : 중량-천톤, 면적-천㎡, 수량-천개, 금액-백만원) "
+             "품목 수주총액 기납품액 수주잔고 A 1,000 400 600 "
+             "합 계 1,000 400 600")
+        got = parse_backlog(t)
+        assert got and got["value"] == 600e6, got
+
+    @pytest.mark.parametrize("mid", [
+        # 절 캡션이 아래 항목 표를 덮는다 — `(1) 국내` 는 표 경계가 아니다.
+        "나. 수주상황 (단위 : 천USD) (1) 국내 구 분",
+        # 원화 캡션 바로 뒤 아래 항목이 자기 외화 캡션을 단다.
+        "나. 수주상황 (단위 : 백만원) (1) 해외 (단위 : 천USD) 구 분",
+        # 앞 표가 빈 표(전부 `-`)라도 합계행이 표를 끝낸다.
+        "나. 수주상황 (단위 : 백만원) 구 분 수주총액 기납품액 수주잔고 - - - "
+        "합 계 - - - (단위 : 천USD) 구 분",
+        # 경계가 **하나뿐**인 픽스처 — 갈래를 하나 지우는 변형이 각자 걸리게.
+        "가. 국내 (단위 : 백만원) 해당사항 없음 나. 해외 (단위 : 천USD) 구 분",
+        "1. 국내 (단위 : 백만원) 해당사항 없음 2. 해외 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 해당사항 없음 ※ 해외분 (단위 : 천USD) "
+        "구 분"])
+    def test_its_own_foreign_caption_still_blocks_the_borrow(self, mid):
+        """반대 증거(#25) — 좁혀도 6,000천USD → 60억원 재현은 그대로 막힌다."""
+        from bot.dart_backlog import parse_backlog
+        t = KRW_SALES_HEAD + "합 계 9,999 " + mid + self.ROW
+        assert parse_backlog(t) is None, mid
 
     def test_a_caption_word_without_a_colon_is_not_a_caption(self):
         """`(단위당 원가)` 같은 낱말은 캡션이 아니다 — 캡션으로 보면 머리행의
@@ -536,6 +772,55 @@ class TestRefreshBeforeTheReport:
         # 다시 본 줄은 이제 지금 파서의 관측이다 — '옛 파서' 표시가 사라진다.
         assert "옛 파서" not in out, out
         assert "아직 다시 보지 않은 관측" not in out, out
+
+    def test_a_same_reason_refresh_keeps_the_row_and_marks_it_current(
+            self, tmp_path, monkeypatch):
+        """사유가 그대로면 `_log_miss` 가 같은 신원의 줄을 **대체**했다 —
+        사유와 상세를 가르는 ` · ` 를 안 떼면 `형식미지원 · 상세` ≠
+        `형식미지원` 이라 방금 쓴 줄을 '반증된 옛 줄' 로 지워 보고서가
+        통째로 빈다(리뷰 M2, 생존 F8)."""
+        bl, log = _ledger(tmp_path, monkeypatch)
+        self._stale(log, "123456")
+        stuck = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+                 "A 1,000 400 650 합 계 1,000 400 650 ※ 끝")
+        _docs(monkeypatch, {"123456": stuck})
+        monkeypatch.setattr("bot.dart_client.get_dart", lambda *a, **k: _Dart())
+        out = bl.review_with_refresh()
+        rows = _rows(log)
+        assert len(rows) == 1 and rows[0]["ps"] == bl._parse_sig(), rows
+        assert rows[0]["detail"] == "헤더 통과 · 합계행 3값(검산실패)", rows
+        assert "막힌 조회 1건" in out and "그대로 1" in out, out
+
+    def test_a_no_document_row_that_now_parses_is_dropped(self, tmp_path,
+                                                          monkeypatch):
+        """`원문미제공` 줄은 개선 여지가 아니라 `drop_fixable` 이 안 지운다 —
+        재조회가 값을 내면 **그 줄 자체**를 지워야 한다(생존 F1)."""
+        bl, log = _ledger(tmp_path, monkeypatch)
+        self._stale(log, "391710", ex="", reason=bl.MISS_NO_DOC)
+        _docs(monkeypatch, {"391710": EX_391710})
+        c = bl.refill_rows(_Dart(), bl.refill_targets(_rows(log)),
+                           say=lambda m: None)
+        assert c["solved"] == 1 and _rows(log) == [], (c, _rows(log))
+
+    def test_a_probe_crash_keeps_the_old_row(self, tmp_path, monkeypatch):
+        """조회가 던지면 옛 관측을 반증할 근거가 없다 — 지우지 않는다
+        (독립 리뷰 B1 규율, 생존 F6)."""
+        bl, log = _ledger(tmp_path, monkeypatch)
+        self._stale(log, "391710")
+
+        def boom(*a, **k):
+            raise RuntimeError("x")
+        monkeypatch.setattr(bl, "backlog_probe", boom)
+        c = bl.refill_rows(_Dart(), bl.refill_targets(_rows(log)),
+                           say=lambda m: None)
+        assert c["failed"] == 1 and len(_rows(log)) == 1, (c, _rows(log))
+
+    def test_the_skip_reason_is_escaped(self):
+        """사유는 HTML 메시지에 실린다 — `<` 하나에 보고서 전체가 안 간다
+        (규칙 7, 생존 M8)."""
+        from bot.dart_backlog import refresh_note
+        assert refresh_note({"skipped": "a <b> & c"}).endswith(
+            "a &lt;b&gt; &amp; c")
 
     def test_nothing_to_refresh_calls_no_source(self, tmp_path, monkeypatch):
         """다시 볼 줄이 없으면 DART 를 **아예** 안 부른다(#61) — 키 조회조차."""
@@ -631,6 +916,18 @@ class TestRefreshBeforeTheReport:
         names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
         assert "review_with_refresh" in names, names
         assert "review_text" not in names, "재조회 없이 요약만 보낸다"
+        # ⚠️ 별칭이 이름 검사를 속인다(생존 G1: `import review_text as
+        # review_with_refresh`) — import 의 **원래 이름**을 본다.
+        got = {(a.name, a.asname) for n in ast.walk(fn)
+               if isinstance(n, ast.ImportFrom) and n.module == "bot.dart_backlog"
+               for a in n.names}
+        assert got == {("review_with_refresh", None)}, got
+        # ⚠️ 받을 사람이 없으면 재조회도 안 한다 — 정기보고서 최대 40건을
+        # 받는 일이다(리뷰 L5). 수신자 조회가 재조회 **앞**이어야 한다.
+        lines = {n.func.id if isinstance(n.func, ast.Name) else
+                 getattr(n.func, "attr", ""): n.lineno
+                 for n in ast.walk(fn) if isinstance(n, ast.Call)}
+        assert lines["_dfa_status"] < lines["to_thread"], lines
 
     def test_cli_refill_uses_the_same_cap_as_the_report(self, tmp_path,
                                                          monkeypatch, capsys):
@@ -671,6 +968,28 @@ class TestTotalRowExcerpt:
         t = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
              "A 1,000 400 600 ※ 각주 5. 위험관리 합 계 9,999")
         assert backlog_total_excerpt(t) == ""
+
+    def test_it_uses_the_same_spot_as_the_head_excerpt(self):
+        """앞 산문의 `수주잔고` 가 첫 라벨 자리여도 발췌는 **표**의 합계행이다
+        — 머리 발췌와 다른 자리를 보면 한 표의 두 조각이 아니다(생존 E5)."""
+        from bot.dart_backlog import backlog_excerpt, backlog_total_excerpt
+        t = ("당사의 수주잔고 관리 방침은 다음과 같습니다 ※ 참고 나. 수주상황 "
+             "(단위 : 백만원) 품목 수주총액 기납품액 수주잔고 A 1,000 400 650 "
+             "합 계 1,000 400 650 ※ 끝")
+        assert "품목 수주총액" in backlog_excerpt(t)
+        assert backlog_total_excerpt(t) == "합 계 1,000 400 650"
+
+    def test_the_ledger_keeps_it_bounded_and_the_report_escapes_it(
+            self, tmp_path, monkeypatch):
+        """원장 한 줄의 크기는 유계다(생존 W2) · 합계행은 DART 원문이라 `<`·`&`
+        하나에 텔레그램이 메시지 전체를 거절한다(규칙 7, 생존 E3)."""
+        bl, log = _ledger(tmp_path, monkeypatch)
+        bl._log_miss("123456", 2026, "11012", "형식미지원", "갈래", "머리",
+                     "합 계 <1> & 2 " + "9 " * 200)
+        exs = _rows(log)[0]["exs"]
+        assert len(exs) == bl._TOTAL_EX_WIDTH, len(exs)
+        out = bl.review_text()
+        assert "합계행 <code>합 계 &lt;1&gt; &amp; 2" in out, out
 
     def test_the_probe_stores_it_and_the_report_shows_it(self, tmp_path,
                                                         monkeypatch):
@@ -745,6 +1064,37 @@ class TestLedgerWritesAreSerialized:
         b = threading.Thread(target=bl.drop_fixable, args=("111111", 2026, "11012"))
         b.start()
         b.join(0.5)          # 락이 없으면 B 는 여기서 이미 끝났다(옛 파일을 읽고)
+        release.set()
+        a.join(5)
+        b.join(5)
+        left = sorted(r["ticker"] for r in _rows(log))
+        assert left == ["222222"], left
+
+    def test_a_single_row_drop_also_waits(self, tmp_path, monkeypatch):
+        """`drop_miss` 도 같은 락이다 — 재조회가 줄마다 부른다(생존 K4)."""
+        import threading
+
+        bl, log = _ledger(tmp_path, monkeypatch)
+        bl._log_miss("111111", 2026, "11012", "형식미지원", "Y")
+        real = bl._write_ledger
+        in_write, release = threading.Event(), threading.Event()
+        first = {"done": False}
+
+        def slow(body):
+            if not first["done"]:
+                first["done"] = True
+                in_write.set()
+                release.wait(5)
+            real(body)
+        monkeypatch.setattr(bl, "_write_ledger", slow)
+        a = threading.Thread(target=bl._log_miss,
+                             args=("222222", 2026, "11012", "형식미지원", "X"))
+        a.start()
+        assert in_write.wait(5)
+        b = threading.Thread(target=bl.drop_miss,
+                             args=("111111", 2026, "11012", "형식미지원"))
+        b.start()
+        b.join(0.5)
         release.set()
         a.join(5)
         b.join(5)

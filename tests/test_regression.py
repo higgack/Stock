@@ -72819,7 +72819,7 @@ class TestBacklogRollingTable20260918:
     # 091340 2026/11012 — 표 **틀만** 있고 칸이 전부 `-`
     EMPTY = ("13,998 내수 11,587 16,071 16,072 합계 138,863 310,238 330,070 "
              "주) 연결재무제표 기준으로 작성되었습니다. "
-             "나. 수주 실적 (단위 : 백만원) 품목 수주일자 납기 수주총액 "
+             "나. 수주 실적 (단위 : ) 품목 수주일자 납기 수주총액 "
              "기납품액 수주잔고 수량 금액 수량 금액 수량 금액 "
              "- - - - - - - - - - - - - - - - - - 합 계 - - - - - - "
              "5. 위험관리 및 파생거래 시장위험과 위험관리(연결기준)")
@@ -72914,7 +72914,12 @@ class TestBacklogRollingTable20260918:
         원인으로 거를 것)."""
         from bot.dart_backlog import diagnose
         filled = self.EMPTY.replace("합 계 - - - - - -", "합 계 1 2 3 4 5 6")
-        assert diagnose(filled) == "형식미지원", diagnose(filled)
+        # 실측 캡션은 `(단위 : )` 라 값이 있으면 `단위없음`(= 개선 여지)이다
+        # (2026-10-02 정정 — 그 전엔 캡션을 `(단위 : 백만원)` 으로 바꿔 둔 채
+        # '실측 그대로' 라 적었다, #155). 금액 캡션을 달면 관문까지 간다.
+        assert diagnose(filled) == "단위없음", diagnose(filled)
+        won = filled.replace("(단위 : )", "(단위 : 백만원)")
+        assert diagnose(won) == "형식미지원", diagnose(won)
 
     def test_existing_formats_still_parse(self):
         """새 형식을 더할 때 옛 형식이 안 깨지는지 — 선택기 순서가 바뀌면
