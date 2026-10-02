@@ -1869,6 +1869,28 @@ def last_render_timing(ticker: str = "", run_llm: bool = False) -> dict:
     return _RENDER_TIMING.snapshot(timing_key(ticker, run_llm))
 
 
+def _empty_payload_reason(ticker: str) -> str:
+    """`build_payload` 가 None 일 때 화면이 할 말.
+
+    국내 종목은 **키부터** 묻는다 — 키 없는 프로세스는 DART 분기 재무를 받지
+    못하는데(`get_normalized_financials` 의 키 검사가 디스크 캐시보다 앞이다)
+    그걸 '소스 미제공' 이라 적으면 원천 부재로 읽힌다(#82 · 실수 #428 독립
+    리뷰 H1). 비-KR 은 DART 를 안 쓰므로 묻지 않는다."""
+    _generic = "분기 재무 데이터 없음(소스 미제공 또는 미지원 시장)"
+    try:
+        from bot.market import detect_market
+        if detect_market((ticker or "").upper()) != "KR":
+            return _generic
+        from bot.dart_client import dart_ready, get_dart
+        if not dart_ready(get_dart()):
+            return ("DART_API_KEY 없음 — 국내 분기 재무(DART)를 받지 "
+                    "못했습니다")
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("quarterly_infographic: 빈 사유 판정 실패 %s: %s",
+                  ticker, exc)
+    return _generic
+
+
 def get_or_render(ticker: str, snap: dict | None = None, *,
                   run_llm: bool = False) -> dict:
     """온디맨드 진입점. 캐시(파일명=분기 키) 우선, 없으면 렌더.
@@ -1882,8 +1904,7 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     _t_pre = _time.time()      # ⚠️ 리셋 — 안 하면 pre_render 가 build_payload
                                # 와 **같은 값**이 나와 빈 구간을 못 본다(실측)
     if not payload:
-        return {"ok": False,
-                "error": "분기 재무 데이터 없음(소스 미제공 또는 미지원 시장)"}
+        return {"ok": False, "error": _empty_payload_reason(ticker)}
     p = cache_path(ticker, payload.get("period_key") or "na",
                    asof=payload.get("asof"))
     # LLM 카드가 **이번에 새로** 붙었을 때만 기존 PNG 를 버린다.

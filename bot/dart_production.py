@@ -807,13 +807,16 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
         return hit
     # ⚠️ 키 검사는 캐시 **뒤** — 키 없는 프로세스도 받아 둔 표는 낸다. 그리고
     # 키 없이 걸은 빈손을 굽지 않는다: 옛 `not dart` 는 키 없는 `get_dart()` 를
-    # 통과시켜 접수번호 0건의 `{}` 를 24시간 캐시에 남겼다 — 키를 넣고
-    # 재시작해도 하루 동안 '표 없음' 이었다(실수 #428).
+    # 통과시켜 접수번호 0건의 `{}` 를 24시간 캐시에 남길 수 있었다(실수 #428 —
+    # 함수 계약의 결함. 지금 진입점은 키가 없으면 분기 시계열이 먼저 비어
+    # 여기 닿지 않는다).
     from bot.dart_client import dart_ready
     if not dart_ready(dart):
         log.info("tables_rolling(%s): DART_API_KEY 없음 — 캐시에 없는 표는 "
                  "받지 못한다", ticker)
         return out
+    # 문서를 한 건이라도 **읽었나** — 못 읽은 빈손은 굽지 않는다(아래).
+    read_any = False
     try:
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
                                    _fetch_doc_text, doc_was_truncated)
@@ -826,6 +829,7 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
                 for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
                     markup = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
                                              raw_markup=True)
+                    read_any = read_any or bool(markup)
                     for k in list(missing):
                         got = _PARSERS[k](markup)
                         if got:
@@ -842,6 +846,15 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
     except Exception as exc:                                   # noqa: BLE001
         log.warning("tables_rolling(%s): %s", ticker, exc)
         return out                     # 실패는 캐시하지 않는다 — 다음에 재시도
+    if not read_any:
+        # ⚠️ 키가 있어도 접수번호 0건·원문 실패면 **본 것이 없다**. 분기
+        # 재무가 있는 종목이면 정기보고서는 있으므로 0건은 '없다' 가 아니라
+        # '못 받았다'(목록 조회 `list.json` 은 캐시가 없어 일시 실패가 그대로
+        # 0건이 된다) — 그 `{}` 를 24시간 구우면 하루 동안 '표 없음' 이다
+        # (실수 #428 독립 리뷰 M3 · #280 빈 결과는 굽지 않는다).
+        log.info("tables_rolling(%s): 읽은 문서 0건 — 굽지 않는다(다음에 "
+                 "재시도)", ticker)
+        return out
     _tables_cache_write(ck, out)
     return out
 

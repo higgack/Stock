@@ -7,30 +7,40 @@
 6곳은 #426 이 고쳤고 남은 13곳을 `bot.dart_client.dart_ready` 단일 술어로
 옮겼다(#38).
 
-계약 넷:
+계약 다섯:
 1. 술어 자체 — 키 유무로 판정, `None` 도 받는다, 옛 이름은 위임한다.
 2. 제품 경로 — 키 없는 **실물 클래스**(`DartClient("")`)를 넣으면 각 진입점이
    키 부재를 말하고 DART 메서드를 부르지 않는다(스텁이 아니라 실물이어야
    옛 판에서 실패한다 — `__bool__` 없는 그 모양이 결함이다, #155).
-3. 인자로 받는 함수 — 키 없이 할 수 있는 일(디스크 캐시)은 하고, 키 없이
-   걸은 빈손은 캐시에 굽지 않는다(#428 — 키 검사를 캐시 앞에 두면 받아 둔
-   답을 잃고, 안 두면 `{}` 가 24시간 '표 없음' 으로 남았다).
-4. 전수 회귀 — `bot/`·`trade/` 어디서든 클라이언트가 **흘러간 자리**에서
-   부정 판정(`not X`·`X is None`)하면 실패. 같은 함수(#427) · 클로저·lambda ·
-   모듈 전역(다른 모듈이 import 해 가도) · `self.속성` · 다른 함수의 인자
-   (호출 그래프 고정점) · 클라이언트를 돌려주는 함수의 반환값(#428). 이름
-   열거가 아니라 커밋될 파일 전수(#24·#412). 긍정 분기(`if dart:` 뒤 메서드
-   호출)는 허용한다 — 메서드가 키를 스스로 보고, `stock_code_to_name` 처럼 키
-   없이 디스크 캐시로 답하는 것이 있어 막으면 그 답을 잃는다.
+3. 인자로 받는 함수 — 키 없이 할 수 있는 일(디스크 캐시)은 하고, 문서를 한
+   건도 못 읽은 빈손은 캐시에 굽지 않는다(#428 — 키 검사를 캐시 앞에 두면
+   받아 둔 답을 잃고, 안 두면 접수번호 0건의 `{}` 가 24시간 구워졌다. 키가
+   있어도 목록 조회가 일시 실패하면 같은 0건이다). ⚠️ 이건 **함수 계약**이다 —
+   지금 진입점은 키가 없으면 분기 시계열이 먼저 비어 여기 닿지 않는다(독립
+   리뷰 H1, 첫 판의 '하루 동안 표 없음' 은 재지 않은 운영 서술이었다).
+4. 키 없을 때 화면 — 분기실적 탭은 '소스 미제공' 대신 키 부재를 말하고,
+   대시보드 최대주주·계열회사 블록은 메서드를 부르지 않고 사유를 로그에
+   적는다(키 부재가 원천 부재로 읽히면 안 된다, #82).
+5. 전수 회귀 — `bot/`·`trade/` 어디서든 클라이언트가 **흘러간 자리**에서
+   부정 판정(`not X`·`X is None`)하면 실패. 같은 함수(#427) · 받지 않고 바로
+   부정(`not get_dart()`) · 클로저·lambda · 모듈 전역(다른 모듈이 import 해
+   가도, 점이 둘인 경로도) · `self.속성` · 다른 함수의 인자(호출 그래프 고정점,
+   정적 메서드 포함) · 클라이언트를 돌려주는 함수의 반환값(#428). 이름 열거가
+   아니라 커밋될 파일 전수(#24·#412). 긍정 분기(`if dart:` 뒤 메서드 호출)는
+   허용한다 — 메서드가 키를 스스로 보고, `stock_code_to_name` 처럼 키 없이
+   디스크 캐시로 답하는 것이 있어 막으면 그 답을 잃는다.
 
 ⚠️ 못 보는 축(#274): 함수 경계를 넘는 보관소(모듈 전역·`self.속성`·바깥
 함수 이름)에 **클라이언트가 아닌 바인딩이 하나라도** 있으면(`_D = None`
 지연 초기화) 그 판정은 살아 있는 검사로 보고 넘긴다 · 클래스 밖에서 쓰는
-`obj.속성` · 상속 · `getattr`·dict·리스트에 담은 클라이언트 · `*args`·
-`**kwargs` 로 넘기기 · `functools.partial`·콜백 등록(실행기 `submit`·
-`Thread(target=…)` 만 따라간다) · 객체 메서드 호출 중 `self.메서드` 가 아닌 것 ·
-다른 철자(`not (d and x)` · `bool(d) is False`) · 긍정 판정의 `else` 갈래 ·
-반복문에서 받기 전 줄의 판정.
+`obj.속성` · 상속 · `Cls.method(...)` 처럼 클래스로 부르는 메서드 ·
+`getattr`·dict·리스트에 담은 클라이언트 · `*args`·`**kwargs` 로 넘기기 ·
+`functools.partial`·콜백 등록(실행기 `submit`·`Thread(target=…)` 만 따라간다) ·
+객체 메서드 호출 중 `self.메서드` 가 아닌 것 · 다른 철자(`not (d and x)` ·
+`bool(d) is False`) · 긍정 판정의 `else` 갈래 · 반복문에서 받기 전 줄의 판정 ·
+깊이 상한 6(이름을 일곱 번 이상 옮겨 담은 사슬 · 일곱 모듈 이상 거친 import).
+오탐 쪽: 같은 스코프에서 다시 묶은 이름(`d = get_dart(); d = None;
+if d is None`)은 첫 묶음을 기억해 잡는다.
 """
 from __future__ import annotations
 
@@ -177,6 +187,10 @@ class TestKeylessEntryPoints:
 
 # ── 3. 전수 회귀 ───────────────────────────────────────────────────────
 _FACTORIES = frozenset({"get_dart", "DartClient"})
+# 운반 판정 상한 — 메모가 살아 있으면 레포 전수가 2만여 회다(2026-10-02 실측
+# 26,839). 넘으면 멈추고 실패한다 — 메모가 깨진 판정이 계속 도는 대신(리뷰 L3 ·
+# 메모 없던 옛 판은 같은 이름을 30번 다시 묶는 함수에서 30초 안에 안 끝났다).
+_EVAL_BUDGET = 200_000
 _FN = (ast.FunctionDef, ast.AsyncFunctionDef)
 _SCOPED = (*_FN, ast.Lambda, ast.ClassDef)
 _PARAM = object()          # 인자 바인딩 표지 — 운반 인자면 클라이언트를 싣는다
@@ -204,16 +218,26 @@ def _key(e):
     return None
 
 
-def _neg_key(x):
-    """부정 판정(`not K` · `K is None` · `K == None` · `None is K`)의 열쇠."""
+def _is_none(e):
+    return isinstance(e, ast.Constant) and e.value is None
+
+
+def _neg_operand(x):
+    """부정 판정(`not E` · `E is None` · `E == None` · `None is E`)의 대상 식."""
     if isinstance(x, ast.UnaryOp) and isinstance(x.op, ast.Not):
-        return _key(x.operand)
+        return x.operand
     if (isinstance(x, ast.Compare)
             and any(isinstance(o, (ast.Is, ast.Eq)) for o in x.ops)):
         sides = [x.left, *x.comparators]
-        if any(isinstance(c, ast.Constant) and c.value is None for c in sides):
-            return next((_key(c) for c in sides if _key(c)), None)
+        if any(_is_none(c) for c in sides):
+            return next((c for c in sides if not _is_none(c)), None)
     return None
+
+
+def _neg_key(x):
+    """부정 판정의 열쇠 — 이름(`d`) 또는 속성 사슬(`self.d`)."""
+    op = _neg_operand(x)
+    return _key(op) if op is not None else None
 
 
 def _cands(v):
@@ -231,6 +255,10 @@ class _Scope:
     def __init__(self, mod, node, parent, kind, in_class=False):
         self.mod, self.node, self.parent, self.kind = mod, node, parent, kind
         self.in_class = in_class            # 클래스 본문 바로 아래의 def
+        # `@staticmethod` 의 첫 인자는 self 가 아니다 — `self.f(x)` 의 x 는
+        # 첫 인자로 간다(리뷰 L1: 건너뛰면 인자가 한 칸씩 밀린다).
+        self.static = any(isinstance(d, ast.Name) and d.id == "staticmethod"
+                          for d in getattr(node, "decorator_list", ()))
         self.nodes = list(_own([node.body] if kind == "lambda" else node.body))
         a = getattr(node, "args", None)
         self.params = [x.arg for x in a.posonlyargs + a.args] if a else []
@@ -344,11 +372,18 @@ def scan(sources: dict) -> dict:
     모듈, 공장을 감싼 함수·전역 이름이 나오는 모듈만 그때그때 읽는다."""
     mods: dict = {}
     scopes: list = []
+    # 운반 판정 메모 — (스코프, 열쇠, 줄, 깊이). 같은 이름을 거듭 다시 묶는
+    # 함수(`ok = ok and …`)는 메모 없이 갈래가 깊이마다 곱해져 줄이 둘 늘 때마다
+    # 두 배쯤 느려졌다(리뷰 L3 · 옛 판 실측 16줄 1.6초 · 30줄은 30초 안에 안
+    # 끝남). 판정이 기대는 것(운반 인자·공장 함수·읽은 모듈)이 바뀌면 비운다.
+    memo: dict = {}
+    evals = [0]
 
     def build(name):
         if name not in mods and name in sources:
             mods[name] = m = _Mod(name, ast.parse(sources[name]))
             scopes.extend(m.scopes)
+            memo.clear()
         return mods.get(name)
 
     def mention(names):
@@ -391,7 +426,7 @@ def scan(sources: dict) -> dict:
         """`base` 가 어느 메서드의 첫 인자(self·cls)면 그 메서드."""
         h = holder(s, base)
         if (h is not None and h.kind == "def" and h.in_class and h.params
-                and h.params[0] == base):
+                and not h.static and h.params[0] == base):
             return h
         return None
 
@@ -459,7 +494,9 @@ def scan(sources: dict) -> dict:
         if c.kind == "class":
             init = c.children.get("__init__")
             return (init, True) if init else (None, False)
-        return (c, sym[0] == "method") if c.kind == "def" else (None, False)
+        if c.kind != "def":
+            return None, False
+        return c, sym[0] == "method" and not c.static
 
     def is_factory_call(s, e):
         if not isinstance(e, ast.Call):
@@ -488,15 +525,27 @@ def scan(sources: dict) -> dict:
         return False
 
     def is_carrier(s, k, line, depth=0):
-        """열쇠 k 가 이 줄에서 클라이언트를 가리키나."""
+        """열쇠 k 가 이 줄에서 클라이언트를 가리키나(메모)."""
+        ck = (id(s), k, line, depth)
+        if ck not in memo:
+            evals[0] += 1
+            if evals[0] > _EVAL_BUDGET:
+                raise RuntimeError(f"운반 판정 {_EVAL_BUDGET}회 초과 — 메모가 "
+                                   "깨졌거나 판정이 폭주한다(리뷰 L3)")
+            memo[ck] = _is_carrier(s, k, line, depth)
+        return memo[ck]
+
+    def _is_carrier(s, k, line, depth):
         # 같은 스코프 줄 순서(1차 규칙) — 그 스코프가 직접 대입한 것
         if any(ln <= line and bearing(s, v, ln, depth)
                for ln, v in s.assigns.get(k, ())):
             return True
         if "." in k:
-            base, attr = k.split(".", 1)
-            if "." in attr:
-                return False
+            # **마지막** 점에서 가른다 — `self.d` 는 메서드의 속성, `pkg.h.D` 는
+            # 모듈 전역(첫 점에서 가르면 점이 둘인 모듈 경로를 놓쳤다, 리뷰
+            # M4). `self.a.b` 는 클라이언트가 아니라 그 안의 값이다 — 점이 든
+            # base 는 인자 이름일 수 없어 `method_of` 가 None 을 낸다.
+            base, attr = k.rsplit(".", 1)
             meth = method_of(s, base)
             if meth is not None:
                 return attr_carrier(meth.parent, attr, depth)
@@ -532,7 +581,7 @@ def scan(sources: dict) -> dict:
         """`self.attr` — 그 클래스 메서드들의 대입 + 클래스 본문 대입이 **모두**
         실어야(보관소 규칙과 같다). 클래스 밖에서 쓰는 `obj.attr` 은 안 본다."""
         ev = [(m, ln, v) for m in cls.children.values()
-              if m.kind == "def" and m.params
+              if m.kind == "def" and m.params and not m.static
               for ln, v in m.assigns.get(f"{m.params[0]}.{attr}", ())]
         ev += [(cls, ln, v) for ln, v in cls.assigns.get(attr, ())]
         return bool(ev) and all(bearing(sc, v, ln, depth) for sc, ln, v in ev)
@@ -578,6 +627,7 @@ def scan(sources: dict) -> dict:
                 if (s.kind == "def" and id(s) not in factory_fns
                         and returns_client(s)):
                     factory_fns[id(s)] = s.node.name
+                    memo.clear()
                     changed = True
                 for x in s.nodes:
                     if not isinstance(x, ast.Call):
@@ -603,6 +653,7 @@ def scan(sources: dict) -> dict:
                         new = got - carrier.setdefault(id(tgt), set())
                         if new:
                             carrier[id(tgt)] |= new
+                            memo.clear()
                             changed = True
 
     def exported():
@@ -637,14 +688,21 @@ def scan(sources: dict) -> dict:
                     and holder(s, x.id) not in (s, None)
                     and is_carrier(s, x.id, x.lineno)):
                 cross_reads += 1
-            k = _neg_key(x)
-            if (k and is_carrier(s, k, x.lineno) and not any(
-                    bearing(s, v, ln, 0) for ln, v in s.resolves.get(id(x), ()))):
+            op = _neg_operand(x)
+            if op is None:
+                continue
+            # 받지 않고 바로 부정하는 철자(`not get_dart()` · `mk() is None`)
+            # — 이름을 거치지 않으니 열쇠가 없다(리뷰 M1).
+            k = _key(op)
+            if (isinstance(op, ast.Call) and is_factory_call(s, op)) or (
+                    k and is_carrier(s, k, x.lineno) and not any(
+                        bearing(s, v, ln, 0)
+                        for ln, v in s.resolves.get(id(x), ()))):
                 hits.append((s.mod.name, x.lineno, ast.unparse(x)))
     return {"hits": sorted(hits), "bindings": bindings,
             "carrier_params": sum(map(len, carrier.values())),
             "cross_reads": cross_reads, "factory_fns": len(factory_fns),
-            "modules": len(mods)}
+            "modules": len(mods), "built": sorted(mods), "evals": evals[0]}
 
 
 def dead_guards(src: str) -> list:
@@ -681,6 +739,11 @@ class TestNoDeadDartGuard:
         assert r["bindings"] >= 20, r            # 받는 자리
         assert r["carrier_params"] >= 15, r      # 인자로 실려 간 자리
         assert r["cross_reads"] >= 3, r          # 클로저·lambda·전역으로 읽는 자리
+        # `trade/` 도 실제로 읽었나 — 범위에서 빠져도 위 하한은 bot 만으로
+        # 채워져 통과했다(리뷰 S57) · 필요한 모듈만 읽나 — 전수를 읽으면 같은
+        # 결과가 3배 느리게 나와 아무 단언도 안 깨졌다(리뷰 S58).
+        assert any(m.startswith("trade.") for m in r["built"]), r["built"]
+        assert r["modules"] * 5 <= len(srcs), (r["modules"], len(srcs))
         assert not r["hits"], (
             "`get_dart()` 는 키가 없어도 객체를 돌려준다 — 키가 필요한 판정은 "
             "`dart_ready(dart)`, 키 없이도 되는 경로(디스크 캐시)는 긍정 분기 "
@@ -703,6 +766,16 @@ class TestNoDeadDartGuard:
         # 같은 함수 안에서 이름을 옮겨 담아도 · `or` 로 받아도
         "def f():\n    d = get_dart()\n    e = d\n    if not e:\n        return\n",
         "def f(x):\n    d = x or get_dart()\n    if not d:\n        return\n",
+        # 여섯 번 옮겨 담아도 — 깊이 상한(6)이 이 사슬에서 정확히 닿는다
+        # (상한을 5로 줄이면 놓친다, 리뷰 S23·S24)
+        "def f():\n    v0 = get_dart()\n"
+        + "".join(f"    v{i} = v{i - 1}\n" for i in range(1, 7))
+        + "    if not v6:\n        return\n",
+        # 받지 않고 바로 부정 — 이름이 없어 열쇠가 없다(리뷰 M1)
+        "def f():\n    if not get_dart():\n        return\n",
+        "def f():\n    if get_dart() is None:\n        return\n",
+        "def mk():\n    return get_dart()\n"
+        "def f():\n    if mk() is None:\n        return\n",
     ])
     def test_scanner_fires(self, src):
         assert dead_guards(src), src
@@ -751,6 +824,38 @@ class TestNoDeadDartGuard:
         "    if not d:\n        return\n",
         "def mk(k):\n    if k:\n        return get_dart()\n    return None\n"
         "def f():\n    d = mk(1)\n    if d is None:\n        return\n",
+        # ── 독립 리뷰가 통과시킨 변형마다 그 갈래를 실제로 태운다(#91·#291) ──
+        # 키워드 전용 인자로 받는 자리 · 그걸 클로저가 읽는 자리(S01~S03)
+        "def use(*, dart):\n    if not dart:\n        return\n"
+        "def f():\n    use(dart=get_dart())\n",
+        "def outer(*, dart):\n    def g():\n        if not dart:\n"
+        "            return\n    g()\ndef f():\n    outer(dart=get_dart())\n",
+        # 남의 함수의 nonlocal None 은 이 보관소의 바인딩이 아니다(S07)
+        "def f():\n    d = get_dart()\n    def g():\n        if not d:\n"
+        "            return\n"
+        "def h():\n    d = None\n    def k():\n        nonlocal d\n"
+        "        d = None\n",
+        # 클래스 본문은 둘러싼 함수의 이름을 읽는다(S09)
+        "def f():\n    d = get_dart()\n    class C:\n        ok = not d\n",
+        # 메서드 안의 맨 이름 호출은 형제 메서드가 아니라 모듈 함수다(S10)
+        _USE + "class C:\n    def use(self, x):\n        pass\n"
+        "    def f(self):\n        use(get_dart())\n",
+        # 클래스 본문에 담은 클라이언트를 self 로 읽는다(S13)
+        "class C:\n    d = get_dart()\n    def f(self):\n        if not self.d:\n"
+        "            return\n",
+        # Thread 의 args 가 리스트여도(S34) · submit 의 키워드도(S68)
+        _USE + "def f():\n"
+        "    threading.Thread(target=use, args=[get_dart()]).start()\n",
+        _USE + "def f(ex):\n    ex.submit(use, dart=get_dart())\n",
+        # 판정 뒤 채우는 게 **다른 이름**이면 기본값 채우기가 아니다(S43)
+        "def use(dart):\n    if dart is None:\n        x = get_dart()\n"
+        "def f():\n    use(get_dart())\n",
+        # 두 겹 안쪽 클로저도(S60)
+        "def f():\n    d = get_dart()\n    def g():\n        def h():\n"
+        "            if not d:\n                return\n",
+        # 정적 메서드는 첫 인자를 건너뛰지 않는다(리뷰 L1)
+        "class C:\n    @staticmethod\n    def use(dart):\n        if not dart:\n"
+        "            return\n    def f(self):\n        self.use(get_dart())\n",
     ])
     def test_scanner_fires_across_scopes(self, src):
         """1차가 못 보던 자리(실수 #428) — 속성 · 모듈 전역 · 클로저 ·
@@ -781,6 +886,39 @@ class TestNoDeadDartGuard:
           "            return\n",
           "pkg.m": "from pkg.k import C\ndef g():\n    C(get_dart())\n"},
          "pkg.k"),
+        # 모듈 수준 대입 없이 `global` 로만 채운 전역(S41)
+        ({"pkg.h": "def init():\n    global D\n    D = get_dart()\n",
+          "pkg.c": "from pkg.h import D\ndef f():\n    if not D:\n        return\n"},
+         "pkg.c"),
+        # 공장을 감싼 함수를 또 감싼 함수 — 세 모듈에 걸쳐(S42·S67)
+        ({"pkg.w": "def mk():\n    return get_dart()\n",
+          "pkg.v": "from pkg.w import mk\ndef mk2():\n    return mk()\n",
+          "pkg.c": "from pkg.v import mk2\n"
+          "def f():\n    d = mk2()\n    if not d:\n        return\n"}, "pkg.c"),
+        # 점이 둘인 모듈 경로(리뷰 M4)
+        ({"pkg.h": "D = get_dart()\n", "pkg.c": "import pkg.h\n"
+          "def f():\n    if not pkg.h.D:\n        return\n"}, "pkg.c"),
+        # ── 판정 메모가 낡으면 놓치는 자리(리뷰 L3 메모의 반대 증거) ──
+        # 운반 인자가 늘면 메모를 비운다 — 안 비우면 중계 함수가 먼저 물은
+        # '아직 아니다' 가 남는다(정의 순서가 판정 순서를 정한다)
+        ({"pkg.r": "def f():\n    mid(get_dart())\ndef mid(dart):\n"
+          "    use(dart)\ndef use(dart):\n    if not dart:\n        return\n"},
+         "pkg.r"),
+        # 공장 함수가 늘면 비운다 — 감싼 함수를 감싼 함수가 먼저 물었다
+        ({"pkg.r": "def h():\n    x = g()\n    if not x:\n        return\n"
+          "def mk():\n    return get_dart()\ndef mk2():\n    return mk()\n"
+          "def g():\n    d = mk2()\n    return d\n"}, "pkg.r"),
+        # 모듈을 새로 읽으면 비운다 — 처음부터 읽힌 모듈이 그 모듈 없이 물었다
+        ({"pkg.c": "def mk():\n    return get_dart()\n",
+          "pkg.b": "from pkg.c import mk\nD = mk()\n",
+          "pkg.a": "# get_dart 를 주석에만 둔 모듈 — 처음부터 읽힌다\n"
+          "from pkg.b import D\n" + _USE + "def f():\n    use(D)\n"}, "pkg.a"),
+        # 메모 열쇠에 깊이 — 깊은 자리에서 먼저 물은 답(상한에 걸린 '아니다')을
+        # 얕은 자리가 다시 쓰면 안 된다
+        ({"pkg.a": "# get_dart 를 주석에만 둔 모듈 — 처음부터 읽힌다\n"
+          "from pkg.b import D\n" + _USE + "def f():\n    x = D\n    use(x)\n",
+          "pkg.b": "u0 = get_dart()\nu1 = u0\nu2 = u1\nu3 = u2\nu4 = u3\n"
+          "D = u4\ndef g():\n    if not D:\n        return\n"}, "pkg.b"),
     ])
     def test_scanner_fires_across_modules(self, srcs, where):
         hits = scan(srcs)["hits"]
@@ -839,6 +977,43 @@ class TestNoDeadDartGuard:
         # 별표 뒤 위치는 어느 인자에 닿는지 모른다 — 짐작하지 않는다
         "def use(a, dart):\n    if not dart:\n        return\n"
         "def f(xs):\n    use(*xs, get_dart())\n",
+        # ── 독립 리뷰가 통과시킨 변형마다 반대 증거(#25·#91) ──
+        # 키워드 전용 인자를 그대로 돌려주는 함수도 공장이 아니다(S04)
+        "def pick(*, d):\n    return d\n"
+        "def f():\n    pick(d=get_dart())\n    x = pick(d=None)\n"
+        "    if x is None:\n        return\n",
+        # nonlocal 로 None 을 넣는 쪽이 있으면 살아 있는 판정이다(S05·S06)
+        "def f():\n    d = get_dart()\n    def reset():\n        nonlocal d\n"
+        "        d = None\n    def g():\n        if d is None:\n"
+        "            return\n",
+        # `global D` 를 선언한 안쪽은 바깥 함수의 D 가 아니라 모듈 D 를 본다(S08)
+        "D = None\ndef outer():\n    D = get_dart()\n    def inner():\n"
+        "        global D\n        if D is None:\n            return\n",
+        # 메서드가 아닌 함수의 첫 인자는 self 가 아니다(S11)
+        "def init(o):\n    o.d = get_dart()\n"
+        "def f(o):\n    if not o.d:\n        return\n",
+        # 주석 달린 대입으로 채워도 기본값 채우기다(S44)
+        "def f(d=None):\n    if d is None:\n        d: object = get_dart()\n"
+        "    d.x()\ndef g():\n    f(get_dart())\n",
+        # 안쪽 함수의 import 가 그 이름을 가렸다(S48)
+        "def f():\n    d = get_dart()\n    def g():\n        import json as d\n"
+        "        if not d:\n            return\n",
+        # 같은 이름의 def 가 전역을 다시 묶었다(S49)
+        "D = get_dart()\ndef D():\n    pass\ndef f():\n    if not D:\n"
+        "        return\n",
+        # 정적 메서드 — 첫 인자가 밀리지 않는다 · 정적 메서드의 첫 인자 속성은
+        # self 속성이 아니다(리뷰 L1)
+        "class C:\n    @staticmethod\n    def pick(a, d):\n        if not d:\n"
+        "            return\n    def f(self):\n        self.pick(get_dart(), None)\n",
+        "class C:\n    @staticmethod\n    def g(o):\n        o.d = get_dart()\n"
+        "    def f(self):\n        if self.d is None:\n            return\n",
+        "class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+        "    @staticmethod\n    def g(o):\n        if not o.d:\n            return\n",
+        # 단일 술어로 감싼 직접 호출 — 허용(리뷰 M1 의 반대 증거)
+        "def f():\n    if not dart_ready(get_dart()):\n        return\n",
+        # 클라이언트의 속성의 속성 — 클라이언트가 아니라 그 안의 값(리뷰 M4)
+        "class C:\n    def __init__(self):\n        self.a = get_dart()\n"
+        "    def f(self):\n        if not self.a.b:\n            return\n",
     ])
     def test_scanner_spares(self, src):
         assert not dead_guards(src), src
@@ -854,6 +1029,29 @@ class TestNoDeadDartGuard:
     ])
     def test_scanner_spares_across_modules(self, srcs):
         assert not scan(srcs)["hits"], srcs
+
+    def test_scanner_rebinding_stays_linear(self):
+        """같은 이름을 거듭 다시 묶는 함수(`ok = ok and chk(i)` 30줄) — 메모
+        없이는 이전 바인딩을 깊이마다 다시 훑어 갈래가 곱해졌다(리뷰 L3 · 옛 판
+        실측: 16줄 1.6초 · 18줄 3.0초 · 30줄은 30초 안에 안 끝났다). 판정
+        횟수가 줄 수에 비례하는지 잰다(이 판 30줄 = 241회) — 메모가 깨지면
+        상한(`_EVAL_BUDGET`)에서 멈추고 실패한다."""
+        body = "".join(f"    ok = ok and chk({i})\n" for i in range(30))
+        # 공장 이름이 나와야 그 모듈을 읽는다(안 나오면 판정 0회로 거짓 통과)
+        r = scan({"m": "from bot.dart_client import get_dart\n"
+                  "def f():\n    ok = True\n" + body
+                  + "    if not ok:\n        return\n"})
+        assert r["modules"] == 1 and not r["hits"], r
+        assert 30 <= r["evals"] <= 1_000, r["evals"]
+
+    def test_scanner_budget_stops_instead_of_spinning(self, monkeypatch):
+        """상한을 넘으면 계속 도는 대신 멈추고 실패한다 — 그 갈래도 탄다."""
+        import sys
+        monkeypatch.setattr(sys.modules[__name__], "_EVAL_BUDGET", 3)
+        with pytest.raises(RuntimeError, match="운반 판정"):
+            scan({"m": "def f():\n    v0 = get_dart()\n"
+                  + "".join(f"    v{i} = v{i - 1}\n" for i in range(1, 7))
+                  + "    if not v6:\n        return\n"})
 
 
 class TestDetailDiagnoseDartName:
@@ -926,22 +1124,76 @@ class TestKeylessCallees:
         assert keyless == []
 
     def test_tables_rolling_keyless_serves_cache_and_bakes_nothing(
-            self, keyless, monkeypatch):
+            self, keyless, monkeypatch, caplog):
         """옛 판은 키 없이 걸어 접수번호를 하나도 못 얻고 `{}` 를 24시간
-        캐시에 구웠다 — 키를 넣고 재시작해도 하루 동안 '표 없음' 이었다."""
+        캐시에 구웠다(함수 계약의 결함 — 지금 운영 진입점은 키가 없으면
+        분기 시계열이 먼저 비어 여기까지 오지 않는다, 독립 리뷰 H1).
+
+        로그도 계약이다 — 키 부재는 화면에 사유를 남기지 않는 경로라 이
+        한 줄이 유일한 흔적이다(리뷰 L6: 지워도 green 이었다)."""
+        import logging
+
         import bot.dart_client as dc
         import bot.dart_production as dp
         _no_doc_fetch(monkeypatch)
         store: dict = {}
         monkeypatch.setattr(dp, "_tables_cached", store.get)
         monkeypatch.setattr(dp, "_tables_cache_write", store.__setitem__)
-        assert dp.tables_rolling(dc.get_dart(), "005930.KS", self._QS) == {}
+        with caplog.at_level(logging.INFO, logger=dp.log.name):
+            assert dp.tables_rolling(dc.get_dart(), "005930.KS",
+                                     self._QS) == {}
         assert store == {}, store
+        assert "DART_API_KEY 없음" in caplog.text, caplog.text
         ck = dp._tables_cache_key("005930.KS", self._QS, tuple(dp._PARSERS))
         store[ck] = {"products": {"rows": [1]}}
         assert dp.tables_rolling(dc.get_dart(), "005930.KS",
                                  self._QS) == {"products": {"rows": [1]}}
         assert keyless == []
+
+    def test_tables_rolling_keyed_but_read_nothing_bakes_nothing(
+            self, monkeypatch, caplog):
+        """키가 있어도 **문서를 한 건도 못 읽었으면** 빈손이다 — 목록 조회
+        (`list.json`, 캐시 없음)가 일시 실패하면 접수번호 0건이 되는데, 옛
+        판은 그 `{}` 를 24시간 구웠다(리뷰 M3). 분기 재무가 있는 종목이면
+        정기보고서는 있으므로 0건은 '없다' 가 아니라 '못 받았다' 다."""
+        import logging
+
+        import bot.dart_client as dc
+        import bot.dart_production as dp
+        _no_doc_fetch(monkeypatch)
+        monkeypatch.setattr(dc.DartClient, "find_periodic_reports",
+                            lambda self, *a: [])
+        monkeypatch.setattr(dc.DartClient, "find_periodic_report",
+                            lambda self, *a: None)
+        store: dict = {}
+        monkeypatch.setattr(dp, "_tables_cached", store.get)
+        monkeypatch.setattr(dp, "_tables_cache_write", store.__setitem__)
+        with caplog.at_level(logging.INFO, logger=dp.log.name):
+            assert dp.tables_rolling(dc.DartClient("k-1234567890"),
+                                     "005930.KS", self._QS) == {}
+        assert store == {}, store
+        assert "읽은 문서 0건" in caplog.text, caplog.text
+
+    def test_tables_rolling_read_document_without_table_is_cached(
+            self, monkeypatch):
+        """반대 증거 — 문서를 **읽었는데** 표가 없으면 그건 답이다. 굽지
+        않으면 매 요청이 같은 원문을 다시 받아 훑는다(이 캐시가 생긴 이유 —
+        2.8M자 정규식이 GIL 을 붙잡았다)."""
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+        monkeypatch.setattr(dc.DartClient, "find_periodic_reports",
+                            lambda self, *a: [{"rcept_no": "20260814000001"}])
+        monkeypatch.setattr(df, "_fetch_doc_text",
+                            lambda *a, **k: "<P>표 없는 본문</P>")
+        monkeypatch.setattr(df, "doc_was_truncated", lambda *a, **k: False)
+        store: dict = {}
+        monkeypatch.setattr(dp, "_tables_cached", store.get)
+        monkeypatch.setattr(dp, "_tables_cache_write", store.__setitem__)
+        assert dp.tables_rolling(dc.DartClient("k-1234567890"),
+                                 "005930.KS", self._QS) == {}
+        ck = dp._tables_cache_key("005930.KS", self._QS, tuple(dp._PARSERS))
+        assert store == {ck: {}}, store
 
     def test_prefetch_tables_keyless_starts_nothing(self, keyless, monkeypatch):
         """미리받기는 데우는 일뿐이다 — 키가 없으면 데울 게 없다(받아 둔 표는
@@ -969,6 +1221,18 @@ class TestKeylessCallees:
         assert qi._dart_name(dc.get_dart(), "005930.KS") == "이름-005930"
         assert qi._dart_name(None, "AAPL") is None
 
+    def test_dart_name_none_is_a_normal_path_not_a_failure(self, caplog):
+        """`None` 은 비-KR 경로가 **정상적으로** 넘긴다. `if dart:` 를 빼면
+        반환값은 같지만(예외를 `except` 가 먹는다) 매 비-KR 렌더가
+        `'NoneType' object has no attribute` 를 실패처럼 남긴다 — 정상 경로를
+        실패로 적으면 진짜 실패를 가린다(#82, 리뷰 P04 생존)."""
+        import logging
+
+        import bot.quarterly_infographic as qi
+        with caplog.at_level(logging.DEBUG, logger=qi.log.name):
+            assert qi._dart_name(None, "AAPL") is None
+        assert "corp name" not in caplog.text, caplog.text
+
 
 class TestMajorShareholdersKeyless:
     def test_keyless_skips_table_and_says_why(self, keyless, caplog):
@@ -985,6 +1249,70 @@ class TestMajorShareholdersKeyless:
         assert "get_major_shareholders" not in keyless, keyless
         assert "DART_API_KEY 없음 — 최대주주 표 생략" in caplog.text
         assert "최대주주 현황" not in seg
+
+    def test_keyless_skips_affiliate_table_and_says_why(self, keyless, caplog):
+        """바로 아래 계열회사 블록(P6b)도 같은 모양이었다 — `if dart2:` 는
+        긍정 분기라 스캐너가 허용하는데, 그 메서드는 키 검사가 디스크 캐시
+        **앞**이라 키 없이 할 수 있는 일이 없고, 빈 목록이 'returned empty'
+        로 남아 키 부재가 원천 부재로 읽혔다(리뷰). 긍정 분기를 허용하는
+        근거는 '키 없이도 답하는 메서드' 이므로 메서드마다 그 근거가 서는지
+        봐야 한다."""
+        import logging
+
+        from bot.dashboard import _render_stock_info_html
+        with caplog.at_level(logging.INFO):
+            seg = _render_stock_info_html({
+                "ticker": "018260.KS",
+                "stock_info": {"currency": "KRW"}})["other_panes"]
+        assert "get_affiliate_investments" not in keyless, keyless
+        assert "DART_API_KEY 없음 — 계열회사 표 생략" in caplog.text
+        assert "returned empty" not in caplog.text, caplog.text
+        assert "계열회사(타법인 출자) 현황" not in seg
+
+
+class TestQuarterlyEmptyReason:
+    """분기실적 탭이 비었을 때 사용자가 실제로 보는 문구(리뷰 H1 — 운영
+    영향은 여기서 난다). 키 없는 국내 종목은 DART 분기 재무를 못 받아
+    (`get_normalized_financials` 의 키 검사가 디스크 캐시보다 **앞**이다)
+    `build_payload` 가 None 이 되는데, 화면은 '소스 미제공 또는 미지원
+    시장' 이라 적어 키 부재가 원천 부재로 읽혔다(#82).
+
+    ⚠️ 렌더 계측(`_RENDER_TIMING`)은 모듈 전역이라 테스트마다 새것으로 갈아
+    끼운다 — 안 그러면 여기서 남긴 AAPL 항목이 '남의 값이 샌다' 를 재는 다른
+    테스트(`test_quarterly_stages_are_measured`)를 깬다(첫 `make test` 실측)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_timing(self, monkeypatch):
+        import bot.quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_RENDER_TIMING", type(qi._RENDER_TIMING)())
+
+    def test_kr_keyless_says_the_key(self, keyless):
+        import bot.quarterly_infographic as qi
+        r = qi.get_or_render("005930.KS", {})
+        assert r["ok"] is False
+        assert "DART_API_KEY 없음" in r["error"], r
+        assert "소스 미제공" not in r["error"], r
+
+    def test_kr_keyed_keeps_the_old_reason(self, monkeypatch):
+        """반대 증거 — 키가 있는데 비었으면 키를 탓하지 않는다."""
+        import bot.dart_client as dc
+        import bot.quarterly_infographic as qi
+        monkeypatch.setattr(dc, "get_dart",
+                            lambda *a, **k: dc.DartClient("k-1234567890"))
+        monkeypatch.setattr(qi, "build_payload", lambda *a, **k: None)
+        r = qi.get_or_render("005930.KS", {})
+        assert r["ok"] is False and "DART_API_KEY" not in r["error"], r
+        assert "분기 재무 데이터 없음" in r["error"], r
+
+    def test_non_kr_does_not_ask_dart(self, monkeypatch):
+        """반대 증거 — 비-KR 은 DART 를 안 쓰므로 묻지도 않는다."""
+        import bot.dart_client as dc
+        import bot.quarterly_infographic as qi
+        monkeypatch.setattr(dc, "get_dart",
+                            lambda *a, **k: pytest.fail("비-KR 인데 DART 를 물었다"))
+        monkeypatch.setattr(qi, "build_payload", lambda *a, **k: None)
+        r = qi.get_or_render("AAPL", {})
+        assert r["ok"] is False and "분기 재무 데이터 없음" in r["error"], r
 
 
 class TestDiagnoseRestartHint:

@@ -7918,9 +7918,13 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_affiliates_invest_html = ""
     if is_kr and _live:
         try:
-            from bot.dart_client import get_dart
+            from bot.dart_client import dart_ready, get_dart
             dart2 = get_dart()
-            if dart2:
+            # 위 최대주주 블록과 같은 모양이다 — `get_affiliate_investments` 는
+            # 키 검사가 디스크 캐시 **앞**이라 키 없이 답할 수 있는 게 없고,
+            # 옛 `if dart2:` 는 늘 참이라 빈 목록이 'returned empty' 로 남아
+            # 키 부재가 원천 부재로 읽혔다(실수 #428 독립 리뷰).
+            if dart_ready(dart2):
                 stock_code2 = ticker.split(".")[0]
                 investments = dart2.get_affiliate_investments(stock_code2)
                 if investments:
@@ -7947,6 +7951,8 @@ def _render_stock_info_html(rec: dict) -> str:
     <tbody>{ai_rows}</tbody></table></div>"""
                 else:
                     log.info("dart: get_affiliate_investments(%s) returned empty", stock_code2)
+            else:
+                log.info("dart: DART_API_KEY 없음 — 계열회사 표 생략")
         except Exception as exc:
             log.warning("detail: DART affiliate investments %s: %s", ticker, exc)
 
