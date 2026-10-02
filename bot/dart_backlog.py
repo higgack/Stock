@@ -112,11 +112,16 @@ _UNIT_MULT = {"원": 1.0, "천원": 1e3, "백만원": 1e6, "억원": 1e8,
 # 캡션 길이로 묶는다(괄호 없는 산문에서 끝없이 훑지 않게, #71). 이건 **의미
 # 규칙**이다 — 실측 캡션이 요구한 게 아니다(영풍은 기호 차단으로 풀린다, #165):
 # 맨 스케일은 통화를 말하지 않고 `원` 은 말한다.
-# ⚠️ 금액 토큰 앞 창은 **40자**다 — 다른 두 캡션 창(`_OWN_CAP_RE`·
-# `_CAP_ANY_RE`)과 같다(#38). 20 이던 첫 판은 `(단위 : 중량-천톤, 면적-천㎡,
-# 수량-천개, 금액-백만원)` 의 `백만원`(25자 뒤)을 못 읽었다(독립 리뷰 M1).
+# ⚠️ 금액 토큰 앞 창은 `단위` 뒤에 **콜론이 있을 때만** 40자다(캡션 괄호 안이라
+# 다른 두 캡션 창 `_OWN_CAP_RE`·`_CAP_ANY_RE` 와 같은 범위). 20 이던 첫 판은
+# `(단위 : 중량-천톤, 면적-천㎡, 수량-천개, 금액-백만원)` 의 `백만원`(25자 뒤)을
+# 못 읽었다(독립 리뷰 M1). 그런데 콜론 없는 `단위` 까지 40자로 넓히자 머리행의
+# `단위` 열 이름(`품목 단위 수주수량 … 단가(천원)`)·산문(`단위가 다른 품목은 …
+# 천원 미만은 절사`)이 21~40자 뒤의 `천원` 을 집어 표 캡션을 덮었다 — 6,000백만원이
+# 6,000천원(1,000배 작음)이 됐다(배포 전 2차 독립 리뷰 M1). 콜론 없는 쪽은 base 의
+# 20자 그대로다.
 _UNIT_RE = re.compile(
-    r"단위\s*[:：]?[^)\]]{0,40}?"
+    r"단위(?:\s*[:：][^)\]]{0,40}?|\s*[^)\]]{0,20}?)"
     r"(?:(조\s*원|십억\s*원|백만\s*원|억\s*원|천\s*원|원)(?![가-힣A-Za-z$])"
     r"|(조|십억|백만|억|천)(?!\s*[가-힣A-Za-z$\u3300-\u33ff%‰])"
     r"(?![^)\]]{0,40}?(?:조|십억|백만|억|천)\s*원))")
@@ -128,28 +133,47 @@ _UNIT_RE = re.compile(
 # 실측 사례는 없다(같은 표의 소캡션·연속 캡션은 `_unit_mult` 가 거른다).
 _OWN_CAP_RE = re.compile(r"\(\s*단위\s*[:：][^)]{0,40}\)")
 
-# 캡션 귀속 판정의 **표 경계** — 그 사이에 있으면 두 자리는 다른 표다: 합계행·
-# 각주·윗 절 제목(`4. 매출` · `나. 수주`), 그리고 숫자 행(`_spans_tables`).
-# 캡션 자체(`(단위`)는 경계가 아니다 — 캡션은 표의 머리이지 앞 표의 끝이
-# 아니다(그래서 `_TABLE_END` 를 그대로 못 쓴다).
-_TABLE_BREAK = re.compile(
-    r"[※☞]|합\s*계|\d+\s*\.\s*[가-힣]{2,}|[가-하]\s*\.\s+[가-힣]")
-# 아래 항목 머리(`(1) 국내` · `1) 해외`) — 표 경계는 아니지만(절 캡션이 아래
+# 캡션 귀속 — 금액 캡션과 라벨 사이에 콜론 캡션이 끼면, 그 캡션이 금액 캡션과
+# **한 묶음**(같은 표의 머리행 소캡션 `수량(단위 : 대)` · 연속 캡션
+# `(단위 : 백만원)(단위 : 대)`)일 때만 금액 캡션을 쓴다. 묶음 밖이면 그 캡션은
+# 뒤 표의 것인데 **라벨 표 자기 캡션**인지 **사이 표** 캡션인지 못 가른다 —
+# 그래서 빌리지 않는다(빈칸 > 틀린 숫자). 캡션 자체(`(단위`)는 묶음 경계가
+# 아니다 — 캡션은 표의 머리이지 앞 표의 끝이 아니다(`_TABLE_END` 를 못 쓴다).
+# ⚠️ 2026-10-02 에 '사이 표면 빌린다' 를 두 판 만들었고 두 판 다 틀린 숫자를
+# 냈다: 한 경계 판정을 양쪽에 쓴 판은 자기 외화 캡션 아래 각주·문장·절 제목을
+# 사이 표로 읽었고(셀프리뷰), 본문 칸 둘로 가른 판은 라벨이 자기 표 본문 **뒤**에
+# 오는 주석형(`수주잔고, 기말`)에서 자기 표 행을 사이 표로 읽었다(독립 리뷰 H1).
+# 자기 캡션이 아래 절(`가. 국내 … 나. 해외`)을 덮는 표와도 모양이 같다. 녹화
+# 입력 184개 중 사이 표 빌리기에 기대는 입력은 0건이었다(실측).
+# 묶음 경계(`_group_break`)는 **넓게** 잡는다 — 넓을수록 빈칸 쪽이다: 합계·각주·
+# 윗 절 제목·문장 끝·'없음'·**앞 표의 잔고 라벨**(머리행만 있는 빈 표 뒤의
+# `[해외]`·`□ 해외` 같은 모르는 제목은 그 라벨이 끊는다, 리뷰 H1)·아래 항목
+# 머리·본문 칸(숫자·`-`) 하나.
+# 잔고 라벨에서 `잔량`(수량 열)은 뺀다 — 같은 표 머리행의 `수주잔량(단위 : 톤)`
+# 소캡션까지 끊으면 base 가 60억원으로 읽던 표가 빈칸이 되고 사유도
+# `합계없음` 으로 틀린다(배포전 셀프리뷰 재현). 경계가 보려는 것은 앞 표의
+# **금액** 잔고 라벨이다.
+# ⚠️ 못 보는 축(#274): 앞 표에 본문도 잔고 라벨도 경계 낱말도 없으면(머리행만
+# 있는 비-수주 표) 뒤 표의 자기 캡션을 묶음으로 읽어 빌린다 — 실측 사례는 없다.
+# 같은 표 머리행이라도 소캡션 앞에 숫자·`합계`·띄운 각주 표식이 있으면 묶음이
+# 끊겨 빈칸이 된다(빈칸 쪽 오류, 리뷰 L2).
+_GROUP_BREAK = re.compile(
+    r"[※☞]|합\s*계|\d+\s*\.\s*[가-힣]{2,}|[가-힣]\s*\.(?=\s|$)"
+    r"|없\s*음|없습니다|수주\s*잔(?!\s*량)|계약\s*잔(?!\s*량)|기말\s*잔(?!\s*량)")
+# 아래 항목 머리(`(1) 국내` · `1)해외`) — 표 경계는 아니지만(절 캡션이 아래
 # 항목 표까지 덮는다) 캡션 묶음은 끊는다: 그 뒤 캡션은 아래 항목 표의 것이다.
 # ⚠️ 앞이 공백(또는 처음)일 때만 — 머리행 각주 표식(`수주총액(주1)`·`(1)`)의
 # `1)` 을 항목 머리로 읽으면 같은 표의 소캡션이 자기 캡션이 돼 표가 빈칸이 된다
 # (2026-10-02 셀프리뷰 재현). `가)`·`①` 꼴 항목은 못 본다(#274).
 _SUBITEM = re.compile(r"(?:^|(?<=\s))\(?\d{1,2}\)\s*[가-힣]")
-_LIST_MARK = re.compile(r"^\(?\d{1,2}\)$")
+# 빈 칸 자리표시자 — 행을 읽는 `_row_values`·`_runs` 와 같은 집합(#38).
+_DASHES = ("-", "―")
 
 
-def _spans_tables(seg: str) -> bool:
-    """`seg` 가 표 경계를 품나 — 그러면 그 양끝은 다른 표다."""
-    if _TABLE_BREAK.search(seg):
-        return True
-    # 숫자 행 = 앞 표의 본문. 항목 번호(`(1)`·`1)`)는 숫자가 아니다.
-    return any(_NUM_TOK.match(t) and not _LIST_MARK.match(t)
-               for t in seg.split())
+def _group_break(seg: str) -> bool:
+    """`seg`(금액 캡션 끝 ~ 뒤 콜론 캡션)가 캡션 묶음을 끊나 — 넓게(빈칸 쪽)."""
+    return bool(_GROUP_BREAK.search(seg) or _SUBITEM.search(seg)
+                or any(t in _DASHES or _NUM_TOK.match(t) for t in seg.split()))
 
 
 def _unit_token(m: "re.Match") -> str:
@@ -321,11 +345,13 @@ def _unit_mult(text: str, at: int) -> float | None:
     금액 캡션과 라벨 사이의 아무 콜론 캡션이나 자기 캡션으로 봐서 base 가 맞게
     읽던 표를 빈칸으로 만들었다 — 머리행 소캡션(`수량(단위 : 대)`) · 연속
     캡션(`(단위 : 백만원)(단위 : 대)`) · **사이 표**의 캡션(`판매경로 (단위 :
-    %)`). 귀속은 표 경계(`_spans_tables`)로 가른다: 그 캡션이 ① 금액 캡션과
-    다른 묶음이고(사이에 표 경계나 아래 항목 머리) ② 라벨과 같은 표일 때만
-    자기 캡션이다. 금액 단위로 **읽혔다면** 그 캡션이 마지막 금액 매치였을
-    것이므로 금액이 아니다 — 읽지 못한 금액 캡션(창 밖 토큰)도 여기서 막히고,
-    상세가 `캡션 미지원` 으로 그 캡션을 보여 준다(빌린 단위보다 빈칸이 낫다).
+    %)`). 그래서 금액 캡션과 **한 묶음**인 캡션(`_group_break` 가 안 끊는
+    소캡션·연속 캡션)만 건너뛰고, 묶음 밖 캡션이 하나라도 있으면 None 이다 —
+    그게 이 표의 것인지 사이 표의 것인지는 못 가른다(셀프리뷰·리뷰 H1 이 두
+    가르는 판을 다 깼다, 위 `_GROUP_BREAK` 주석). 금액 단위로 **읽혔다면** 그
+    캡션이 마지막 금액 매치였을 것이므로 금액이 아니다 — 읽지 못한 금액
+    캡션(창 밖 토큰)도 여기서 막히고, 상세가 `캡션 미지원` 으로 그 캡션을
+    보여 준다(빌린 단위보다 빈칸이 낫다).
 
     ⚠️ 훑는 범위는 **창 + 여유**다 — 처음부터 훑으면 라벨 자리마다 문서 전체를
     다시 읽는다(리뷰 L2: 4M자 41자리에서 진단 비용의 대부분). 창 밖 매치는
@@ -337,11 +363,8 @@ def _unit_mult(text: str, at: int) -> float | None:
     if not best or at - best.end() > _CAP_WINDOW:
         return None
     for c in _OWN_CAP_RE.finditer(text, best.end(), at):
-        gap = text[best.end():c.start()]
-        if not (_spans_tables(gap) or _SUBITEM.search(gap)):
-            continue        # 같은 캡션 묶음(소캡션·연속 캡션) — 금액 캡션이 이 표의 것
-        if not _spans_tables(text[c.end():at]):
-            return None     # 이 표에 붙은 자기 캡션이 금액이 아니다 — 빌리지 않는다
+        if _group_break(text[best.end():c.start()]):
+            return None     # 묶음 밖 캡션 — 이 표(또는 사이 표)의 것. 못 가르면 빌리지 않는다
     return _UNIT_MULT.get(_unit_token(best))
 
 
@@ -350,7 +373,7 @@ def _row_values(text: str, at: int, limit: int = 400) -> list[float]:
     숫자도 `-` 도 아닌 토큰이 나오면 행이 끝난 것으로 본다."""
     out: list[float] = []
     for tok in text[at:at + limit].split():
-        if tok == "-" or tok == "―":
+        if tok in _DASHES:
             continue
         if not _NUM_TOK.match(tok):
             break
@@ -370,16 +393,25 @@ def _verify_exact(vals: list[float], positive: bool = True) -> float | None:
 
     `positive=False` 는 **진단 전용**이다 — 항등식은 맞는데 잔고가 0 이하인
     표(영풍 실측 245,858 − 264,255 = −18,396)를 '열을 잘못 집었다' 와 가르려고
-    부호 조건만 뺀다. 파서는 늘 기본값으로 부른다(0 이하는 화면에 안 싣는다)."""
+    부호 조건만 뺀다. 파서는 늘 기본값으로 부른다(0 이하는 화면에 안 싣는다).
+    ⚠️ 그때도 **더하는 열은 0 이상**이어야 한다(총액·기초·신규) — 음수는 괄호로
+    적은 기납품이 그 자리에 앉은 것이다. 3열 표에 비고 `0` 이 붙은
+    `1,000 (400) 600 0` 이 4열 항등식에 1,000 + (−400) − 600 = 0 으로 우연히
+    맞아, 파서가 부분열 탐색을 멈추고 진단이 `잔고0이하`(원장에 안 남음)로
+    숨겼다 — base 는 600 을 읽었다(배포 전 2차 독립 리뷰 L1)."""
     if len(vals) == 3:
         a, b, c = vals
         exp, got = a - abs(b), c
+        adds = (a,)
     elif len(vals) == 4:
         a, b, c, d = vals
         exp, got = a + b - abs(c), d
+        adds = (a, b)
     else:
         return None
     if positive and (exp <= 0 or got <= 0):
+        return None
+    if not positive and min(adds) < 0:
         return None
     if abs(exp - got) > _TOL * max(abs(exp), abs(got)):
         return None
@@ -406,7 +438,9 @@ def _verify(vals: list[float], positive: bool = True) -> float | None:
     # 그게 이 행의 답이다 — 부분열 탐색으로 넘어가면 `5 1,000 5 1,000 0 0`
     # (다 납품한 수량·금액 쌍)에서 `[1,000, 5, 1,000]` 이 1% 안에 맞아 잔고
     # 1,000 을 지어냈다(2026-10-02 독립 리뷰 L8 — 빈칸 > 틀린 숫자). 진단은
-    # 같은 항등식을 `positive=False` 로 보고 `잔고0이하` 로 가른다.
+    # 같은 항등식을 `positive=False` 로 보고 `잔고0이하` 로 가른다. 더하는 열이
+    # 음수면 그 항등식은 표가 말하는 게 아니라 우연이라 멈추지 않는다
+    # (`_verify_exact` — 파서의 중단과 진단이 같은 판정을 쓴다, #35).
     exact = [v[1::2]] if len(v) == 6 else []
     exact.append(v)
     for cols in exact:
@@ -437,7 +471,7 @@ def _runs(seg: str) -> list[list[float]]:
     연도·건수·절번호에서 자연히 끊긴다."""
     out, cur = [], []
     for tok in seg.split():
-        if tok in ("-", "―"):
+        if tok in _DASHES:
             continue                      # 수량 자리표시자 — 행을 끊지 않는다
         if _NUM_TOK.match(tok):
             v = _to_num(tok)
@@ -460,6 +494,16 @@ def _first_run(seg: str) -> list[float]:
     return runs[0] if runs else []
 
 
+def _header_gated(text: str, at: int) -> bool:
+    """형태 A 의 머리행 관문 — 라벨 앞 260자에 시작 잔고 라벨(`_OPEN_LABELS`)과
+    납품 라벨(`_DELIV_LABELS`)이 **둘 다** 있다. 파서·관문 진단·음수 판정·사유
+    판정이 **같은 관문**을 걷는다(#35·#38 — 진단만 다른 자리를 보면 사유와 상세가
+    갈린다, 배포 전 2차 독립 리뷰 L3)."""
+    head = text[max(0, at - 260):at]
+    return (any(k in head for k in _OPEN_LABELS)
+            and any(k in head for k in _DELIV_LABELS))
+
+
 def _parse_table(text: str) -> tuple[float, str] | None:
     """형태 A — 헤더(총액/기초 + 기납품 + 잔고)가 있는 표.
 
@@ -470,10 +514,7 @@ def _parse_table(text: str) -> tuple[float, str] | None:
        합계가 있는데 못 맞췄다는 건 내 컬럼 모델이 틀렸다는 신호라, 거기서
        행을 더 파면 틀린 값을 그럴듯하게 만들어낸다."""
     for m in _balance_matches(text):
-        head = text[max(0, m.start() - 260):m.start()]
-        if not any(k in head for k in _OPEN_LABELS):
-            continue
-        if not any(k in head for k in _DELIV_LABELS):
+        if not _header_gated(text, m.start()):
             continue
         mult = _unit_mult(text, m.start())
         if mult is None:
@@ -890,8 +931,15 @@ MISS_NON_POSITIVE = "잔고0이하"
 # 창: 195870 은 공개→영업기밀 16자 · 영업기밀→생략 37자. 이 갈래는 **이름을 달아**
 # 둔다 — 테스트가 이 갈래만 맞는 예문으로 재야 하는데(다른 갈래가 대신 맞으면 이
 # 갈래의 변형이 안 걸린다, #91b), 정규식 문자열을 잘라 쓰면 깨지기 쉽다(#19).
+# ⚠️ 공개·공시·기재 **바로 뒤의 조사**도 본다(`는`·`가`·`를` — 그 낱말이 주어·
+# 목적어여야 '수주잔고 공개를 안 한다' 는 말이다). 각주 `수주잔고의 공시와 관련하여
+# 발주처명은 영업상 비밀…` · `수주잔고 기재 기준: … 발주처는 영업기밀로 생략` 은
+# 공개 대상이 발주처인데 첫 판이 미공시로 숨겼다(배포 전 2차 독립 리뷰 M2).
+# 못 보는 축(#274): 조사가 맞아도 절이 바뀌어 대상이 달라지면(`공시는 … 이며,
+# 발주처명은 영업상 비밀`) 여전히 숨는다 — base 부터 있던 각주 오탐(`수주잔고 기재
+# 시 고객사명은 … 기재를 생략`)과 같은 계열이다.
 _TRADE_SECRET_PAT = (
-    r"수주잔고(?:에\s*대한|의)?\s*(?:공개|공시|기재)[^.]{0,60}?"
+    r"수주잔고(?:에\s*대한|의)?\s*(?:공개|공시|기재)(?:는|가|를)[^.]{0,60}?"
     r"영업\s*상?\s*(?:기밀|비밀)[^.]{0,60}?(?:생략|기재하지\s*않|공개하지\s*않)")
 _NO_DATA_RE = re.compile(
     r"수주잔고[^.]{0,30}?(?:산정[^.]{0,10}?불가|없습니다|기재[^.]{0,10}?생략)"
@@ -948,8 +996,12 @@ def diagnose(text: str) -> str:
         return "단위없음"
     # 합계행은 **잘린 표**에서 찾는다(`_total_row`) — 파서·관문 진단과 같은
     # 표를 봐야 다음 절의 `합계` 가 '합계 있음' 을 만들지 않는다(리뷰 L3: 사유
-    # `형식미지원` 과 상세 `합계행 없음` 이 갈렸다, #38).
-    if not any(_total_row(text, p)[1] for p in with_unit):
+    # `형식미지원` 과 상세 `합계행 없음` 이 갈렸다, #38). 그리고 머리행 관문을
+    # 지난 자리가 있으면 **그 자리들로만** 본다 — 상세(`_gate_stage`)가 그
+    # 자리들을 말한다. 관문 밖 산문(`당사의 수주잔고 현황 합 계 1,234`)의 합계가
+    # '합계 있음' 을 만들어 사유와 상세가 또 갈렸다(배포 전 2차 독립 리뷰 L3).
+    gated = [p for p in with_unit if _header_gated(text, p)]
+    if not any(_total_row(text, p)[1] for p in (gated or with_unit)):
         return "합계없음"
     # 항등식은 맞는데 잔고가 0 이하(영풍 실측) — 원천 값이지 파서 갭이 아니다.
     # 빈 표와 섞여도 같은 결론이지만, **다른 자리가 하나라도** 있으면 그건
@@ -983,9 +1035,7 @@ def _nonpositive_backlog_table(text: str, at: int) -> bool:
     ⚠️ 관문을 파서와 똑같이 걷는다 — 진단만 느슨하면 다른 표의 음수가
     '원천 값' 으로 둔갑해 진짜 갭이 원장에서 사라진다(#35·#385).
     """
-    head = text[max(0, at - 260):at]
-    if not (any(k in head for k in _OPEN_LABELS)
-            and any(k in head for k in _DELIV_LABELS)):
+    if not _header_gated(text, at):
         return False
     if _unit_mult(text, at) is None:
         return False
@@ -1145,12 +1195,10 @@ def _gate_stage(text: str, spots: list[int]) -> str:
     보고하면 뒤 자리에서 검산까지 갔다가 실패한 사실이 가려진다."""
     best, rank = _GATE_LABELS[0], 0
     for at in spots:
-        head = text[max(0, at - 260):at]
-        if not any(k in head for k in _OPEN_LABELS):
-            continue
-        if not any(k in head for k in _DELIV_LABELS):
-            if rank < 1:
-                best, rank = _GATE_LABELS[1], 1
+        if not _header_gated(text, at):
+            head = text[max(0, at - 260):at]
+            if any(k in head for k in _OPEN_LABELS) and rank < 1:
+                best, rank = _GATE_LABELS[1], 1      # 시작 열은 있고 납품 열이 없다
             continue
         seg = _cut_table(text[at:at + 2500])
         m = re.search(r"합\s*계", seg)

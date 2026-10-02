@@ -328,6 +328,18 @@ class TestTheTotalRowIsLookedUpInTheTable:
         assert diagnose(t) == "합계없음", diagnose(t)
         assert diagnose_detail(t) == "헤더는 통과 · 합계행 없음"
 
+    def test_a_total_outside_the_gated_table_does_not_split_them(self):
+        """관문 밖 산문의 `합계` — 위 판은 잘린 표만 보게 했지만 관문을 안 지난
+        자리(`당사의 수주잔고 현황 합 계 1,234`)까지 세어, 사유는 `형식미지원` ·
+        상세는 `합계행 없음` 으로 또 갈렸다. 사유도 상세(`_gate_stage`)처럼
+        **관문을 지난 자리**로 본다(배포 전 2차 독립 리뷰 L3 재현, 합성)."""
+        from bot.dart_backlog import diagnose, diagnose_detail
+        pad = "가나다라마바사 " * 40
+        t = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+             "A 1,000 400 650 ※ 끝 " + pad + "당사의 수주잔고 현황 합 계 1,234")
+        assert diagnose(t) == "합계없음", diagnose(t)
+        assert diagnose_detail(t) == "헤더는 통과 · 합계행 없음"
+
 
 class TestFingerprintIsTakenAtImport:
     """처음 부를 때 재면 배포가 파일을 바꾼 뒤 재시작에 실패한 프로세스(옛
@@ -415,7 +427,12 @@ class TestTradeSecretNonDisclosure:
         "세부 내역은 고객사와의 비밀유지 약정 및 영업비밀 보호를 위하여 기재를 "
         "생략합니다",
         "※ 수주잔고 상위 프로젝트는 발주처와 체결한 계약상 영업상 비밀 유지 "
-        "조항에 따라 프로젝트명을 공개하지 않았습니다"])
+        "조항에 따라 프로젝트명을 공개하지 않았습니다",
+        # 공개·공시·기재 뒤에 주어·목적어 조사가 없다 — 공개 대상이 발주처다
+        # (배포 전 2차 독립 리뷰 M2 재현, base 는 둘 다 `형식미지원`).
+        "※ 수주잔고의 공시와 관련하여 발주처명은 영업상 비밀유지 의무에 따라 "
+        "공개하지 않습니다",
+        "※ 수주잔고 기재 기준: 계약금액 기준이며 발주처는 영업기밀로 생략"])
     def test_a_footnote_about_other_details_does_not_hide_the_table(self, note):
         from bot.dart_backlog import diagnose
         t = self.TABLE + note
@@ -431,7 +448,10 @@ class TestTradeSecretNonDisclosure:
         "이번 보고서에는 기재하지 않습니다.",
         "수주잔고에 대한 기재는 발주처와의 계약에 따라 영업상 기밀에 해당되어 "
         "공개하지 않습니다.",
-        "수주잔고 공개는 당사의 영업 비밀에 해당하여 생략합니다."])
+        "수주잔고 공개는 당사의 영업 비밀에 해당하여 생략합니다.",
+        # 조사 갈래 — `는` 말고 주어 `가`·목적어 `를` 도 공개 대상이 수주잔고다.
+        "수주잔고 공개가 당사의 영업기밀 유출에 해당하여 생략합니다.",
+        "수주잔고 기재를 고객과의 영업상 비밀 유지를 위하여 생략합니다."])
     def test_the_backlog_itself_declared_a_trade_secret(self, sentence):
         """반대 증거(#25) — 공개 대상이 **수주잔고 자신**이면 미공시다."""
         import re
@@ -450,6 +470,15 @@ class TestTradeSecretNonDisclosure:
         far = "가" * 120
         t = (self.TABLE + "※ 수주잔고에 대한 공개 기준은 " + far
              + " 영업기밀 자료는 생략합니다")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+
+    def test_a_verb_far_from_the_trade_secret_does_not_count(self):
+        """뒤 창(영업기밀 → 생략)도 유계다 — 첫 창만 재면 뒤 창을 넓히는 변형이
+        통과했다(리뷰 생존 T-win2-200, #91c)."""
+        from bot.dart_backlog import diagnose
+        far = "가" * 80
+        t = (self.TABLE + "※ 수주잔고에 대한 공개는 영업기밀에 해당하여 " + far
+             + " 생략합니다")
         assert diagnose(t) == "형식미지원", diagnose(t)
 
 
@@ -530,6 +559,29 @@ class TestNonPositiveBalance:
         return (head + "㈜영풍 아연괴 2026.01.01~2026.12.31 "
                 "2026.01.01~2026.12.31 55,220 120,000 60,000 130,000 "
                 "-4,780 -10,000 " + total + " ※ 기납품액은 실제 판매가 기준")
+
+    def test_a_trailing_zero_column_does_not_fake_a_zero_identity(self):
+        """`1,000 (400) 600 0` — 기납품을 괄호로 적은 3열 표 + 비고 `0`. 4열
+        항등식이 1,000 + (−400) − 600 = 0 으로 **우연히** 맞아, 파서가 부분열
+        탐색을 멈추고 진단이 `잔고0이하`(원장에 안 남음)로 숨겼다 — base 는
+        600 을 읽었다(배포 전 2차 독립 리뷰 L1 재현). 더하는 열(총액·기초·신규)이
+        음수면 그 항등식은 표가 말하는 게 아니다."""
+        from bot.dart_backlog import parse_backlog
+        t = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 수주잔고 비고 "
+             "A 1,000 (400) 600 0 합 계 1,000 (400) 600 0 ※ 끝")
+        got = parse_backlog(t)
+        assert got and got["value"] == 600e6, got
+
+    def test_a_plausible_zero_identity_still_stops_the_search(self):
+        """반대 증거(#25) — `1,000 0 1,000 0`(기초 1,000 + 신규 0 − 납품 1,000
+        = 0)은 표가 말하는 항등식이 0 으로 맞은 것이다. 부분열 `[1,000, 0,
+        1,000]` 이 잔고 1,000 을 지어내지 않는다(L8). 3열도 더하는 열(총액)이
+        음수면 진단 판정에서 빠진다."""
+        from bot.dart_backlog import _verify, _verify_exact
+        assert _verify([1000.0, 0.0, 1000.0, 0.0]) is None
+        assert _verify([1000.0, 0.0, 1000.0, 0.0], positive=False) == 0.0
+        assert _verify_exact([-100.0, 50.0, -150.0], positive=False) is None
+        assert _verify_exact([100.0, 250.0, -150.0], positive=False) == -150.0
 
     @pytest.mark.parametrize("total", [
         "합 계 - 245,858 - 264,255 - -18,396",
@@ -667,7 +719,9 @@ class TestCaptionIsNotBorrowedAcrossTables:
 
     # ── 독립 리뷰 M1(2026-10-02) — 첫 판은 금액 캡션과 라벨 **사이의 아무
     # 콜론 캡션**이나 '자기 캡션' 으로 봐서 base 가 맞게 읽던 표를 빈칸으로
-    # 만들었다. 캡션 귀속은 **표 경계**(숫자 행·합계·각주·윗 절 제목)로 가른다.
+    # 만들었다. 금액 캡션과 **한 묶음**인 캡션(머리행 소캡션·연속 캡션)만
+    # 건너뛴다. 묶음 밖 캡션은 이 표의 것인지 사이 표의 것인지 못 가르므로
+    # 빌리지 않는다(배포 전 2차 독립 리뷰 H1 — 아래 `…intermediate…`).
     ROW = (" 수주총액 기납품액 수주잔고 A 10,000 4,000 6,000 "
            "합 계 10,000 4,000 6,000")
 
@@ -675,17 +729,14 @@ class TestCaptionIsNotBorrowedAcrossTables:
         # 머리행의 소캡션 — 같은 표의 수량 열 단위다(합성).
         ("나. 수주상황 (단위 : 백만원) 품목 수량(단위 : 대) 수주총액 기납품액 "
          "수주잔고 A 10 10,000 4,000 6,000 합 계 10 10,000 4,000 6,000", 6000e6),
+        # 띄워 적힌 소캡션(셀 안 `<br>` 은 원문에서 공백이 된다) — 묶음 경계가
+        # 없으면 같은 묶음이다. '붙은 캡션만' 으로 좁히면 이게 빈칸이 된다.
+        ("나. 수주상황 (단위 : 백만원) 품목 수량 (단위 : 대) 수주총액 기납품액 "
+         "수주잔고 A 10 10,000 4,000 6,000 합 계 10 10,000 4,000 6,000", 6000e6),
         # 연속 캡션 — 금액·수량 단위를 따로 적은 한 표(합성).
         ("나. 수주상황 (단위 : 백만원)(단위 : 대) 구 분" + ROW, 6000e6),
         ("나. 수주상황 (단위 : 천원) 구 분 건수(단위 : 건) 수주총액 기납품액 "
          "수주잔고 A 3 10,000 4,000 6,000 합 계 3 10,000 4,000 6,000", 6000e3),
-        # 사이 표의 비금액 캡션은 **그 표**의 것이다 — 자기 캡션이 없는 수주
-        # 표는 앞 원화 캡션을 쓴다(base 와 같은 규약, 합성).
-        ("가. 매출실적 (단위 : 백만원) 매출 합계 9,999 나. 판매경로 (단위 : %) "
-         "국내 60 해외 40 다. 수주상황 구 분" + ROW, 6000e6),
-        # 사이 표가 빈 표(`-`)여도 윗 절 제목(`다.`)이 그 캡션을 끊는다.
-        ("가. 매출실적 (단위 : 백만원) 매출 합계 9,999 나. 판매경로 (단위 : %) "
-         "국내 - 해외 - 다. 수주상황 구 분" + ROW, 6000e6),
         # 머리행 각주 표식(`(주1)`·`(1)`)은 아래 항목 머리가 아니다 — 첫 판의
         # `_SUBITEM` 은 앞 글자를 안 봐서 `수주총액(주1)` 의 `1)` 에 걸렸다
         # (2026-10-02 셀프리뷰 재현, 합성).
@@ -694,21 +745,131 @@ class TestCaptionIsNotBorrowedAcrossTables:
         ("나. 수주상황 (단위 : 백만원) 구분 수주총액(1) 수량(단위 : 대) 기납품액 "
          "수주잔고 A 10,000 4,000 6,000 합 계 10,000 4,000 6,000", 6000e6),
     ])
-    def test_captions_of_the_same_or_another_table_do_not_veto(self, t, want):
+    def test_captions_of_the_same_table_do_not_veto(self, t, want):
         from bot.dart_backlog import parse_backlog
         got = parse_backlog(t)
         assert got and got["value"] == want, (got, t[:60])
 
+    @pytest.mark.parametrize("body", ["국내 60 해외 40", "국내 - 해외 -",
+                                      "국내 ― 해외 ―"])
+    def test_an_intermediate_tables_caption_blocks_the_borrow(self, body):
+        """옛 계약을 다시 씀(#222): '사이 표의 비금액 캡션은 그 표의 것 — 자기
+        캡션이 없는 수주 표는 앞 원화 캡션을 쓴다(base 규약)'.
+
+        그 갈래는 사이 표를 **라벨 표의 자기 캡션**과 가르지 못했다. 본문 칸으로
+        가른 판은 라벨이 자기 표 본문 **뒤**에 오는 주석형(`수주잔고, 기말`)에서
+        자기 표 행을 사이 표로 읽어 앞 표의 원화를 빌렸고(배포 전 2차 독립 리뷰
+        H1 — 아래 `…note_form…`), 절 제목으로 가르면 자기 캡션이 아래 절을 덮는
+        표(`가. 국내 … 나. 해외`)와 모양이 같다. 녹화 입력 184개 중 이 빌리기에
+        기대는 입력은 0건이었다(실측) — 빈칸 > 틀린 숫자. 진단은 막은 그 캡션을
+        상세에 싣는다(다음 라운드가 실물로 판단하게, #82)."""
+        from bot.dart_backlog import diagnose, diagnose_detail, parse_backlog
+        t = ("가. 매출실적 (단위 : 백만원) 매출 합계 9,999 나. 판매경로 (단위 : %) "
+             + body + " 다. 수주상황 구 분" + self.ROW)
+        assert parse_backlog(t) is None, body
+        assert diagnose(t) == "단위없음", diagnose(t)
+        assert "(단위 : %)" in diagnose_detail(t), diagnose_detail(t)
+
+    SALES = "가. 매출실적 (단위 : 백만원) 구분 매출액 제품 1,000 합 계 1,000 "
+    NOTE = ("고객과의 계약에서 생기는 계약잔액 및 변동에 대한 공시 {cap} 공시금액 "
+            "장부금액 합계 수주잔고, 기초 2,377 2,377 증가(감소), 수주잔고 588 588 "
+            "공사수익 (788) (788) 수주잔고, 기말 2,177 2,177 누적공사수익")
+
+    @pytest.mark.parametrize("cap", ["(단위 : 천USD)", "(단위 : 대)", "(단위 : )"])
+    def test_a_note_form_label_after_its_own_rows_does_not_borrow(self, cap):
+        """주석형(`_parse_xbrl`) — 라벨 `수주잔고, 기말` 은 **자기 표 행 뒤**에
+        온다. 본문 칸으로 사이 표를 가르던 판은 자기 표 행(2,377 · 588 …)을 사이
+        표로 읽고 앞 표의 백만원을 빌려 2,177천USD 를 21억 7,700만원으로 냈다
+        (배포 전 2차 독립 리뷰 H1 재현 — base 도 같은 값이었다)."""
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(self.SALES + self.NOTE.format(cap=cap)) is None, cap
+
+    def test_a_note_form_with_its_own_won_caption_still_reads(self):
+        """반대 증거(#25) — 주석형 자기 캡션이 원화면 그대로 읽는다."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self.SALES + self.NOTE.format(cap="(단위 : 백만원)"))
+        assert got and got["value"] == 2177e6 and got["form"] == "주석·건설계약", got
+
+    TAIL = (" 구 분 수주총액 기납품액 수주잔고 A 10,000 4,000 6,000 "
+            "합 계 10,000 4,000 6,000")
+
+    @pytest.mark.parametrize("domestic", [
+        "구 분 수주총액 기납품액 수주잔고",     # `수주\s*잔`
+        "구 분 계약금액 계약잔액",               # `계약\s*잔`
+        "구 분 기초 기말잔고"])                  # `기말\s*잔`
+    @pytest.mark.parametrize("mark", ["[해외]", "□ 해외", "<해외>", "○ 해외",
+                                      "(해외)", "가) 해외", "② 해외"])
+    def test_a_header_only_table_then_an_unknown_heading_does_not_borrow(
+            self, domestic, mark):
+        """머리행만 있는 빈 국내표 뒤에 모르는 제목(`[해외]`·`□`·`가)`·`②` …)과
+        자기 외화 캡션 — 경계 낱말이 하나도 없어 같은 묶음으로 읽혀 앞 표의
+        원화를 빌렸다(배포 전 2차 독립 리뷰 H1, 일곱 꼴 전부). 제목 꼴을 늘어놓는
+        대신 **앞 표의 잔고 라벨**이 묶음을 끊는다(목록은 다음 꼴을 못 잡는다,
+        #24). 라벨 꼴 셋은 각자 그것 하나뿐인 픽스처다(#91c)."""
+        from bot.dart_backlog import parse_backlog
+        t = ("나. 수주상황 [국내] (단위 : 백만원) " + domestic + " " + mark
+             + " (단위 : 천USD)" + self.TAIL)
+        assert parse_backlog(t) is None, (domestic, mark)
+
+    @pytest.mark.parametrize("sub", ["수주잔량(단위 : 톤)", "수주잔량 (단위 : 톤)"])
+    def test_a_quantity_balance_sub_caption_stays_in_the_group(self, sub):
+        """잔고 라벨 경계는 **앞 표의 금액 잔고 라벨**을 보려는 것이다 — 같은 표
+        머리행의 수량 열 `수주잔량(단위 : 톤)` 까지 끊으면 base·e9a7fc4 가 60억원으로
+        읽던 표가 빈칸이 되고, 사유도 `합계없음`(수주잔량 자리의 잘린 표)으로 틀리게
+        적힌다(배포전 셀프리뷰 재현). `잔량` 은 수량이라 경계에서 뺀다."""
+        from bot.dart_backlog import parse_backlog
+        t = ("나. 수주상황 (단위 : 백만원) 품목 수주총액 기납품액 " + sub + " 수주잔고 "
+             "A 10 10,000 4,000 6,000 합 계 10 10,000 4,000 6,000")
+        got = parse_backlog(t)
+        assert got and got["value"] == 6000e6, got
+
+    @pytest.mark.parametrize("qty,label", [
+        ("수주잔량", "수주잔고"), ("계약잔량", "계약잔액"), ("기말잔량", "기말잔고"),
+        ("수주잔 량", "수주잔고")])
+    def test_each_quantity_balance_label_is_not_a_group_break(self, qty, label):
+        """세 잔고 라벨 꼴마다 `잔량` 예외가 걸리는지 — 파서 경로가 있는 건
+        `수주잔고` 뿐이라 나머지 둘은 `_unit_mult` 로 직접 잰다(#91c 각 꼴 하나씩).
+        좁은 셀은 낱말을 띄어 쓴 채 온다(`수주잔 량`, #94) — 예외의 `\\s*` 를 그
+        꼴이 잰다(뮤테이션 J4 가 그 픽스처 없이 살아남았다)."""
+        from bot.dart_backlog import _unit_mult
+        t = ("나. 수주상황 (단위 : 백만원) 구 분 수주총액 기납품액 " + qty
+             + "(단위 : 대) " + label + " A 1 2 3")
+        assert _unit_mult(t, t.index(label)) == 1e6, qty
+
     def test_a_long_mixed_caption_reads_its_won_token(self):
         """금액 토큰 앞이 20자를 넘는 혼합 캡션 — 옛 창(20)은 못 읽어 그
-        캡션을 '비금액 자기 캡션' 으로 보고 빈칸을 냈다. 다른 두 창(40)과
-        맞춘다(합성)."""
+        캡션을 '비금액 자기 캡션' 으로 보고 빈칸을 냈다. 콜론 캡션은 40자(합성)."""
         from bot.dart_backlog import parse_backlog
         t = ("나. 수주상황 (단위 : 중량-천톤, 면적-천㎡, 수량-천개, 금액-백만원) "
              "품목 수주총액 기납품액 수주잔고 A 1,000 400 600 "
              "합 계 1,000 400 600")
         got = parse_backlog(t)
         assert got and got["value"] == 600e6, got
+
+    @pytest.mark.parametrize("mid", [
+        "품목 단위 수주수량 기납품수량 수주잔량 계약일자 단가(천원)",
+        "판매 단위가 다른 품목은 금액 기준으로 합산하였으며 천원 미만은 절사 품목"])
+    def test_a_unit_word_without_a_colon_does_not_reach_a_far_won(self, mid):
+        """콜론 없는 `단위`(머리행의 단위 열 이름 · 산문)는 base 의 20자만 본다 —
+        40자로 넓힌 판은 21~40자 뒤의 `천원` 을 집어 표 캡션을 덮었다(6,000백만원
+        → 6,000천원, 배포 전 2차 독립 리뷰 M1 재현)."""
+        from bot.dart_backlog import parse_backlog
+        t = ("나. 수주상황 (단위 : 백만원) " + mid + " 수주총액 기납품액 수주잔고 "
+             "A 10,000 4,000 6,000 합 계 10,000 4,000 6,000")
+        got = parse_backlog(t)
+        assert got and got["value"] == 6000e6, got
+
+    def test_a_caption_straddling_the_window_edge_still_reads(self):
+        """훑는 범위의 **여유**(창 + 200자)가 재는 것 — 캡션이 창 경계에 걸치면
+        (`단위` 는 창 밖, 단위 토큰은 창 안) 창 끝에서 훑기 시작한 판은 `단위` 를
+        못 보고 빈칸을 낸다(리뷰 생존 S-noslack, #91c)."""
+        from bot.dart_backlog import _CAP_WINDOW, _unit_mult
+        cap = "(단위 : 백만원)"
+        t = cap + " " + "가" * (_CAP_WINDOW - 2) + "수주잔고"
+        at = t.index("수주잔고")
+        best_end = cap.index("원") + 1
+        assert at - best_end == _CAP_WINDOW and at - _CAP_WINDOW > cap.index("단")
+        assert _unit_mult(t, at) == 1e6
 
     @pytest.mark.parametrize("mid", [
         # 절 캡션이 아래 항목 표를 덮는다 — `(1) 국내` 는 표 경계가 아니다.
@@ -719,12 +880,47 @@ class TestCaptionIsNotBorrowedAcrossTables:
         "나. 수주상황 (단위 : 백만원) 구 분 수주총액 기납품액 수주잔고 - - - "
         "합 계 - - - (단위 : 천USD) 구 분",
         # 경계가 **하나뿐**인 픽스처 — 갈래를 하나 지우는 변형이 각자 걸리게.
-        "가. 국내 (단위 : 백만원) 해당사항 없음 나. 해외 (단위 : 천USD) 구 분",
-        "1. 국내 (단위 : 백만원) 해당사항 없음 2. 해외 (단위 : 천USD) 구 분",
-        "나. 수주상황 (단위 : 백만원) 해당사항 없음 ※ 해외분 (단위 : 천USD) "
-        "구 분"])
+        # (앞 표 본문은 중립 낱말 `기타` — `없음` 을 쓰면 갈래가 둘이 된다.)
+        "가. 국내 (단위 : 백만원) 기타 나. 해외 (단위 : 천USD) 구 분",
+        "1. 국내 (단위 : 백만원) 기타 2. 해외 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 기타 ※ 해외분 (단위 : 천USD) 구 분",
+        # 앞 표가 '없음' 뿐이고 절 제목도 없다 — 2026-10-02 셀프리뷰 재현:
+        # 경계가 안 보여 같은 묶음으로 읽고 원화를 빌렸다(50억원). 문장 끝·
+        # '없음/없습니다' 도 묶음을 끊는다(갈래마다 하나씩).
+        "나. 수주상황 (단위 : 백만원) 해당사항 없음 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 실적이 없습니다 해외 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 실적 미발생. 해외 (단위 : 천USD) 구 분",
+        # 자기 외화 캡션과 머리행 **사이**의 각주·문장·절 제목·합계 머리칸·연도·
+        # 항목 번호 — 첫 판은 그걸 '사이 표' 증거로 읽어 앞 표의 원화를 빌렸다
+        # (5,000천USD → 50억원, 셀프리뷰·2차 독립 리뷰 H1 재현). 묶음 밖
+        # 캡션이면 무엇이 그 아래 오든 빌리지 않는다.
+        "나. 수주상황 (단위 : 천USD) 외화 계약 기준입니다. 구 분",
+        "나. 수주상황 (단위 : 천USD) ※ 환율 미적용 구 분",
+        "나. 수주상황 (단위 : 천USD) ※ 적용환율 1,350 구 분",
+        "나. 수주상황 (단위 : 천USD) ※ 환율 1,350 · 1,400 구 분",
+        "나. 수주상황 (단위 : 천USD) 가. 국내 구 분",
+        "나. 수주상황 (단위 : 천USD) 구 분 국내 해외 합계",
+        "나. 수주상황 (단위 : 천USD) 구 분 2026 2025",
+        "나. 수주상황 (단위 : 천USD) 구분 2026",
+        "나. 수주상황 (단위 : 천USD) (1) 국내 (2) 해외 구 분",
+        "나. 수주상황 (단위 : 천USD) 1) 국내 2) 해외 구 분",
+        # 붙여 쓴 아래 항목 머리(`1)해외`·`(1)해외`) — 낱말에 붙어 본문 칸이
+        # 아니므로 이 픽스처의 앞 표 경계는 `_SUBITEM` 하나뿐이다(괄호를 요구하는
+        # 변형·항목 머리를 지우는 변형이 각자 걸리게, #91c).
+        "나. 수주상황 (단위 : 백만원) 기타 1)해외 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 기타 (1)해외 (단위 : 천USD) 구 분",
+        # 묶음 경계의 나머지 갈래 — 각 픽스처의 앞 표 본문은 그 갈래 **하나**
+        # 뿐이다: `☞` · 합계 머리칸 · 본문 칸 하나(숫자 · `-` · `―` · 연도 꼴 —
+        # 넓게) · 캡션 바로 앞 문장 끝(`.(단위`).
+        "나. 수주상황 (단위 : 백만원) 기타 ☞ 해외분 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 구 분 금액 합 계 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 기타 10 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 국내 - (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 국내 ― (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 기준 2025 (단위 : 천USD) 구 분",
+        "나. 수주상황 (단위 : 백만원) 실적 미발생.(단위 : 천USD) 구 분"])
     def test_its_own_foreign_caption_still_blocks_the_borrow(self, mid):
-        """반대 증거(#25) — 좁혀도 6,000천USD → 60억원 재현은 그대로 막힌다."""
+        """반대 증거(#25) — 6,000천USD → 60억원 재현은 그대로 막힌다."""
         from bot.dart_backlog import parse_backlog
         t = KRW_SALES_HEAD + "합 계 9,999 " + mid + self.ROW
         assert parse_backlog(t) is None, mid
@@ -737,6 +933,18 @@ class TestCaptionIsNotBorrowedAcrossTables:
              "기납품액 수주잔고 A 10,000 4,000 6,000 합 계 10,000 4,000 6,000")
         got = parse_backlog(t)
         assert got and got["value"] == 6000e6, got
+
+
+class TestPlaceholderSetIsShared:
+    """`―`(U+2015) 자리표시자 — 캡션 판정의 본문 칸과 행 리더가 **같은 집합**
+    (`_DASHES`)을 쓴다(#38). 행 리더 쪽은 지금까지 `―` 를 재는 테스트가
+    없었다 — 집합을 하나로 모으면서 그 배제를 같이 못박는다."""
+
+    def test_row_readers_skip_the_bar(self):
+        from bot.dart_backlog import _row_values, _runs
+        # 숫자 **사이**의 `―` — 앞에 두면 끊어도 결과가 같아 못 잰다(#91c).
+        assert _runs("A 1,000 ― 2,000 B") == [[1000.0, 2000.0]]
+        assert _row_values("1,000 ― 2,000 끝", 0) == [1000.0, 2000.0]
 
 
 # ── 보고서가 지금 파서의 판정을 싣는다 — 발송 전 재조회 ────────────────
@@ -909,7 +1117,9 @@ class TestRefreshBeforeTheReport:
         미설치 환경에서도 재도록 소스를 AST 로 본다(기존 스케줄 테스트와 같은
         규약)."""
         import ast
-        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1] / "bot" / "telegram_bot.py"
+               ).read_text(encoding="utf-8")
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.AsyncFunctionDef)
                   and n.name == "_periodic_backlog_review")
@@ -928,6 +1138,15 @@ class TestRefreshBeforeTheReport:
                  getattr(n.func, "attr", ""): n.lineno
                  for n in ast.walk(fn) if isinstance(n, ast.Call)}
         assert lines["_dfa_status"] < lines["to_thread"], lines
+        # ⚠️ 호출 순서만 보면 `if not chat_id: continue` 를 재조회 **뒤로** 옮기는
+        # 변형이 통과한다(배포 전 2차 독립 리뷰 L4) — 건너뛰는 **분기**가 앞이어야.
+        guard = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.If)
+                 and isinstance(n.test, ast.UnaryOp)
+                 and isinstance(n.test.op, ast.Not)
+                 and isinstance(n.test.operand, ast.Name)
+                 and n.test.operand.id == "chat_id"
+                 and any(isinstance(b, ast.Continue) for b in n.body)]
+        assert guard and guard[0] < lines["to_thread"], (guard, lines)
 
     def test_cli_refill_uses_the_same_cap_as_the_report(self, tmp_path,
                                                          monkeypatch, capsys):
