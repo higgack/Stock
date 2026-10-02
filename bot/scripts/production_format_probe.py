@@ -147,7 +147,12 @@ def _latest_quarters(dart, ticker: str) -> list[dict]:
         return []
 
 
-_NOT_FIXABLE = ("미공시", "명시적미공시", "미검사")
+# 수주잔고 쪽 '고칠 것 아님' 은 `dart_backlog.NON_FIXABLE_REASONS` 가 단일
+# 출처다 — 여기 리터럴로 적어 두면 새 갈래(`잔고0이하`·`원문미제공`)가 생길
+# 때 이 스윕만 그걸 '개선 여지' 로 센다(#38·#45). `미검사` 는 이 스윕 고유.
+from bot.dart_backlog import NON_FIXABLE_REASONS as _BL_NON_FIXABLE  # noqa: E402
+
+_NOT_FIXABLE = _BL_NON_FIXABLE + ("미검사",)
 
 
 def fixable_reasons(by_reason: dict) -> dict:
@@ -300,8 +305,7 @@ def main(argv: list[str] | None = None) -> int:
             # ⚠️ 사유만으론 어떤 열 구성인지 모른다 — 열 뜻을 추측해 배정하면
             # 의미가 틀리고 검산도 못 잡는다(#106). 원문 발췌가 다음 라운드의
             # 유일한 근거다.
-            if bl_excerpt and bl_why.split(" · ")[0] not in (
-                    "미공시", "명시적미공시", "미검사"):
+            if bl_excerpt and bl_why.split(" · ")[0] not in _NOT_FIXABLE:
                 backlog_ex.append((tk, bl_why, bl_excerpt[:args.show]))
         cover["제품표"] += 1 if prod else 0
         cover["생산표"] += 1 if got else 0

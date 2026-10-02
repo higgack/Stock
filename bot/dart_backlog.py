@@ -47,6 +47,8 @@
     세울 수 없다(수직 합만 성립). 검산 없이 낼 수는 없다.
   · 합계행이 **2값** — 항등식을 세울 두 번째 항이 없다. 열 뜻을 추측해
     배정하면 스케일이 아니라 **의미**가 틀리고 검산도 못 잡는다.
+  · 항등식은 맞는데 잔고가 **0 이하** — 영풍(기납품이 수주총액을 넘었다).
+    화면의 '잔고' 가 아니므로 안 싣고, 진단은 `잔고0이하`(고칠 것 아님)다.
 
 ⚠️ **수량·건수·비중 열이 섞이면 열 개수가 어긋난다**(2026-08-21 스윕:
 `형식미지원 · 합계행 5값/4값`). 추측해 배정하지 않고 **연속 부분열**로 같은
@@ -64,17 +66,22 @@ from __future__ import annotations
 import html as _html
 import json as _json
 import logging
+import os
 import re
+import threading
 from pathlib import Path as _Path
 
 log = logging.getLogger("bot.dart_backlog")
 
 # 단위 → 원 배수. `백만USD`·`천불` 류는 **의도적으로 없다** — 매칭되면 거부한다.
-# ⚠️ `백만USD`·`천불` 류가 **없는 것이 곧 외화 차단**이다 — 매칭되지 않으면
-# `_unit_mult` 가 None 을 돌려 그 표를 통째로 버린다. 환율 소스를 붙이기
-# 전까지 여기에 외화를 추가하면 원화 축에 1400배 값이 올라간다(씨에스윈드
-# "수주잔고는 1,097백만USD" 실측). 별도 가드 함수를 두면 죽은 코드가 되므로
-# **이 표 자체가 가드**다.
+# ⚠️ `백만USD`·`천불` 류가 없는 것이 외화 차단의 **절반**이다 — 환율 소스를
+# 붙이기 전까지 여기에 외화를 추가하면 원화 축에 1400배 값이 올라간다(씨에스윈드
+# "수주잔고는 1,097백만USD" 실측). 나머지 절반은 `_unit_mult` 가 표 **자기
+# 캡션**을 보는 것이다 — 2026-10-02 까지 이 주석은 "매칭되지 않으면 None 을
+# 돌려 그 표를 버린다" 고 적었는데, `_unit_mult` 는 금액이 아닌 가까운 캡션을
+# **건너뛰고 앞 표의 원화 캡션을 빌려** 썼다(재현: `(단위 : 천USD)` 표가
+# `(단위 : 백만원)` 매출 표 뒤에 오면 6,000천USD → 60억원). 표 하나로는
+# 가드가 안 된다(#55 설명이 코드와 어긋나면 버그).
 _UNIT_MULT = {"원": 1.0, "천원": 1e3, "백만원": 1e6, "억원": 1e8,
               "십억원": 1e9, "조원": 1e12,
               # ⚠️ `원` 을 생략한 캡션이 실재한다 — `(단위 : 백만)`·
@@ -95,10 +102,26 @@ _UNIT_MULT = {"원": 1.0, "천원": 1e3, "백만원": 1e6, "억원": 1e8,
 #     `(단위 : 백만 달러)`(1,400배)·`(단위 : 천 주)` 를 금액으로 안 읽는다.
 # 띄어쓴 `백만 원` 을 원 계열에 넣지 않으면 `백만` 이 차단당해 물러나며 맨
 # `원` 이 잡혀 **1.0**(100만배 오차)이 된다 — 두 갈래가 한 세트다.
+# ⚠️ 맨 스케일 차단은 한글·영문만 보고 **단위 기호**를 놓쳤다(2026-10-02 영풍
+# 000670 실측 캡션 `(단위 : M/T, 천㎡, 천개 / 백만원)` — `천㎡` 의 `천` 을 금액
+# 단위로 읽어 1,000배 작은 값이 될 뻔했다. 검산 실패로 가려져 있었을 뿐이다).
+# ㎡·㎏·㎥ 류는 낱개로 늘어놓지 않고 **CJK 호환 블록**(U+3300–33FF, 사각형
+# 단위 기호 전부)으로 막는다 — 목록은 다음 기호를 못 잡는다(#24).
+# ⚠️ 그리고 같은 캡션에 `원` 이 붙은 금액 단위가 **뒤에** 있으면 맨 스케일은
+# 수량 쪽이다(`(단위 : 천, 백만원)`) — 그 원 단위를 쓴다. 뒤를 보는 창은
+# 캡션 길이로 묶는다(괄호 없는 산문에서 끝없이 훑지 않게, #71).
 _UNIT_RE = re.compile(
     r"단위\s*[:：]?[^)\]]{0,20}?"
     r"(?:(조\s*원|십억\s*원|백만\s*원|억\s*원|천\s*원|원)(?![가-힣A-Za-z$])"
-    r"|(조|십억|백만|억|천)(?!\s*[가-힣A-Za-z$]))")
+    r"|(조|십억|백만|억|천)(?!\s*[가-힣A-Za-z$\u3300-\u33ff%‰])"
+    r"(?![^)\]]{0,40}?(?:조|십억|백만|억|천)\s*원))")
+# 표 **자기** 캡션 — 콜론까지 있어야 캡션이다. `(단위당 원가)` 같은 낱말을
+# 캡션으로 보면 머리행의 괄호 하나가 멀쩡한 원화 표를 빈칸으로 만든다(#146).
+# ⚠️ 못 보는 축(#274): 콜론 없는 비금액 캡션(`(단위 천USD)`)은 여기 안 걸려
+# 앞 표 캡션을 여전히 빌린다. 반대로 머리행 안의 비금액 소캡션이 잔고 라벨
+# **앞**에 오면(`품목(단위 : 대) … 수주잔고`) 멀쩡한 원화 표를 버린다 — 실측
+# 사례는 없다(라벨 뒤 소캡션은 검색 범위 밖이라 안 걸린다).
+_OWN_CAP_RE = re.compile(r"\(\s*단위\s*[:：][^)]{0,40}\)")
 
 
 def _unit_token(m: "re.Match") -> str:
@@ -136,11 +159,21 @@ _ORDER_CTX = re.compile(r"수주|도급|계약잔액")
 def _balance_matches(text: str) -> list:
     """잔고 라벨 매치 전량 — **파서와 진단이 같은 것을 본다**(#105).
 
-    한쪽만 문맥을 요구하면 통계와 화면이 갈라진다."""
+    한쪽만 문맥을 요구하면 통계와 화면이 갈라진다.
+
+    ⚠️ 뒤쪽 문맥은 **이 표 안에서만** 본다(2026-10-02 078340 실측). 투자부동산
+    변동표의 `반기말금액` 속 `기말` 이 120자 뒤 **다음 절 제목**
+    `4. 매출 및 수주상황` 의 `수주` 를 문맥으로 빌려 잔고 라벨이 됐다 — 그
+    제목은 모든 정기보고서에 있으므로 그 앞 표의 `기말` 은 전부 같은 일을
+    당한다. 표 끝은 파서와 같은 `_cut_table` 이 정한다(#38).
+    ⚠️ 앞쪽은 자르지 않는다 — 소제목(`라. 수주상황`)과 캡션이 표의 문맥이고
+    그 둘이 `_TABLE_END` 에 걸리므로, 자르면 391710 롤링 표가 통째로 빠진다.
+    """
     out = []
     for m in re.finditer("|".join(_BAL_LABELS), text or ""):
         if m.group(0) in _GENERIC_BAL:
-            near = text[max(0, m.start() - 260):m.start() + 120]
+            near = (text[max(0, m.start() - 260):m.start()]
+                    + _cut_table(text[m.start():m.start() + 120]))
             if not _ORDER_CTX.search(near):
                 continue
         out.append(m)
@@ -248,11 +281,22 @@ def _unit_mult(text: str, at: int) -> float | None:
     """`at` **앞쪽** 가장 가까운 `(단위 : X)`. 표 캡션은 항상 표 위에 온다.
 
     없으면 None — 단위 없이 스케일을 가정하면 100배 오차가 난다(백만원 vs
-    억원). 못 정하면 값을 버리는 쪽이 옳다."""
+    억원). 못 정하면 값을 버리는 쪽이 옳다.
+
+    ⚠️ **표 자기 캡션이 금액이 아니면 None** 이다(2026-10-02). 옛 판은 금액
+    캡션만 훑어 마지막 것을 썼다 — 그래서 `(단위 : 천USD)`·`(단위 : 천톤)`·
+    `(단위 : )` 처럼 표 자기 캡션이 원화가 아니면 그걸 **건너뛰고 앞 표의
+    원화 캡션을 빌렸다**. 검산은 열 사이 항등식만 보므로 스케일이 통째로
+    틀려도 통과한다(재현: 6,000천USD → 60억원 — 조용한 오답, 빈칸 > 틀린 숫자).
+    """
     best = None
     for m in _UNIT_RE.finditer(text, 0, at):
         best = m
     if not best or at - best.end() > _CAP_WINDOW:
+        return None
+    # 금액 캡션 **뒤**에 다른 캡션이 있으면 그게 이 표의 캡션이다 — 금액이
+    # 아니므로(금액이었다면 그 캡션이 마지막 금액 매치였다) 빌리지 않는다.
+    if _OWN_CAP_RE.search(text, best.end(), at):
         return None
     return _UNIT_MULT.get(_unit_token(best))
 
@@ -272,13 +316,17 @@ def _row_values(text: str, at: int, limit: int = 400) -> list[float]:
     return out
 
 
-def _verify_exact(vals: list[float]) -> float | None:
+def _verify_exact(vals: list[float], positive: bool = True) -> float | None:
     """정확히 3열/4열일 때의 항등식.
 
     · 3열: 수주총액 − 기납품액 = 수주잔고
     · 4열: 기초잔액 + 신규 − 기납품액 = 수주잔고
     (기납품액이 `(12,248,487)` 처럼 이미 음수로 적힌 회사가 있어 **절대값**으로
-    뺀다 — HD현대중공업 실측.)"""
+    뺀다 — HD현대중공업 실측.)
+
+    `positive=False` 는 **진단 전용**이다 — 항등식은 맞는데 잔고가 0 이하인
+    표(영풍 실측 245,858 − 264,255 = −18,396)를 '열을 잘못 집었다' 와 가르려고
+    부호 조건만 뺀다. 파서는 늘 기본값으로 부른다(0 이하는 화면에 안 싣는다)."""
     if len(vals) == 3:
         a, b, c = vals
         exp, got = a - abs(b), c
@@ -287,14 +335,14 @@ def _verify_exact(vals: list[float]) -> float | None:
         exp, got = a + b - abs(c), d
     else:
         return None
-    if exp <= 0 or got <= 0:
+    if positive and (exp <= 0 or got <= 0):
         return None
     if abs(exp - got) > _TOL * max(abs(exp), abs(got)):
         return None
     return got
 
 
-def _verify(vals: list[float]) -> float | None:
+def _verify(vals: list[float], positive: bool = True) -> float | None:
     """합계행 숫자들이 원문이 명시한 항등식을 만족하면 잔고를 반환.
 
     ⚠️ 이 검산이 유일한 컬럼 정합성 보증이다. 표 구조가 바뀌어 엉뚱한 열을
@@ -311,10 +359,10 @@ def _verify(vals: list[float]) -> float | None:
     # 숫자로 적어 6개가 나온다 — 홀수 인덱스(금액)만 뽑아 3열과 같게 본다.
     v = list(vals or [])
     if len(v) == 6:
-        got = _verify_exact(v[1::2])
+        got = _verify_exact(v[1::2], positive)
         if got is not None:
             return got
-    got = _verify_exact(v)
+    got = _verify_exact(v, positive)
     if got is not None:
         return got
     # 부분열 탐색. 상한을 두는 이유: 열이 아주 많은 표는 우연히 맞는 조합이
@@ -324,7 +372,7 @@ def _verify(vals: list[float]) -> float | None:
     cands: set = set()
     for w in (3, 4):
         for i in range(0, len(v) - w + 1):
-            r = _verify_exact(v[i:i + w])
+            r = _verify_exact(v[i:i + w], positive)
             if r is not None:
                 cands.add(round(r, 6))
     return cands.pop() if len(cands) == 1 else None
@@ -748,6 +796,8 @@ _EXCERPT_CAP = 600
 # 생략 문구 없음 · 1294/4096). 자르는 것은 **예산 하나**다(#45).
 _DM_LIMIT = 4000
 _DM_EX_WIDTH = 200
+# 보고서에 싣는 합계행 폭 — 값이 6~8개면 100자 안이다.
+_DM_TOTAL_WIDTH = 100
 # 운영자에게 인쇄되는 명령은 **그대로 붙여넣어 도는 형태**여야 한다(#278).
 # HTML 메시지라 `&&` 는 `&amp;&amp;` 로 써야 파싱이 안 깨진다(규칙 7).
 _CLI_CMD = "cd ~/stock &amp;&amp; .venv/bin/python -m bot.scripts.backlog_misses"
@@ -760,6 +810,12 @@ MISS_SERIES_ANOMALY = "시계열이상"
 # 문서를 안 읽었으므로 파싱 판정을 갱신할 근거가 없고, DART 일일한도 한 번이
 # 게이트 분류(이 보고서의 존재 이유)를 통째로 지운다(2026-09-18 독립 리뷰 B1).
 MISS_NO_DOC = "원문미제공"
+# 표는 읽혔고 원문 항등식(수주총액 − 기납품액 = 수주잔고)도 **맞는데** 잔고가
+# 0 이하다 — 영풍 000670 실측 245,858 − 264,255 = −18,396(기납품이 수주총액을
+# 넘었다). 파서는 0 이하를 일부러 안 싣는다(화면의 '잔고' 가 아니다). 그건
+# 파서 갭이 아니라 **원천 값**이라 개선 여지로 세면 다음 라운드가 고칠 수
+# 없는 것을 고치러 간다(#93·#260). 차트 각주에는 이 이름이 그대로 실린다.
+MISS_NON_POSITIVE = "잔고0이하"
 
 # 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
 # SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
@@ -771,13 +827,20 @@ MISS_NO_DOC = "원문미제공"
 #   · LG이노텍 011070 "수주잔고 등 … 예측하고 **관리하는 것은 어려운 상황**"
 # 이 정규식은 **분류 전용**이다(`diagnose` 만 쓴다) — 파서는 이걸 안 보므로
 # 넓혀도 값이 죽지 않는다. 넓히는 대신 '수주' 문맥 안으로 한정한다.
+# ⚠️ 2026-10-02 195870 실측: "수주총액, 기납품액 및 수주잔고에 대한 공개는 당사
+# 및 당사 종속회사의 **영업기밀**에 해당되어 … 구체적 기재를 생략합니다" — 사유가
+# 길어 `수주잔고 … 기재 … 생략` 이 30자 창을 넘었다. 영업기밀·영업비밀을
+# 경유하는 어구로 받되 **같은 문장**(`[^.]`)으로 묶는다 — 다른 문장의 영업기밀
+# 언급이 수주잔고 표를 미공시로 내리면 진짜 파서 갭이 원장에서 사라진다(#385).
 _NO_DATA_RE = re.compile(
     r"수주잔고[^.]{0,30}?(?:산정[^.]{0,10}?불가|없습니다|기재[^.]{0,10}?생략)"
     r"|(?:수주물량[^.]{0,20}?)?수주잔고[^.]{0,20}?관리하고\s*있지\s*않"
     r"|기재[는를]?\s*생략[^.]{0,40}?수주잔고"
     r"|수주잔고[^.]{0,40}?기재하지\s*않"
     r"|수주(?:거래|계약)[^.]{0,25}?없습니다"
-    r"|수주잔고[^.]{0,60}?(?:예측|관리)[^.]{0,30}?어려")
+    r"|수주잔고[^.]{0,60}?(?:예측|관리)[^.]{0,30}?어려"
+    r"|수주잔고[^.]{0,80}?영업\s*상?\s*(?:기밀|비밀)[^.]{0,80}?"
+    r"(?:생략|기재하지\s*않|공개하지\s*않)")
 
 
 def _balance_spots(text: str) -> list[int]:
@@ -810,17 +873,64 @@ def diagnose(text: str) -> str:
     # (`(단위 : 사)`·`(단위 : 주)`)을 근거로 '단위없음' 이라고 보고했다.
     # 감사의 판정은 **제품이 실제로 훑는 범위**와 같아야 한다(#80·#35).
     spots = _balance_spots(text)
+    # 원천이 표 **틀만** 내고 칸을 전부 `-` 로 뒀다. 파서로 해결할 수 없으므로
+    # 개선 여지가 아니다 — '형식미지원' 으로 세면 다음 작업 목록이 통째로
+    # 틀린다(#93·#109·#111).
+    # ⚠️ **단위보다 먼저** 본다(2026-10-02 091340 실측 캡션 `(단위 : )`). 옛
+    # 판은 금액 단위를 찾은 자리만 봐서, 같은 빈 표가 캡션을 빌리면 빈 표로,
+    # 못 빌리면 `단위없음`(= 개선 여지)으로 갈렸다. 빈 칸은 캡션이 뭐라든
+    # 빈 칸이다. 그리고 **모든** 자리가 빈 표여야 한다 — 하나라도 다른
+    # 자리가 있으면 그게 진짜 파서 갭일 수 있다(#385 숨기는 쪽이 더 나쁘다).
+    if all(_empty_backlog_table(text, p) for p in spots):
+        return "명시적미공시"
     with_unit = [p for p in spots if _unit_mult(text, p) is not None]
     if not with_unit:
         return "단위없음"
     if not any(re.search(r"합\s*계", text[p:p + 2500]) for p in with_unit):
         return "합계없음"
-    if all(_empty_backlog_table(text, p) for p in with_unit):
-        # 원천이 표 **틀만** 내고 칸을 전부 `-` 로 뒀다. 파서로 해결할 수
-        # 없으므로 개선 여지가 아니다 — '형식미지원' 으로 세면 다음 작업
-        # 목록이 통째로 틀린다(#93·#109·#111).
-        return "명시적미공시"
+    # 항등식은 맞는데 잔고가 0 이하(영풍 실측) — 원천 값이지 파서 갭이 아니다.
+    # 빈 표와 섞여도 같은 결론이지만, **다른 자리가 하나라도** 있으면 그건
+    # 개선 여지로 남긴다(위와 같은 이유).
+    verdicts = [("empty" if _empty_backlog_table(text, p) else
+                 "nonpos" if _nonpositive_backlog_table(text, p) else "")
+                for p in spots]
+    if "nonpos" in verdicts and all(verdicts):
+        return MISS_NON_POSITIVE
     return "형식미지원"
+
+
+def _total_row(text: str, at: int):
+    """그 자리 표의 `합 계` 매치 — **잘린 표**(`_cut_table`) 안에서만 찾는다.
+
+    ⚠️ 표 끝을 안 자르면 다음 절의 숫자가 합계 행 값으로 읽힌다(2026-10-02
+    091340 의 갈래가 그 모양으로 재현된다 — 실제 꼬리는 발췌 밖이라 재지
+    못했다, `_empty_backlog_table` 참고). 관문 진단
+    (`_gate_stage`)과 빈 표 판정·발췌가 **같은 표**를 봐야 '합계행 0값' 과
+    '빈 표가 아님' 이 동시에 참이 되는 일이 없다(#38).
+    → (잘린 표, 매치 또는 None)
+    """
+    seg = _cut_table(text[at:at + 2500])
+    return seg, re.search(r"합\s*계", seg)
+
+
+def _nonpositive_backlog_table(text: str, at: int) -> bool:
+    """그 자리 표가 **파서와 같은 관문**(시작·납품 열 + 금액 단위 + 합계행)을
+    지나고, 합계행이 항등식을 만족하는데 잔고가 0 이하인가.
+
+    ⚠️ 관문을 파서와 똑같이 걷는다 — 진단만 느슨하면 다른 표의 음수가
+    '원천 값' 으로 둔갑해 진짜 갭이 원장에서 사라진다(#35·#385).
+    """
+    head = text[max(0, at - 260):at]
+    if not (any(k in head for k in _OPEN_LABELS)
+            and any(k in head for k in _DELIV_LABELS)):
+        return False
+    if _unit_mult(text, at) is None:
+        return False
+    seg, m = _total_row(text, at)
+    if m is None:
+        return False
+    bal = _verify(_row_values(seg, m.end()), positive=False)
+    return bal is not None and bal <= 0
 
 
 def _empty_backlog_table(text: str, at: int) -> bool:
@@ -841,10 +951,17 @@ def _empty_backlog_table(text: str, at: int) -> bool:
     가득한 표가 '명시적미공시' 로 분류되고, 그 사유는 `_log_miss` 가 기록
     자체를 건너뛰므로 **진짜 파서 갭이 원장에서 통째로 사라진다**(#93·#109·
     #111 이 세우려 한 '개선 여지' 계수의 정반대, 독립 리뷰 2026-09-18 H1).
+
+    ⚠️ **잘린 표**만 본다(`_total_row`) — 옛 판은 합계 뒤 120자를 표 끝을
+    안 자르고 읽었다 — 빈 표 바로 뒤 다음 절에 번호 항목(`(1) …` → −1)이
+    오면 그걸 값으로 센다. 2026-10-02 091340 이 `합계행 0값(검산실패)` 으로
+    남은 갈래가 그 모양이다. ⚠️ 단 091340 의 실제 꼬리는 보고서 발췌(200자,
+    `… - - 5. 위험` 에서 끝남) 밖이라 **재지 못했다** — 발췌만 넣으면 옛 판도
+    빈 표로 본다(`5.` 는 값으로 안 읽힌다). 번호 항목을 덧붙여야 관측된 갈래가
+    글자 그대로 재현된다(#165 — 재현은 가설의 지지이지 증명이 아니다).
     """
-    seg = text[at:at + 2500]
-    tm = re.search(r"합\s*계", seg)
-    if not tm:
+    seg, tm = _total_row(text, at)
+    if tm is None:
         return False
     after = seg[tm.end():tm.end() + 120]
     return not _first_run(after) and "-" in after
@@ -868,7 +985,9 @@ def diagnose_detail(text: str) -> str:
     # 분류는 "원문이 안 쓴다고 밝힘" 인데 상세는 단위 얘기를 하니 읽는
     # 사람이 '단위를 더 지원하면 되나' 로 오해한다(#93 의 반대 방향:
     # 행동으로 이어지지 **않는** 상세는 노이즈다).
-    if diagnose(text) in ("미공시", "명시적미공시", MISS_NO_DOC):
+    # 고칠 것이 아닌 갈래 전부 — 목록을 여기 따로 적으면 새 갈래(잔고0이하)가
+    # 생길 때 한쪽만 바뀐다(#38).
+    if diagnose(text) in NON_FIXABLE_REASONS:
         return ""
     spots = _balance_spots(text)
     if not spots:
@@ -991,10 +1110,19 @@ def backlog_excerpt(text: str, width: int = 400) -> str:
     구성인지는 원문을 봐야 정해지고, 추측으로 열을 배정하면 스케일이 아니라
     **의미**가 틀린다(#106). 다음 라운드의 유일한 근거다.
     """
+    at = _excerpt_spot(text)
+    if at is None:
+        return ""
+    seg = text[max(0, at - 120):at + width]
+    return re.sub(r"\s+", " ", seg).strip()
+
+
+def _excerpt_spot(text: str) -> int | None:
+    """발췌가 볼 자리 — 헤더 게이트를 가장 멀리 통과한 라벨(파서가 본 그 자리).
+    머리 발췌와 합계행 발췌가 **같은 자리**를 써야 한 표의 두 조각이 된다."""
     spots = _balance_spots(text or "")
     if not spots:
-        return ""
-    # 헤더 게이트를 가장 멀리 통과한 자리를 고른다(파서가 본 그 자리).
+        return None
     best, at = -1, spots[0]
     for p in spots:
         head = (text[max(0, p - 260):p])
@@ -1003,8 +1131,29 @@ def backlog_excerpt(text: str, width: int = 400) -> str:
               + (1 if _unit_mult(text, p) is not None else 0))
         if sc > best:
             best, at = sc, p
-    seg = text[max(0, at - 120):at + width]
-    return re.sub(r"\s+", " ", seg).strip()
+    return at
+
+
+# 합계행 발췌 폭. 합계 라벨 + 값 6~8개면 충분하고, 표 끝(`_cut_table`)에서
+# 이미 잘린다.
+_TOTAL_EX_WIDTH = 160
+
+
+def backlog_total_excerpt(text: str, width: int = _TOTAL_EX_WIDTH) -> str:
+    """머리 발췌와 **같은 표**의 `합 계` 행 — 없으면 빈 문자열.
+
+    ⚠️ 머리 발췌는 라벨 뒤 400자에서 끝나 행이 많은 표는 합계행이 창 밖이다
+    (2026-09-18 영풍 000670 — 그래서 `합계행 3값(검산실패)` 의 근거를 못 봤다).
+    표 길이에는 상한이 없으니 창을 아무리 넓혀도 다음 표가 또 넘는다 — 대신
+    **검산이 실제로 본 그 행**을 따로 싣는다. 그 판정의 근거가 그 행이다.
+    """
+    at = _excerpt_spot(text)
+    if at is None:
+        return ""
+    seg, m = _total_row(text, at)
+    if m is None:
+        return ""
+    return re.sub(r"\s+", " ", seg[m.start():m.start() + width]).strip()
 
 
 # ⚠️ KONEX(`.KN`)도 국내다 — `screener` 가 `.KS/.KQ/.KN` 을 KR 로 적는다.
@@ -1106,14 +1255,31 @@ def excerpt_samples(rows: list) -> list[dict]:
         groups.setdefault(r.get("detail") or r.get("reason") or "?", []).append(r)
     out = []
     for kind, items in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        pick = next((i for i in items if i.get("ex")), None)
+        # ⚠️ **지금 파서가 본 표본을 먼저** 고른다 — 옛 파서의 표본은 이미
+        # 고쳐진 형태일 수 있다(2026-10-02 391710: 보고서가 실은 표본을 지금
+        # 파서가 읽었다). 없으면 옛 것을 싣되 그렇다고 표시한다(#43).
+        pick = (next((i for i in items if i.get("ex") and seen_by_current(i)),
+                     None)
+                or next((i for i in items if i.get("ex")), None))
         if pick is None:
             continue            # 이 갈래엔 아직 발췌가 없다 — 지어내지 않는다
         out.append({"kind": kind, "n": len(items),
                     "ticker": norm_miss_ticker(pick.get("ticker")),
                     "year": pick.get("year"), "reprt": pick.get("reprt"),
-                    "at": pick.get("at"), "ex": str(pick.get("ex") or "")})
+                    "at": pick.get("at"), "ex": str(pick.get("ex") or ""),
+                    "exs": str(pick.get("exs") or ""),
+                    "old_parser": not seen_by_current(pick)})
     return out
+
+
+def seen_by_current(rec: dict) -> bool:
+    """그 줄을 **지금 파서**가 남겼나 — 줄의 파서 지문(`ps`)으로 가른다.
+
+    ⚠️ 지문이 없는 줄(2026-10-02 이전)은 옛 파서다. 파서를 고쳐도 원장 줄은
+    그 종목을 누가 다시 열 때까지 그대로라, 보고서가 **이미 고쳐진 표본**을
+    '고칠 근거' 로 실었다(391710 — #92 이미 고친 것을 또 고치러 간다).
+    """
+    return isinstance(rec, dict) and rec.get("ps") == _parse_sig()
 
 
 def excerpt_line(sm: dict) -> str:
@@ -1126,7 +1292,9 @@ def excerpt_line(sm: dict) -> str:
     return (f"· [{_html.escape(str(sm.get('kind')))}] "
             f"{_html.escape(str(sm.get('ticker')))} "
             f"{sm.get('year')}/{sm.get('reprt')}"
-            + (f" · 기록 {when}" if when else ""))
+            + (f" · 기록 {when}" if when else "")
+            # 지금 파서가 다시 안 본 표본 — 이미 고쳐졌을 수 있다(#43·#92).
+            + (" · 옛 파서" if sm.get("old_parser") else ""))
 
 
 def _kst_day(ts) -> str:
@@ -1164,21 +1332,40 @@ def _u16len(s: str) -> int:
     return len(s.encode("utf-16-le")) // 2
 
 
+def refetchable(rec) -> bool:
+    """원문을 **다시 받아** 판정을 갱신할 수 있는 줄인가.
+
+    `시계열이상` 은 원문 없이 기록된다(`quarterly_infographic` 이 조립된
+    시계열만 보고 남긴다) — 다시 받을 원문이 없으니 재조회 대상이 아니고,
+    그 줄은 차트를 다시 열 때 갱신된다. 재조회 대상(`refill_targets`)과
+    보고서의 '옛 파서 관측' 계수가 **같은 술어**를 쓴다 — 따로 적으면 경고가
+    "`--refill` 이 갱신" 이라는 **지킬 수 없는 처방**을 단다(#38·#380).
+    """
+    return isinstance(rec, dict) and rec.get("reason") != MISS_SERIES_ANOMALY
+
+
 def refill_targets(rows: list) -> list[dict]:
-    """발췌가 없는 미스의 (종목·분기·사유) 목록 — **다시 조회하면 붙는다**.
+    """다시 조회할 미스의 (종목·분기·사유) 목록 — 발췌가 없거나 **옛 파서**가
+    남긴 줄.
 
     발췌를 남기기 전에 쌓인 줄은 그 종목·분기를 누군가 다시 열 때까지
     영원히 근거가 없다. 격주 보고서는 2주에 한 번이므로, 그때까지 기다리는
-    대신 운영자가 한 번에 되메울 수 있어야 한다(§Automation-first).
+    대신 한 번에 되메울 수 있어야 한다(§Automation-first).
+
+    ⚠️ 발췌가 **있어도** 옛 파서의 관측이면 다시 본다(2026-10-02). 그 줄은
+    파서를 고친 뒤에도 원장에 그대로 남아, 391710 처럼 지금 파서가 읽는
+    표가 '고칠 것' 으로 계속 실렸다(#92·#18).
 
     ⚠️ 신원으로 중복을 없앤다 — 같은 줄을 두 번 조회하면 그만큼 바깥
     원천을 두드린다(#61).
     """
     seen, out = set(), []
     for r in rows:
-        if not isinstance(r, dict) or r.get(_TOMB_KEY) or r.get("ex"):
+        if not isinstance(r, dict) or r.get(_TOMB_KEY):
             continue
-        if r.get("reason") == MISS_SERIES_ANOMALY:
+        if r.get("ex") and seen_by_current(r):
+            continue        # 지금 파서가 본 발췌가 있다 — 다시 볼 이유가 없다
+        if not refetchable(r):
             continue        # 원문 없이 기록된다 — 되메울 원문이 없다
         k = miss_key(r)
         if k in seen:
@@ -1204,34 +1391,52 @@ def drop_miss(ticker, year, reprt_code, reason: str) -> bool:
         return False
     key = miss_key({"ticker": ticker, "year": year,
                     "reprt": reprt_code, "reason": reason})
-    raw = _MISS_LOG.read_text(encoding="utf-8")
-    kept = []
-    for ln in raw.splitlines():
-        r = parse_miss_line(ln)
-        if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
-            continue
-        kept.append(ln)
-    body = ("\n".join(kept) + "\n") if kept else ""
-    if body == raw:
-        return False
-    _write_ledger(body)
+    with _LEDGER_LOCK:
+        raw = _MISS_LOG.read_text(encoding="utf-8")
+        kept = []
+        for ln in raw.splitlines():
+            r = parse_miss_line(ln)
+            if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
+                continue
+            kept.append(ln)
+        body = ("\n".join(kept) + "\n") if kept else ""
+        if body == raw:
+            return False
+        _write_ledger(body)
     return True
 
 
 def _write_ledger(body: str) -> None:
     """원장 갈아끼우기 — tmp+replace. `write_text` 는 truncate 후 쓰기라
     읽는 쪽이 **찢긴 파일**을 본다(#379·#384). 쓰는 곳이 둘이므로 한 곳에
-    둔다(#38)."""
+    둔다(#38).
+
+    ⚠️ 임시 파일 이름에 **프로세스 번호**를 싣는다 — 원장을 쓰는 프로세스가
+    둘이다(대시보드의 차트 조회 · 봇의 격주 재조회, 2026-10-02 부터). 같은
+    임시 파일을 둘이 동시에 쓰면 섞인 파일이 원장으로 옮겨진다. 이 함수를
+    부르는 쪽은 `_LEDGER_LOCK` 을 쥔다(같은 프로세스의 스레드끼리).
+    ⚠️ 못 보는 축(#274): 프로세스 **사이**의 read-modify-write 유실은 남는다
+    — 원장은 진단용이고 다음 조회가 다시 남긴다."""
     _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _MISS_LOG.with_name(_MISS_LOG.name + ".tmp")
+    tmp = _MISS_LOG.with_name(f"{_MISS_LOG.name}.{os.getpid()}.tmp")
     tmp.write_text(body, encoding="utf-8")
     tmp.replace(_MISS_LOG)
 
 
+# 원장 read-modify-write 의 스레드 직렬화. 차트 한 장이 분기 4개를 **병렬**로
+# 조회하고(`map_bounded`), 2026-10-02 부터 성공한 조회도 원장을 고친다 —
+# 락이 없으면 한 스레드의 지우기를 다른 스레드의 쓰기가 덮는다. 재진입 가능
+# (`_log_miss` → `drop_fixable`).
+_LEDGER_LOCK = threading.RLock()
+
+
+# 원천에 **낼 값이 없다** — 원장에 남기지 않는다(`_log_miss`). 남기면 보고서가
+# 고칠 수 없는 것을 '고칠 것' 으로 센다(#93·#260).
+SOURCE_HAS_NO_VALUE = ("미공시", "명시적미공시", MISS_NON_POSITIVE)
 # 파서로는 못 고치는 사유 — 원천에 값이 없거나(미공시류) 원문을 못 받았거나
 # 원문 경로가 아니다. **여집합이 개선 여지**라, `diagnose` 가 새 관문 사유를
 # 내면 자동으로 '고칠 것' 으로 분류된다(#24 목록을 우리가 들면 새 항목을 못 잡는다).
-NON_FIXABLE_REASONS = ("미공시", "명시적미공시", MISS_NO_DOC, MISS_SERIES_ANOMALY)
+NON_FIXABLE_REASONS = SOURCE_HAS_NO_VALUE + (MISS_NO_DOC, MISS_SERIES_ANOMALY)
 
 
 def drop_fixable(ticker, year, reprt_code) -> int:
@@ -1246,26 +1451,31 @@ def drop_fixable(ticker, year, reprt_code) -> int:
     if not _MISS_LOG.exists():
         return 0
     want = (norm_miss_ticker(ticker), year, reprt_code)
-    raw = _MISS_LOG.read_text(encoding="utf-8")
-    kept, n = [], 0
-    for ln in raw.splitlines():
-        r = parse_miss_line(ln)
-        if (r is not None and not r.get(_TOMB_KEY)
-                and (norm_miss_ticker(r.get("ticker")), r.get("year"),
-                     r.get("reprt")) == want
-                and r.get("reason") not in NON_FIXABLE_REASONS):
-            n += 1
-            continue
-        kept.append(ln)
-    if n:
-        _write_ledger(("\n".join(kept) + "\n") if kept else "")
+    with _LEDGER_LOCK:
+        raw = _MISS_LOG.read_text(encoding="utf-8")
+        # 성공한 조회마다 불린다(2026-10-02) — 그 종목이 원장에 없으면 줄마다
+        # JSON 을 풀지 않고 바로 돌아간다(차트 경로의 비용, #119).
+        if want[0] not in raw:
+            return 0
+        kept, n = [], 0
+        for ln in raw.splitlines():
+            r = parse_miss_line(ln)
+            if (r is not None and not r.get(_TOMB_KEY)
+                    and (norm_miss_ticker(r.get("ticker")), r.get("year"),
+                         r.get("reprt")) == want
+                    and r.get("reason") not in NON_FIXABLE_REASONS):
+                n += 1
+                continue
+            kept.append(ln)
+        if n:
+            _write_ledger(("\n".join(kept) + "\n") if kept else "")
     return n
 
 
 def _log_miss(ticker: str, year, reprt_code, reason: str,
-              detail: str = "", excerpt: str = "") -> None:
+              detail: str = "", excerpt: str = "", total: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
-    if reason in ("미공시", "명시적미공시"):
+    if reason in SOURCE_HAS_NO_VALUE:
         # ⚠️ 그냥 돌아가면 **이미 쌓인 개선 여지 줄이 그대로 남는다** —
         # `miss_key` 에 사유가 들어가므로 새 분류가 옛 줄을 덮지 않고, 격주
         # 보고서는 다음 사람이 `--refill` 을 손으로 돌릴 때까지 그 건을 계속
@@ -1284,7 +1494,11 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
                "reprt": reprt_code, "reason": reason, "dv": _DETAIL_VOCAB,
                # 발췌가 언제 관측된 것인지 — 파서를 고친 뒤 남은 옛 관측과
                # 이번 라운드를 구별할 방법이 없으면 근거가 거짓이 된다(#114).
-               "at": int(time.time())}
+               "at": int(time.time()),
+               # **어느 파서**가 본 관측인지 — 날짜만으론 배포 전후를 못
+               # 가른다(2026-10-02 391710 '기록 09-19' 가 고친 날과 같은
+               # 날이었다, #364·#21 진단은 어느 코드에서 나왔는지 말할 것).
+               "ps": _parse_sig()}
         if detail:
             # 사유만으론 뭘 고쳐야 할지 모른다(#93) — 상세를 같이 남긴다.
             rec["detail"] = detail
@@ -1295,39 +1509,43 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
             # 잘못된 fix), 그 왕복이 없으면 히스토그램만 보고 파서를 고치게
             # 된다 — 이 보고서가 그렇게 네 번 오진을 냈다(#105·#107·#109·#275).
             rec["ex"] = excerpt[:_EXCERPT_CAP]
+        if total:
+            # 검산이 본 **합계행** — 머리 발췌 창 밖일 때가 많다(영풍 000670).
+            rec["exs"] = total[:_TOTAL_EX_WIDTH]
         line = _json.dumps(rec, ensure_ascii=False)
-        raw = (_MISS_LOG.read_text(encoding="utf-8")
-               if _MISS_LOG.exists() else "")
-        old = raw.splitlines()[-_MISS_CAP:]
-        # 옛 어휘 줄은 **쓰는 김에 걷어낸다**. 남겨 두면 4000줄 캡이 돌 때까지
-        # 보고서를 지배하고, 어휘가 달라 아래 신원 비교(`miss_key`)로도
-        # 합쳐지지 않아 같은 건이 두 줄로 쌓인다. 파서 지문(`_parse_sig`)이 바뀌면 캐시가
-        # 무효라 다음 조회에서 새 어휘로 다시 쌓인다 — 잃는 정보가 없다.
-        keep = [ln for ln in old if is_current_vocab(ln)]
-        dropped = len(old) - len(keep)
-        old = keep
-        if dropped:
-            prev = sum(int((parse_miss_line(ln) or {}).get(_TOMB_KEY) or 0)
-                       for ln in old)
-            old = [ln for ln in old
-                   if not (parse_miss_line(ln) or {}).get(_TOMB_KEY)]
-            old.append(_json.dumps(
-                {"dv": _DETAIL_VOCAB, _TOMB_KEY: prev + dropped,
-                 "at": int(time.time())}, ensure_ascii=False))
-        # ⚠️ 신원이 같은 **옛 줄은 이 줄이 대신한다**. 줄 전체 비교만 두면
-        # 발췌 같은 필드를 더하는 순간 같은 미스가 두 줄로 쌓여 보고서의
-        # 건수가 부푼다(#45).
-        key = miss_key(rec)
-        kept = []
-        for ln in old:
-            r = parse_miss_line(ln)
-            if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
-                continue
-            kept.append(ln)
-        body = "\n".join(kept + [line]) + "\n"
-        # ⚠️ 남는 축: read-modify-write 라 **동시 쓰기의 유실**은 그대로다
-        # (선재 — 원장은 진단용이고 다음 조회가 다시 남긴다).
-        _write_ledger(body)
+        with _LEDGER_LOCK:
+            raw = (_MISS_LOG.read_text(encoding="utf-8")
+                   if _MISS_LOG.exists() else "")
+            old = raw.splitlines()[-_MISS_CAP:]
+            # 옛 어휘 줄은 **쓰는 김에 걷어낸다**. 남겨 두면 4000줄 캡이 돌 때까지
+            # 보고서를 지배하고, 어휘가 달라 아래 신원 비교(`miss_key`)로도
+            # 합쳐지지 않아 같은 건이 두 줄로 쌓인다. 파서 지문(`_parse_sig`)이 바뀌면 캐시가
+            # 무효라 다음 조회에서 새 어휘로 다시 쌓인다 — 잃는 정보가 없다.
+            keep = [ln for ln in old if is_current_vocab(ln)]
+            dropped = len(old) - len(keep)
+            old = keep
+            if dropped:
+                prev = sum(int((parse_miss_line(ln) or {}).get(_TOMB_KEY) or 0)
+                           for ln in old)
+                old = [ln for ln in old
+                       if not (parse_miss_line(ln) or {}).get(_TOMB_KEY)]
+                old.append(_json.dumps(
+                    {"dv": _DETAIL_VOCAB, _TOMB_KEY: prev + dropped,
+                     "at": int(time.time())}, ensure_ascii=False))
+            # ⚠️ 신원이 같은 **옛 줄은 이 줄이 대신한다**. 줄 전체 비교만 두면
+            # 발췌 같은 필드를 더하는 순간 같은 미스가 두 줄로 쌓여 보고서의
+            # 건수가 부푼다(#45).
+            key = miss_key(rec)
+            kept = []
+            for ln in old:
+                r = parse_miss_line(ln)
+                if r is not None and not r.get(_TOMB_KEY) and miss_key(r) == key:
+                    continue
+                kept.append(ln)
+            body = "\n".join(kept + [line]) + "\n"
+            # ⚠️ 남는 축: 프로세스 **사이**의 동시 쓰기 유실은 그대로다
+            # (`_write_ledger` 독스트링 — 원장은 진단용이고 다음 조회가 다시 남긴다).
+            _write_ledger(body)
     except Exception as exc:
         log.debug("dart_backlog: 미스 로그 실패: %s", exc)
 
@@ -1422,16 +1640,14 @@ def _trim_note(n: int) -> str:
             "보여줍니다.")
 
 
-def review_text() -> str:
-    """미스 요약 HTML — 보낼 게 없으면 빈 문자열.
+def _ledger_rows() -> tuple[list, list, int]:
+    """원장 → (현행 어휘 행, 전체 레코드, 옛 어휘 건수).
 
-    ⚠️ 기록 자체가 **개선 여지 있는 사유만** 담는다(미공시는 `_log_miss` 가
-    거른다). 그래서 여기 뭔가 있다는 건 곧 '새 형식이 나타났다' 는 뜻이다."""
-    import json
-    from collections import Counter
-    if not _MISS_LOG.exists():
-        return ""
+    보고서(`review_text`)·CLI(`backlog_misses`)·발송 전 재조회가 **같은
+    술어**를 써야 셋이 다른 모집단을 보지 않는다(#35·#38·#45)."""
     rows, legacy, all_rec = [], 0, []
+    if not _MISS_LOG.exists():
+        return rows, all_rec, legacy
     for ln in _MISS_LOG.read_text(encoding="utf-8").splitlines():
         if not ln.strip():
             continue
@@ -1448,9 +1664,47 @@ def review_text() -> str:
             legacy += 1
             continue
         rows.append(rec)
+    legacy += _tomb_count(all_rec)
+    return rows, all_rec, legacy
+
+
+def refresh_note(rf: dict | None) -> str:
+    """발송 전 재조회 결과 한 줄 — 없거나 할 게 없었으면 빈 문자열(#25·#260).
+
+    ⚠️ 못 했으면 **못 했다고** 말한다 — 조용히 넘어가면 아래 '옛 파서' 줄이
+    왜 남았는지 읽는 쪽이 모른다(#43·#82)."""
+    if not rf:
+        return ""
+    if rf.get("skipped"):
+        return f"⚠️ 발송 전 재조회 못 함 — {_html.escape(str(rf['skipped']))}"
+    tried = int(rf.get("tried") or 0)
+    if not tried:
+        return ""
+    parts = [f"해소 {rf.get('solved', 0)}", f"그대로 {rf.get('same', 0)}"]
+    for k, lbl in (("changed", "사유 바뀜"), ("nodoc", "원문 없음"),
+                   ("failed", "조회 실패")):
+        if rf.get(k):
+            parts.append(f"{lbl} {rf[k]}")
+    left = int(rf.get("left") or 0)
+    return (f"발송 전 지금 파서로 다시 조회 {tried}건 — " + " · ".join(parts)
+            + (f" · 상한으로 {left}건은 다음 회차" if left else ""))
+
+
+def review_text(refreshed: dict | None = None) -> str:
+    """미스 요약 HTML — 보낼 게 없으면 빈 문자열.
+
+    ⚠️ 기록 자체가 **개선 여지 있는 사유만** 담는다(미공시는 `_log_miss` 가
+    거른다). 그래서 여기 뭔가 있다는 건 곧 '새 형식이 나타났다' 는 뜻이다.
+
+    `refreshed` = 발송 직전 재조회(`refresh_misses`) 결과 — 그 사실을 한 줄로
+    싣는다. 원장은 그 재조회가 이미 갱신해 두었다.
+    """
+    from collections import Counter
+    if not _MISS_LOG.exists():
+        return ""
+    rows, all_rec, legacy = _ledger_rows()
     if not rows:
         return ""
-    legacy += _tomb_count(all_rec)
     by = Counter(r.get("reason", "?") for r in rows)
     tick = Counter(norm_miss_ticker(r.get("ticker")) for r in rows)
     out = [f"📐 <b>수주잔고 파서 리뷰</b> (격주 금요일)",
@@ -1462,6 +1716,19 @@ def review_text() -> str:
         note = f"옛 어휘 {legacy}건 제외"
     if note:
         out += [f"⚠️ {note}", ""]
+    rf_line = refresh_note(refreshed)
+    if rf_line:
+        out += [rf_line, ""]
+    # ⚠️ 지금 파서가 다시 안 본 줄은 **이미 고쳐졌을 수 있다**(2026-10-02
+    # 391710 — 보고서가 실은 표본을 지금 파서가 4,015백만원으로 읽었다).
+    # 세지 않고 섞으면 읽는 쪽이 고친 것을 또 고친다(#92·#43).
+    # ⚠️ 다시 받을 원문이 있는 줄만 센다(`refetchable`) — 아래 처방
+    # (`--refill`)이 `시계열이상` 줄은 안 건드리기 때문이다(#380).
+    stale = sum(1 for r in rows if refetchable(r) and not seen_by_current(r))
+    if stale:
+        out += [f"⚠️ 이 중 {stale}건은 지금 파서가 아직 다시 보지 않은 관측 — "
+                "이미 고쳐졌을 수 있습니다(그 종목을 다시 열거나 "
+                f"<code>{_CLI_CMD} --refill</code> 이 갱신)", ""]
     out += [f"· {r}: {n}건" for r, n in by.most_common()]
     det = Counter(r.get("detail") for r in rows if r.get("detail"))
     if det:
@@ -1489,6 +1756,10 @@ def review_text() -> str:
         for sm in samples:
             ex = _html.escape(sm["ex"][:_DM_EX_WIDTH])
             blk = f"{excerpt_line(sm)}\n<code>{ex}</code>"
+            if sm.get("exs"):
+                # 검산이 본 **합계행** — 머리 발췌 창 밖일 때가 많다(영풍 000670).
+                blk += (f"\n합계행 <code>"
+                        f"{_html.escape(sm['exs'][:_DM_TOTAL_WIDTH])}</code>")
             # ⚠️ **보낼 메시지 전체**를 잰다. 예산을 따로 빼 두면 그 식의
             # 피연산자 하나(머리말)를 빠뜨리는 변형이 안 잡히고 실제로
             # 4,106 u16 가 나갔다(2026-09-18 독립 리뷰 실측, #20·#291).
@@ -1504,6 +1775,136 @@ def review_text() -> str:
             out += head + body
     # ⚠️ 꼬리말은 따로 넘긴다 — 한도를 넘으면 목록만 덜어내고 안내는 남긴다.
     return _fit_message(out, tail)
+
+
+# 발송 전 재조회 상한 — 미스 1건당 정기보고서 1건(최대 40MB)을 받는다.
+# CLI `--refill` 의 기본값과 **같은 값**이다(두 곳에 적으면 갈린다, #38).
+REFRESH_CAP = 40
+
+
+def refill_rows(dart, todo: list, say=None) -> dict:
+    """원장 줄들을 **지금 파서로** 다시 조회해 갱신한다 → 계수 dict.
+
+    CLI `--refill` 과 격주 보고서 직전 재조회가 **같은 규율**을 쓴다(#38) —
+    옛 판은 이 루프가 CLI 안에만 있어 보고서는 옛 관측을 그대로 실었다.
+
+    ⚠️⚠️ **옛 줄은 이번에 원문을 읽었을 때만 지운다**(2026-09-18 독립 리뷰
+    B1 실측): 첫 판은 "사유가 달라졌으면 지운다" 였는데, `backlog_probe` 는
+    자기 예외를 삼켜 `오류:XxxError` 를 돌려주고(그 경로에선 새 줄이 **안**
+    써진다) DART 일일한도는 예외 없이 빈 문서를 준다. 그래서 장애 한 번이
+    게이트 분류(이 보고서의 존재 이유)를 지웠다 — 실측 3줄 → **0줄**.
+    프로브가 실은 `doc_len` 으로 "읽었나" 를 가른다.
+    ⚠️ 한 줄씩 즉시 말한다(`say`) — 수십 분짜리를 끝날 때까지 침묵하면
+    멈춘 건지 모른다(#103).
+    """
+    say = say or (lambda msg: log.info("backlog refill: %s", msg))
+    c = {"tried": 0, "filled": 0, "solved": 0, "same": 0, "changed": 0,
+         "nodoc": 0, "failed": 0}
+    for i, r in enumerate(todo, 1):
+        c["tried"] += 1
+        tk, yr, rc = r.get("ticker"), r.get("year"), r.get("reprt")
+        was = r.get("reason")
+        # ⚠️ `out=` 을 넘겨 **캐시를 우회**한다 — 이 모듈의 규율이다(#35:
+        # 감사·프로브는 화면 캐시를 타지 않는다). 캐시 히트면 `_log_miss` 가
+        # 아예 안 돌아, 옛 줄만 지우고 아무것도 안 쓰는 경로가 열린다.
+        box: dict = {}
+        try:
+            val, why = backlog_probe(dart, tk, yr, rc, out=box)
+        except Exception as exc:                               # noqa: BLE001
+            c["failed"] += 1
+            say(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ "
+                f"{type(exc).__name__}: {exc} — 옛 줄은 그대로 둔다")
+            continue
+        if val is not None:
+            c["solved"] += 1
+            drop_miss(tk, yr, rc, was)
+            say(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ✅ 해소 "
+                f"{val/1e12:.3f}조 — 원장에서 지웠다")
+            continue
+        now = (why or "").split(" · ")[0]
+        if not box:
+            # 프로브가 내부에서 실패했다 — 새 줄이 안 써졌으므로 옛 관측을
+            # 반증할 근거가 없다. 지우지도, 되메움으로 세지도 않는다.
+            c["failed"] += 1
+            say(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ❌ {why} — "
+                "옛 줄은 그대로 둔다")
+            continue
+        if not box.get("doc_len") or now == MISS_NO_DOC:
+            # 원문을 못 받았다(원천 장애·일일한도·`status=014`). 파싱 판정을
+            # 갱신할 근거가 없으므로 **옛 줄을 지우지 않는다**.
+            # ⚠️ 그런데 `_log_miss` 가 방금 `원문미제공` 줄을 **새로** 썼다 —
+            # 사유가 달라 신원이 다르기 때문이다. 그대로 두면 같은 분기가 두
+            # 건으로 세어지므로(#45) 이 실행이 만든 그 줄만 도로 지운다.
+            if now != was:
+                drop_miss(tk, yr, rc, now)
+            c["nodoc"] += 1
+            say(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ⏳ 원문 여전히 없음 "
+                f"({why}) — 옛 줄은 그대로 둔다")
+            continue
+        # 여기부터는 **원문을 읽었다**. 사유가 그대로면 `_log_miss` 가 같은
+        # 신원의 줄을 대체했고, 달라졌으면 옛 줄은 방금 반증된 관측이다(#45).
+        c["filled"] += 1
+        if now == was:
+            c["same"] += 1
+        else:
+            c["changed"] += 1
+            drop_miss(tk, yr, rc, was)
+        say(f"[{i:2d}/{len(todo)}] {tk} {yr}/{rc}  ↻ {why}"
+            + ("" if now == was else f"  ⚠️ 사유 바뀜(옛 줄 {was} 는 지웠다)"))
+    return c
+
+
+def dart_ready(dart) -> bool:
+    """키가 있는 DART 클라이언트인가.
+
+    ⚠️ `get_dart()` 는 키가 없어도 **항상** 클라이언트를 돌려준다(`DartClient`
+    에 `__bool__` 이 없다) — `if not dart` 는 키 부재를 못 잡는 **도달 불가**
+    검사였다(2026-10-02 셀프리뷰 실측). 안 잡으면 키 없는 날의 재조회가 전부
+    `원문미제공` 으로 찍혀 계정 문제와 원천 장애가 구별되지 않는다(#82).
+    재조회(`refresh_misses`)와 CLI(`backlog_misses`)가 **같은 술어**를 쓴다(#38).
+    """
+    return bool(dart) and bool(getattr(dart, "api_key", None))
+
+
+def refresh_misses(cap: int = REFRESH_CAP) -> dict:
+    """격주 보고서 직전 — **옛 파서가 남긴 줄**·발췌 없는 줄을 지금 파서로
+    다시 본다(2026-10-02).
+
+    ⚠️ 왜(사용자가 붙여 넣은 보고서가 증거다): 09-19 03:42 에 4열 롤링 파서를
+    배포했는데 그날 기록된 391710 줄이 2주 뒤 보고서에 '고칠 것' 으로 실렸다
+    — 그 종목을 아무도 다시 안 열면 원장은 영원히 옛 파서의 관측이다. 운영자가
+    `--refill` 을 기억해 돌리는 건 이 보고서가 막으려던 '기억해야 하는 일'
+    이다(§Automation-first).
+    ⚠️ 할 게 없으면 DART 를 아예 안 부른다(#61). 키가 없으면 **못 했다고**
+    돌려준다 — 보고서가 그 사실을 싣는다(#43·#54).
+    """
+    rows, _all, _legacy = _ledger_rows()
+    todo = refill_targets(rows)
+    if not todo:
+        return {"tried": 0}
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    if not dart_ready(dart):
+        return {"skipped": "DART_API_KEY 없음 — 옛 관측을 다시 못 봤다",
+                "todo": len(todo)}
+    c = refill_rows(dart, todo[:cap])
+    c["todo"] = len(todo)
+    c["left"] = max(0, len(todo) - cap)
+    return c
+
+
+def review_with_refresh(cap: int = REFRESH_CAP) -> str:
+    """격주 보고서 본문 — **먼저 다시 본 뒤** 요약한다(봇 태스크가 부른다).
+
+    ⚠️ 재조회의 실패가 보고서를 지우면 안 된다(#315 곁들이 하나가 본체를
+    지운다) — 실패는 사유로 실리고 보고서는 그대로 나간다.
+    """
+    try:
+        rf = refresh_misses(cap)
+    except Exception as exc:                                   # noqa: BLE001
+        log.exception("backlog 발송 전 재조회 실패")
+        rf = {"skipped": f"재조회 중 오류({type(exc).__name__})"}
+    return review_text(rf)
 
 
 # 파싱 결과 디스크 캐시 — `tables_rolling`(dart_production) 과 같은 규약.
@@ -1602,18 +2003,32 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         if got:
             if ck and text:
                 _bl_cache_write(ck, got["value"], "정상")
+            # ⚠️ 값이 나왔으면 그 분기의 **개선 여지 줄은 이미 해소**다
+            # (2026-10-02 391710 — 09-19 에 고친 표가 원장에 남아 2주 뒤 보고서가
+            # 그걸 '고칠 것' 으로 실었다). 지우는 경로가 `--refill`(발췌 없는
+            # 줄만) 하나뿐이었다. 원문을 **읽고** 값을 낸 경우라 옛 관측을
+            # 반증할 근거가 있다(독립 리뷰 B1 규율). `시계열이상` 은 파싱
+            # 성공이 반증하지 않으므로 남는다(`drop_fixable` 이 거른다).
+            if text:
+                try:
+                    drop_fixable(ticker, year, reprt_code)
+                except Exception:                           # noqa: BLE001
+                    log.debug("backlog 해소 줄 정리 실패 %s", ticker,
+                              exc_info=True)
             return got["value"], "정상"
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
         why = diagnose(text or "")
         det = diagnose_detail(text or "")
         ex = backlog_excerpt(text or "")
+        tot = backlog_total_excerpt(text or "")
         if out is not None:
             out["detail"] = det
             out["excerpt"] = ex
+            out["total"] = tot
             # ⚠️ 되메우기는 "이번에 원문을 **읽었나**" 를 알아야 한다 —
             # 안 읽었으면 옛 관측을 반증할 근거가 없다(독립 리뷰 B1).
             out["doc_len"] = len(text or "")
-        _log_miss(ticker, year, reprt_code, why, det, ex)
+        _log_miss(ticker, year, reprt_code, why, det, ex, tot)
         # 사유만 돌려주면 "단위없음 15건"에서 멈춰 다음 수를 못 정한다 —
         # 상세를 붙여 감사 히스토그램이 곧 작업 목록이 되게 한다(#93).
         _why = f"{why} · {det}" if det else why
