@@ -748,7 +748,11 @@ def prefetch_tables(dart, ticker: str, quarters: list,
     빨라지지 않는데 그것도 조용하다(#104 미리받기 계획이 루프와 같아야 한다).
     """
     keys = tuple(want or _PARSERS)
-    if not dart or not quarters:
+    # ⚠️ 데우는 일뿐이라 키가 없으면 할 게 없다(받아 둔 표는 `tables_rolling`
+    # 이 캐시로 낸다). 옛 `not dart` 는 키 없는 `get_dart()` 를 못 걸러
+    # 헛스레드를 띄웠다(실수 #428).
+    from bot.dart_client import dart_ready
+    if not dart_ready(dart) or not quarters:
         return
     ck = _tables_cache_key(ticker, quarters, keys)
     if _tables_cached(ck) is not None:
@@ -789,7 +793,7 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
     짧아서 판정이 늘 '안 잘림'으로 기운다(2026-08-21 삼성전자 실측)."""
     out: dict = {}
     keys = tuple(want or _PARSERS)
-    if not dart or not quarters:
+    if not quarters:
         return out
     # ⚠️ 파싱 결과를 캐시한다. 2026-08-22 실측: `/api/quarterly` 가 213~288초
     # 였고, 이 함수는 **2.8M자 원문을 매 요청마다 다시 정규식으로 훑는다**
@@ -801,6 +805,15 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
     hit = _tables_cached(ck)
     if hit is not None:
         return hit
+    # ⚠️ 키 검사는 캐시 **뒤** — 키 없는 프로세스도 받아 둔 표는 낸다. 그리고
+    # 키 없이 걸은 빈손을 굽지 않는다: 옛 `not dart` 는 키 없는 `get_dart()` 를
+    # 통과시켜 접수번호 0건의 `{}` 를 24시간 캐시에 남겼다 — 키를 넣고
+    # 재시작해도 하루 동안 '표 없음' 이었다(실수 #428).
+    from bot.dart_client import dart_ready
+    if not dart_ready(dart):
+        log.info("tables_rolling(%s): DART_API_KEY 없음 — 캐시에 없는 표는 "
+                 "받지 못한다", ticker)
+        return out
     try:
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
                                    _fetch_doc_text, doc_was_truncated)

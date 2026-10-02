@@ -2742,8 +2742,44 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 **이 검사가 못 보는 축**(#274):
 - (a) 클라이언트를 **인자로 받는** 함수의 판정 — 스캐너 밖이다. `backlog_probe`·`fcf_audit` 은 손으로 `dart_ready` 로 옮겼고 동작
   테스트가 있지만, `quarterly_infographic` 의 둘(`_dart_name`·수주잔고 조회)은 긍정 쪽이라 그대로 두었다(뒤의 `backlog_probe` 가 키를 본다).
+  → **#428 이 덮었다.** 그리고 이 줄은 틀렸었다 — 그 둘은 긍정 쪽이 아니라 `if not dart` 였고, `dart_production` 의 둘은 아예 안 셌다.
 - (b) 긍정 분기(`if dart:` 뒤 메서드, 11곳) — 허용한다. 메서드가 키를 스스로 보고, 캐시로 답하는 것이 있다. 대시보드 최대주주 블록은
   `else` 로그를 살리려고 `dart_ready` 로 바꿨다 — 렌더 테스트(`TestHoldersTab20260818`)는 키 있는 갈래만 타고, 키 없는 `else` 로그는 안 탄다.
+  → #428 `TestMajorShareholdersKeyless` 가 그 `else` 갈래를 탄다.
 - (c) 함수 **밖**(모듈 수준)에서 받은 이름 · 속성 대상(`self.dart = get_dart()`) · 다른 함수로 넘긴 뒤의 판정 · `getattr(mod, "get_dart")()`
   처럼 이름이 안 보이는 호출 · 다시 묶은 이름(`d = get_dart(); d = None; if d is None`)은 오탐이다(첫 묶음을 기억한다).
+  → 모듈 수준·속성·다른 함수로 넘긴 뒤는 #428 이 덮었다(남은 축은 #428 절).
 - (d) `fin_freshness_probe.probe` 는 스냅샷 수집(네트워크)을 먼저 해서 동작 테스트가 없다 — 그 자리는 전수 AST 만 지킨다.
+
+## #428 — 인자·속성·전역으로 흘러간 클라이언트의 부정 판정 · 키 검사는 캐시 뒤 (`tests/test_dart_ready_20261002.py` 95건(+59) · 2026-10-02)
+
+#427 의 스캐너는 `get_dart()` 를 받은 **같은 함수** 안만 봤다. 사각 셋(속성 · 모듈 수준 · 다른 함수로 넘긴 뒤)을 스크래치 스캐너로 먼저
+쟀더니 속성·모듈 수준은 0건, 인자로 넘긴 뒤의 부정 판정은 4곳(`dart_production.prefetch_tables`·`tables_rolling` ·
+`quarterly_infographic._fill_backlog`·`_dart_name`)이었다. 앞의 셋엔 `None` 이 한 번도 안 왔다(호출 그래프 실측). 재현 테스트가 고치기
+전에 넷 실패했다 — `tables_rolling` 은 키 없이 걸은 `{}` 를 24시간 캐시에 구웠고, `backlog_probe`(#427 이 키 검사를 캐시 앞에 둠)와
+`_fill_backlog` 는 받아 둔 수주잔고를 잃었고, `prefetch_tables` 는 헛스레드를 띄웠다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 인자로 받는 함수 — 키 없는 **실물**이 넘어오면 받아 둔 캐시는 낸다(`backlog_probe` · `_fill_backlog` · `tables_rolling`) · 키 없이 걸은 빈손을 캐시에 굽지 않는다(`tables_rolling`) · 데울 게 없으면 스레드를 안 띄운다(`prefetch_tables`) | ✅ 자동 | `TestKeylessCallees` — 재현 먼저(고치기 전 4건 실패) |
+| 반대 증거 — `_dart_name` 은 `dart_ready` 로 막지 않는다(키 없이 디스크 캐시로 이름을 답한다) · 비-KR 은 `None` 을 받는다 | ✅ 자동 | `test_dart_name_keyless_still_reads_cache` |
+| 대시보드 최대주주 블록 — 키가 없으면 `get_major_shareholders` 를 부르지 않고 사유를 로그에 적는다(#427 의 못 보는 축 (b)) | ✅ 자동 | `TestMajorShareholdersKeyless` |
+| 전수 회귀가 **흘러간 자리**까지 본다 — 속성(같은 메서드 줄 순서 · 클래스 전체 · 생성자 주입 · lambda 안) · 모듈 전역(모듈 본문 · `global` · `if __name__`) · 클로저·lambda · 인자(호출 그래프 고정점: 같은 모듈 · import · 함수 안 import · 모듈 별칭 · `self.메서드` · 생성자 · `submit` · `Thread(target=…)` · 키워드 · 중계 함수) · 클라이언트를 돌려주는 함수의 반환값 · 다른 모듈이 import 해 간 함수·전역 · 이름을 옮겨 담기 · `or` 로 받기 | ✅ 자동 | `test_scanner_fires` · `test_scanner_fires_across_scopes` · `test_scanner_fires_across_modules` |
+| 허용 — 지연 초기화 보관소(`None` 바인딩이 섞인 모듈 전역·클래스 본문·`self.속성`·클로저) · 기본값 채우기(`if not d: d = get_dart()` — 넘겨받아도, 채우는 값이 클라이언트일 때만) · 받기 **전** 판정 · 아무도 클라이언트를 안 넘기는 인자 · 다른 위치 인자 · 가려진 이름 · 별표 뒤 위치 · 다른 객체의 같은 속성 · 메서드의 다른 인자 · 클래스 본문 이름(메서드에선 안 보인다) · 인자를 그대로 돌려주는 함수 · 다른 모듈의 같은 이름 · 무엇이 담겼는지 모르는 바인딩(for·튜플 풀기) | ✅ 자동 | `test_scanner_spares` · `test_scanner_spares_across_modules` |
+| 레포 하한 — 훑은 파일 > 300 · 받는 자리 ≥ 20 · 인자로 실려 간 자리 ≥ 15 · 클로저·전역으로 읽는 자리 ≥ 3(실측 45·21·7). 공장 이름이 나오는 모듈에서 시작해 클라이언트가 실려 간 모듈만 읽는다(실측 32개 · 2초대, 전수를 다 읽으면 8.8초) | ✅ 자동 | `test_repo_has_no_negative_guard_on_get_dart` |
+
+뮤테이션 53종(스캐너 규칙 46 · 제품 7)을 녹색 백업 + md5 복원으로 돌렸다. 52종이 잡혔다. 남은 하나는 운반 인자 수를 99 로 **부풀리는**
+변형이다 — 하한은 줄어드는 쪽만 재고(0 으로 줄이는 짝은 잡힌다), 상한을 현재값에 붙이면 시한폭탄이다(#67). 처음엔 같은 스코프의
+줄 순서를 지우는 변형도 살아남았다 — 기본값 채우기 예외가 '받기 전 판정' 픽스처를 대신 만족시켰다. 받기 전에 판정하고 뒤에 받는
+픽스처를 더해 잡았다(#91). 제품 7종은 키 검사를 캐시 앞으로 · 키 검사 제거 · `prefetch_tables` 옛 `not dart` · `_fill_backlog` 와
+`_dart_name` 을 `dart_ready` 로 막는 **그럴듯한 오답** 둘 · 최대주주 블록을 옛 `if dart:` 로.
+
+**이 검사가 못 보는 축**(#274):
+- 함수 경계를 넘는 보관소에 클라이언트가 아닌 바인딩이 **하나라도** 있으면(`_D = None` 지연 초기화) 그 판정은 살아 있는 검사로 보고
+  넘긴다 — `get_dart` 자신이 그 모양이라 잡으면 제품 코드부터 오탐이다.
+- 클래스 밖에서 쓰는 `obj.속성` · 상속 · `getattr`·dict·리스트에 담은 클라이언트 · `*args`·`**kwargs` 로 넘기기 · `functools.partial`·
+  콜백 등록(실행기 `submit`·`Thread(target=…)` 만 따라간다) · `self.메서드` 가 아닌 객체 메서드 호출.
+- 다른 철자(`not (d and x)` · `bool(d) is False`) · 긍정 판정의 `else` 갈래 · 반복문에서 받기 전 줄의 판정(두 번째 바퀴엔 받은 뒤다).
+- 키 없을 때 화면이 **빈칸의 사유**를 말하는지는 안 잰다 — 분기실적 탭의 제품·가동률 섹션은 키가 없으면 '표 없음' 과 같은 모양으로
+  사라진다(#43 축, 이번 범위 밖).
+

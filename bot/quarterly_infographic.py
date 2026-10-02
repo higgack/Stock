@@ -322,7 +322,10 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
 
     graceful: 실패·부재는 조용히 건너뛴다 — 값이 없으면 `_extra_series` 가
     패널 자체를 생략하므로 화면에 빈 축이나 0 막대가 남지 않는다."""
-    if not dart or not qs:
+    # ⚠️ 키는 `backlog_probe` 가 **캐시 뒤에서** 본다 — 여기서 막으면 키 없는
+    # 프로세스가 받아 둔 수주잔고를 잃는다. 옛 `not dart` 는 늘 거짓이었다
+    # (KR 경로만 부르고 `get_dart()` 는 키 없이도 객체다, 실수 #428).
+    if not qs:
         return
     try:
         from bot.dart_backlog import backlog_probe
@@ -1480,14 +1483,17 @@ def _live_quote(ticker: str, market: str, shares: float | None = None) -> dict:
 
 
 def _dart_name(dart, ticker: str) -> str | None:
-    """DART corp_code 맵의 회사명(디스크 캐시 · 네트워크 0). 실패 시 None."""
-    if not dart:
-        return None
-    try:
-        return dart.stock_code_to_name((ticker or "").upper().split(".")[0])
-    except Exception as exc:
-        log.debug("quarterly_infographic: corp name %s: %s", ticker, exc)
-        return None
+    """DART corp_code 맵의 회사명(디스크 캐시 · 네트워크 0). 실패 시 None.
+
+    ⚠️ `dart_ready` 로 막지 않는다 — 키 없는 클라이언트도 디스크 캐시로
+    이름을 답한다(#427 긍정 분기). `None` 은 비-KR 경로가 넘긴다."""
+    if dart:
+        try:
+            return dart.stock_code_to_name(
+                (ticker or "").upper().split(".")[0])
+        except Exception as exc:
+            log.debug("quarterly_infographic: corp name %s: %s", ticker, exc)
+    return None
 
 
 def build_payload(ticker: str, snap: dict | None = None, *,
