@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     print("⚠️ '최근만 ❌, 옛 기간 ✅' 이면 파서가 아니라 캐시를 의심할 것"
           f" — 재무캐시 키는 qfin{_FIN_CACHE_VER}, TTL 7일\n")
 
-    from bot.dart_client import get_dart
+    from bot.dart_client import dart_ready, get_dart
     from bot.dart_quarterly import get_quarterly_series
     from bot.fcf import cumulative_smell
     from bot.market import detect_market
@@ -184,12 +184,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     # DART 는 **KR 이 섞여 있을 때만** 필요하다 — AAPL 하나 보려는데
     # 키가 없다고 통째로 멈추면 다른 나라를 영영 못 본다(이번 질문 그 자체).
-    dart = get_dart() if any(detect_market(t.upper()) == "KR"
-                             for t in tickers) else None
-    if dart is None and any(detect_market(t.upper()) == "KR"
-                            for t in tickers):
-        print("❌ DART 클라이언트 없음 — KR 종목은 판정 불가")
-        return 2
+    has_kr = any(detect_market(t.upper()) == "KR" for t in tickers)
+    dart = get_dart() if has_kr else None
+    # ⚠️ 옛 판은 `dart is None and has_kr` 였다 — KR 이 있으면 dart 를 만드니
+    # 그 조건은 **늘 거짓**이었다(실수 #427). 키 유무로 재되, 통째로 멈추지
+    # 않는다 — 기본 표본은 시장이 섞여 있고 KR 도 yfinance 경로는 키 없이
+    # 돈다. 키가 없으면 KR 의 **DART 경로만** 판정 불가로 적고 rc=2.
+    no_key = has_kr and not dart_ready(dart)
+    if no_key:
+        print("❌ DART_API_KEY 없음 — KR 종목의 DART 경로는 판정 불가"
+              "(yfinance 경로는 계속 본다)\n")
 
     for tk in tickers:
         _mkt = detect_market(tk.upper()) or "?"
@@ -202,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
         _yf_report(tk, cumulative_smell, _seen)
         if _mkt != "KR":
             print()
+            continue
+        if no_key:
+            print("   ── DART 경로 ❓ 판정 불가 — DART_API_KEY 없음\n")
             continue
         print("   ── DART 경로(밸류에이션 분기표·분기실적 인포그래픽)")
         # 연간 — `financials_ts` 가 쓰는 그 경로 그대로(#35).
@@ -273,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
                   f" **캐시**일 가능성이 높다. `_FIN_CACHE_VER` 를 올렸는지"
                   f" 확인하고, 급하면 ~/.tradingagents/cache 의 qfin* 삭제.")
         print()
-    return 0
+    return 2 if no_key else 0
 
 
 def _seen_recent(seen: list) -> list:

@@ -1538,10 +1538,10 @@ def collect_kr_financials(ticker: str) -> dict:
     """
     # 현년 + 3개년 시계열 — 같은 DART 재무 API 라 한 task 에서 순차.
     out: dict = {}
-    from bot.dart_client import get_dart
+    from bot.dart_client import dart_ready, get_dart
     from datetime import datetime as _dt
     dart = get_dart()
-    if not dart:
+    if not dart_ready(dart):
         return out
     fin = dart.get_normalized_financials(ticker)
     if fin and fin.get("financials"):

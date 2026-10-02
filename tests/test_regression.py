@@ -7809,7 +7809,11 @@ class TestDartFinancialsLatency20260821:
     파싱이 아니라 DART 원자조회 ~20회를 **직렬**로 도는 것이다."""
 
     class _Rec:
-        """호출을 세고 **동시 실행 수**를 기록하는 스텁."""
+        """호출을 세고 **동시 실행 수**를 기록하는 스텁.
+
+        `api_key` — 운영 클라이언트 모양(없으면 `dart_ready` 가 막는다, #427)."""
+
+        api_key = "test-key"
 
         def __init__(self, have=None, delay=0.05):
             import threading
@@ -7970,6 +7974,8 @@ class TestFcfAccuracyAudit20260821:
                             lambda *a, **k: qs or [])
 
         class _D:
+            api_key = "test-key"   # 운영 클라이언트 모양(#427 dart_ready)
+
             def get_normalized_financials(self, *a, **k):
                 return None
         return fa.audit_one(tk, _D() if qs is not None else None)
@@ -27684,6 +27690,8 @@ class TestFlowTrendDiagnosis20260818:
         import bot.stock_snapshot as ss
 
         class _FakeDart:
+            api_key = "test-key"   # 운영 클라이언트 모양(#427 dart_ready)
+
             def get_normalized_financials(self, tk, year=None):
                 return {"year": year or 2025, "fs_div": "CFS",
                         "financials": {"매출": 100.0, "영업이익": 10.0},
@@ -28188,6 +28196,7 @@ class TestHoldersTab20260818:
                  "pct": None, "note": ""}]
         monkeypatch.setattr("bot.dart_client.get_dart",
                             lambda: types.SimpleNamespace(
+                                api_key="test-key",   # 운영 모양(#427)
                                 get_major_shareholders=lambda c: rows,
                                 get_affiliate_investments=lambda c: [],
                                 get_recent_disclosures=lambda *a, **k: []))
@@ -30393,6 +30402,8 @@ class TestLongRangeFallback20260819:
             return out
 
         class _Dart:
+            api_key = "test-key"   # 운영 클라이언트 모양(#427 dart_ready)
+
             @staticmethod
             def get_normalized_financials(t, **k):
                 return None
@@ -32050,7 +32061,12 @@ class TestMarketSectionOrder20260820:
 
 
 class _NoDart:
-    """DART 가 아무것도 안 주는 스텁 — 프로브가 그래도 끝까지 돈다."""
+    """DART 가 아무것도 안 주는 스텁 — 프로브가 그래도 끝까지 돈다.
+
+    `api_key` 는 운영 클라이언트가 늘 갖는 속성이다 — 없으면 `dart_ready`
+    가 '키 없음' 으로 읽어 프로브가 일찍 멈춘다(실수 #427)."""
+
+    api_key = "test-key"
 
     def get_normalized_financials(self, *a, **k):
         return None
@@ -77489,6 +77505,8 @@ class TestFcfCapexBasisGap20260921:
         _ = fa
 
         class _D:
+            api_key = "test-key"   # 운영 클라이언트 모양(#427 dart_ready)
+
             def get_normalized_financials(_s, tk, year=None):
                 return _ann
         r = fa.audit_one("181710.KS", _D())

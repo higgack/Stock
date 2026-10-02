@@ -4353,15 +4353,27 @@ def diagnose_detail_sources(ticker: str) -> dict:
         code = tkr.split(".")[0]
 
         def _dart_name():
-            from bot.dart_client import get_dart
+            from bot.dart_client import dart_ready, get_dart
             dart = get_dart()
-            if not dart:
-                return {"ok": False, "error": "DART client unavailable (key missing?)"}
+            # ⚠️ 키가 없어도 멈추지 않는다 — `stock_code_to_name` 은 corp_code
+            # 디스크 캐시로 답할 수 있어, 여기서 막으면 그 사실을 잃는다.
+            # 키 부재는 **같이 말한다**(옛 `if not dart` 는 도달 불가였다, #427).
             nm = dart.stock_code_to_name(code)
             ci = dart.get_company_info(code) or {}
-            return {"ok": bool(nm or ci.get("corp_name")),
-                    "stock_code_to_name": nm,
-                    "company_info_corp_name": ci.get("corp_name")}
+            res = {"ok": bool(nm or ci.get("corp_name")),
+                   "stock_code_to_name": nm,
+                   "company_info_corp_name": ci.get("corp_name")}
+            if not dart_ready(dart):
+                # ⚠️ 클라이언트는 프로세스당 하나라, 시작 뒤 `.env` 에 키를
+                # 넣으면 같은 응답의 env 칸은 True 인데 클라이언트엔 키가
+                # 없다 — 그때 '미설정' 이라 적으면 거짓이다(#165).
+                res["error"] = (
+                    "DART 클라이언트가 키 없이 만들어졌다 — .env 에는 키가 "
+                    "있으니 프로세스 재시작 필요"
+                    if (out.get("env") or {}).get("DART_API_KEY") else
+                    "DART_API_KEY 미설정 — 회사정보 조회 불가"
+                    "(이름은 corp_code 디스크 캐시로만)")
+            return res
         _probe("dart_name", _dart_name)
 
         def _http_status(url, headers=None):
@@ -7867,9 +7879,11 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_affiliates_html = ""
     if is_kr and _live:
         try:
-            from bot.dart_client import get_dart
+            from bot.dart_client import dart_ready, get_dart
             dart = get_dart()
-            if dart:
+            # 메서드는 키가 없으면 빈 목록을 준다 — 판정은 키로 해야 아래
+            # else 로그가 실제로 뜬다(옛 `if dart:` 는 늘 참이었다, #427).
+            if dart_ready(dart):
                 stock_code = ticker.split(".")[0]
                 shareholders = dart.get_major_shareholders(stock_code)
                 if shareholders:
@@ -7896,7 +7910,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 else:
                     log.info("dart: get_major_shareholders(%s) returned empty", stock_code)
             else:
-                log.info("dart: get_dart() returned None — DART_API_KEY not set?")
+                log.info("dart: DART_API_KEY 없음 — 최대주주 표 생략")
         except Exception as exc:
             log.warning("detail: DART major shareholders %s: %s", ticker, exc)
 

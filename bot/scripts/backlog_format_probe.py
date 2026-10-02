@@ -79,10 +79,10 @@ def probe(ticker: str) -> None:
     print("=" * 78)
     print(f"■ {ticker}")
     print("=" * 78)
-    from bot.dart_client import get_dart
+    from bot.dart_client import dart_ready, get_dart
     from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
     dart = get_dart()
-    if not dart:
+    if not dart_ready(dart):
         print("  ❌ DART_API_KEY 없음 — .env 확인")
         return
     rep, tag = _report(dart, ticker)

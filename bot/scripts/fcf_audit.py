@@ -412,18 +412,21 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
                          if sm else f"✅ 누적 냄새 없음({len(_sm_vals)}분기)"))
         flag(not sm, "⑤누적냄새(yf)")
 
-    if mkt != "KR" or not dart:
+    from bot.dart_client import dart_ready
+    # ⚠️ `not dart` 가 아니다 — 호출부는 KR 이면 늘 `get_dart()` 를 넘기고
+    # 그건 키가 없어도 참이라, 키 없는 날 아래 ③payload 로 오보했다(#427).
+    if mkt != "KR" or not dart_ready(dart):
         # 비-KR 은 인포그래픽도 같은 yfinance 현금흐름을 쓴다 — 원천이
         # 하나뿐이라 교차출처 비교 대상이 없다(그 사실을 말한다, #82).
         say("  [분기실적 탭] 비-KR 은 재무제표 탭과 **같은 원천**"
             "(yfinance) — 교차출처 검사 대상 없음"
-            if mkt != "KR" else "  ❓ DART 없음 — KR 경로 판정 불가")
+            if mkt != "KR" else "  ❓ DART_API_KEY 없음 — KR 경로 판정 불가")
         if mkt == "KR":
             # ⚠️ 여기는 ③ payload 축이 아니다 — DART 클라이언트가 **아예
             # 없어** KR 경로 전체를 못 탄 것이다. `③payload` 라고 적으면
             # 운영자를 `get_quarterly_series` 로 보내는데 진짜 원인은
             # 자격증명이다. 틀린 라벨은 라벨이 없는 것보다 나쁘다(#82·#187b).
-            flag(None, "DART경로(클라이언트 없음)")
+            flag(None, "DART경로(키 없음)")
         return {"lines": out, "bad": bad, "unknown": unknown,
             "bad_axes": bad_axes, "unknown_axes": unknown_axes}
 

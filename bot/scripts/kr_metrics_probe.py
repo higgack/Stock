@@ -414,11 +414,11 @@ def _dart_raw(ticker: str, snap: dict) -> None:
     """
     print("⑧ DART 원본 대조(창 6분기 + 당기/누적)")
     try:
-        from bot.dart_client import get_dart
+        from bot.dart_client import dart_ready, get_dart
         from bot.dart_quarterly import get_quarterly_series
         dart = get_dart()
-        if not dart:
-            print("    DART 클라이언트 없음(키 확인)")
+        if not dart_ready(dart):
+            print("    DART_API_KEY 없음(.env 확인)")
             return
         ser = get_quarterly_series(dart, ticker, n=6) or []
         if not ser:

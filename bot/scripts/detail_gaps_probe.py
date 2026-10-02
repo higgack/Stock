@@ -103,9 +103,9 @@ def probe_dart_accounts(ticker: str) -> None:
         print("  (KR 아님 — 건너뜀)")
         return
     try:
-        from bot.dart_client import get_dart
+        from bot.dart_client import dart_ready, get_dart
         dart = get_dart()
-        if not dart:
+        if not dart_ready(dart):
             print("  ❌ DART_API_KEY 없음")
             return
         code = dart.stock_code_to_corp_code(ticker)
@@ -159,10 +159,10 @@ def probe_backlog(ticker: str) -> None:
     try:
         import datetime as _dt
 
-        from bot.dart_client import get_dart
+        from bot.dart_client import dart_ready, get_dart
         from bot.dart_feed import _fetch_doc_text
         dart = get_dart()
-        if not dart:
+        if not dart_ready(dart):
             print("  ❌ DART_API_KEY 없음")
             return
         year = _dt.date.today().year

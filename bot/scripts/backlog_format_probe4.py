@@ -92,10 +92,10 @@ def _report(dart, code: str):
 def probe(code: str, expect_name: str = "") -> str:
     """→ 'OK' | 'NONE'(미공시) | 'MISS'(공시하는데 미지원) | 'ERR'"""
     from bot.dart_backlog import parse_backlog
-    from bot.dart_client import get_dart
+    from bot.dart_client import dart_ready, get_dart
     from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
     dart = get_dart()
-    if not dart:
+    if not dart_ready(dart):
         print("  ❌ DART_API_KEY 없음 — .env 확인")
         return "ERR"
     # ⚠️ DART 가 아는 이름을 찍는다 — 내가 코드를 잘못 적었으면 여기서 드러난다.
