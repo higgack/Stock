@@ -1970,15 +1970,12 @@ def refill_rows(dart, todo: list, say=None) -> dict:
 
 
 def dart_ready(dart) -> bool:
-    """키가 있는 DART 클라이언트인가.
+    """`bot.dart_client.dart_ready` 로 위임한다 — 술어는 한 곳에(#38).
 
-    ⚠️ `get_dart()` 는 키가 없어도 **항상** 클라이언트를 돌려준다(`DartClient`
-    에 `__bool__` 이 없다) — `if not dart` 는 키 부재를 못 잡는 **도달 불가**
-    검사였다(2026-10-02 셀프리뷰 실측). 안 잡으면 키 없는 날의 재조회가 전부
-    `원문미제공` 으로 찍혀 계정 문제와 원천 장애가 구별되지 않는다(#82).
-    재조회(`refresh_misses`)와 CLI(`backlog_misses`)가 **같은 술어**를 쓴다(#38).
-    """
-    return bool(dart) and bool(getattr(dart, "api_key", None))
+    이 이름은 재조회(`refresh_misses`)·CLI(`backlog_misses`)가 먼저 썼다.
+    지연 import 인 이유: 이 모듈은 `dart_client` 를 함수 안에서만 부른다."""
+    from bot.dart_client import dart_ready as _ready
+    return _ready(dart)
 
 
 def refresh_misses(cap: int = REFRESH_CAP) -> dict:
@@ -2093,7 +2090,9 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
     ⚠️ 원문을 40MB 로 받는다 — 「매출 및 수주상황」은 목차상 II.사업의 내용
     뒤라 기본 3MB 상한 밖으로 밀리고, 그러면 **공시하는 회사도 '없음'으로
     오판된다**(2026-08-17 프로브로 확인)."""
-    if not dart:
+    # ⚠️ `not dart` 만 보면 키 없는 `get_dart()` 가 통과해 빈 원문을
+    # `원문미제공` 으로 원장에 남겼다(인포그래픽 경로, 실수 #427).
+    if not dart_ready(dart):
         # ⚠️ 계약은 (값, 사유) 튜플이다 — None 하나를 내면 호출부의
         # `v, why = backlog_probe(...)` 가 TypeError 로 터진다.
         return None, "DART없음"

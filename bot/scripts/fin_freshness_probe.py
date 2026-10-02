@@ -72,10 +72,10 @@ def probe(ticker: str) -> None:
         try:
             import datetime as _dt
 
-            from bot.dart_client import get_dart
+            from bot.dart_client import dart_ready, get_dart
             from bot.dart_quarterly import quarter_label
             dart = get_dart()
-            if not dart:
+            if not dart_ready(dart):
                 print("  [DART 후보] ❌ DART_API_KEY 없음")
             else:
                 _y = _dt.date.today().year

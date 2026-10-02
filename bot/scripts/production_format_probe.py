@@ -181,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="수주잔고 검사 생략(40MB 재파싱이 느릴 때)")
     args = ap.parse_args(argv)
 
-    from bot.dart_client import get_dart
+    from bot.dart_client import dart_ready, get_dart
     from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
                                _fetch_doc_text)
     from bot.dart_feed import doc_was_truncated as dp_trunc
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     print("열: 분기수 · 재고 · 수주 · 제품 · 생산(판정)  "
           "— 원문에 있는데 못 가져오는 걸 찾는 게 목적")
     dart = get_dart()
-    if not dart:
+    if not dart_ready(dart):
         print("❌ DART 키 미설정 — .env 확인")
         return 1
 

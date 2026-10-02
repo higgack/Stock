@@ -2710,3 +2710,40 @@ base→고친 판은 29건(리뷰가 확인한 24건 + 그 5건). 미수집 경�
   접는다는 사실에 기댄다. 여유는 창 가장자리에 걸친 캡션 픽스처가 잰다(2차 리뷰 반영분 — 그전엔 무가드였다).
 - (l) 형제 모듈의 파싱 캐시 지문(`dart_production` 은 처음 부를 때 · `edgar_eps`·`edinet_xbrl` 은 부를 때마다 디스크에서)은
   이번에 안 고쳤다 — 재시작에 실패한 프로세스가 새 지문 키에 옛 결과를 굽는 경로가 그 모듈들에 남아 있다(범위 밖).
+
+## #427 — `get_dart()` 뒤의 `if not dart` 는 키 부재를 못 잡는다: 남은 13곳 (`tests/test_dart_ready_20261002.py` 36건 · `tests/test_regression.py` 스텁 7개에 `api_key` · 2026-10-02 · 배포 전 독립 리뷰 반영)
+
+`get_dart()` 는 키가 없어도 `DartClient` 를 돌려주고 그 클래스엔 `__bool__` 이 없다 — 그 뒤 같은 함수의 `if not dart`·`dart is None` 은
+늘 거짓이었다. #426 이 술어 `dart_ready` 를 만들어 6곳을 고쳤고, 남은 13곳(대시보드 진단 1 · `collect_kr_financials` 1 · 형제 프로브 11)을
+같은 술어로 옮겼다. 술어는 `bot/dart_client.py` 한 곳이고 `dart_backlog.dart_ready` 는 위임이다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 술어는 키로 판정한다(`None`·키 없는 실물 → 거짓 · 키 있으면 참) · 실물 클래스는 키가 없어도 참이다(이 회귀의 전제) · 옛 이름은 위임한다 | ✅ 자동 | `TestDartReadyPredicate` |
+| 키 없는 **실물** 클라이언트를 넣으면 진입점마다 키 부재를 말하고 공개 메서드를 하나도 안 부른다 — `backlog_format_probe` 1~4 · `detail_gaps_probe` 2곳 · `kr_metrics_probe._dart_raw` · `kr_revenue_probe` · `production_format_probe` · `fcf_probe`(KR) · `collect_kr_financials` | ✅ 자동 | `TestKeylessEntryPoints` |
+| `fcf_probe` 는 키가 없어도 통째로 멈추지 않는다 — 섞인 목록의 모든 종목이 yfinance 경로를 타고(KR 포함), KR 의 DART 경로만 '판정 불가', rc=2 | ✅ 자동 | `test_fcf_probe_kr_needs_key` |
+| 인자로 받는 자리도 호출부가 `get_dart()` 를 넘기면 같은 병이다 — `backlog_probe` 는 키 없으면 `(None, 'DART없음')` 이고 원장에 `원문미제공` 을 안 남긴다 · `fcf_audit.audit_one` 은 `③payload` 가 아니라 `DART경로(키 없음)` 축으로 센다 | ✅ 자동 | `TestKeylessParameterGuards` |
+| 반대 증거 — 비-KR 만이면 `fcf_probe` 는 DART 를 만들지도 묻지도 않는다 | ✅ 자동 | `test_fcf_probe_non_kr_runs_without_dart` |
+| 대시보드 진단 `dart_name` 칸은 키가 없어도 멈추지 않고(캐시 조회 결과 키가 그 칸에 실린다) 키 부재를 같은 칸에 적는다 — 같은 응답의 env 칸이 키 있음이면 '미설정' 이 아니라 '재시작 필요' 다(클라이언트는 프로세스당 하나) | ✅ 자동 | `TestDetailDiagnoseDartName` · `TestDiagnoseRestartHint` |
+| `bot/`·`trade/` 커밋될 파일 전수(테스트 트리 제외)에서 `get_dart()`/`DartClient()` 로 받은 이름을 부정 판정하지 않는다 — 훑은 파일 > 300 · 스캐너가 **실제로 받은** 자리 ≥ 20(문자열 계수는 주석이 대신 채운다 — 대조 0건은 실패) | ✅ 자동 | `test_repo_has_no_negative_guard_on_get_dart` |
+| 그 스캐너가 실제로 문다(`not X` · `X is None` · `None is X` · `X == None` · `IfExp` 안의 받기 · 속성 호출 · `as` 별칭 · `BoolOp` 안 · 주석 달린 대입 · `:=`) — 그리고 허용한다(`dart_ready` · 긍정 분기 · 인자로 받은 이름 · 받기 **전** 판정 · 중첩 함수의 같은 이름) | ✅ 자동 | `test_scanner_fires` · `test_scanner_spares` — 본 테스트와 같은 함수(#286) |
+
+뮤테이션 32종(술어를 객체 유무로 · 위임 대신 복제 · 진단 칸 키 부재 문구 끔 · 진단 칸 조기 반환 · 13곳 각각 옛 검사로 · `fcf_probe` 의
+옛 조건·비-KR 에도 생성·통째로 멈춤·KR DART 경로 계속·rc 0 · `fcf_audit`·`backlog_probe` 의 옛 `not dart` · 재시작 안내 갈래 고정 둘 ·
+스캐너의 별칭/`is None`/`None is`/줄 순서/중첩/`IfExp`/주석 대입/`:=`/받은 자리 계수 규칙 각각 끔)이 전부 잡혔다(녹색 백업 + md5 복원).
+진단 칸 조기 반환 변형은 처음엔 살아남았다 — 옆 `_naver` 프로브가 같은 `stock_code_to_name` 을 불러 기록 단언을 대신 만족시켰다(#75).
+그 칸의 결과로 다시 썼다.
+
+배포 전 독립 리뷰(읽기 전용): Blocking·High 없음 · Medium 3 · Low 3 — 전부 반영. M1 첫 판의 `fcf_probe` 는 KR 한 종목에 키가 없으면
+섞인 목록을 **통째로** 멈췄다(바로 위 주석이 금지한 바로 그것) · M2 인자로 받는 `backlog_probe`·`fcf_audit` 도 호출부가 늘
+`get_dart()` 를 넘겨 같은 병이었다(`원문미제공` 원장 오기 · `③payload` 오보) · M3 키를 시작 뒤 `.env` 에 넣으면 '미설정' 이 거짓이다 ·
+L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스캐너 사각(주석 대입·`:=`·`None is`) · L6 하한이 문자열을 셌다.
+
+**이 검사가 못 보는 축**(#274):
+- (a) 클라이언트를 **인자로 받는** 함수의 판정 — 스캐너 밖이다. `backlog_probe`·`fcf_audit` 은 손으로 `dart_ready` 로 옮겼고 동작
+  테스트가 있지만, `quarterly_infographic` 의 둘(`_dart_name`·수주잔고 조회)은 긍정 쪽이라 그대로 두었다(뒤의 `backlog_probe` 가 키를 본다).
+- (b) 긍정 분기(`if dart:` 뒤 메서드, 11곳) — 허용한다. 메서드가 키를 스스로 보고, 캐시로 답하는 것이 있다. 대시보드 최대주주 블록은
+  `else` 로그를 살리려고 `dart_ready` 로 바꿨다 — 렌더 테스트(`TestHoldersTab20260818`)는 키 있는 갈래만 타고, 키 없는 `else` 로그는 안 탄다.
+- (c) 함수 **밖**(모듈 수준)에서 받은 이름 · 속성 대상(`self.dart = get_dart()`) · 다른 함수로 넘긴 뒤의 판정 · `getattr(mod, "get_dart")()`
+  처럼 이름이 안 보이는 호출 · 다시 묶은 이름(`d = get_dart(); d = None; if d is None`)은 오탐이다(첫 묶음을 기억한다).
+- (d) `fin_freshness_probe.probe` 는 스냅샷 수집(네트워크)을 먼저 해서 동작 테스트가 없다 — 그 자리는 전수 AST 만 지킨다.

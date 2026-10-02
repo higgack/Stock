@@ -365,7 +365,8 @@ def main(argv: list[str]) -> int:
                                  _DART_NAME_MAP, _NAME_MAP_NORM,
                                  _account_rank, _norm_acct_nm,
                                  _extract_dart_financials,
-                                 calc_kr_financial_ratios, get_dart)
+                                 calc_kr_financial_ratios, dart_ready,
+                                 get_dart)
     tickers = [a for a in argv[1:] if not a.startswith("-")]
     try:
         from bot.wisereport_financials import _PARSE_VER as _fgv
@@ -380,8 +381,8 @@ def main(argv: list[str]) -> int:
     if "--fnguide-debug" in argv:
         return _fnguide_debug(tickers)
     dart = get_dart()
-    if not dart:
-        _p("❗ DART 클라이언트 없음 — DART_API_KEY 확인")
+    if not dart_ready(dart):
+        _p("❗ DART_API_KEY 없음 — .env 확인")
         return 1
     if "--sweep" in argv:
         return _sweep(dart, tickers or _SWEEP_DEFAULT)

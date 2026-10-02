@@ -2001,3 +2001,21 @@ def get_dart() -> DartClient:
     if _singleton is None:
         _singleton = DartClient()
     return _singleton
+
+
+def dart_ready(dart) -> bool:
+    """키가 있는 DART 클라이언트인가 — `get_dart()` 결과를 판정하는 **단일 술어**.
+
+    ⚠️ `get_dart()` 는 키가 없어도 **항상** 클라이언트를 돌려준다(`DartClient`
+    에 `__bool__` 이 없다) — 그 뒤의 `if not dart` 는 키 부재를 못 잡는
+    **도달 불가** 검사였다(2026-10-02 실측 19곳, 실수 #427). 안 잡으면 메서드가
+    각자 빈 값을 돌려줘 '원천에 없다'·'원문 미제공' 으로 읽히고, 계정 문제와
+    원천 장애가 구별되지 않는다(#82). `None` 도 받는다(KR 이 없으면 안 만드는
+    호출부가 있다).
+
+    ⚠️ **긍정 분기(`if dart:` 뒤 메서드 호출)는 바꾸지 않는다** — 메서드가
+    키를 스스로 보고 빈 값을 주고, `stock_code_to_name` 처럼 키 없이도 디스크
+    캐시로 답하는 것이 있어 여기로 막으면 그 답을 잃는다. 이 술어는 '키가
+    없다' 고 **말하거나 멈추는** 자리에 쓴다.
+    """
+    return dart is not None and bool(getattr(dart, "api_key", None))
