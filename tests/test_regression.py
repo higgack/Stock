@@ -72463,14 +72463,22 @@ class TestBacklogMissExcerpt20260918:
 
     def test_refill_targets_are_deduped_and_exclude_rows_that_have_one(self):
         """되메울 대상은 발췌 없는 줄뿐이고 **신원으로 중복을 없앤다** —
-        같은 줄을 두 번 조회하면 그만큼 바깥 원천을 두드린다(#61)."""
+        같은 줄을 두 번 조회하면 그만큼 바깥 원천을 두드린다(#61).
+
+        ⚠️ 2026-10-02 계약 변경(#222): 발췌가 있어도 **옛 파서가 남긴** 줄은
+        다시 본다 — 그 줄이 파서를 고친 뒤에도 남아 보고서가 이미 고쳐진
+        391710 을 '고칠 것' 으로 실었다(`tests/test_backlog_review_20261002.py`).
+        그래서 '발췌가 있어 제외' 되는 줄은 **지금 파서의 지문**을 실어야
+        한다 — 이 테스트의 원래 계약(지금 관측이 있는 줄은 안 두드린다)은
+        그대로다."""
         from bot import dart_backlog as bl
         rows = [{"ticker": "000670", "year": 2026, "reprt": "11013",
                  "reason": "형식미지원"},
                 {"ticker": "000670.KS", "year": 2026, "reprt": "11013",
                  "reason": "형식미지원"},                      # 같은 신원
                 {"ticker": "091340", "year": 2026, "reprt": "11012",
-                 "reason": "형식미지원", "ex": "이미 있다"},
+                 "reason": "형식미지원", "ex": "이미 있다",
+                 "ps": bl._parse_sig()},
                 {bl._TOMB_KEY: 3},
                 # 원문 없이 기록되는 사유 — 되메울 원문이 없고, 다시 조회하면
                 # 그 자리에 파싱 사유가 들어와 이 신호가 지워진다(#38·#43).
@@ -72811,7 +72819,7 @@ class TestBacklogRollingTable20260918:
     # 091340 2026/11012 — 표 **틀만** 있고 칸이 전부 `-`
     EMPTY = ("13,998 내수 11,587 16,071 16,072 합계 138,863 310,238 330,070 "
              "주) 연결재무제표 기준으로 작성되었습니다. "
-             "나. 수주 실적 (단위 : 백만원) 품목 수주일자 납기 수주총액 "
+             "나. 수주 실적 (단위 : ) 품목 수주일자 납기 수주총액 "
              "기납품액 수주잔고 수량 금액 수량 금액 수량 금액 "
              "- - - - - - - - - - - - - - - - - - 합 계 - - - - - - "
              "5. 위험관리 및 파생거래 시장위험과 위험관리(연결기준)")
@@ -72906,7 +72914,12 @@ class TestBacklogRollingTable20260918:
         원인으로 거를 것)."""
         from bot.dart_backlog import diagnose
         filled = self.EMPTY.replace("합 계 - - - - - -", "합 계 1 2 3 4 5 6")
-        assert diagnose(filled) == "형식미지원", diagnose(filled)
+        # 실측 캡션은 `(단위 : )` 라 값이 있으면 `단위없음`(= 개선 여지)이다
+        # (2026-10-02 정정 — 그 전엔 캡션을 `(단위 : 백만원)` 으로 바꿔 둔 채
+        # '실측 그대로' 라 적었다, #155). 금액 캡션을 달면 관문까지 간다.
+        assert diagnose(filled) == "단위없음", diagnose(filled)
+        won = filled.replace("(단위 : )", "(단위 : 백만원)")
+        assert diagnose(won) == "형식미지원", diagnose(won)
 
     def test_existing_formats_still_parse(self):
         """새 형식을 더할 때 옛 형식이 안 깨지는지 — 선택기 순서가 바뀌면

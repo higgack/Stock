@@ -37,7 +37,7 @@ import sys
 import time as _time
 import time
 
-_PROBE_VER = 11         # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 12         # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -48,6 +48,9 @@ _PROBE_VER = 11         # 진단 스크립트 버전 배너(실수 #21)
 #   v6(2026-08-21): 어느 **서식(앵커)**로 잡혔는지 표기·집계.
 #   DART 서식이 두 벌이라(`원재료 및 생산설비` 현행 /
 #   `생산 및 설비에 관한 사항` 구) 어느 쪽이 남는지 봐야 한다.
+#   v12(2026-10-02): 수주잔고 '고칠 것 아님' 을 `dart_backlog` 단일 출처로
+#   (`잔고0이하`·`원문미제공` 이 개선 여지로 세어지던 것) — 판정이 바뀌었으니
+#   옛 출력과 섞지 않게 판을 올린다(v7~v11 은 기록이 없다).
 
 
 def _universe(limit: int) -> list[str]:
@@ -147,7 +150,12 @@ def _latest_quarters(dart, ticker: str) -> list[dict]:
         return []
 
 
-_NOT_FIXABLE = ("미공시", "명시적미공시", "미검사")
+# 수주잔고 쪽 '고칠 것 아님' 은 `dart_backlog.NON_FIXABLE_REASONS` 가 단일
+# 출처다 — 여기 리터럴로 적어 두면 새 갈래(`잔고0이하`·`원문미제공`)가 생길
+# 때 이 스윕만 그걸 '개선 여지' 로 센다(#38·#45). `미검사` 는 이 스윕 고유.
+from bot.dart_backlog import NON_FIXABLE_REASONS as _BL_NON_FIXABLE  # noqa: E402
+
+_NOT_FIXABLE = _BL_NON_FIXABLE + ("미검사",)
 
 
 def fixable_reasons(by_reason: dict) -> dict:
@@ -300,8 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             # ⚠️ 사유만으론 어떤 열 구성인지 모른다 — 열 뜻을 추측해 배정하면
             # 의미가 틀리고 검산도 못 잡는다(#106). 원문 발췌가 다음 라운드의
             # 유일한 근거다.
-            if bl_excerpt and bl_why.split(" · ")[0] not in (
-                    "미공시", "명시적미공시", "미검사"):
+            if bl_excerpt and bl_why.split(" · ")[0] not in _NOT_FIXABLE:
                 backlog_ex.append((tk, bl_why, bl_excerpt[:args.show]))
         cover["제품표"] += 1 if prod else 0
         cover["생산표"] += 1 if got else 0

@@ -4107,18 +4107,27 @@ async def _periodic_backlog_review(application) -> None:
             if key == sent_key:            # 같은 창에서 중복 발송 방지
                 continue
             sent_key = key
-            from bot.dart_backlog import review_text
-            body = await asyncio.to_thread(review_text)
-            if not body:
-                continue                   # 새 미스 없음 — 무음
             # 수신자는 DART 공시알림에 이미 등록된 chat_id 를 재사용한다 —
             # 별도 등록 절차를 만들면 그것부터 기억해야 해서 취지에 어긋난다.
             # 미등록이면 조용히 건너뛴다(알림을 켠 적 없는 사용자에게 안 보냄).
+            # ⚠️ 재조회 **전에** 본다 — 받을 사람이 없는데 정기보고서를 최대
+            # 40건(건당 최대 40MB) 받을 이유가 없다(2026-10-02 독립 리뷰 L5).
             from bot.dart_fav_alerts import status as _dfa_status
             chat_id = (_dfa_status() or {}).get("chat_id")
             if not chat_id:
                 log.info("backlog review: 수신 chat_id 없음 — 발송 생략")
                 continue
+            # ⚠️ 발송 **직전에** 옛 파서가 남긴 줄을 지금 파서로 다시 본다
+            # (2026-10-02 — 09-19 에 고친 391710 이 2주 뒤 보고서에 '고칠 것'
+            # 으로 실렸다). 재조회 실패는 사유로 실리고 보고서는 그대로 나간다.
+            # 재조회는 정기보고서를 최대 40건 받아 훑어 수 분 걸릴 수 있다 —
+            # to_thread 라 이벤트 루프(getUpdates)는 안 막힌다(실수 #2). `.busy`
+            # 로는 안 감싼다: 형제 주기 작업(`_periodic_audit_sweep`)과 같은
+            # 규약이고, `.busy` 는 그동안 watchdog 와 배포 재시작을 함께 미룬다.
+            from bot.dart_backlog import review_with_refresh
+            body = await asyncio.to_thread(review_with_refresh)
+            if not body:
+                continue                   # 새 미스 없음 — 무음
             await application.bot.send_message(
                 chat_id=chat_id, text=body, parse_mode="HTML")
         except asyncio.CancelledError:
