@@ -35,6 +35,7 @@ import html as _html
 import logging
 import re
 import threading
+import time
 
 from bot.textwidth import vlen as _vlen
 
@@ -674,6 +675,13 @@ _PARSERS = {"products": parse_products, "production": parse_production}
 
 # 파싱 결과 디스크 캐시(#21b — 결과에 파서 지문을 찍고 읽을 때 대조).
 _TABLES_TTL = 24 * 3600
+# 문서를 한 건도 못 읽은 빈손은 **짧게만** 믿는다(실수 #428 델타 리뷰 M1).
+# 24시간 믿으면 목록 조회 한 번의 일시 실패가 하루를 비우고(#280), 아예 안
+# 적으면 0건이 영구인 회사 — 결산월이 12월이 아니라 `dart_client.
+# _periodic_report_window` 의 제출창이 안 맞는 회사 — 가 탭을 열 때마다 목록을
+# 다시 걷는다(미리받기·핸들러가 각자 걸어 요청마다 16회 실측 · 장애 땐
+# 타임아웃만 합해도 요청마다 최대 ~80초, #303 실패는 짧게만 믿는다).
+_TABLES_EMPTY_TTL = 30 * 60
 
 
 def _parse_sig() -> str:
@@ -713,18 +721,32 @@ def _tables_cached(key: str):
     try:
         from bot.finviz_client import _cached
         hit = _cached(key, ttl=_TABLES_TTL)
-        return hit.get("data") if isinstance(hit, dict) and "data" in hit else None
+        if not (isinstance(hit, dict) and "data" in hit):
+            return None
+        if hit.get("empty_read"):
+            # 빈손 기록은 짧게만 — 나이는 **기록 안에 적힌 시각**으로 잰다
+            # (파일 mtime 을 따로 물으면 그 사이 덮인 파일의 나이가 붙는다, #160).
+            at = hit.get("at")
+            if (not isinstance(at, (int, float))
+                    or time.time() - at >= _TABLES_EMPTY_TTL):
+                return None
+        return hit.get("data")
     except Exception as exc:                                   # noqa: BLE001
         log.debug("tables cache read(%s): %s", key, exc)
         return None
 
 
-def _tables_cache_write(key: str, out: dict) -> None:
+def _tables_cache_write(key: str, out: dict, *, empty_read: bool = False) -> None:
+    """`empty_read=True` 는 문서를 한 건도 못 읽은 빈손 — `_tables_cached` 가
+    `_TABLES_EMPTY_TTL` 동안만 믿는다."""
     if _parse_sig() == "nosig":
         return
     try:
         from bot.finviz_client import _cache_write
-        _cache_write(key, {"data": out})
+        rec: dict = {"data": out}
+        if empty_read:
+            rec.update(empty_read=True, at=time.time())
+        _cache_write(key, rec)
     except Exception as exc:                                   # noqa: BLE001
         log.debug("tables cache write(%s): %s", key, exc)
 
@@ -815,7 +837,7 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
         log.info("tables_rolling(%s): DART_API_KEY 없음 — 캐시에 없는 표는 "
                  "받지 못한다", ticker)
         return out
-    # 문서를 한 건이라도 **읽었나** — 못 읽은 빈손은 굽지 않는다(아래).
+    # 문서를 한 건이라도 **읽었나** — 못 읽은 빈손은 짧게만 굽는다(아래).
     read_any = False
     try:
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
@@ -847,13 +869,15 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
         log.warning("tables_rolling(%s): %s", ticker, exc)
         return out                     # 실패는 캐시하지 않는다 — 다음에 재시도
     if not read_any:
-        # ⚠️ 키가 있어도 접수번호 0건·원문 실패면 **본 것이 없다**. 분기
-        # 재무가 있는 종목이면 정기보고서는 있으므로 0건은 '없다' 가 아니라
+        # ⚠️ 키가 있어도 접수번호 0건·원문 실패면 **본 것이 없다**. 0건은
         # '못 받았다'(목록 조회 `list.json` 은 캐시가 없어 일시 실패가 그대로
-        # 0건이 된다) — 그 `{}` 를 24시간 구우면 하루 동안 '표 없음' 이다
-        # (실수 #428 독립 리뷰 M3 · #280 빈 결과는 굽지 않는다).
-        log.info("tables_rolling(%s): 읽은 문서 0건 — 굽지 않는다(다음에 "
-                 "재시도)", ticker)
+        # 0건이 된다)일 수도, '없다'(결산월이 12월이 아니라 제출창이 안 맞는
+        # 회사 — 영구)일 수도 있고 여기선 둘을 못 가른다. 24시간 구우면 앞의
+        # 경우 하루 동안 '표 없음' 이고(독립 리뷰 M3 · #280), 아예 안 구우면
+        # 뒤의 경우 탭마다 목록을 다시 걷는다(델타 리뷰 M1) — 짧게만 굽는다.
+        log.info("tables_rolling(%s): 읽은 문서 0건 — %d분만 믿고 다시 "
+                 "걷는다", ticker, _TABLES_EMPTY_TTL // 60)
+        _tables_cache_write(ck, out, empty_read=True)
         return out
     _tables_cache_write(ck, out)
     return out

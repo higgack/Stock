@@ -13,9 +13,10 @@
    키 부재를 말하고 DART 메서드를 부르지 않는다(스텁이 아니라 실물이어야
    옛 판에서 실패한다 — `__bool__` 없는 그 모양이 결함이다, #155).
 3. 인자로 받는 함수 — 키 없이 할 수 있는 일(디스크 캐시)은 하고, 문서를 한
-   건도 못 읽은 빈손은 캐시에 굽지 않는다(#428 — 키 검사를 캐시 앞에 두면
+   건도 못 읽은 빈손은 **짧게(30분)만** 굽는다(#428 — 키 검사를 캐시 앞에 두면
    받아 둔 답을 잃고, 안 두면 접수번호 0건의 `{}` 가 24시간 구워졌다. 키가
-   있어도 목록 조회가 일시 실패하면 같은 0건이다). ⚠️ 이건 **함수 계약**이다 —
+   있어도 목록 조회가 일시 실패하면 같은 0건이고, 아예 안 구우면 0건이 영구인
+   회사가 탭마다 목록을 다시 걷는다 — 델타 리뷰 M1). ⚠️ 이건 **함수 계약**이다 —
    지금 진입점은 키가 없으면 분기 시계열이 먼저 비어 여기 닿지 않는다(독립
    리뷰 H1, 첫 판의 '하루 동안 표 없음' 은 재지 않은 운영 서술이었다).
 4. 키 없을 때 화면 — 분기실적 탭은 '소스 미제공' 대신 키 부재를 말하고,
@@ -1150,29 +1151,112 @@ class TestKeylessCallees:
                                  self._QS) == {"products": {"rows": [1]}}
         assert keyless == []
 
-    def test_tables_rolling_keyed_but_read_nothing_bakes_nothing(
-            self, monkeypatch, caplog):
-        """키가 있어도 **문서를 한 건도 못 읽었으면** 빈손이다 — 목록 조회
-        (`list.json`, 캐시 없음)가 일시 실패하면 접수번호 0건이 되는데, 옛
-        판은 그 `{}` 를 24시간 구웠다(리뷰 M3). 분기 재무가 있는 종목이면
-        정기보고서는 있으므로 0건은 '없다' 가 아니라 '못 받았다' 다."""
+    @staticmethod
+    def _real_cache(monkeypatch, tmp_path):
+        """실물 `_tables_cached`·`_tables_cache_write` 를 tmp 디렉터리에 — 짧은
+        기록의 나이는 `dp.time` 이 잰다(테스트가 시계를 옮긴다)."""
+        import time
+        import types
+
+        import bot.dart_production as dp
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
+        clock = {"t": time.time()}
+        monkeypatch.setattr(dp, "time",
+                            types.SimpleNamespace(time=lambda: clock["t"]))
+        return clock
+
+    def test_tables_rolling_keyed_but_read_nothing_bakes_short(
+            self, monkeypatch, tmp_path, caplog):
+        """키가 있어도 **문서를 한 건도 못 읽었으면** 빈손이다. 24시간 구우면
+        목록 조회(`list.json`, 캐시 없음) 한 번의 일시 실패가 하루를 비우고
+        (리뷰 M3), 아예 안 구우면 0건이 **영구인** 회사 — 결산월이 12월이
+        아니라 `_periodic_report_window` 의 제출창이 안 맞는 회사 — 가 탭을
+        열 때마다 목록을 다시 걷는다. 미리받기 스레드와 핸들러가 각자 걸어
+        요청마다 16회였고(실측) 장애 땐 타임아웃만 합해도 요청마다 최대 ~80초다
+        (델타 리뷰 M1).
+        그래서 **짧게(30분)** 믿는다 — 그 안에서는 핸들러도 미리받기도 다시
+        걷지 않고, 지나면 다시 걷는다(#303 실패는 짧게만 믿는다)."""
         import logging
+        import types
 
         import bot.dart_client as dc
         import bot.dart_production as dp
         _no_doc_fetch(monkeypatch)
+        walks: list = []
         monkeypatch.setattr(dc.DartClient, "find_periodic_reports",
-                            lambda self, *a: [])
+                            lambda self, *a: walks.append(a) or [])
         monkeypatch.setattr(dc.DartClient, "find_periodic_report",
                             lambda self, *a: None)
-        store: dict = {}
-        monkeypatch.setattr(dp, "_tables_cached", store.get)
-        monkeypatch.setattr(dp, "_tables_cache_write", store.__setitem__)
+        clock = self._real_cache(monkeypatch, tmp_path)
+        cli = dc.DartClient("k-1234567890")
         with caplog.at_level(logging.INFO, logger=dp.log.name):
-            assert dp.tables_rolling(dc.DartClient("k-1234567890"),
-                                     "005930.KS", self._QS) == {}
-        assert store == {}, store
-        assert "읽은 문서 0건" in caplog.text, caplog.text
+            assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        assert walks and "읽은 문서 0건" in caplog.text, caplog.text
+        n = len(walks)
+        clock["t"] += dp._TABLES_EMPTY_TTL - 60
+        assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        assert len(walks) == n, "짧은 기록 안인데 목록을 다시 걸었다"
+        made: list = []
+        monkeypatch.setattr(dp, "_PREFETCH", set())
+        monkeypatch.setattr(dp, "threading", types.SimpleNamespace(
+            Thread=lambda *a, **k: made.append(k) or types.SimpleNamespace(
+                start=lambda: None)))
+        dp.prefetch_tables(cli, "005930.KS", self._QS)
+        assert made == [], "빈손 기록이 살아 있는데 미리받기가 또 걸으러 갔다"
+        clock["t"] += 120                      # 이제 30분을 넘겼다
+        assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        assert len(walks) > n, "짧은 기록이 지났는데 다시 걷지 않았다"
+        assert dp._TABLES_EMPTY_TTL == 30 * 60      # 크기도 못박는다(#66)
+
+    def test_tables_rolling_unreadable_document_bakes_short(
+            self, monkeypatch, tmp_path):
+        """'원문 실패' 갈래 — 접수번호는 있는데 원문을 못 받았으면 본 것이
+        없다. 24시간 구우면 그 하루 내내 '표 없음' 이다(델타 리뷰 L1:
+        `read_any = True` 변형이 살아남았다 — 접수번호 0건만 재고 있었다)."""
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+        fetched: list = []
+        monkeypatch.setattr(dc.DartClient, "find_periodic_reports",
+                            lambda self, *a: [{"rcept_no": "20260814000001"}])
+        monkeypatch.setattr(df, "_fetch_doc_text",
+                            lambda rn, *a, **k: fetched.append(rn) or None)
+        monkeypatch.setattr(df, "doc_was_truncated", lambda *a, **k: False)
+        clock = self._real_cache(monkeypatch, tmp_path)
+        cli = dc.DartClient("k-1234567890")
+        assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        n = len(fetched)
+        assert n, fetched
+        clock["t"] += dp._TABLES_EMPTY_TTL + 60
+        assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        assert len(fetched) > n, "원문을 못 받은 빈손이 30분을 넘겨 살아 있다"
+
+    def test_tables_rolling_any_read_document_bakes_long(
+            self, monkeypatch, tmp_path):
+        """반대 증거 — 한 건이라도 **읽었으면** 그건 답이라 24시간 굽는다.
+        마지막 문서만 보고 판정하면(`read_any = bool(markup)`) 앞에서 읽은
+        문서가 있어도 빈손으로 쳐 30분마다 같은 원문을 다시 받아 훑는다
+        (델타 리뷰 L1 · P03)."""
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+        fetched: list = []
+        monkeypatch.setattr(dc.DartClient, "find_periodic_reports",
+                            lambda self, *a: [{"rcept_no": "A"},
+                                              {"rcept_no": "B"}])
+        monkeypatch.setattr(
+            df, "_fetch_doc_text",
+            lambda rn, *a, **k: fetched.append(rn) or (
+                "<P>표 없는 본문</P>" if rn == "A" else None))
+        monkeypatch.setattr(df, "doc_was_truncated", lambda *a, **k: False)
+        clock = self._real_cache(monkeypatch, tmp_path)
+        cli = dc.DartClient("k-1234567890")
+        assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        assert fetched == ["A", "B"], fetched
+        clock["t"] += dp._TABLES_EMPTY_TTL + 60
+        assert dp.tables_rolling(cli, "005930.KS", self._QS) == {}
+        assert fetched == ["A", "B"], "문서를 읽었는데 30분 만에 다시 걸었다"
 
     def test_tables_rolling_read_document_without_table_is_cached(
             self, monkeypatch):
@@ -1269,6 +1353,27 @@ class TestMajorShareholdersKeyless:
         assert "returned empty" not in caplog.text, caplog.text
         assert "계열회사(타법인 출자) 현황" not in seg
 
+    def test_keyed_renders_affiliate_table(self, monkeypatch):
+        """반대 증거 — 운영 VM 은 키가 있어 **이 갈래만** 탄다. 키가 있으면
+        메서드를 부르고 표를 그린다(델타 리뷰 L2: `if dart_ready(dart2) and
+        False:` 가 살아남았다 — 키 있는 스텁이 빈 목록만 줘 표가 한 번도
+        그려지지 않았다)."""
+        import bot.dart_client as dc
+        from bot.dashboard import _render_stock_info_html
+        cli = dc.DartClient("k-1234567890")
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: cli)
+        monkeypatch.setattr(dc.DartClient, "get_major_shareholders",
+                            lambda self, code: [])
+        monkeypatch.setattr(
+            dc.DartClient, "get_affiliate_investments",
+            lambda self, code: [{"name": "삼성디스플레이", "purpose": "경영참여",
+                                 "pct": 84.8, "book_value": 18_000_000_000_000}])
+        seg = _render_stock_info_html({
+            "ticker": "018260.KS",
+            "stock_info": {"currency": "KRW"}})["other_panes"]
+        assert "계열회사(타법인 출자) 현황 (DART 사업보고서 · 1사)" in seg, seg
+        assert "삼성디스플레이" in seg and "84.80%" in seg, seg
+
 
 class TestQuarterlyEmptyReason:
     """분기실적 탭이 비었을 때 사용자가 실제로 보는 문구(리뷰 H1 — 운영
@@ -1304,14 +1409,19 @@ class TestQuarterlyEmptyReason:
         assert r["ok"] is False and "DART_API_KEY" not in r["error"], r
         assert "분기 재무 데이터 없음" in r["error"], r
 
-    def test_non_kr_does_not_ask_dart(self, monkeypatch):
-        """반대 증거 — 비-KR 은 DART 를 안 쓰므로 묻지도 않는다."""
+    @pytest.mark.parametrize("ticker", ["AAPL", "7203.T", "0700.HK",
+                                        "2330.TW", "600519.SS"])
+    def test_non_kr_does_not_ask_dart(self, ticker, monkeypatch):
+        """반대 증거 — 비-KR 은 DART 를 안 쓰므로 묻지도 않는다. 시장마다 잰다
+        (델타 리뷰 L3: `!= "KR"` 을 `== "US"` 로 바꾼 변형이 US 하나로는
+        살아남았다 — 그러면 키 없는 프로세스의 7203.T·0700.HK 탭이 '국내 분기
+        재무' 를 탓한다)."""
         import bot.dart_client as dc
         import bot.quarterly_infographic as qi
         monkeypatch.setattr(dc, "get_dart",
                             lambda *a, **k: pytest.fail("비-KR 인데 DART 를 물었다"))
         monkeypatch.setattr(qi, "build_payload", lambda *a, **k: None)
-        r = qi.get_or_render("AAPL", {})
+        r = qi.get_or_render(ticker, {})
         assert r["ok"] is False and "분기 재무 데이터 없음" in r["error"], r
 
 
