@@ -2090,12 +2090,6 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
     ⚠️ 원문을 40MB 로 받는다 — 「매출 및 수주상황」은 목차상 II.사업의 내용
     뒤라 기본 3MB 상한 밖으로 밀리고, 그러면 **공시하는 회사도 '없음'으로
     오판된다**(2026-08-17 프로브로 확인)."""
-    # ⚠️ `not dart` 만 보면 키 없는 `get_dart()` 가 통과해 빈 원문을
-    # `원문미제공` 으로 원장에 남겼다(인포그래픽 경로, 실수 #427).
-    if not dart_ready(dart):
-        # ⚠️ 계약은 (값, 사유) 튜플이다 — None 하나를 내면 호출부의
-        # `v, why = backlog_probe(...)` 가 TypeError 로 터진다.
-        return None, "DART없음"
     # ⚠️ `out` 을 요구하는 호출(감사·프로브)은 캐시를 안 탄다 — 원문 발췌·
     # 상세는 매번 원문에서 다시 뽑아야 진단이 신선하다(#35).
     ck = _bl_key(ticker, year, reprt_code) if out is None else ""
@@ -2103,6 +2097,15 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         hit = _bl_cached(ck)
         if hit is not None:
             return hit
+    # ⚠️ 키 검사는 캐시 **뒤**다 — 키 없는 프로세스도 받아 둔 답은 낸다.
+    # `not dart` 만 보면 키 없는 `get_dart()` 가 통과해 빈 원문을
+    # `원문미제공` 으로 원장에 남길 수 있었고(실수 #427), 그걸 고치며 이 검사를
+    # 캐시 앞에 둬 받아 둔 답까지 버렸다(실수 #428 — 둘 다 함수 계약의 결함.
+    # 지금 진입점은 키가 없으면 분기 시계열이 먼저 비어 여기 닿지 않는다).
+    if not dart_ready(dart):
+        # ⚠️ 계약은 (값, 사유) 튜플이다 — None 하나를 내면 호출부의
+        # `v, why = backlog_probe(...)` 가 TypeError 로 터진다.
+        return None, "DART없음"
     try:
         from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
         # ⚠️ 후보를 **순서대로** 시도한다. 가장 최근 접수건에 문서가 없는
