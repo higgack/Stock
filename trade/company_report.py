@@ -696,11 +696,20 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None,
                     products = r.get("products", [])
             except Exception as exc:
                 log.warning("company_report DART %s: %s", code, exc)
+    # 제품 구성이 비었는데 그 이유가 **키 부재**면 화면이 그렇게 말한다 —
+    # '미확보(비상장·해외·미발견)' 로 두면 원천 부재로 읽힌다(#43·#82).
+    products_why = ""
+    if code and not products:
+        from trade.dart_revenue import dart_key
+        if not dart_key(api_key):
+            from bot.dart_client import keyless_reason
+            products_why = keyless_reason("DART 매출표를")
     # 회사별 탭과 동일 소스(store.db BeOn 알림) — 회사 모드에서만 필요(품목 모드는
     # 위에서 이미 반환). 풍부한 회사→품목 매핑(사용자 2026-06-18).
     exposure = _company_exposure(name, by_mti, pairs, by_imp, _load_alerts())
     return {"mode": "company", "query": q, "code": code, "name": name,
-            "products": products, "exposure": exposure}
+            "products": products, "products_why": products_why,
+            "exposure": exposure}
 
 
 def _render_free_item(data: dict) -> str:
@@ -841,8 +850,10 @@ def render_free(data: dict) -> str:
                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">매출비중</th></tr></thead>'
                      f'<tbody>{prows}</tbody></table>')
     else:
+        _why = data.get("products_why")
         prod_html = ('<div style="color:#9aa0aa;font-size:13px;margin:10px 0">📦 제품 구성 — '
-                     'DART 매출표 미확보(비상장·해외·미발견)</div>')
+                     + (e(_why) if _why else 'DART 매출표 미확보(비상장·해외·미발견)')
+                     + '</div>')
     # 관세청 노출 (수출·수입 추세 YoY·ΔYoY·MoM·ΔMoM 포함 — 산업트렌드와 동일 계산식)
     if exposure:
         exp_html = _exposure_table(

@@ -661,12 +661,21 @@ def diagnose(markup: str | None, *, truncated: bool = False) -> str:
 
 
 def _rcept_nos(dart, ticker: str, year: int, reprt_code: str) -> list[str]:
-    """해당 분기 보고서의 접수번호들(정정공시 포함)."""
+    """해당 분기 보고서의 접수번호들(정정공시 포함).
+
+    목록 조회의 답을 못 들었으면 그 사유가 반환 목록의 `failed` 에 실린다
+    (`dart_client.list_failure` 로 읽는다). 단건 조회로 다시 물어 하나를
+    얻어도 사유는 남긴다 — 단건 조회는 늦게 낸 정정을 안 보므로 그 분기의
+    답이 온전하다고 말할 수 없다."""
+    from bot.dart_client import PeriodicReports, list_failure
     reps = dart.find_periodic_reports(ticker, year, reprt_code)
+    failed = list_failure(reps)
     if not reps:
         rep = dart.find_periodic_report(ticker, year, reprt_code)
         reps = [rep] if rep and rep.get("rcept_no") else []
-    return [r.get("rcept_no") for r in reps if r and r.get("rcept_no")]
+    return PeriodicReports(
+        (r.get("rcept_no") for r in reps if r and r.get("rcept_no")),
+        failed=failed)
 
 
 # 표 종류 → 파서. 새 표를 붙일 때 여기만 늘리면 수집 사다리는 그대로다.
@@ -675,13 +684,18 @@ _PARSERS = {"products": parse_products, "production": parse_production}
 
 # 파싱 결과 디스크 캐시(#21b — 결과에 파서 지문을 찍고 읽을 때 대조).
 _TABLES_TTL = 24 * 3600
-# 문서를 한 건도 못 읽은 빈손은 **짧게만** 믿는다(실수 #428 델타 리뷰 M1).
-# 24시간 믿으면 목록 조회 한 번의 일시 실패가 하루를 비우고(#280), 아예 안
-# 적으면 0건이 영구인 회사 — 결산월이 12월이 아니라 `dart_client.
-# _periodic_report_window` 의 제출창이 안 맞는 회사 — 가 탭을 열 때마다 목록을
-# 다시 걷는다(미리받기·핸들러가 각자 걸어 요청마다 16회 실측 · 장애 땐
-# 타임아웃만 합해도 요청마다 최대 ~80초, #303 실패는 짧게만 믿는다).
-_TABLES_EMPTY_TTL = 30 * 60
+# 권위 없는 결과는 **짧게만** 믿는다 — 길이는 `dart_client.PROVISIONAL_TTL_SEC`
+# (수주잔고와 같은 규약, #38). 두 갈래다:
+# (a) 문서를 한 건도 못 읽은 빈손(실수 #428 델타 리뷰 M1). 24시간 믿으면 목록
+#     조회 한 번의 일시 실패가 하루를 비우고(#280), 아예 안 적으면 0건이 영구인
+#     회사 — 결산월이 12월이 아니라 `dart_client._periodic_report_window` 의
+#     제출창이 안 맞는 회사 — 가 탭을 열 때마다 목록을 다시 걷는다(미리받기·
+#     핸들러가 각자 걸어 요청마다 16회 실측 · 장애 땐 타임아웃만 합해도 요청마다
+#     최대 ~80초, #303 실패는 짧게만 믿는다).
+# (b) 걷는 동안 **못 물어본 곳**(목록·원문 조회의 일시 실패)이 있었던 결과
+#     (델타 리뷰 L4). 최신 분기 목록만 못 받고 옛 분기 문서가 읽히면 옛 보고서
+#     표가 최신 분기 키로 24시간 굳었다 — 그 하루 동안 최신 보고서를 다시 찾지
+#     않는다.
 
 
 def _parse_sig() -> str:
@@ -723,12 +737,13 @@ def _tables_cached(key: str):
         hit = _cached(key, ttl=_TABLES_TTL)
         if not (isinstance(hit, dict) and "data" in hit):
             return None
-        if hit.get("empty_read"):
-            # 빈손 기록은 짧게만 — 나이는 **기록 안에 적힌 시각**으로 잰다
+        if hit.get("short"):
+            # 권위 없는 기록은 짧게만 — 나이는 **기록 안에 적힌 시각**으로 잰다
             # (파일 mtime 을 따로 물으면 그 사이 덮인 파일의 나이가 붙는다, #160).
+            from bot.dart_client import PROVISIONAL_TTL_SEC
             at = hit.get("at")
             if (not isinstance(at, (int, float))
-                    or time.time() - at >= _TABLES_EMPTY_TTL):
+                    or time.time() - at >= PROVISIONAL_TTL_SEC):
                 return None
         return hit.get("data")
     except Exception as exc:                                   # noqa: BLE001
@@ -736,16 +751,17 @@ def _tables_cached(key: str):
         return None
 
 
-def _tables_cache_write(key: str, out: dict, *, empty_read: bool = False) -> None:
-    """`empty_read=True` 는 문서를 한 건도 못 읽은 빈손 — `_tables_cached` 가
-    `_TABLES_EMPTY_TTL` 동안만 믿는다."""
+def _tables_cache_write(key: str, out: dict, *, short: str = "") -> None:
+    """`short` 는 권위 없는 결과의 갈래 — `"empty"`(문서를 한 건도 못 읽은
+    빈손) · `"partial"`(못 물어본 곳이 있었다). `_tables_cached` 가
+    `dart_client.PROVISIONAL_TTL_SEC` 동안만 믿는다."""
     if _parse_sig() == "nosig":
         return
     try:
         from bot.finviz_client import _cache_write
         rec: dict = {"data": out}
-        if empty_read:
-            rec.update(empty_read=True, at=time.time())
+        if short:
+            rec.update(short=short, at=time.time())
         _cache_write(key, rec)
     except Exception as exc:                                   # noqa: BLE001
         log.debug("tables cache write(%s): %s", key, exc)
@@ -832,31 +848,48 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
     # 통과시켜 접수번호 0건의 `{}` 를 24시간 캐시에 남길 수 있었다(실수 #428 —
     # 함수 계약의 결함. 지금 진입점은 키가 없으면 분기 시계열이 먼저 비어
     # 여기 닿지 않는다).
-    from bot.dart_client import dart_ready
+    from bot.dart_client import PROVISIONAL_TTL_SEC, dart_ready
     if not dart_ready(dart):
         log.info("tables_rolling(%s): DART_API_KEY 없음 — 캐시에 없는 표는 "
                  "받지 못한다", ticker)
         return out
     # 문서를 한 건이라도 **읽었나** — 못 읽은 빈손은 짧게만 굽는다(아래).
     read_any = False
+    # 걷는 동안 **못 물어본 곳** — (분기 라벨, 사유). 하나라도 있으면 결과에
+    # 권위가 없다: 그 자리에 더 최신 표가 있었을 수 있다(델타 리뷰 L4).
+    missed: list[tuple[str, str]] = []
     try:
+        from bot.dart_client import list_failure
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
-                                   _fetch_doc_text, doc_was_truncated)
+                                   _fetch_doc_text, doc_was_truncated,
+                                   source_has_no_document)
         for q in reversed(quarters[-max_back:]):
             missing = [k for k in keys if k not in out]
             if not missing:
                 break
-            for rn in _rcept_nos(dart, ticker, q.get("year"),
-                                 q.get("reprt_code")):
+            label = q.get("label") or ""
+            rns = _rcept_nos(dart, ticker, q.get("year"), q.get("reprt_code"))
+            why = list_failure(rns)
+            if why:
+                missed.append((label, why))
+            for rn in rns:
                 for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
                     markup = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
                                              raw_markup=True)
                     read_any = read_any or bool(markup)
+                    if not markup and not source_has_no_document(rn):
+                        # 원천이 '파일 없음'(013·014)이라고 **답한** 게 아니면
+                        # 답을 못 들은 것이다(타임아웃 · 직전 실패의 쿨다운).
+                        missed.append((label, f"원문 {rn} 못 받음"))
                     for k in list(missing):
                         got = _PARSERS[k](markup)
                         if got:
-                            got["basis_label"] = q.get("label") or ""
+                            got["basis_label"] = label
                             got["rcept_no"] = rn
+                            if missed:
+                                # 이 표보다 **앞서** 못 물어본 곳만 이 표를 의심케
+                                # 한다 — 그 뒤의 실패는 다른 표를 찾다 난 것이다.
+                                got["stale_note"] = stale_note(missed, label)
                             out[k] = got
                             missing.remove(k)
                     if not missing:
@@ -875,12 +908,50 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
         # 회사 — 영구)일 수도 있고 여기선 둘을 못 가른다. 24시간 구우면 앞의
         # 경우 하루 동안 '표 없음' 이고(독립 리뷰 M3 · #280), 아예 안 구우면
         # 뒤의 경우 탭마다 목록을 다시 걷는다(델타 리뷰 M1) — 짧게만 굽는다.
-        log.info("tables_rolling(%s): 읽은 문서 0건 — %d분만 믿고 다시 "
-                 "걷는다", ticker, _TABLES_EMPTY_TTL // 60)
-        _tables_cache_write(ck, out, empty_read=True)
+        log.info("tables_rolling(%s): 읽은 문서 0건(못 물어본 곳 %d) — %d분만 "
+                 "믿고 다시 걷는다", ticker, len(missed),
+                 PROVISIONAL_TTL_SEC // 60)
+        _tables_cache_write(ck, out, short="empty")
+        return out
+    if missed:
+        # 읽은 문서는 있지만 못 물어본 곳도 있다 — 옛 보고서 표를 최신 분기
+        # 키로 24시간 굳히지 않는다(델타 리뷰 L4). 화면은 표마다 `stale_note`
+        # 로 그 사실을 말한다(#43).
+        log.info("tables_rolling(%s): 못 물어본 곳 %d — %s — %d분만 믿고 다시 "
+                 "걷는다", ticker, len(missed),
+                 "; ".join(f"{lb or '?'} {w}" for lb, w in missed[:4]),
+                 PROVISIONAL_TTL_SEC // 60)
+        _tables_cache_write(ck, out, short="partial")
         return out
     _tables_cache_write(ck, out)
     return out
+
+
+def stale_note(missed: list, basis_label: str) -> str:
+    """표보다 앞서 못 물어본 보고서가 있었다는 화면 문구(단일 출처).
+
+    갈래가 둘이다 — 더 최신 분기의 보고서를 못 받았거나(델타 리뷰 L4 의 본
+    갈래), 이 표와 **같은 분기**의 다른 접수본(앞 후보인 정정본 · 늦게 낸
+    정정의 목록)을 못 받았거나. 뒤의 경우 '26.2Q 보고서 기준' 표 아래에
+    '26.2Q 보고서를 받지 못해' 라고 적으면 화면이 제 말을 뒤집는다(#34).
+
+    ⚠️ '최신이 **아닐 수** 있다' 까지만 말한다 — 못 물어본 보고서에 그 표가
+    있었는지는 모른다(#165). '30분 뒤 조회부터' 는 짧은 기록의 수명이다:
+    그 뒤 첫 조회(미리받기 포함)가 다시 걷는다."""
+    from bot.dart_client import PROVISIONAL_TTL_SEC
+    labels = list(dict.fromkeys(lb for lb, _w in missed))
+    parts = []
+    newer = [lb for lb in labels if lb and lb != basis_label]
+    if newer:
+        parts.append(f"{', '.join(newer)} 보고서")
+    if basis_label and basis_label in labels:
+        parts.append(f"{basis_label}의 다른 접수본(정정 등)")
+    if not parts:
+        parts.append("일부 보고서")           # 분기 라벨을 모르면 단정하지 않는다
+    josa = "을" if parts[-1].endswith(")") else "를"
+    return (f"⚠️ 이번 조회에서 {' · '.join(parts)}{josa} 받지 못해 이 표가 "
+            f"최신이 아닐 수 있습니다 — {PROVISIONAL_TTL_SEC // 60}분 뒤 "
+            f"조회부터 다시 받습니다")
 
 
 def production_rolling(dart, ticker: str, quarters: list, max_back: int = 4
@@ -969,7 +1040,13 @@ def render_products_html(prod: dict | None) -> str:
              else "📦 주요 제품 및 서비스")
     if prod.get("kind") == "매입":
         meta.insert(0, "판매 표 미기재 — 매입 표로 대체")
-    return dark_panel(title, meta, prod["table_html"], prod.get("notes"))
+    return dark_panel(title, meta, prod["table_html"], _notes_with_stale(prod))
+
+
+def _notes_with_stale(prod: dict) -> list[str]:
+    """각주 — 못 물어본 보고서가 있었으면 그 사실을 **첫 줄**에(#43·#228)."""
+    stale = [prod["stale_note"]] if prod.get("stale_note") else []
+    return stale + list(prod.get("notes") or [])
 
 
 def render_html(prod: dict | None) -> str:
@@ -984,4 +1061,4 @@ def render_html(prod: dict | None) -> str:
         meta.append(prod["unit"])
     meta.append("출처: DART 정기보고서 원문")
     return dark_panel("🏭 " + (" · ".join(kinds) if kinds else "생산 현황"),
-                      meta, prod["table_html"], prod.get("notes"))
+                      meta, prod["table_html"], _notes_with_stale(prod))

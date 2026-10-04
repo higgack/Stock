@@ -1881,10 +1881,9 @@ def _empty_payload_reason(ticker: str) -> str:
         from bot.market import detect_market
         if detect_market((ticker or "").upper()) != "KR":
             return _generic
-        from bot.dart_client import dart_ready, get_dart
+        from bot.dart_client import dart_ready, get_dart, keyless_reason
         if not dart_ready(get_dart()):
-            return ("DART_API_KEY 없음 — 국내 분기 재무(DART)를 받지 "
-                    "못했습니다")
+            return keyless_reason("국내 분기 재무(DART)를")
     except Exception as exc:                                   # noqa: BLE001
         log.debug("quarterly_infographic: 빈 사유 판정 실패 %s: %s",
                   ticker, exc)

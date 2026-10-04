@@ -102,8 +102,12 @@ def _docs(monkeypatch, texts, calls=None):
             raise got
         return got
 
+    # `source_has_no_document` — 원천이 '파일 없음' 이라 **답했나**(2026-10-04
+    # 부터 수주잔고가 묻는다: 못 받은 원문이 있었으면 짧게만 굽는다). 이 가짜는
+    # 원천 답을 흉내 내지 않으므로 늘 '아니오'.
     monkeypatch.setitem(sys.modules, "bot.dart_feed", types.SimpleNamespace(
-        _DOC_TEXT_MAX_FULL=2, _fetch_doc_text=_fetch))
+        _DOC_TEXT_MAX_FULL=2, _fetch_doc_text=_fetch,
+        source_has_no_document=lambda rn: False))
 
 
 # ── 391710 — 이미 고쳐진 관측이 보고서에 남는다 ─────────────────────────

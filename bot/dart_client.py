@@ -916,6 +916,36 @@ def _dart_key_from_env_file() -> str:
         return _ENV_KEY_CACHED
 
 
+# 권위 없는 결과 — 문서를 한 건도 못 읽은 빈손, 또는 걷는 동안 **못 물어본
+# 곳**(목록·원문 조회의 일시 실패)이 있었던 결과 — 를 믿는 시간. 표 롤링
+# (`dart_production`)과 수주잔고(`dart_backlog`)가 같이 쓴다(#38). 24시간
+# 믿으면 일시 실패 한 번이 하루를 비우거나 옛 보고서로 굳히고(#280), 아예 안
+# 구우면 원천이 영구히 0건인 회사가 탭마다 다시 걷는다(#303 실패는 짧게만).
+PROVISIONAL_TTL_SEC = 30 * 60
+
+
+class PeriodicReports(list):
+    """정기보고서 후보 목록 + **못 물어본 사유**(`failed`).
+
+    ⚠️ 빈 목록은 두 갈래다 — 원천이 '없다' 고 답했거나(status 013 · 이름이
+    맞는 보고서 0건) 우리가 답을 못 들었거나(타임아웃 · 원천 오류 코드).
+    처방이 정반대인데(#82) 옛 반환은 둘 다 `[]` 였다 — 그래서 표 롤링이 최신
+    분기 목록 조회의 일시 실패 뒤 옛 보고서 표를 **최신 분기 키로 24시간**
+    구웠다(실수 #428 델타 리뷰 L4). 사유는 값과 **같은 응답에** 실려 다닌다
+    (#160 — 두 번째 호출로 묻지 않는다). list 하위형이라 기존 호출부는 그대로다.
+    """
+
+    def __init__(self, items=(), failed: str | None = None):
+        super().__init__(items)
+        self.failed = failed
+
+
+def list_failure(reps) -> str | None:
+    """`find_periodic_reports` 결과에 실린 '못 물어본 사유'. 없으면 None —
+    원천이 답한 목록(빈 목록 포함)이거나 사유를 싣지 않는 대역(테스트 가짜)이다."""
+    return reps.failed if isinstance(reps, PeriodicReports) else None
+
+
 class DartClient:
     """Single-key DART client. Cheap to instantiate; reuse across calls
     to amortize the corp_code mapping load."""
@@ -1293,7 +1323,11 @@ class DartClient:
         (정정·첨부 계열 접수건은 원본을 참조만 하고 자체 문서가 없다).
         그러면 원본이 가려져 그 분기가 통째로 빈다 — 차트 막대가 두 칸
         비어 있던 원인이다(사용자 2026-08-17). 호출부가 순서대로 시도해야
-        한다."""
+        한다.
+
+        반환은 `PeriodicReports` — 목록 조회(1차·후행 정정 2차)의 답을 못
+        들었으면 `failed` 에 사유가 실린다. 원천이 '없다' 고 답한 것(status
+        013 · 이름이 맞는 보고서 0건)은 실패가 아니다(#82)."""
         if not self.api_key:
             return []
         corp_code = self.stock_code_to_corp_code(stock_code)
@@ -1311,14 +1345,20 @@ class DartClient:
             payload = resp.json()
         except Exception as exc:
             log.warning("dart: list.json for %s failed: %s", stock_code, exc)
-            return []
-        if payload.get("status") != "000":
-            return []
+            return PeriodicReports(failed=f"목록 조회 실패({type(exc).__name__})")
+        st = str(payload.get("status") or "")
+        if st != "000":
+            # 013 = 원천이 '조회된 데이터 없음' 이라고 **답했다**. 그 밖(020 한도
+            # 초과 · 800 점검 · 900 등)은 답을 못 들은 것이다(#82).
+            if st == "013":
+                return PeriodicReports()
+            return PeriodicReports(failed=f"목록 조회 status={st}")
         matches = [r for r in payload.get("list") or []
                    if keyword in (r.get("report_nm") or "")]
         matches.sort(key=lambda r: r.get("rcept_dt") or "", reverse=True)
-        out = [{"rcept_no": r.get("rcept_no"), "report_nm": r.get("report_nm"),
-                "rcept_dt": r.get("rcept_dt")} for r in matches]
+        out = PeriodicReports(
+            {"rcept_no": r.get("rcept_no"), "report_nm": r.get("report_nm"),
+             "rcept_dt": r.get("rcept_dt")} for r in matches)
 
         # 2차 — **창 밖에 늦게 접수된 정정**. 제출기한 창(예: 1분기 4/01~5/31)만
         # 보면 그 뒤에 낸 정정이 통째로 안 보인다. 정정이 나오면 원본 문서가
@@ -1342,7 +1382,12 @@ class DartClient:
                 timeout=_HTTP_TIMEOUT,
             )
             pay2 = resp2.json()
-            if pay2.get("status") == "000":
+            st2 = str(pay2.get("status") or "")
+            if st2 not in ("000", "013"):
+                # 늦게 낸 정정을 못 물어봤다 — 1차 목록은 그대로 쓰되 그
+                # 사실을 싣는다(정정본이 원본을 대신할 수 있다).
+                out.failed = f"후행 정정 조회 status={st2}"
+            if st2 == "000":
                 seen = {r["rcept_no"] for r in out}
                 late = [r for r in pay2.get("list") or []
                         if keyword in (r.get("report_nm") or "")
@@ -1355,6 +1400,7 @@ class DartClient:
         except Exception as exc:
             log.debug("find_periodic_reports: 후행 정정 조회 실패 %s: %s",
                       stock_code, exc)
+            out.failed = f"후행 정정 조회 실패({type(exc).__name__})"
         return out
 
     # ── /api/elestock.json — insider / major shareholder holdings ──────
@@ -2019,3 +2065,16 @@ def dart_ready(dart) -> bool:
     없다' 고 **말하거나 멈추는** 자리에 쓴다.
     """
     return dart is not None and bool(getattr(dart, "api_key", None))
+
+
+def keyless_reason(what: str, *, at_collection: bool = False) -> str:
+    """키가 없어 DART 를 못 물었을 때 **빈칸 자리에** 적는 문구(단일 출처, #38).
+
+    `what` 은 목적격 조사까지 붙인 대상이다(`"공시 목록을"`). 키 부재를 말하지
+    않으면 빈칸이 '원천에 없다' 로 읽힌다(#82 · 실수 #428 독립 리뷰 H1).
+
+    `at_collection=True` 는 값을 **모을 때** 키가 없었던 경우(스냅샷에 기록된
+    사실) — 나중에 키를 넣고 그 화면을 다시 봐도 문장이 거짓이 되지 않게
+    '수집 당시' 라고 적는다(#165)."""
+    head = "수집 당시 DART_API_KEY 없음" if at_collection else "DART_API_KEY 없음"
+    return f"{head} — {what} 받지 못했습니다"

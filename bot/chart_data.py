@@ -375,6 +375,16 @@ def _series_payload(
                     e for e in fetch_disclosure_events(ticker, days=max(span, 30))
                     if lo_t <= e["time"] <= hi_t
                 ]
+                # 마커가 하나도 없는데 그 이유가 **키 부재**면 차트 안내 자리가
+                # 그 사실을 말한다(#43) — '공시가 없던 기간' 으로 읽히지 않게.
+                if not payload["events"]:
+                    from bot.market import detect_market
+                    if detect_market(ticker) == "KR":
+                        from bot.dart_client import (dart_ready, get_dart,
+                                                     keyless_reason)
+                        if not dart_ready(get_dart()):
+                            payload["events_note"] = keyless_reason(
+                                "공시 마커(DART 공시 목록)를")
         except Exception:
             pass
     _mark("ind.events", _ind_t.time() - _ind_t0)

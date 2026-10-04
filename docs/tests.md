@@ -2799,13 +2799,68 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 **이 검사가 못 보는 축**(#274):
 - 함수 경계를 넘는 보관소에 클라이언트가 아닌 바인딩이 **하나라도** 있으면(`_D = None` 지연 초기화) 그 판정은 살아 있는 검사로 보고
   넘긴다 — `get_dart` 자신이 그 모양이라 잡으면 제품 코드부터 오탐이다.
-- 클래스 밖에서 쓰는 `obj.속성` · 상속 · `Cls.method(...)` 처럼 클래스로 부르는 메서드 · `getattr`·dict·리스트에 담은 클라이언트 ·
+- → **#429 가 덮었다**(남은 축은 #429 절). 클래스 밖에서 쓰는 `obj.속성` · 상속 · `Cls.method(...)` 처럼 클래스로 부르는 메서드 · `getattr`·dict·리스트에 담은 클라이언트 ·
   `*args`·`**kwargs` 로 넘기기 · `functools.partial`·콜백 등록(실행기 `submit`·`Thread(target=…)` 만 따라간다) · `self.메서드` 가 아닌
   객체 메서드 호출.
-- 다른 철자(`not (d and x)` · `bool(d) is False`) · 긍정 판정의 `else` 갈래 · 반복문에서 받기 전 줄의 판정(두 번째 바퀴엔 받은 뒤다).
+- → **#429 가 덮었다.** 다른 철자(`not (d and x)` · `bool(d) is False`) · 긍정 판정의 `else` 갈래 · 반복문에서 받기 전 줄의 판정(두 번째 바퀴엔 받은 뒤다 — #429 실측: 첫 바퀴는 받기 전 값을 보므로 살아 있는 판정이고, 앞선 클라이언트가 있으면 줄 순서 규칙이 이미 잡는다).
 - 오탐 쪽: 같은 스코프에서 다시 묶은 이름(`d = get_dart(); d = None; if d is None`)은 첫 묶음을 기억해 잡는다(줄 순서만 보고 덮어쓴 것은
   안 본다 — 실측으로 잡힌다).
-- 깊이 상한 6 — 이름을 일곱 번 이상 옮겨 담은 사슬 · 일곱 모듈 이상 거쳐 import 한 전역은 놓친다(실측: 여섯까지 잡는다).
-- 부분 굽기(이 PR 전부터의 동작) — 빈손 판정은 '한 건도 못 읽었나' 만 보므로, 최신 분기의 목록 조회만 일시 실패하고 옛 분기 문서가
+- → **#429 가 덮었다**(순환 감지 — 깊이 상한이 없다). 깊이 상한 6 — 이름을 일곱 번 이상 옮겨 담은 사슬 · 일곱 모듈 이상 거쳐 import 한 전역은 놓친다(실측: 여섯까지 잡는다).
+- → **#429 가 덮었다.** 부분 굽기(이 PR 전부터의 동작) — 빈손 판정은 '한 건도 못 읽었나' 만 보므로, 최신 분기의 목록 조회만 일시 실패하고 옛 분기 문서가
   읽히면 옛 보고서의 표가 **최신 분기 키**로 24시간 구워진다(`basis_label` 이 어느 보고서의 표인지는 적는다 — 델타 리뷰 L4).
-- 키 없을 때 화면이 **빈칸의 사유**를 말하는지는 분기실적 탭 한 곳만 잰다 — 다른 DART 화면은 #43 축(이번 범위 밖).
+- → **#429 가 덮었다.** 키 없을 때 화면이 **빈칸의 사유**를 말하는지는 분기실적 탭 한 곳만 잰다 — 다른 DART 화면은 #43 축(이번 범위 밖).
+
+## #429 — #428 이 남긴 '못 보는 축' 셋: 부분 캐시 · 키 없을 때 빈칸 사유 · 스캐너 사각 (`tests/test_dart_blindspots_20261004.py` 59건 · `tests/test_dart_ready_20261002.py` 258건(+113) · `trade/tests/test_company_report.py` +3 · 2026-10-04)
+
+#428 절의 '이 검사가 못 보는 축' 중 셋을 순서대로 고쳤다(사용자 2026-10-04 "3개 모두 순서대로 고쳐주고").
+
+### ① 부분 캐시 — 못 물어본 곳이 있으면 짧게만 굽는다
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| `find_periodic_reports` 는 목록의 답을 **못 들었으면** 그 사실을 값과 같은 응답에 싣는다(`PeriodicReports.failed` — 구간 조회 예외 · 013 이 아닌 status · 후행 정정 조회의 실패·이상 status). 013(조회된 데이터 없음)은 원천의 답이라 실패가 아니다 · 답한 목록엔 사유가 없다 · `list_failure` 는 제 타입만 읽는다(가짜 대역은 None) | ✅ 자동 | `TestPeriodicReportsFailure` 10건 |
+| 표 롤링 — 어느 분기라도 목록을 못 물어봤거나 원문을 일시적으로 못 받았으면(원천이 '파일 없음' 013·014 라 답한 것은 세지 않는다) 결과를 `PROVISIONAL_TTL_SEC`(30분)만 믿는다(`short="partial"`) · 깨끗하게 걸었으면 24시간 · 로그가 못 물어본 곳을 이름으로 댄다 | ✅ 자동 | `TestTablesRollingPartial` 9건(재현 먼저 — 고치기 전 '목록 실패 뒤 24시간 기록') |
+| 화면 — 채택된 표보다 **앞서** 못 물어본 곳만 그 표를 의심케 한다(`stale_note` · 표가 정해진 뒤의 미스는 말하지 않는다) · 더 새 분기면 '26.2Q 보고서를', 같은 분기 다른 접수본이면 '26.2Q의 다른 접수본(정정 등)을' · 라벨 없는 미스는 '일부 보고서' · '최신이 아닐 수 있다' 까지만(#165) | ✅ 자동 | `TestStaleNote` 6건 · `test_screen_says_which_report_was_not_fetched` · `test_same_quarter_correction_is_named_as_such` |
+| 수주잔고(`backlog_probe`)도 같다 — 앞 후보 원문 일시 실패 · 목록 실패면 읽은 답도 짧게 굽는다 · 원천의 '파일 없음' 은 답이다 · 30분 상수는 `dart_client.PROVISIONAL_TTL_SEC` 하나(#38) | ✅ 자동 | `TestBacklogProvisional` 5건 |
+
+### ② 키 없을 때 화면이 빈칸의 사유를 말한다
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 문구 단일 출처 `dart_client.keyless_reason(what, at_collection=…)` — 분기실적 탭의 기존 문구도 거친다(글자는 그대로) | ✅ 자동 | `test_wording_is_one_source` · `test_quarterly_tab_uses_the_same_source` |
+| 스냅샷 수집 — DART 작업(법인 정보 · 임원 지분 · 공시)과 재무 수집기는 **빈손 + 키 없음** 일 때만 `kr.dart_keyless` 를 적는다(키 없이 캐시로 답한 것 · 키가 있는데 빈손은 적지 않는다) · 작업마다 배선 | ✅ 자동 | `test_note_marks_only_an_empty_keyless_answer` · `test_each_dart_task_records_keyless`(3) · `test_snapshot_collection_records_keyless` · `test_keyed_collection_records_nothing` · `test_financials_collector_records_keyless` |
+| 렌더 — **빈 칸에만** 사유(DART 법인 칸 · K-IFRS 재무 요약 · 공시 탭 · 주주 탭은 한 줄로, #395) · 값이 있는 칸은 조용하다 · 스냅샷 기록만이면 '수집 당시', 이 렌더가 지금 키 없이 물었으면(라이브 최대주주·계열회사) '지금' — 둘 중 **한쪽만** 키 없이 물어도 '지금' · 배치 렌더는 라이브 표를 안 묻는다 · 기록 없으면 키 탓을 지어내지 않는다 | ✅ 자동 | `test_live_keyless_page_says_why_in_every_empty_dart_section` · `test_one_live_table_alone_still_says_now`(2) · `test_batch_page_says_at_collection_only` · `test_no_record_no_reason` · `test_present_data_keeps_its_section_quiet` · `test_present_financials_keep_the_kifrs_slot_quiet` |
+| 보강 — 키 없이 빈 공시는 기록 · 키 있는데 빈손은 기록 안 함 · 기록된 빈 재무는 키가 생기면 다시 받고 아직 없으면 기다린다 · 기록 없는 빈칸은 받으러 가지 않는다 | ✅ 자동 | `test_enrichment_records_keyless_disclosures` · `test_enrichment_keyed_empty_records_nothing` · `test_keyless_snapshot_financials_are_fetched_once_key_returns` · `test_keyless_snapshot_financials_wait_while_still_keyless` |
+| 성장 카드 · 차트 공시 마커(KR + 키 없음 + 마커 0 일 때만 · JS 가 그 사유를 안내로 쓴다) · DART 피드 배너(키 있으면 조용) · trade 회사 리포트 매출표(키 우선순위 `dart_key` 하나) | ✅ 자동 | `test_growth_card_*`(2) · `test_chart_note_*`(4) · `test_chart_hint_shows_the_note`(node) · `test_feed_page_*`(2) · `KeylessProductsReasonTests20261004` 3건 |
+
+### ③ 스캐너 — #428 이 못 본 모양
+
+레포를 먼저 쟀다 — 새 모양 중 운영 코드에 실재하는 것은 기본값만 두는 IfExp 7곳(`x if dart else None`, 넘긴다)뿐이었다. 이번 확장은 예방이다(레포 실측: 훑은 파일 673 · 읽은 모듈 33 · 판정 36,206회 · 최대 사슬 깊이 4 · 1.9초 · 적중 0).
+
+| 축 | 강제 | 테스트 |
+|---|---|---|
+| 다른 철자 — 드모르간(`not (d and x)`·`not (x or d)` · 중첩 · 부정의 부정은 긍정) · `not bool(d)` · `bool(d) is False`/`== False`/`is not True`/`!= True` · `d is False` | ✅ 자동 | `test_scanner_fires_on_former_blind_spots` |
+| 긍정 판정의 else 갈래 — 값이 **언제나** 클라이언트면 죽은 갈래(If · IfExp · `elif` · `is not None` · 공장 직접 · 모듈 전역 · `self.속성` · 다른 모듈 전역 · 언제나 클라이언트를 돌려주는 함수 — 감싼 함수 · 다시 감싼 함수 · 못 주면 raise · 판정에서 바로 부르기) · 반대 증거: 기본값만 두는 갈래(대입·`pass`·`continue`·`return []`) · 클라이언트가 아닐 수 있는 값(`get_dart() if k else None` · 반복문 뒷줄의 `None` · 지연 초기화 전역) · 클라이언트가 아닐 수 있는 값을 돌려주는 함수(갈래 하나가 None · 끝으로 흘러 None · 어느 return 이 None · 바로 부르기 — 부정 판정 쪽에선 공장이지만 else 판정엔 '언제나' 가 아니다 · `surely_call`, 배포전 셀프리뷰가 찾은 오탐) · 인자(뒤에서 다시 묶여도) | ✅ 자동 | 같음 · `test_scanner_spares_former_blind_spot_lookalikes` |
+| 컨테이너 — 상수 칸(`ctx['dart']` · `xs[0]` · `dict(dart=…)` · `SimpleNamespace(dart=…)` · `getattr(o, "d")` · `m.get("dart")`) · 지역은 앞선 리터럴의 그 칸, 보관소는 그 칸에 쓰는 모든 스코프 + 담는 쪽의 바인딩 · 반대 증거: 기본값 있는 getattr(지연 초기화) · 없는 칸 · None 칸 · 펼친 dict · 범위 밖 칸 · 그 칸에 None 을 쓰는 스코프 · 모르는 값으로 다시 묶은 보관소 · 인자로 받은 dict | ✅ 자동 | 같음 |
+| 미뤄 부르기 — `partial`·`to_thread`·`run_in_executor`·`call_soon`·`Thread(kwargs=)`·`Timer`(위치) · 반대 증거: 다른 자리 · 실행기에만 가는 키워드(`context=`) | ✅ 자동 | 같음 |
+| `*args`·`**kwargs` — 넘기기 · 리터럴 펼치기(`*[…]`·`**{…}`·`**dict(…)`) · 받은 쪽의 칸(`a[0]`·`kw.get('d')`) · 반대 증거: 다시 묶은 묶음 · 다른 칸 · 앞 인자로 밀린 자리 · 모르는 별표 뒤 · 묶음 칸을 돌려주는 함수는 공장이 아니다 · 묶음을 다시 묶어도 들어올 때의 바인딩(보수적 — 옛 판은 잡았다, 아래) | ✅ 자동 | 같음 |
+| 클래스 — 클래스로 부른 메서드(첫 인자가 self) · classmethod · 객체 메서드(`C()` 인스턴스 · `self.h = H()` · 타입 주석 인자) · 상속(조상의 속성·메서드·`__init__`) · 클래스 밖 객체 속성(지역 인스턴스 · 모듈 인스턴스 · 타입 주석·문자열 주석 인자 · 클로저가 읽는 주석 인자) · 반대 증거: 자손이 None 을 넣는다(같은 모듈 · 다른 모듈) · 지연 초기화 · `Optional[C]` · 클래스로 부르면 첫 인자가 self · 정적 메서드 · 타입 모르는 객체 | ✅ 자동 | 같음 · `test_scanner_fires_across_modules_on_former_blind_spots` · `test_scanner_spares_across_modules_on_former_blind_spots` |
+| 다른 모듈 — 조상 모듈(공장 이름이 없어도 상속하는 클래스의 모듈을 읽는다) · 인스턴스 속성·객체 칸(그 클래스·객체 이름을 내보내 읽게 한다) · 모듈 경로·import 한 클래스로 부른 메서드 · 다시 내보낸 이름 · 다른 모듈 전역의 else 갈래 · 여덟 모듈 import 사슬 | ✅ 자동 | `test_scanner_fires_across_modules_on_former_blind_spots` 10건 |
+| 깊이 상한 → 순환 감지 — 서른 번 옮겨 담아도 잡는다 · 순환은 '아니다'(최소 고정점) · 가정에 기댄 거짓은 메모하지 않는다(판정 순서를 맞춘 픽스처로 잰다) · 사슬 상한 400 은 넘으면 실패한다(조용히 접지 않는다) | ✅ 자동 | `test_scanner_cycles_terminate_without_depth_cap` · `test_scanner_provisional_false_is_not_memoized` · `test_scanner_stack_limit_stops_instead_of_folding` · `test_scanner_rebinding_stays_linear`(30줄 = 64회) |
+| 반복문 — 앞선 클라이언트가 있으면 받기 전 줄도 잡는다(옛 판도 잡던 것을 핀으로) · 첫 바퀴가 받기 전 값을 보면 살아 있는 판정 | ✅ 자동 | 같음 |
+
+옛 스캐너에 새 픽스처를 태우자 발화 70건 중 69건이 실패했다(통과한 1건이 위 반복문 핀). 반대 증거 셋은 옛 판에서 **오탐**이었다 — 자손이 속성을 `None` 으로 다시 채우는 클래스(같은 모듈 · 다른 모듈), 조건의 일부인 기본값 채우기(`if d is None or force:`). 넷째(`def f(*a): a = get_dart()` 뒤 안쪽 함수의 `not a`)는 옛 판이 잡던 것을 **의도해서 바꿨다** — 옛 판은 묶음 인자를 바인딩으로 세지 않았는데, 안쪽 함수가 다시 묶기보다 먼저 불리는 순서에선 그게 오탐이다. 흐름을 안 보므로 보통 인자와 같이 센다(보수적).
+
+뮤테이션(녹색 백업 + md5 복원): ① 24종 전부 잡힘. ② 39종 중 37종 → 최대주주·계열회사가 **각자** '지금' 표시를 세우는 두 줄(K16·K16b)은 두 블록을 함께 태우면 한쪽이 다른 쪽을 대신 채워 살아남았다 — 한 블록을 예외로 끊는 픽스처로 39/39. ③ 77종 중 72종 → 살아남은 다섯(인자 제외 · 실행기에만 가는 키워드 · 다시 내보낸 이름 · 잠정 거짓 메모 · 순환의 낮은 자리 전파)에 픽스처 넷을 더해 77/77. 배포전 셀프리뷰가 찾은 else 판정 오탐(위 표)의 고침에 새 변형 7종 — 전부 잡힘(고치기 전 판은 새 반대 증거 넷 전부에서 오탐). 인자 제외는 인자에 바인딩이 없으면 빈 증거라 어차피 거짓이어서, 뒤에서 다시 묶인 인자로 태웠다. 잠정 거짓 둘은 판정 **순서**가 맞아야만 드러나 스코프·바인딩을 뒤에서부터 훑는 순서를 쓰는 픽스처를 만들었다.
+
+**이 검사가 못 보는 축 — #429 뒤에 남은 것**(#274):
+- 함수 경계를 넘는 보관소에 클라이언트가 아닌 바인딩이 하나라도 있으면(`_D = None` 지연 초기화) 살아 있는 검사로 본다 — `get_dart` 자신이 그 모양이다.
+- 타입 주석 없는 인자의 속성(`def f(o): o.d`) · `Optional[C]`·`C | None` 주석 — 어느 객체인지 모른다.
+- 다른 모듈이 그 객체의 칸·속성을 쓰는 것(`import m; m.CTX['d'] = None`) — 보관소 규칙이 그 쓰기를 못 봐 **오탐** 쪽이다.
+- 컨테이너를 바꾸는 메서드(`update`·`setdefault`·`append`) · 펼친 dict(모른다로 본다) · 식별자가 아닌 문자열 칸 · 음수·변수 칸.
+- 표에 없는 콜백 등록(`atexit.register` 등) · 위치로 넘긴 `Thread` target · 이름으로 넘긴 `args=` · 슬라이스·풀기로 옮긴 `*args`.
+- 여러 조상(다이아몬드)의 메서드 순서는 왼쪽 우선 깊이 우선으로 근사한다 · 자손은 **읽은 모듈** 안에서만 찾는다(조상 이름을 쓰는 모듈은 읽힌다).
+- else 판정은 칸·객체 속성·`d or 기본값` 을 보지 않고, 인자의 else 도 보지 않는다(부르는 쪽을 다 모른다).
+- 보관소끼리 서로 옮겨 담는 순환(`A = B` · `B = A`)은 증명되지 않아 넘긴다(최소 고정점 — 놓치는 쪽).
+- 반복문에서 몇 번째 바퀴인지로 막은 판정(`if i > 0 and not d`).
+- 오탐 쪽: 같은 스코프에서 다시 묶은 이름(`d = get_dart(); d = None; if d is None`)은 첫 묶음을 기억해 잡는다(엄격 — 고칠 곳은 늘 `dart_ready`).

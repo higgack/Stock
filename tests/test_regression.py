@@ -32498,7 +32498,8 @@ class TestTablesParseCache20260822:
             sys.modules, "bot.dart_feed",
             types.SimpleNamespace(_DOC_TEXT_MAX=1, _DOC_TEXT_MAX_FULL=2,
                                   _fetch_doc_text=_fetch,
-                                  doc_was_truncated=lambda *a, **k: False))
+                                  doc_was_truncated=lambda *a, **k: False,
+                                  source_has_no_document=lambda rn: False))
         monkeypatch.setattr(dp, "_PARSERS", {
             "products": lambda mk: {"table_html": "<table></table>"}})
 
@@ -32546,7 +32547,8 @@ class TestTablesParseCache20260822:
             sys.modules, "bot.dart_feed",
             types.SimpleNamespace(_DOC_TEXT_MAX=1, _DOC_TEXT_MAX_FULL=2,
                                   _fetch_doc_text=_boom,
-                                  doc_was_truncated=lambda *a, **k: False))
+                                  doc_was_truncated=lambda *a, **k: False,
+                                  source_has_no_document=lambda rn: False))
         assert dp.tables_rolling(self._Dart(), "ZZZ.KS", self._Q) == {}
         assert dp.tables_rolling(self._Dart(), "ZZZ.KS", self._Q) == {}
         assert len(n) == 2, "실패를 캐시했다"
@@ -32681,7 +32683,8 @@ class TestQuarterlyStagesAndBacklogCache20260822:
             types.SimpleNamespace(
                 _DOC_TEXT_MAX_FULL=2,
                 _fetch_doc_text=lambda rn, key, max_bytes=0: (
-                    calls.append(rn), text)[1]))
+                    calls.append(rn), text)[1],
+                source_has_no_document=lambda rn: False))
 
     def test_second_call_does_not_refetch(self, monkeypatch):
         import bot.dart_backlog as bl
@@ -33026,7 +33029,8 @@ class TestTablePrefetch20260822:
             sys.modules, "bot.dart_feed",
             types.SimpleNamespace(_DOC_TEXT_MAX=1, _DOC_TEXT_MAX_FULL=2,
                                   _fetch_doc_text=_fetch,
-                                  doc_was_truncated=lambda *a, **k: False))
+                                  doc_was_truncated=lambda *a, **k: False,
+                                  source_has_no_document=lambda rn: False))
         monkeypatch.setattr(dp, "_PARSERS", {
             "products": lambda mk: {"table_html": "<table></table>"}})
 
@@ -72127,7 +72131,8 @@ class TestBacklogMissExcerpt20260918:
             sys.modules, "bot.dart_feed",
             types.SimpleNamespace(
                 _DOC_TEXT_MAX_FULL=2,
-                _fetch_doc_text=lambda rn, key, max_bytes=0: text))
+                _fetch_doc_text=lambda rn, key, max_bytes=0: text,
+                source_has_no_document=lambda rn: False))
 
     def _rows(self, bl):
         return [bl.parse_miss_line(x) for x in
@@ -72546,7 +72551,8 @@ class TestBacklogMissExcerpt20260918:
             _sys.modules, "bot.dart_feed",
             types.SimpleNamespace(
                 _DOC_TEXT_MAX_FULL=2,
-                _fetch_doc_text=lambda rn, key, max_bytes=0: texts[rn]))
+                _fetch_doc_text=lambda rn, key, max_bytes=0: texts[rn],
+                source_has_no_document=lambda rn: False))
         monkeypatch.setattr("bot.dart_client.get_dart", lambda *a, **k: _D())
 
         assert bm.refill() == 0
@@ -72607,7 +72613,8 @@ class TestBacklogMissExcerpt20260918:
 
         monkeypatch.setitem(
             _sys.modules, "bot.dart_feed",
-            types.SimpleNamespace(_DOC_TEXT_MAX_FULL=2, _fetch_doc_text=_fetch))
+            types.SimpleNamespace(_DOC_TEXT_MAX_FULL=2, _fetch_doc_text=_fetch,
+                                  source_has_no_document=lambda rn: False))
         monkeypatch.setattr("bot.dart_client.get_dart", lambda *a, **k: _D())
 
     def test_refill_keeps_the_old_row_when_it_could_not_read_the_document(

@@ -668,6 +668,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         from bot.dart_client import get_dart
         dart = get_dart()
         ci = dart.get_company_info(stock_code) if dart else None
+        _note_dart_keyless(out, dart, ci)
         if ci and ci.get("status") == "000":
             kr = out.setdefault("kr", {})
             for src_key, dst_key in (
@@ -707,10 +708,10 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         out: dict = {}
         from bot.dart_client import get_dart
         dart = get_dart()
-        if dart:
-            holders = dart.get_insider_holdings(stock_code)
-            if holders:
-                out.setdefault("kr", {})["insider_holdings"] = holders[:15]
+        holders = dart.get_insider_holdings(stock_code) if dart else []
+        _note_dart_keyless(out, dart, holders)
+        if holders:
+            out.setdefault("kr", {})["insider_holdings"] = holders[:15]
         return out
 
     def _t_dart_disclosures() -> dict:
@@ -719,6 +720,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         dart = get_dart()
         if dart:
             disclosures = dart.get_recent_disclosures(stock_code, days_back=365, limit=30)
+            _note_dart_keyless(out, dart, disclosures)
             if disclosures:
                 # B5(2026-06-16): dart_detail 구조화 요약(증자금액·자기주식
                 # 취득금액·CB 전환가·배당 주당/시가배당률)을 rcept_no 매칭으로
@@ -1529,6 +1531,18 @@ def consecutive_tail(ts: list, n: int) -> list:
     return run
 
 
+def _note_dart_keyless(out: dict, dart, got) -> None:
+    """DART 에서 아무것도 못 받았고 **그 이유가 키 부재**면 스냅샷에 적는다
+    (`kr.dart_keyless`) — 화면이 그 칸에 사유를 말한다(#43·#82). 받은 게
+    있으면 적지 않는다: 메서드가 키 없이도 디스크 캐시로 답할 수 있다(실수
+    #428 — 그 답을 막지 않고, 빈손일 때만 키를 묻는다)."""
+    if got:
+        return
+    from bot.dart_client import dart_ready
+    if not dart_ready(dart):
+        out.setdefault("kr", {})["dart_keyless"] = True
+
+
 def collect_kr_financials(ticker: str) -> dict:
     """DART 재무(연간·시계열·분기) 수집 → {"kr": {...}}.
 
@@ -1542,6 +1556,9 @@ def collect_kr_financials(ticker: str) -> dict:
     from datetime import datetime as _dt
     dart = get_dart()
     if not dart_ready(dart):
+        # 화면이 K-IFRS 칸에 사유를 말하고, 키가 생기면 다시 받는다(#43·#18 —
+        # `dashboard._e_kr_financials` 가 이 표식을 본다).
+        out.setdefault("kr", {})["dart_keyless"] = True
         return out
     fin = dart.get_normalized_financials(ticker)
     if fin and fin.get("financials"):
