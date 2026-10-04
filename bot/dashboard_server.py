@@ -430,6 +430,14 @@ def _wrap_style() -> str:
 # 차트 payload 디스크 캐시 파일명. **순수 함수로 빼 둔다** — 회귀가 소스
 # 문자열을 슬라이스하면 같은 계약을 지키는 리팩터에 깨진다(#19).
 _CHART_CACHE_VER = 6
+# 차트 캐시 수명(초) — last_price 가 장중 갱신되도록 5분. 만료된 파일은 다시
+# 읽히지 않는다(stale 서빙이 없다). 핸들러와 `_purge_dead_caches` 가 같이 읽는다(#38).
+_CHART_TTL = 300
+
+
+def _chart_cache_suffix(lite: bool = False) -> str:
+    """버전·lite 꼬리 — 이름 규약의 단일 출처(`chart_cache_name`·정리 루틴, #38)."""
+    return f"_v{_CHART_CACHE_VER}" + ("_lite" if lite else "") + ".json"
 
 
 def chart_cache_name(safe: str, interval: str, rng: str,
@@ -440,8 +448,7 @@ def chart_cache_name(safe: str, interval: str, rng: str,
     같은 파일에 섞으면 첫 화면이 lite 를 굽고 그 뒤 TTL 내내 오버레이를
     켜도 데이터가 없다.
     """
-    return (f"{safe}_{interval}_{rng}_v{_CHART_CACHE_VER}"
-            + ("_lite" if lite else "") + ".json")
+    return f"{safe}_{interval}_{rng}" + _chart_cache_suffix(lite)
 
 
 def _production_html(ticker: str, payload: dict) -> str:
@@ -725,6 +732,87 @@ def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
     return _kr_band_tables(band, ticker)[0]
 
 
+# `/api/quote` 디스크 캐시 수명(초) — 핸들러와 `_purge_dead_caches` 가 같이 읽는다
+# (#38). FULL 은 만료 뒤에도 stale 로 서빙하고 뒤에서 새로 그린다(SWR) — 그래서
+# FULL 의 만료는 'stale 표시' 의 기준이지 '못 쓰는 파일' 의 기준이 아니다. LIGHT
+# 는 만료되면 다시 읽히지 않는다.
+_QUOTE_TTL = {"full": 14400, "light": 300}
+# `/api/quote` 무거운 본문이 기대는 **환경 상태** — 축마다 (꼬리 글자, 술어 이름).
+# 본문이 그 상태에 따라 문장·표를 바꾼다: DART 키 없음 사유(공시·법인·임원 칸) ·
+# KRX 로그인 자격증명 미설정 사유(수급 다기간추이) · 외국인보유(DATA_GO_KR, SEIBRO) ·
+# 내부자 심리·추천 추이(Finnhub). 상태가 바뀌면 이름이 바뀌어 첫 조회가 새로 그린다
+# — 옛 판은 DART 하나만 갈라, 다른 키를 넣어도 본문이 4시간(그 뒤엔 stale 로 뒤에서
+# 갱신될 때까지) '미설정' 을 말했다(실수 #430). 판정은 렌더와 **같은 술어**다
+# (`_quote_axis_ready`, #38). 정리 루틴은 이 표에서 꼬리 문법을 파생한다(`_QUOTE_TAG_RE`).
+# ⚠️ 축을 더할 때: 그 상태에 따라 본문이 갈리는 렌더 자리를 먼저 찾고(`dashboard`
+# 의 `*_ready()` 호출), 여기 한 줄 + `_quote_axis_ready` 한 갈래를 더한다.
+_QUOTE_ENV_AXES = (("k", "dart"), ("r", "krx"), ("s", "seibro"), ("f", "finnhub"))
+# 꼬리 문법 — 축마다 1(있음) · 0(없음) · x(판정 실패, 어느 본문과도 섞지 않는다).
+# 정리 루틴이 '지금 규약의 이름' 을 가를 때 쓴다 — 키 상태가 되돌아가면 그쪽 본문이
+# 다시 읽히므로 모든 조합이 산다.
+_QUOTE_TAG_RE = "".join(f"{c}[01x]" for c, _n in _QUOTE_ENV_AXES)
+
+
+def _quote_name(safe: str, kind: str, tag: str) -> str:
+    """이름 규약의 단일 출처(`_quote_cache_name`·정리 루틴·감사, #38)."""
+    from bot.dashboard import _RENDER_VER
+    return f"{safe}_{kind}_v{_RENDER_VER}_{tag}.json"
+
+
+def _quote_parse(name: str) -> tuple[str, str, str] | None:
+    """`_quote_name` 이 지은 **지금 규약의** 이름 → (safe, kind, tag). 아니면 None.
+
+    패턴을 따로 적지 않고 `_quote_name` 에 자리표시를 넣어 조각을 얻는다 — 규약이
+    바뀌면 여기도 따라 바뀐다(#337 패턴을 손으로 적으면 멀쩡한 캐시를 지운다)."""
+    holes = ("\x00", "\x01", "\x02")
+    pieces = re.split("[\x00\x01\x02]", _quote_name(*holes))
+    if len(pieces) != 4:
+        return None
+    pat = ("^" + re.escape(pieces[0]) + "(?P<safe>.+)" + re.escape(pieces[1])
+           + "(?P<kind>" + "|".join(map(re.escape, _QUOTE_TTL)) + ")"
+           + re.escape(pieces[2]) + "(?P<tag>" + _QUOTE_TAG_RE + ")"
+           + re.escape(pieces[3]) + "$")
+    m = re.match(pat, name)
+    return (m["safe"], m["kind"], m["tag"]) if m else None
+
+
+def _quote_tag_axis(tag: str, letter: str) -> str | None:
+    """꼬리에서 한 축의 값(`"1"`·`"0"`·`"x"`) — 그 축이 없으면 None. 값 글자와 축
+    글자는 겹치지 않는다(`_QUOTE_TAG_RE`)."""
+    i = tag.find(letter)
+    return tag[i + 1] if 0 <= i < len(tag) - 1 else None
+
+
+def _quote_axis_ready(name: str) -> bool:
+    """축 하나의 상태 — 렌더가 그 자리에서 쓰는 술어 그대로(#38)."""
+    if name == "dart":
+        from bot.dart_client import dart_ready, get_dart
+        return dart_ready(get_dart())
+    if name == "krx":
+        from bot.pykrx_client import krx_login_ready
+        return krx_login_ready()
+    if name == "seibro":
+        from bot.seibro_client import seibro_key_ready
+        return seibro_key_ready()
+    if name == "finnhub":
+        from bot.finnhub_client import finnhub_key_ready
+        return finnhub_key_ready()
+    raise ValueError(f"알 수 없는 시세 캐시 축: {name!r}")
+
+
+def _quote_env_tag() -> str:
+    """지금 환경의 꼬리(`k1r0s1f1` 꼴). 판정이 던진 축은 `x` — 경고를 남긴다."""
+    out = []
+    for letter, name in _QUOTE_ENV_AXES:
+        try:
+            v = "1" if _quote_axis_ready(name) else "0"
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("quote cache: %s 키 상태 판정 실패 — %s", name, exc)
+            v = "x"
+        out.append(letter + v)
+    return "".join(out)
+
+
 def _quote_cache_name(safe: str, kind: str) -> str:
     """`/api/quote` 디스크 캐시 파일 이름.
 
@@ -732,23 +820,115 @@ def _quote_cache_name(safe: str, kind: str) -> str:
     고치고 버전을 안 올리면 stale-while-revalidate 가 옛 HTML 을 무기한
     서빙한다(TTL 만료도 소용없다, 2026-08-17 실측).
 
-    ⚠️ **DART 키 유무**도 들어간다(실수 #429 델타 리뷰 L1). 키 없이 그린 무거운
-    본문은 공시 탭이 '지금 DART_API_KEY 없음' 을 말하는데, 그 본문이 4시간(그
-    뒤엔 stale 로 무기한) 남아 키를 넣고 재시작해도 거짓 문장이 계속 나왔다 —
-    신선 캐시 반환이 `force` 보다 먼저라 수동 🔄 도 못 우회했다. 키 유무로
-    가르면 키가 생긴 첫 조회가 새로 그린다. 판정은 렌더와 같은 술어
-    (`dart_ready`, #38). 전 시장 공통이다 — 키 상태가 바뀔 때 한 번 다시 그릴
-    뿐이고, 어느 시장 본문이 키 문장을 담는지 여기서 가르지 않는다.
+    ⚠️ **환경 상태**(키 유무)도 들어간다 — `_QUOTE_ENV_AXES`. 실수 #429 델타 리뷰
+    L1 이 DART 키로 처음 갈랐다: 키 없이 그린 무거운 본문은 공시 탭이 '지금
+    DART_API_KEY 없음' 을 말하는데, 그 본문이 4시간(그 뒤엔 stale) 남아 키를 넣고
+    재시작해도 거짓 문장이 계속 나왔다 — 신선 캐시 반환이 `force` 보다 먼저라 수동
+    🔄 도 못 우회했다. 실수 #430 이 같은 병을 다른 키(KRX·DATA_GO_KR·Finnhub)에서도
+    막았다. 판정은 렌더와 같은 술어(#38). 전 시장 공통이다 — 상태가 바뀔 때 한 번
+    다시 그릴 뿐이고, 어느 시장 본문이 그 문장을 담는지 여기서 가르지 않는다.
     """
-    from bot.dashboard import _RENDER_VER
+    return _quote_name(safe, kind, _quote_env_tag())
+
+
+def _purge_dead_caches(root: Path, *, now: float | None = None) -> dict:
+    """`/api/quote`·`/api/chart` 디스크 캐시에서 **다시 읽힐 길이 없는 파일**만 지운다.
+
+    두 캐시는 이름에 버전(렌더러·payload)을 싣는다 — 버전이 오르거나 이름 규약이
+    바뀌면(실수 #429 의 키 꼬리) 옛 이름 파일은 어느 핸들러도 다시 열지 않는데,
+    지우는 코드가 없어 종목마다 영영 쌓였다(실수 #430). 남기는 기준은 '핸들러가
+    그 파일을 아직 서빙할 수 있나' 하나다:
+
+      · quote FULL(지금 이름)  — 만료돼도 stale 로 서빙하므로 남긴다(SWR)
+      · quote LIGHT(지금 이름) — `_QUOTE_TTL['light']` 안만 남긴다
+      · chart(지금 이름)       — `_CHART_TTL` 안만 남긴다(stale 서빙이 없다)
+      · 그 밖의 이름           — 지운다(옛 버전·옛 규약 — 다시 열 이름이 아니다)
+
+    '지금 이름' 은 이름을 만드는 함수의 조각(`_quote_name`·`_chart_cache_suffix`)
+    에서 파생한다 — 패턴을 따로 적으면 규약이 바뀔 때 멀쩡한 캐시를 지운다(#337).
+    `*.json` 만 본다. 서버 시작(요청을 받기 전)에 돌아 쓰는 중인 파일과 겹치지
+    않는다. 결과는 디렉터리별 (지움, 남김, 실패) 수다 — 실패는 호출부가 알린다.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    chart_cur = (_chart_cache_suffix(False), _chart_cache_suffix(True))
+
+    def _keep_quote(name: str, age: float) -> bool:
+        got = _quote_parse(name)
+        if got is None:
+            return False
+        kind = got[1]
+        return kind == "full" or age < _QUOTE_TTL[kind]
+
+    def _keep_chart(name: str, age: float) -> bool:
+        return name.endswith(chart_cur) and age < _CHART_TTL
+
+    def _sweep(sub: str, keep) -> tuple[int, int, int]:
+        d = root / sub
+        removed = kept = failed = 0
+        if not d.is_dir():
+            return (0, 0, 0)
+        for f in d.glob("*.json"):
+            try:
+                age = now - f.stat().st_mtime
+                if keep(f.name, age):
+                    kept += 1
+                    continue
+                f.unlink()
+                removed += 1
+            except OSError:
+                failed += 1
+        return (removed, kept, failed)
+
+    return {"quote_cache": _sweep("quote_cache", _keep_quote),
+            "chart_cache": _sweep("chart_cache", _keep_chart)}
+
+
+def _owner_purges() -> tuple:
+    """이름을 짓는 모듈이 정리 규칙을 갖는 캐시 — (표시명, 정리 함수 가져오기).
+
+    공용 캐시 디렉터리(`finviz_client._CACHE_DIR`)는 수십 개 모듈이 같이 쓰고
+    어떤 파일은 이력으로 읽힌다 — 죽은 파일을 판정할 수 있는 것은 그 이름을 짓고
+    읽는 모듈뿐이다(#38). DART 표·수주잔고는 이름에 파서 지문을 싣는 #430 의
+    형제다. ⚠️ 이 디렉터리는 봇 프로세스도 쓴다 — 위 두 캐시와 달리 '쓰는 중인
+    파일과 겹치지 않는다' 가 보장되지 않는다(경합의 대가는 캐시 미스 한 번,
+    `finviz_client.purge_expired`)."""
+    def _tables():
+        from bot.dart_production import purge_dead_tables
+        return purge_dead_tables
+
+    def _backlog():
+        from bot.dart_backlog import purge_dead_backlog
+        return purge_dead_backlog
+    return (("dart_tables", _tables), ("dart_backlog", _backlog))
+
+
+def _startup_cache_purge(root: Path) -> dict | None:
+    """서버 시작 때 `_purge_dead_caches` 와 `_owner_purges` 를 돌리고 결과를 남긴다.
+
+    지운 수·남긴 수는 info, 지우지 못한 파일은 경고, 정리 자체가 던지면 경고 —
+    조용히 삼키지 않는다(#12). 정리가 실패해도 서버 기동은 막지 않고, 한 캐시의
+    실패가 다른 캐시의 정리를 막지 않는다(캐시는 곁들이다, #315). 남은 수는 다음
+    재시작이 다시 센다.
+    """
     try:
-        from bot.dart_client import dart_ready, get_dart
-        tag = "k1" if dart_ready(get_dart()) else "k0"
+        res = _purge_dead_caches(root)
     except Exception as exc:                                   # noqa: BLE001
-        # 키 상태를 모르면 따로 둔다 — 키 있음·없음 어느 본문과도 섞지 않는다
-        log.warning("quote cache: DART 키 상태 판정 실패 — %s", exc)
-        tag = "kx"
-    return f"{safe}_{kind}_v{_RENDER_VER}_{tag}.json"
+        log.warning("디스크 캐시 정리 실패 — %s", exc)
+        res = {}
+    for name, get in _owner_purges():
+        try:
+            res[name] = get()()
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("디스크 캐시 정리(%s) 실패 — %s", name, exc)
+    if not res:
+        return None
+    log.info("디스크 캐시 정리: %s", " · ".join(
+        f"{k} 지움 {r} · 남김 {kept}" for k, (r, kept, _f) in res.items()))
+    failed = {k: v[2] for k, v in res.items() if v[2]}
+    if failed:
+        log.warning("디스크 캐시 정리: 지우지 못한 파일 %s — 권한·잠금 확인", failed)
+    return res
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -1648,7 +1828,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_f = cache_dir / chart_cache_name(safe, interval, rng, lite)
             # TTL 5 min — last_price 가 장중 갱신되도록. yfinance 호출은
             # 종목당 5분당 1회 → 단일 채널 audience 면 무료한도 안전 (~2000/h).
-            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
+            if (cache_f.exists()
+                    and (time.time() - cache_f.stat().st_mtime) < _CHART_TTL):
                 try:
                     self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
                     return
@@ -1728,7 +1909,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_f = cache_dir / _quote_cache_name(safe, kind)
             # FULL is slow-moving (filings quarterly, 수급 daily) → 4 h.
             # LIGHT is intraday → 5 min (matches the chart API cadence).
-            ttl = 14400 if full else 300  # FULL=4h, LIGHT=5min
+            ttl = _QUOTE_TTL[kind]  # FULL=4h, LIGHT=5min — 정리 루틴과 같은 값
             if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < ttl:
                 try:
                     self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
@@ -2642,6 +2823,9 @@ def main() -> int:
             log.info("lookup_cache 무효화: %d HTML 제거 (배포 후 신선 렌더 보장)", _cleared)
     except Exception as _cexc:
         log.debug("lookup_cache clear skipped: %s", _cexc)
+    # quote_cache·chart_cache 의 '다시 읽힐 길이 없는' 파일 정리(실수 #430) — 요청을
+    # 받기 전에 돈다(쓰는 중인 파일과 겹치지 않는다).
+    _startup_cache_purge(_ARCHIVE_ROOT.parent)
     # 검색 워밍업 — api/search(종목명→ticker)는 DART corp_code 맵을 처음 1회
     # 로드할 때 느리다(서버 재시작 직후 첫 검색). 백그라운드로 미리 로드해
     # 첫 검색 '...' 지연 제거. 실패해도 서버 기동에 무영향.

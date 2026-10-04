@@ -40,22 +40,24 @@
    키를 스스로 보고, `stock_code_to_name` 처럼 키 없이 디스크 캐시로 답하는
    것이 있어 막으면 그 답을 잃는다.
 
-⚠️ 못 보는 축(#274) — #429 뒤에 남은 것: 함수 경계를 넘는 보관소에 **클라이언트가
-아닌 바인딩이 하나라도** 있으면(`_D = None` 지연 초기화) 그 판정은 살아 있는
-검사로 보고 넘긴다(`get_dart` 자신이 그 모양이다) · 타입 주석 없는 인자의 속성
-(`def f(o): o.d` — 어느 객체인지 모른다) · `Optional[C]` 같은 주석 · 다른 모듈이
-그 객체의 칸을 쓰는 것(`import m; m.CTX['d'] = None` — 보관소 규칙이 그 쓰기를
-못 봐 **오탐** 쪽이다) · 컨테이너를 바꾸는 메서드(`update`·`setdefault`·`append`)
-· 펼친 dict(`{**a, 'k': …}` — 모른다로 본다) · 식별자가 아닌 문자열 칸 · 음수·변수
-칸 · 표에 없는 콜백 등록(`atexit.register` 등) · 위치로 넘긴 `Thread` 의 target ·
-이름으로 넘긴 `args=` · 슬라이스·풀기로 옮긴 `*args` · 여러 조상(다이아몬드)의
-메서드 순서(왼쪽 우선 깊이 우선으로 근사) · else 판정의 칸·객체 속성·`d or 기본값`
-· 인자의 else(부르는 쪽을 다 모른다) · 보관소끼리 서로 옮겨 담는 순환(최소
-고정점이라 증명되지 않는다) · 반복문에서 몇 번째 바퀴인지로 막은 판정
-(`if i > 0 and not d`). 판정 사슬 상한 400 은 넘으면 '아니다' 로 접지 않고
-실패한다(레포 실측 깊이 4). 오탐 쪽: 같은 스코프에서 다시 묶은 이름
-(`d = get_dart(); d = None; if d is None`)은 첫 묶음을 기억해 잡는다(엄격 —
-고칠 곳은 늘 `dart_ready` 다).
+⚠️ 못 보는 축(#274) — #430 이 #429 의 목록(쓰기 축 · 호출 축 · 흐름·클래스 축 ·
+else 판정 · 보관소 순환)을 메운 뒤 남은 것은 **정적으로 가를 수 없는** 경계다:
+보관소에 클라이언트가 아닌 바인딩이 하나라도 있으면(`_D = None` 지연 초기화) 살아
+있는 검사로 본다 — 의도다(`get_dart` 자신이 그 모양이고, 값을 담기 전에 읽히는
+순서는 실행이 정한다) · 반복문에서 몇 번째 바퀴인지로 막은 판정(`if i > 0 and not
+d`) — 값이 아니라 실행 횟수에 달렸다 · 실행 중에 정해지는 이름(`getattr(o, name)`
+의 변수 이름 · 변수로 고른 모듈) — 읽기는 모른다로 본다 · 칸 **뒤** 에 펼침·상수가
+아닌 열쇠가 오는 dict(`{'d': X, **a}` · `{'d': X, k: None}`) — 덮였을지 모른다(그
+앞의 칸은 확정, 같은 열쇠는 마지막이 이긴다) · 인자의 else 는 닫힌 세계(함수 안에서 정의해 그 이름을 곧바로 부르는
+데에만 쓴 함수)에서만 — 열린 함수는 부르는 곳을 다 모른다 · 대상을 못 찾은 메서드
+이름(`x.get_dart()`)은 이름으로 본다(엄격 쪽) · 이름공간 객체를 변수·인자에 담아
+쓰는 쓰기(`g = globals(); g['G'] = None` · `exec`)는 쓰기로 안 본다(엄격 쪽 — 그
+자리에서 부른 `globals()[…]` 만 본다) · 세터 인자로 들어오는 None(`def setd(p):
+global G; G = p`)은 인자 규칙('갈래 하나라도')을 따라 잡는다(엄격 쪽). 순환은 E-게이트 최대 고정점으로
+잰다(바닥 — 공장 호출 — 에 닿아야 참, 무작위 보관소 그래프에서 기대값과 정확히
+일치). 판정 사슬 상한 400 은 넘으면 '아니다' 로 접지 않고 실패한다(레포 실측 깊이
+5). 오탐 쪽: 같은 스코프에서 다시 묶은 이름(`d = get_dart(); d = None; if d is
+None`)은 첫 묶음을 기억해 잡는다(엄격 — 고칠 곳은 늘 `dart_ready` 다).
 """
 from __future__ import annotations
 
@@ -215,11 +217,18 @@ _DART_MOD = "bot.dart_client"
 # `lru_cache`·다시 묶은 `staticmethod` 는 아니다).
 _TRANSPARENT_DECOS = {"staticmethod": "builtins", "classmethod": "builtins",
                       "lru_cache": "functools", "cache": "functools"}
+# 위 표를 (출처, 원래 이름) 꼴로 — 장식 이름을 별칭까지 따라가 이것과 견준다.
+_TRANSPARENT_SRC = {(src, n) for n, src in _TRANSPARENT_DECOS.items()}
+# 읽으면 게터를 부르는 장식(`ev_attr`)
+_PROPERTY_SRC = {("builtins", "property"), ("functools", "cached_property")}
 # 운반 판정 상한 — 메모가 살아 있으면 레포 전수가 수만 회다(실측은 아래 레포
 # 회귀가 단언한다). 넘으면 멈추고 실패한다 — 메모가 깨진 판정이 계속 도는 대신
 # (리뷰 L3 · 메모 없던 옛 판은 같은 이름을 30번 다시 묶는 함수에서 30초 안에 안
 # 끝났다).
 _EVAL_BUDGET = 200_000
+# 순환 재기 회차 상한 — 회차마다 직전 회차의 참을 가정해 다시 재고, 참 집합이
+# 그대로면 멈춘다(자기 일관). 넘으면 확정하지 않는다(놓치는 쪽 · 실수 #430)
+_RERUN_PASSES = 32
 # 판정 사슬 상한 — 옛 깊이 상한 6(이름을 여섯 번까지만 따라간다)은 **순환
 # 감지**로 바꿨다(사슬이 길어도 끝까지 따라간다, #428 못 보는 축). 남은 상한은
 # 파이썬 재귀를 지키는 안전판이고, 넘으면 조용히 '아니다' 로 접지 않고 멈추고
@@ -234,15 +243,48 @@ _DEFER = {"submit": (0, 1, True), "partial": (0, 1, True),
           "partialmethod": (0, 1, True), "to_thread": (0, 1, True),
           "call_soon": (0, 1, False), "call_soon_threadsafe": (0, 1, False),
           "run_in_executor": (1, 2, False), "call_later": (1, 2, False),
-          "call_at": (1, 2, False)}
-# 키워드로 함수·인자를 받는 것 — 이름 → (함수 키워드, 함수의 위치 자리).
-# `Thread(target=f, args=(…), kwargs={…})` · `Process` 같음 ·
-# `Timer(t, f, args, kwargs)`(위치로도 받는다).
-_DEFER_KW = {"Thread": ("target", None), "Process": ("target", None),
-             "Timer": ("function", 1)}
+          "call_at": (1, 2, False), "add_reader": (1, 2, False),
+          "add_writer": (1, 2, False), "add_signal_handler": (1, 2, False)}
+# 이름이 흔해 **받는 쪽**을 가려야 하는 미뤄 부르기 — 이름 → (받는 쪽, 함수 자리,
+# 인자 시작 자리, 키워드도 그 함수로 가나). 받는 쪽: ("qual", {모듈.이름}) = 부른
+# 것이 그 함수 · ("recv", {모듈.생성자}) = 그 생성자로 만든 객체의 메서드. 아무
+# 객체의 `register`·`callback` 을 콜백 등록으로 보면 오탐이다(실수 #430).
+_EXITSTACKS = frozenset({"contextlib.ExitStack", "contextlib.AsyncExitStack"})
+_POOLS = frozenset({"multiprocessing.Pool", "multiprocessing.pool.Pool",
+                    "multiprocessing.pool.ThreadPool", "multiprocessing.dummy.Pool"})
+_DEFER_CHECKED = {
+    "register": (("qual", frozenset({"atexit.register"})), 0, 1, True),
+    "finalize": (("qual", frozenset({"weakref.finalize"})), 1, 2, True),
+    "callback": (("recv", _EXITSTACKS), 0, 1, True),
+    "push_async_callback": (("recv", frozenset({"contextlib.AsyncExitStack"})),
+                            0, 1, True)}
+# 함수·인자 묶음·키워드 묶음을 자리나 키워드로 받는 것 — 이름 → (받는 쪽 또는
+# None, (함수 키워드, 자리), (인자 묶음 키워드, 자리), (키워드 묶음 키워드, 자리)).
+# `Thread(group, target, name, args, kwargs)` · `Process` 같음 ·
+# `Timer(t, f, args, kwargs)` · `scheduler.enter(delay, prio, action, argument,
+# kwargs)` · `Pool.apply_async(func, args, kwds)`.
+_SCHED = frozenset({"sched.scheduler"})
+_DEFER_KW = {
+    "Thread": (None, ("target", 1), ("args", 3), ("kwargs", 4)),
+    "Process": (None, ("target", 1), ("args", 3), ("kwargs", 4)),
+    "Timer": (None, ("function", 1), ("args", 2), ("kwargs", 3)),
+    "enter": (("recv", _SCHED), ("action", 2), ("argument", 3), ("kwargs", 4)),
+    "enterabs": (("recv", _SCHED), ("action", 2), ("argument", 3), ("kwargs", 4)),
+    "apply_async": (("recv", _POOLS), ("func", 0), ("args", 1), ("kwds", 2))}
 # 칸을 키워드로 받는 리터럴 생성자 — `dict(k=…)` 는 칸, `SimpleNamespace(k=…)`
 # 는 속성.
 _NS_CALLS = {"dict": "item", "SimpleNamespace": "attr"}
+# 컨테이너를 바꾸는 메서드(`_Scope._method_store`)
+_MUTATORS = frozenset({"update", "setdefault", "__setitem__", "pop", "__delitem__",
+                       "popitem", "clear", "insert", "remove", "sort",
+                       "reverse", "append", "extend"})
+# 컨테이너를 바꾸지 않는 메서드 — 지역 컨테이너가 '새어 나가지 않았나' 를 볼 때
+# 이 이름으로 꺼낸 것만 안전한 쓰임으로 본다(실수 #430)
+_READERS = frozenset({"get", "keys", "values", "items", "copy", "count", "index",
+                      "__contains__", "__getitem__", "__len__"})
+# `.get` 으로 읽었는데 그 칸이 없는 바인딩 — 기본값이 온다(누가 읽나에 따라
+# 기본값이 다르므로 증거에는 표시만 남기고 읽는 쪽이 채운다 · 실수 #430)
+_MISSING = object()
 
 
 def _own(body):
@@ -268,13 +310,39 @@ def _deco_name(d):
 
 
 def _const_index(e):
-    """칸 열쇠로 쓰는 상수 — 식별자 모양 문자열 · 정수(불은 아니다)."""
+    """칸 열쇠로 쓰는 상수 — 문자열(식별자가 아니어도) · 정수(음수 포함 · 불은
+    아니다). 옛 판은 식별자 모양 문자열·0 이상 정수만 받아 `CTX['api-key']` ·
+    `L[-1]` 을 아예 열쇠로 못 만들었다(실수 #430)."""
+    if (isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.USub)
+            and isinstance(e.operand, ast.Constant)
+            and type(e.operand.value) is int):
+        return -e.operand.value
     if isinstance(e, ast.Constant):
         v = e.value
-        if isinstance(v, str) and v.isidentifier():
+        if isinstance(v, str):
             return v
         if isinstance(v, int) and not isinstance(v, bool):
             return v
+    return None
+
+
+def _modkey(path):
+    """모듈 객체의 열쇠 — `@` + 점을 `:` 로 바꾼 경로(점이 없어야 속성 열쇠와 안
+    섞인다). `@__name__` 은 그 열쇠를 쓴 모듈 자신."""
+    return "@" + path.replace(".", ":")
+
+
+def _ns_base(e):
+    """이름공간 식 → 그 객체의 열쇠 — `globals()` → 이 모듈 · `vars(X)` ·
+    `X.__dict__` → X(모르는 객체면 ""). 그 칸은 속성이다(`globals()['D']` =
+    전역 D). 이름공간이 아니면 None."""
+    if isinstance(e, ast.Call) and not e.keywords and isinstance(e.func, ast.Name):
+        if e.func.id == "globals" and not e.args:
+            return "@__name__"
+        if e.func.id == "vars" and len(e.args) == 1:
+            return _key(e.args[0]) or ""
+    if isinstance(e, ast.Attribute) and e.attr == "__dict__":
+        return _key(e.value) or ""
     return None
 
 
@@ -298,10 +366,27 @@ def _key(e):
         b = _key(e.value)
         return f"{b}.{e.attr}" if b else None
     if isinstance(e, ast.Subscript):
-        b, i = _key(e.value), _const_index(e.slice)
+        i = _const_index(e.slice)
+        ns = _ns_base(e.value)
+        if ns is not None:              # globals()['D'] · vars(o)['d'] — 속성
+            return (f"{ns}.{i}" if ns and isinstance(i, str) and i.isidentifier()
+                    else None)
+        b = _key(e.value)
+        if b == "sys.modules":          # 그 모듈 객체
+            if isinstance(i, str):
+                return _modkey(i)
+            if isinstance(e.slice, ast.Name) and e.slice.id == "__name__":
+                return "@__name__"
+            return None
         return f"{b}[{i!r}]" if b and i is not None else None
     if isinstance(e, ast.Call) and not e.keywords:
         f = e.func
+        if ((isinstance(f, ast.Name) and f.id == "import_module"
+             or isinstance(f, ast.Attribute) and f.attr == "import_module"
+             and _key(f.value) == "importlib")
+                and len(e.args) == 1 and isinstance(e.args[0], ast.Constant)
+                and isinstance(e.args[0].value, str)):
+            return _modkey(e.args[0].value)
         if (isinstance(f, ast.Name) and f.id == "getattr" and len(e.args) == 2
                 and isinstance(e.args[1], ast.Constant)
                 and isinstance(e.args[1].value, str)
@@ -319,16 +404,38 @@ def _key(e):
 def _split(k):
     """열쇠의 마지막 접근자 — `a.b` → ("a", "attr", "b") · `a['x']` →
     ("a", "item", "x") · `a.get('x')` → ("a", "get", "x") · 이름 하나면 None.
-    칸 열쇠는 식별자·정수뿐이라 점·괄호가 섞이지 않는다."""
+    칸 열쇠는 repr 로 적었다 — 문자열 칸 안의 괄호·점에 속지 않게 오른쪽의
+    `[` 부터 재파싱해 **리터럴로 읽히는** 첫 자리에서 가른다(실수 #430 — 옛
+    판은 식별자·정수 칸만 있어 마지막 `[` 를 믿었다). 문자열 안의 `[` 뒤는
+    리터럴이 못 된다 — repr 이 감싸는 따옴표를 안에서 늘 이스케이프해서다(무작위
+    30만 개로 반례 없음을 쟀다). 못 가르면 던진다(우리가 만든 열쇠라 그건
+    스캐너 결함이다)."""
     if k.endswith("?"):
         b, _kind, n = _split(k[:-1])
         return b, "get", n
     if k.endswith("]"):
-        i = k.rindex("[")
-        return k[:i], "item", ast.literal_eval(k[i + 1:-1])
+        i = len(k) - 1
+        while True:
+            i = k.rindex("[", 0, i)
+            lit = k[i + 1:-1]
+            try:
+                return k[:i], "item", ast.literal_eval(lit)
+            except (ValueError, SyntaxError):
+                continue
     if "." in k:
         b, a = k.rsplit(".", 1)
         return b, "attr", a
+    return None
+
+
+def _get_default(e):
+    """`x.get(k, 기본값)` 의 기본값 식 — `.get` 이 아니면 None. 기본값이 None·빈
+    값이어도 그대로 돌려준다: 그런 식은 어느 판정에서도 클라이언트를 싣지 않아
+    걸러 두면 같은 답을 두 번 막는 죽은 가드였다(뮤테이션 D33 — 지우는 변형이
+    전 슈트·레포 스캔에서 같은 답이었다)."""
+    if (isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute)
+            and e.func.attr == "get" and len(e.args) == 2 and not e.keywords):
+        return e.args[1]
     return None
 
 
@@ -338,11 +445,36 @@ def _store_key(k):
 
 
 def _root(k):
-    return re.match(r"\w+", k).group()
+    return re.match(r"[@\w:]+", k).group()
 
 
 def _is_none(e):
     return isinstance(e, ast.Constant) and e.value is None
+
+
+def _unwrap_optional(e):
+    """`Optional[C]` · `Union[C, None]` · `C | None` → C(몇 겹이든 · 실수 #430 —
+    옛 판은 그 주석의 인자를 어느 객체인지 모른다고 봤다). 아니면 그대로."""
+    while True:
+        if isinstance(e, ast.Subscript):
+            v = e.value
+            head = v.attr if isinstance(v, ast.Attribute) else getattr(v, "id", None)
+            if head == "Optional":
+                e = e.slice
+                continue
+            if head == "Union" and isinstance(e.slice, ast.Tuple):
+                rest = [x for x in e.slice.elts if not _is_none(x)]
+                if len(rest) == 1 and len(rest) < len(e.slice.elts):
+                    e = rest[0]
+                    continue
+        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.BitOr):
+            if _is_none(e.right):
+                e = e.left
+                continue
+            if _is_none(e.left):
+                e = e.right
+                continue
+        return e
 
 
 def _is_const(e, *vals):
@@ -500,7 +632,10 @@ def _is_generator(sc):
 
 
 def _cands(v):
-    """값의 후보 — `a if k else b` · `a or b` 는 갈래마다 본다(1차 규칙)."""
+    """값의 후보 — `a if k else b` · `a or b` 는 갈래마다 본다(1차 규칙) ·
+    `await x` 는 x 의 결과다(코루틴 함수가 돌려준 것)."""
+    if isinstance(v, ast.Await):
+        return _cands(v.value)
     if isinstance(v, ast.IfExp):
         return [v.body, v.orelse]
     if isinstance(v, ast.BoolOp):
@@ -515,10 +650,15 @@ def _entry(v, kind, name):
     if kind == "get":
         kind = "item"
     if kind == "item" and isinstance(v, ast.Dict):
-        if any(k is None for k in v.keys):          # {**다른것} — 덮였을지 모른다
-            return None
-        for kk, vv in zip(v.keys, v.values):
-            c = _const_index(kk)
+        # 뒤에서부터 — 같은 열쇠는 마지막이 이긴다. `{**다른것}` 을 먼저 만나면
+        # 그 앞의 칸은 덮였을지 모르고 그 칸이 거기서 올지도 모른다(모른다).
+        # 펼침 **뒤** 에 적은 칸은 무엇이 펼쳐지든 그 값이다(실수 #430 — 옛
+        # 판은 펼침이 하나라도 있으면 전부 모른다로 봤다)
+        # 상수가 아닌 열쇠(`{k: None}` · f-문자열)도 같다 — 그 칸일 수 있다(독립 리뷰)
+        for kk, vv in zip(reversed(v.keys), reversed(v.values)):
+            c = None if kk is None else _const_index(kk)
+            if c is None:
+                return None
             if c == name and type(c) is type(name):
                 return ("있음", vv)
         return ("없음", None)
@@ -526,7 +666,8 @@ def _entry(v, kind, name):
         if (not isinstance(name, int)
                 or any(isinstance(e, ast.Starred) for e in v.elts)):
             return None
-        return ("있음", v.elts[name]) if name < len(v.elts) else ("없음", None)
+        return (("있음", v.elts[name]) if -len(v.elts) <= name < len(v.elts)
+                else ("없음", None))
     if (isinstance(v, ast.Call) and _NS_CALLS.get(_call_name(v)) == kind
             and not v.args and all(k.arg for k in v.keywords)):
         for k in v.keywords:
@@ -559,6 +700,104 @@ def _arg_entry(s, base, kind, name):
     return None
 
 
+def _binds(node, k):
+    """노드 아래에 이름 k 를 묶는 자리가 있나 — 대입·`del`·대입식·import·def·
+    class 이름·`except … as`·패턴 이름·컴프리헨션 변수(보수적으로 센다). 중첩
+    def·lambda·class 의 **본문**은 다른 스코프라 안 본다(이름 자체는 묶음이다)."""
+    return k in _bound_names(node)
+
+
+def _bound_names(node):
+    """`_binds` 의 이름 집합 — 노드에 한 번만 재서 붙인다. 도달 정의는 같은
+    문장을 이름마다 다시 묻는데, 문장 아래를 매번 훑으면 긴 모듈 맨 위에서 레포
+    전수가 몇 배 느려졌다(실수 #430 실측)."""
+    got = getattr(node, "_noah_bound", None)
+    if got is not None:
+        return got
+    got = set()
+    stack = [node]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, ast.Name) and isinstance(x.ctx, (ast.Store, ast.Del)):
+            got.add(x.id)
+        elif isinstance(x, (ast.Import, ast.ImportFrom)):
+            got.update(a.asname or a.name.split(".")[0] for a in x.names)
+        elif isinstance(x, (*_FN, ast.ClassDef)):
+            got.add(x.name)
+            continue                        # 본문은 다른 스코프
+        elif isinstance(x, ast.Lambda):
+            continue
+        elif isinstance(x, ast.ExceptHandler) and x.name:
+            got.add(x.name)
+        elif isinstance(x, (ast.MatchAs, ast.MatchStar)) and x.name:
+            got.add(x.name)
+        elif isinstance(x, ast.MatchMapping) and x.rest:
+            got.add(x.rest)
+        stack.extend(ast.iter_child_nodes(x))
+    node._noah_bound = got
+    return got
+
+
+def _simple_binding(st, k):
+    """문장 st 가 k 를 **그 값으로** 묶는 단순 바인딩이면 그 값, 아니면 `_NO`.
+    `k = v` · `k: T = v` · `from m import k` · `import k` · `def k` · `class k`
+    — 값식 안에 k 를 또 묶는 대입식이 있으면 단순하지 않다."""
+    if isinstance(st, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == k for t in st.targets):
+        if any(not isinstance(t, ast.Name) and _binds(t, k) for t in st.targets) \
+                or _binds(st.value, k):
+            return _NO
+        return st.value
+    if (isinstance(st, ast.AnnAssign) and st.value is not None
+            and isinstance(st.target, ast.Name) and st.target.id == k):
+        return _NO if _binds(st.value, k) else st.value
+    if isinstance(st, ast.ImportFrom):
+        for a in st.names:
+            if (a.asname or a.name) == k:
+                return (("import", st.module, a.name)
+                        if st.level == 0 and st.module else None)
+    if isinstance(st, ast.Import) and any(
+            (a.asname or a.name.split(".")[0]) == k for a in st.names):
+        return None
+    if isinstance(st, (*_FN, ast.ClassDef)) and st.name == k:
+        return None
+    return _NO
+
+
+_NO = object()          # `_simple_binding` 의 '단순 바인딩 아님'
+_DYN = object()         # 쓰기 색인의 '어느 칸인지 모름'
+
+
+def _blocks(st):
+    """복합문 st 의 하위 문장 목록들 [(갈래, 목록)]."""
+    out = []
+    for name in ("body", "orelse", "finalbody"):
+        b = getattr(st, name, None)
+        if isinstance(b, list) and b and isinstance(b[0], ast.stmt):
+            out.append((name, b))
+    for h in getattr(st, "handlers", ()) or ():
+        out.append(("handler", h.body))
+    for c in getattr(st, "cases", ()) or ():
+        out.append(("case", c.body))
+    return out
+
+
+def _header_binds(st, k):
+    """복합문의 머리(본문 전에 평가되는 식)가 k 를 묶나 — if/while 조건 · for
+    이터러블 · with 항목(`as` 포함) · match 대상."""
+    parts = []
+    if isinstance(st, (ast.If, ast.While)):
+        parts = [st.test]
+    elif isinstance(st, (ast.For, ast.AsyncFor)):
+        parts = [st.iter]
+    elif isinstance(st, (ast.With, ast.AsyncWith)):
+        parts = [p for it in st.items
+                 for p in (it.context_expr, it.optional_vars) if p is not None]
+    elif isinstance(st, ast.Match):
+        parts = [st.subject]
+    return any(_binds(p, k) for p in parts)
+
+
 class _Scope:
     """모듈·def·lambda·class 하나 — 그 안의 대입·import·선언을 들고 있다."""
 
@@ -573,6 +812,7 @@ class _Scope:
         self.classm = "classmethod" in decos
         self.bases = list(node.bases) if kind == "class" else []
         self.nodes = list(_own([node.body] if kind == "lambda" else node.body))
+        self.node_ids = {id(x) for x in self.nodes}
         a = getattr(node, "args", None)
         self.params = [x.arg for x in a.posonlyargs + a.args] if a else []
         self.kwonly = [x.arg for x in a.kwonlyargs] if a else []
@@ -586,7 +826,8 @@ class _Scope:
                      for n in x.names}
         self.nonloc = {n for x in self.nodes if isinstance(x, ast.Nonlocal)
                        for n in x.names}
-        self.children: dict = {}            # 바로 아래 def·class 이름
+        self.children: dict = {}            # 바로 아래 def·class 이름(뒤의 것)
+        self.defs: dict = {}                # 이름 → 그 이름의 def·class 전부
         # 열쇠 → [(줄, 값)] — 값이 None 이면 '무엇이 담겼는지 모르는' 바인딩,
         # ("import", 모듈, 이름) 은 import.
         self.assigns: dict = {}
@@ -602,6 +843,8 @@ class _Scope:
                     if not isinstance(t, (ast.Tuple, ast.List)):
                         self._add(_key(t), x.lineno, x.value)
                         direct.add(id(t))
+                    else:
+                        self._unpack(t, x.value, x.lineno, direct)
             elif (isinstance(x, (ast.AnnAssign, ast.NamedExpr))
                   and x.value is not None):
                 self._add(_key(x.target), x.lineno, x.value)
@@ -609,6 +852,11 @@ class _Scope:
         # `setattr(o, 'd', v)` 는 `o.d = v` 다(리뷰 F2) — 이름이 상수가 아니면
         # 어느 속성인지 모른다(이 스코프는 아무 속성이나 쓸 수 있다).
         self.dyn_setattr = False
+        # 쓰기 축(실수 #430 — 옛 판은 아래 쓰기를 못 봐, 그 칸·전역을 바꾸는 함수가
+        # 있어도 보관소 규칙이 판정을 잡았다):
+        self.dyn_items: dict = {}           # 컨테이너 열쇠 → [줄] — 어느 칸인지 모름
+        self.tail: dict = {}                # 컨테이너 열쇠 → [(줄, 값)] — 끝에 붙임
+        self.dyn_ns: list = []              # [(객체 열쇠, 줄)] — 이름 모르는 속성 쓰기
         for x in self.nodes:
             if (isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
                     and x.func.id == "setattr" and len(x.args) == 3):
@@ -618,10 +866,36 @@ class _Scope:
                     self._add(f"{b}.{nm.value}", x.lineno, x.args[2])
                 else:
                     self.dyn_setattr = True
+                    if b:
+                        self.dyn_ns.append((b, x.lineno))
         for x in self.nodes:
+            # 어느 칸인지 모르는 쓰기·지우기 — 변수 칸 · 이름공간의 식별자 아닌
+            # 이름(음수 칸 쓰기는 열쇠로 남고, 색인이 양수 칸 읽기와 겹친다고 본다)
+            if (isinstance(x, ast.Subscript)
+                    and isinstance(x.ctx, (ast.Store, ast.Del))):
+                i = _const_index(x.slice)
+                ns = _ns_base(x.value)
+                if ns is not None:
+                    if not (ns and isinstance(i, str) and i.isidentifier()):
+                        self._dyn_store(x.value, x.lineno)
+                elif i is None:
+                    self._dyn_store(x.value, x.lineno)
+            elif isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute):
+                self._method_store(x)
+        for x in self.nodes:
+            # `del` 도 그 칸·속성·이름을 바꾼다(없앤다 — 값 모름)
             if (isinstance(x, (ast.Name, ast.Attribute, ast.Subscript))
-                    and isinstance(x.ctx, ast.Store) and id(x) not in direct):
+                    and isinstance(x.ctx, (ast.Store, ast.Del))
+                    and id(x) not in direct):
                 self._add(_key(x), getattr(x, "lineno", 0), None)
+            elif isinstance(x, ast.ExceptHandler) and x.name:
+                # `except … as e` · match 의 캡처 — 이름 노드가 아니라 옛 판은
+                # 바인딩으로 안 셌다(else 판정이 그 갈래의 다른 값을 몰랐다, #430)
+                self._add(x.name, x.lineno, None)
+            elif isinstance(x, (ast.MatchAs, ast.MatchStar)) and x.name:
+                self._add(x.name, x.lineno, None)
+            elif isinstance(x, ast.MatchMapping) and x.rest:
+                self._add(x.rest, x.lineno, None)
             elif isinstance(x, ast.ImportFrom) and x.level == 0 and x.module:
                 for a in x.names:
                     nm = a.asname or a.name
@@ -655,6 +929,111 @@ class _Scope:
         if k:
             self.assigns.setdefault(k, []).append((line, v))
 
+    def _unpack(self, t, v, line, direct):
+        """`a, b = v` — 자리마다 그 값(`v[i]` · 리터럴이면 그 원소). 별표
+        하나(`a, *b, c = v`)는 앞은 `v[i]`, 뒤는 `v[-k]`, 별표 자리는 가운데
+        조각이다(실수 #430 — 옛 판은 풀기를 모두 값 모름으로 봐 `a, b = args`
+        뒤 b 의 판정을 놓쳤다). 리터럴 길이가 안 맞으면 자리를 모른다(값
+        모름으로 남긴다). 별표 둘은 문법 오류라 오지 않는다."""
+        n = len(t.elts)
+        si = next((k for k, e in enumerate(t.elts) if isinstance(e, ast.Starred)),
+                  None)
+        lit = isinstance(v, (ast.Tuple, ast.List))
+        if lit and (any(isinstance(z, ast.Starred) for z in v.elts)
+                    or (len(v.elts) != n if si is None else len(v.elts) < n - 1)):
+            return
+
+        def sub(sl):
+            return ast.copy_location(
+                ast.Subscript(value=v, slice=sl, ctx=ast.Load()), t)
+
+        for i, e in enumerate(t.elts):
+            if i == si:
+                after = n - 1 - si
+                val = (ast.List(elts=v.elts[si:len(v.elts) - after], ctx=ast.Load())
+                       if lit else sub(ast.Slice(
+                           lower=ast.Constant(si),
+                           upper=ast.Constant(-after) if after else None)))
+                e = e.value
+            elif si is not None and i > si:
+                val = v.elts[i - n] if lit else sub(ast.Constant(i - n))
+            else:
+                val = v.elts[i] if lit else sub(ast.Constant(i))
+            if isinstance(e, (ast.Tuple, ast.List)):
+                self._unpack(e, val, line, direct)
+            elif _key(e):
+                self._add(_key(e), line, val)
+                direct.add(id(e))
+
+    def _dyn_store(self, base_expr, line):
+        """어느 칸·속성인지 모르는 쓰기 — 이름공간이면 이름 모르는 속성
+        (`dyn_ns` · else 판정은 아무 속성이나로 본다), 아니면 그 컨테이너의
+        아무 칸(`dyn_items`)."""
+        ns = _ns_base(base_expr)
+        if ns is not None:
+            self.dyn_setattr = True
+            if ns:
+                self.dyn_ns.append((ns, line))
+            return
+        bk = _key(base_expr)
+        if bk:
+            self.dyn_items.setdefault(bk, []).append(line)
+
+    def _method_store(self, x):
+        """컨테이너를 바꾸는 메서드 — `update`·`setdefault`·`__setitem__` 은 그
+        칸에 쓴다 · `pop`(문자열 칸)·`__delitem__` 은 그 칸을 없앤다 · `clear`·
+        `popitem`·모르는 `update`·`insert`·`remove`·`sort`·`reverse`·리스트
+        `pop` 은 어느 칸인지 모른다 · `append`·`extend` 는 끝에 붙인다. 이름공간
+        (`globals()`·`vars(o)`·`o.__dict__`)의 칸은 속성이다."""
+        m, r, ln = x.func.attr, x.func.value, x.lineno
+        if m not in _MUTATORS:
+            return
+        ns = _ns_base(r)
+        if ns == "":                    # 모르는 객체의 이름공간 — 아무 속성이나
+            self.dyn_setattr = True
+            return
+        bk = None if ns is not None else _key(r)
+        if not (ns or bk):
+            return
+
+        def put(name, v):
+            if name is None or (ns is not None and not (
+                    isinstance(name, str) and name.isidentifier())):
+                self._dyn_store(r, ln)
+            elif ns is not None:
+                self._add(f"{ns}.{name}", ln, v)
+            else:
+                self._add(f"{bk}[{name!r}]", ln, v)
+
+        args = x.args
+        if m == "update":
+            for a in args:
+                if isinstance(a, ast.Dict):
+                    for kk, vv in zip(a.keys, a.values):
+                        put(None if kk is None else _const_index(kk), vv)
+                else:
+                    put(None, None)
+            for kw in x.keywords:
+                put(kw.arg, kw.value)           # `**mapping` 은 arg 가 None
+        elif m in ("setdefault", "__setitem__"):
+            if args:
+                put(_const_index(args[0]), args[1] if len(args) > 1 else None)
+        elif m in ("pop", "__delitem__"):
+            i = _const_index(args[0]) if args else None
+            put(i if isinstance(i, str) else None, None)
+        elif m in ("append", "extend"):
+            if ns is not None:
+                return
+            if m == "append":
+                vals = [args[0]] if args else [None]
+            elif args and isinstance(args[0], (ast.List, ast.Tuple)):
+                vals = list(args[0].elts)
+            else:
+                vals = [None]
+            self.tail.setdefault(bk, []).extend((ln, v) for v in vals)
+        else:
+            put(None, None)
+
     def is_local(self, name):
         if self.kind == "module":
             return True
@@ -675,6 +1054,7 @@ class _Mod:
                     if a.name in _FACTORIES and a.asname:
                         self.factories.add(a.asname)
         self.scopes: list = []
+        self.lam: dict = {}                 # id(lambda 노드) → 그 스코프
         self.top = self._build(tree, None, "module")
         # global·nonlocal 로 바깥 이름을 바꾸는 스코프(보관소 판정 색인)
         self.writers: dict = {}
@@ -691,10 +1071,15 @@ class _Mod:
             if isinstance(x, (*_FN, ast.ClassDef)):
                 c = self._build(x, s, "class" if isinstance(x, ast.ClassDef)
                                 else "def", in_class=(kind == "class"))
-                s.children[x.name] = c
+                # 같은 이름의 def 가 여럿이면 **뒤의 것**(직선 코드에서 이기는 쪽)
+                # — 옛 판은 뒤에서부터 훑어 앞의 정의가 남았다(#430)
+                old = s.children.get(x.name)
+                if old is None or old.node.lineno < x.lineno:
+                    s.children[x.name] = c
+                s.defs.setdefault(x.name, []).append(c)
                 s._add(x.name, x.lineno, None)
             elif isinstance(x, ast.Lambda):
-                self._build(x, s, "lambda")
+                self.lam[id(x)] = self._build(x, s, "lambda")
             else:
                 stack.extend(ast.iter_child_nodes(x))
         return s
@@ -734,6 +1119,12 @@ def _scan(sources):
     mro_cache: dict = {}
     sub_cache: dict = {}
     fam_cache: dict = {}
+    top_cache: dict = {}            # (모듈, 이름) → 맨 위 마지막 바인딩
+    reach_cache: dict = {}          # (스코프, 이름, 줄) → 같은 블록 도달 정의
+    xself_cache: dict = {}          # 클래스 → 그 메서드를 클래스로 부르는 자리가 있나
+    attr_idx: dict = {}             # 속성 이름 → [(스코프, 바탕)] · None → 이름 모르는 setattr
+    cs_idx: dict = {}               # (id(보관 스코프), 이름) → 그 컨테이너에 쓰는 자리
+    nsdyn_idx: dict = {}            # 모듈 경로 → [(스코프, 줄)] — 이름 모르는 전역 쓰기
 
     def build(name):
         if name not in mods and name in sources:
@@ -747,6 +1138,17 @@ def _scan(sources):
             mro_cache.clear()
             sub_cache.clear()
             fam_cache.clear()
+            top_cache.clear()           # 다른 모듈의 `m.D = …` 가 판정을 바꾼다
+            reach_cache.clear()
+            xself_cache.clear()
+            attr_idx.clear()
+            cs_idx.clear()
+            nsdyn_idx.clear()
+            esc_cache.clear()           # 새 모듈의 스코프가 그 이름을 쓸 수 있다
+            closed_cache.clear()
+            back.clear()
+            for g in gstk:
+                g["tmemo"].clear()
         return mods.get(name)
 
     def mention(names):
@@ -756,6 +1158,7 @@ def _scan(sources):
                 build(n)
 
     carrier: dict = {}             # id(def) → 클라이언트가 실려 오는 인자(·칸)
+    pcls: dict = {}                # id(def) → {인자: [넘어온 인스턴스의 클래스]}
     factory_fns: dict = {}         # id(def) → 이름(클라이언트를 돌려주는 def)
 
     # ── 판정 노드(메모 · 순환 감지) ────────────────────────────────────
@@ -767,6 +1170,46 @@ def _scan(sources):
     prov: dict = {}
     prov_list: list = []
 
+    # 순환에서 증명되는 보관소 — 최소 고정점이 '아니다' 로 끝낸 순환의 뿌리를
+    # **참으로 가정**하고 다시 잰다(최대 고정점 쪽 · 실수 #430). 가정에 기대
+    # 얻은 참은 그 재기의 임시 메모(`tmemo`)에만 두고, 뿌리가 참으로 끝나며 가정
+    # 없이 참인 근거(바닥: 공장 호출·가정 없이 증명된 이름)에 닿았을 때만(E-
+    # 게이트) 확정한다 — 바닥 없이 서로만 가리키는 순환(`D = D`)은 값이 한 번도
+    # 안 담기므로 확정하지 않는다. 거짓은 가정을 더해도 거짓이라(단조) 바로
+    # 메모한다. 재기 안의 재기는 바깥 가정에 기댄 만큼 바깥 임시 메모로 간다.
+    gstk: list = []             # 진행 중인 재기 [{root, tmemo}] (바깥→안)
+    # 판정마다 [기댄 가장 바깥 재기 깊이(없으면 _NODEP), 바닥에 닿았나]. 임시
+    # 메모는 (값, 바닥, 깊이) — 깊이로 그 참이 어느 재기의 가정까지 기대는지
+    # 안다(재기가 확정되면 그 깊이 이상만 확정하고 나머지는 바깥으로 넘긴다)
+    frames: list = []
+    back: set = set()           # 진행 중에 자기 자신에게 되돌아온 판정
+    _NODEP = 10 ** 9
+
+    def _dep(d):
+        if frames and d < frames[-1][0]:
+            frames[-1][0] = d
+
+    def _ground():
+        if frames:
+            frames[-1][1] = True
+
+    def _sub(fn, *a):
+        """하위 판정 하나를 따로 재서 (값, 기댄 깊이, 바닥) — 참이면 그 기댐·바닥을
+        지금 판정에 올린다(거짓은 가정을 더해도 거짓이라 아무것도 안 올린다).
+        ⚠️ 거짓의 기댐까지 올리는 변형(D22)은 결과를 바꾸는 입력을 못 찾았다
+        (무작위 보관소 그래프 4,000 · 앞선 대입 사슬 차분 3,000) — 더 보수적인
+        쪽이라 답은 같고 재기만 는다. 도달 불가라고 재지는 않았다(#377)."""
+        frames.append([_NODEP, False])
+        try:
+            r = fn(*a)
+        finally:
+            d, gr = frames.pop()
+        if r:
+            _dep(d)
+            if d == _NODEP or gr:
+                _ground()
+        return r
+
     def node(ck, fn):
         """판정 하나 — 메모하고, 순환은 진행 중인 판정을 '아니다' 로 보고 끊는다
         (최소 고정점 — 끝까지 따라가 증명된 것만 참). 옛 판은 깊이 6에서 끊어
@@ -777,10 +1220,25 @@ def _scan(sources):
         판정을 건드렸으면 잠정으로 두고, 순환의 뿌리(자기보다 먼저 시작한 것을
         건드리지 않은 판정)가 '아니다' 로 끝나면 그 아래 잠정을 전부 확정한다 —
         남은 잠정은 모두 '아니다' 끼리만 기대므로 그 배정이 고정점이고, 최소
-        고정점도 그렇다(리뷰 F5)."""
+        고정점도 그렇다(리뷰 F5). 보관소 판정의 순환 뿌리는 그 뒤 위의 '참으로
+        가정한 재기' 를 한 번 더 받는다(실수 #430)."""
         if ck in memo:
+            if memo[ck]:
+                _ground()
             return memo[ck]
+        for j in range(len(gstk) - 1, -1, -1):
+            hit = gstk[j]["tmemo"].get(ck)
+            if hit is not None:
+                _dep(hit[2])
+                if hit[1]:
+                    _ground()
+                return True
+        for j, g in enumerate(gstk):
+            if g["root"] == ck or (ck in stack and ck in g["assume"]):
+                _dep(j)                     # 가정 — 바닥은 아니다
+                return True
         if ck in stack:
+            back.add(ck)
             low[0] = min(low[0], stack[ck])
             return False
         if ck in prov:
@@ -798,18 +1256,32 @@ def _scan(sources):
         peak[0] = max(peak[0], idx + 1)
         saved, low[0] = low[0], idx
         start = len(prov_list)
+        frames.append([_NODEP, False])
         try:
             v = fn()
         finally:
             del stack[ck]
+            dep, fl = frames.pop()
         mine = low[0]
         low[0] = min(saved, mine) if stack else _STACK_LIMIT
         mine_entries = prov_list[start:]
+        # 거짓은 가정을 더해도 거짓이다 — 거짓 가지의 기댐은 부모에 안 올린다
+        # (올리면 바닥 없는 참이 바깥 재기로 미뤄져 확정된다)
         if v:
-            memo[ck] = True
             for e in mine_entries:          # 이 판정을 '아니다' 로 가정한 잠정
                 prov.pop(e, None)
             del prov_list[start:]
+            back.discard(ck)
+            if dep != _NODEP:               # 재기의 가정에 기댄 참 — 임시로만
+                # 가장 안쪽 재기에 둔다 — 안쪽 가정에도 기댔을 수 있어 바깥에
+                # 두면 안쪽이 기각돼도 살아남는다(안쪽이 확정되면 바깥으로 간다)
+                gstk[-1]["tmemo"][ck] = (True, fl, dep)
+                _dep(dep)
+                if fl:
+                    _ground()
+                return True
+            memo[ck] = True
+            _ground()
             return True
         if mine < idx:                      # 더 먼저 시작한 판정에 기댄다 — 잠정
             for e in mine_entries:          # 이 판정에 기대던 것은 이제 그 아래에
@@ -817,6 +1289,22 @@ def _scan(sources):
                     prov[e][1] = mine
             prov[ck] = [False, mine]
             prov_list.append(ck)
+            back.discard(ck)
+            return False
+        cyc = ck in back
+        back.discard(ck)
+        if cyc:                             # 순환의 뿌리 — 참으로 가정해 다시
+            for e in mine_entries:          # 그 순환의 잠정은 재기가 새로 잰다
+                prov.pop(e, None)
+            del prov_list[start:]
+            got = _rerun(ck, fn, idx)
+            if got is True:
+                return True
+            if got is not False:            # 조상에 닿았다 — 잠정으로 두고
+                prov[ck] = [False, got]     # 그 조상의 판정이 다시 재게 한다
+                prov_list.append(ck)
+                return False
+            memo[ck] = False
             return False
         for e in mine_entries:              # 순환의 뿌리가 '아니다' — 전부 확정
             memo[e] = prov.pop(e)[0]
@@ -824,8 +1312,73 @@ def _scan(sources):
         memo[ck] = False
         return False
 
+    def _rerun(ck, fn, idx):
+        """순환의 뿌리 ck 를 참으로 가정하고 다시 잰다 — 참이고 바닥에 닿았으면
+        확정(바깥 재기의 가정에 기댔으면 그 임시 메모로)하고 True, 아니면 False.
+        다시 잰 판정이 뿌리보다 먼저 시작한 진행 중 판정(조상)을 건드렸으면 그
+        답은 조상을 '아니다' 로 가정한 것이라 확정할 수 없다 — 그 조상의 자리를
+        돌려줘 잠정으로 남긴다(조상이 순환의 뿌리로 끝날 때 다시 잰다). 재기는
+        후보를 다 재므로 첫 판정이 안 닿던 조상에 닿을 수 있다."""
+        k = len(gstk)
+        prev: set = set()
+        for _ in range(_RERUN_PASSES):
+            g = {"root": ck, "tmemo": {}, "assume": prev}
+            gstk.append(g)
+            stack[ck] = idx
+            saved, low[0] = low[0], idx
+            start = len(prov_list)
+            frames.append([_NODEP, False])
+            try:
+                v = fn()
+            finally:
+                del stack[ck]
+                dep, fl = frames.pop()
+                gstk.pop()
+            mine = low[0]
+            low[0] = min(saved, mine) if stack else _STACK_LIMIT
+            for e in prov_list[start:]:     # 재기 안에서 끝나지 않은 잠정은 버린다
+                prov.pop(e, None)
+            del prov_list[start:]
+            if mine < idx:
+                return mine
+            if not v:
+                return False
+            now = {key for key, hv in g["tmemo"].items() if hv[0]}
+            if now == prev:
+                break                       # 가정한 참이 전부 다시 참 — 자기 일관
+            prev = now                      # 이번 회차의 참을 다음 회차의 가정으로
+        else:
+            return False                    # 수렴하지 않았다 — 놓치는 쪽
+        out = dep if dep < k else _NODEP    # 바깥 재기의 가정에 기댄 깊이
+        if out == _NODEP and not fl:
+            return False                    # 바닥 없는 순환 — 값이 안 담긴다
+        if out != _NODEP:
+            # 바깥 가정에 기댔다 — 바닥 판정도 바깥으로 미룬다(바닥이 그 바깥
+            # 쪽에 있을 수 있다). 이 뿌리에 기댄 참도 같이 그 깊이로 넘긴다
+            for key, (_v, gr, d) in g["tmemo"].items():
+                gstk[-1]["tmemo"][key] = (True, gr, min(d, out))
+            gstk[-1]["tmemo"][ck] = (True, fl, out)
+            _dep(out)
+            if fl:
+                _ground()
+            return True
+        for key, hv in g["tmemo"].items():
+            # 이 뿌리의 가정에만 기댔다 — 확정. 바깥에 기댄 참은 거짓 가지에서만
+            # 생기는데 그 가지는 첫 회차에 메모돼 마지막 회차 tmemo 엔 거의 안
+            # 남는다 — 늘 확정하는 변형(D24)이 바꾸는 입력은 못 찾았다(위 D22 와
+            # 같은 퍼징). 방어로 둔다
+            if hv[2] >= k:
+                memo[key] = True
+            else:                           # 바깥에 기댄 거짓 가지의 참 — 넘긴다
+                gstk[-1]["tmemo"][key] = hv
+        memo[ck] = True
+        _ground()
+        return True
+
     # ── 이름 해석 ────────────────────────────────────────────────────
     hs_cache: dict = {}
+    esc_cache: dict = {}
+    closed_cache: dict = {}
 
     def holder(s, name):
         """이름이 사는 스코프 — LEGB(메서드에선 클래스 본문 이름을 안 본다)."""
@@ -838,7 +1391,15 @@ def _scan(sources):
         if s.kind == "module":
             return s
         if s.kind == "class":
-            return s if name in s.assigns else holder(s.parent, name)
+            if name in s.assigns:
+                return s
+            # 바깥 클래스 본문의 이름은 안 보인다(파이썬 이름 규칙 — `_symbol` 도
+            # 건너뛴다). 옛 판은 바로 위 클래스에서 찾아 중첩 클래스 본문의
+            # 전역 이름을 바깥 클래스 이름으로 읽었다(실수 #430).
+            cur = s.parent
+            while cur.kind == "class":
+                cur = cur.parent
+            return holder(cur, name)
         if name in s.glob:
             return s.mod.top
         if s.is_local(name):
@@ -860,8 +1421,14 @@ def _scan(sources):
         return None
 
     def module_path(s, base):
-        """`m` · `bot.x` 같은 이름 사슬 → 모듈 경로(import 를 따라). 모르면 None."""
+        """`m` · `bot.x` 같은 이름 사슬 → 모듈 경로(import 를 따라). 모르면 None.
+        `@경로`(`sys.modules['m']` · `import_module('m')` · `globals()` 로 얻은
+        모듈 객체 — `_modkey`)는 그 경로(`@__name__` 은 s 의 모듈)."""
         head = base.split(".")[0]
+        if head.startswith("@"):
+            mp = (s.mod.name if head == "@__name__"
+                  else head[1:].replace(":", "."))
+            return mp + base[len(head):]
         cur = s
         while cur is not None:
             if head in cur.imp_mod:
@@ -882,19 +1449,28 @@ def _scan(sources):
         c = m.top.children.get(sym[2])
         if c is None and sym[2] in m.top.imp_from and hops < 4:
             return resolve(("qual", *m.top.imp_from[sym[2]]), lazy, hops + 1)
+        if c is None:
+            # 맨 위에 lambda 로 묶은 이름(`mk = lambda: get_dart()`) — 마지막
+            # 바인딩이 그 lambda 일 때만(실수 #430 — 옛 판은 다른 모듈에서
+            # import 한 lambda 공장을 대상 모름으로 봤다)
+            last = toplevel_last(m.top, sym[2])
+            if last is not None and isinstance(last[1], ast.Lambda):
+                c = m.lam.get(id(last[1]))
         return c
 
     def class_scope(s, expr, lazy=False):
         """식(이름 · `모듈.클래스` · 문자열 주석) → 클래스 스코프. 모르면 None."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             try:
-                expr = ast.parse(expr.value, mode="eval").body
+                expr = _unwrap_optional(ast.parse(expr.value, mode="eval").body)
             except SyntaxError:
                 return None
             sym = _symbol(s, expr) if isinstance(expr, ast.Name) else None
-        elif isinstance(expr, ast.Name):
+        elif isinstance(_unwrap_optional(expr), ast.Name):
+            expr = _unwrap_optional(expr)
             sym = symbol(s, expr)
         else:
+            expr = _unwrap_optional(expr)
             sym = None
         if sym is None and isinstance(expr, ast.Attribute):
             b = _key(expr.value)
@@ -903,17 +1479,44 @@ def _scan(sources):
         c = resolve(sym, lazy) if sym and sym[0] in ("qual", "scope") else None
         return c if c is not None and c.kind == "class" else None
 
+    def bases_of(c):
+        return [b for b in (class_scope(c.parent, e) for e in c.bases)
+                if b is not None]
+
+    def dfs_mro(cls):
+        """왼쪽 우선 깊이 우선 — C3 가 서지 않는 계층(파이썬은 TypeError)의 근사."""
+        out, todo = [], [cls]
+        while todo:
+            c = todo.pop(0)
+            if c in out:
+                continue
+            out.append(c)
+            todo[0:0] = bases_of(c)
+        return out
+
     def mro(cls):
-        """cls 와 조상 — 왼쪽 우선 깊이 우선(읽은 모듈 안에서만)."""
+        """cls 와 조상 — 파이썬과 같은 **C3 선형화**(읽은 모듈 안에서만). 옛 판은
+        왼쪽 우선 깊이 우선으로 근사해, 다이아몬드(`D(B, C)` · B·C 가 A 를
+        상속)에서 A 의 메서드를 C 보다 먼저 골랐다(#429 못 보는 축 · 실수 #430).
+        선형화가 안 서는 계층은 옛 근사로 둔다."""
         if id(cls) not in mro_cache:
-            out, todo = [], [cls]
-            while todo:
-                c = todo.pop(0)
-                if c in out:
-                    continue
-                out.append(c)
-                todo[0:0] = [b for b in (class_scope(c.parent, e)
-                                         for e in c.bases) if b is not None]
+            mro_cache[id(cls)] = [cls]      # 자기 상속 순환을 끊는 자리표시
+            bases = bases_of(cls)
+            seqs = [list(mro(b)) for b in bases] + [list(bases)]
+            out = [cls]
+            while True:
+                seqs = [q for q in seqs if q]
+                if not seqs:
+                    break
+                head = next((q[0] for q in seqs
+                             if not any(q[0] in t[1:] for t in seqs)), None)
+                if head is None:
+                    out = dfs_mro(cls)
+                    break
+                out.append(head)
+                for q in seqs:
+                    if q[0] is head:
+                        del q[0]
             mro_cache[id(cls)] = out
         return mro_cache[id(cls)]
 
@@ -993,12 +1596,24 @@ def _scan(sources):
                 if cur.kind == "class" and cur is not s:
                     cur = cur.parent
                     continue
+                if cur.kind == "module":
+                    b = module_binding(s, cur, func.id, func)
+                    if b is not None:
+                        return (last_symbol(cur, func.id, b[1]) if b[0] == "at"
+                                else None)
                 if func.id in cur.imp_from:
                     return ("qual", *cur.imp_from[func.id])
                 c = cur.children.get(func.id)
                 if c is not None:
                     return ("scope", c)
                 if cur.kind != "module" and cur.is_local(func.id):
+                    # 같은 블록에서 닿는 값이 lambda 면 그것(`mk = lambda: …`)
+                    r = (reaching(cur, func.id, func.lineno) if cur is s
+                         else None)
+                    if (r is not None and r[0] == "def"
+                            and isinstance(r[2], ast.Lambda)
+                            and id(r[2]) in cur.mod.lam):
+                        return ("scope", cur.mod.lam[id(r[2])])
                     return None          # 다른 값이 그 이름을 가렸다
                 cur = cur.parent
             return None
@@ -1045,7 +1660,7 @@ def _scan(sources):
         if c.kind == "class":
             init = find_method(c, "__init__")
             return (init, True) if init else (None, False)
-        if c.kind != "def":
+        if c.kind not in ("def", "lambda"):
             return None, False
         if how == "method":
             return c, not c.static
@@ -1073,7 +1688,191 @@ def _scan(sources):
                     and module_path(s, b) == _DART_MOD)
         return False
 
-    def shadowed(s, name):
+    def inert(top, st):
+        """import 시점에 우리 함수를 부를 수 없는 맨 위 문장 — import · 장식·호출
+        없는 def · 호출 없는 대입(`bot.dart_client` 공장 호출은 된다 — 이 모듈을
+        다시 부르지 않는다) · 설명 문자열 · pass."""
+        if isinstance(st, (ast.Import, ast.ImportFrom, ast.Pass)):
+            return True
+        if isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant):
+            return True
+        if isinstance(st, _FN):
+            a = st.args
+            evald = [*a.defaults, *[d for d in a.kw_defaults if d is not None],
+                     *[x.annotation for x in (*a.posonlyargs, *a.args,
+                                              *a.kwonlyargs)
+                       if x.annotation is not None]]
+            if st.returns is not None:
+                evald.append(st.returns)
+            return not st.decorator_list and not any(
+                isinstance(n, ast.Call) for d in evald for n in ast.walk(d))
+        if isinstance(st, (ast.Assign, ast.AnnAssign)):
+            # 맨 위가 직접 평가하는 호출만 — lambda 본문은 나중에 돈다(바로 부른
+            # `(lambda: …)()` 는 대상이 lambda 라 공장이 아니다 — 막는 쪽)
+            return st.value is None or all(
+                real_factory(top, n.func) for n in _own([st.value])
+                if isinstance(n, ast.Call))
+        return False
+
+    def toplevel_last(top, k):
+        """모듈 맨 위에서만 묶이는 이름의 **마지막** 바인딩 — (줄, 값, 문장) 또는
+        None(모른다 — 옛 규칙으로 간다). 조건: 바인딩이 **전부** 모듈 맨 위의
+        직접 문장(중첩·풀기·for 없음) · 다른 스코프(global)·다른 모듈(`m.k = …`)·
+        이름 모르는 setattr 이 안 쓴다 · 첫 바인딩부터 마지막 바인딩까지의 문장이
+        import 시점에 우리 함수를 부를 수 없다(`inert`). 그러면 함수 안에서 읽는
+        값은 늘 마지막 바인딩이다(실수 #430 — 옛 판은 바인딩이 여럿이면 모두를
+        봐, `_D = None` 뒤 `_D = get_dart()` 를 놓치고 import 뒤 재정의한 공장
+        이름을 공장으로 봤다)."""
+        ck = (id(top), k)
+        if ck not in top_cache:
+            top_cache[ck] = _toplevel_last(top, k)
+        return top_cache[ck]
+
+    def _toplevel_last(top, k):
+        if top.kind != "module":
+            return None
+        evs = top.assigns.get(k, ())
+        if not evs or any(t is not top and holder(t, k) is top
+                          for t in top.mod.writers.get(k, ())):
+            return None
+        body = top.node.body
+        idx = [i for i, st in enumerate(body) if _simple_binding(st, k) is not _NO]
+        if len(idx) != len(evs) or module_written(top, k):
+            return None
+        if len(idx) > 1 and not all(inert(top, st)
+                                    for st in body[idx[0]:idx[-1] + 1]):
+            return None
+        st = body[idx[-1]]
+        return (st.lineno, _simple_binding(st, k), st)
+
+    def last_symbol(top, name, last):
+        """맨 위 마지막 바인딩 → 호출 대상 기호(`_symbol` 과 같은 꼴)."""
+        st = last[2]
+        if isinstance(st, ast.ImportFrom):
+            v = last[1]
+            return ("qual", v[1], v[2]) if isinstance(v, tuple) else None
+        if isinstance(st, (*_FN, ast.ClassDef)):
+            return next((("scope", c) for c in top.defs.get(name, ())
+                         if c.node is st), None)
+        if isinstance(last[1], ast.Lambda) and id(last[1]) in top.mod.lam:
+            return ("scope", top.mod.lam[id(last[1])])  # `mk = lambda: …`
+        return None                         # 대입·import 한 모듈 — 대상을 모른다
+
+    def at_import(s, use):
+        """이름 노드 use 가 import 시점에 **그 자리에서** 평가되나 — s 의 본문
+        노드이고 s 가 모듈 맨 위이거나 맨 위까지 클래스 본문만 거친다(def·lambda
+        본문은 나중에 돈다). 주석·기반 클래스·장식·기본값은 어느 스코프의 본문
+        노드도 아니라 이 판정 밖이다(옛 규칙 — 문자열 주석은 줄 번호가 없다)."""
+        if use is None or id(use) not in s.node_ids:
+            return False
+        cur = s
+        while cur.kind == "class":
+            cur = cur.parent
+        return cur.kind == "module"
+
+    def module_binding(s, h, name, use):
+        """모듈 h 의 이름 name 이 그 자리(s 의 이름 노드 use)에서 가리키는 바인딩
+        — ("at", (줄, 값, 문장)) · ("unbound",) · None(모른다 — 옛 규칙).
+
+        import 시점 코드(`at_import`)면 **그 줄에 닿는** 바인딩, 함수 안이면 맨 위
+        마지막 바인딩(`toplevel_last` — 함수는 import 가 끝난 뒤 돈다). 옛 판은
+        맨 위 문장에도 마지막 바인딩을 써 `_D = get_dart()` 뒤 `def get_dart()`
+        를 재정의로 읽었고, 판정 순서에 따라 답이 갈렸으며, `get_dart =
+        get_dart()` 에서 맨 위 판정이 자기를 다시 불러 끝없이 돌았다(실수 #430)."""
+        if at_import(s, use):
+            r = reaching(h, name, use.lineno)
+            if r is None:
+                return None
+            return ("at", r[1:]) if r[0] == "def" else ("unbound",)
+        last = toplevel_last(h, name)
+        return ("at", last) if last is not None else None
+
+    def ev_eff(home, k):
+        """보관소 이름의 **효력 있는** 바인딩 — 모듈 맨 위 마지막 바인딩을 알면 그
+        하나, 아니면 전부(`ev_name`)."""
+        if home.kind == "module":
+            last = toplevel_last(home, k)
+            if last is not None:
+                return [(home, last[0], last[1])]
+        return ev_name(home, k)
+
+    def reaching(s, k, line):
+        """같은 블록 사슬에서 그 줄에 닿는 지역 이름 k 의 값 — ("def", 줄, 값,
+        문장) · ("param",) · ("unbound",) · None(모른다 — 옛 규칙으로 간다).
+        모듈이면 맨 위 클래스 본문 안의 줄도 된다 — 그 사슬의 클래스 본문이 k 를
+        묶으면 클래스 이름이라 None.
+
+        옛 판은 같은 스코프의 **앞선 바인딩 하나라도**(1차 규칙) 봐서
+        `d = get_dart(); d = None; if d is None:` 을 잡았다(오탐, #429 못 보는
+        축). 그 줄을 담은 문장에서 위로 거슬러 올라가며 k 를 묶는 첫 문장을 찾는다
+        — 단순 바인딩이면 그것이 유일하게 닿는 값이다(사이에 k 를 묶는 문장이
+        없고, 반복문의 다음 바퀴가 닿지 않을 때만). 갈래·반복·예외로 여러 값이
+        닿을 수 있으면 None."""
+        ck = (id(s), k, line)
+        if ck not in reach_cache:
+            reach_cache[ck] = _reaching(s, k, line)
+        return reach_cache[ck]
+
+    def _reaching(s, k, line):
+        if s.kind not in ("def", "module") or not k.isidentifier() \
+                or holder(s, k) is not s:
+            return None
+        if s.kind == "module":
+            if s.mod.writers.get(k) or module_written(s, k):
+                return None
+        elif any(holder(t, k) is s for t in s.mod.writers.get(k, ())):
+            return None                     # 안쪽 함수가 nonlocal 로 바꾼다
+        path, stmts, in_cls = [], s.node.body, False
+        while True:
+            hits = [i for i, st in enumerate(stmts)
+                    if st.lineno <= line <= (st.end_lineno or st.lineno)]
+            if len(hits) != 1:
+                return None                 # 한 줄에 문장이 여럿 — 가르지 않는다
+            st = stmts[hits[0]]
+            sub = next(((kind, b) for kind, b in _blocks(st)
+                        if b[0].lineno <= line <= (b[-1].end_lineno or line)),
+                       None)
+            path.append((stmts, hits[0], st, sub[0] if sub else None, in_cls))
+            if sub is None:
+                break
+            stmts, in_cls = sub[1], isinstance(st, ast.ClassDef)
+        stmts, i, st, _kind, _cls = path[-1]
+        # 그 줄의 문장 — 머리(조건 등)면 그 머리가, 단순문이면 문장 전체가 k 를
+        # 먼저 묶을 수 있다(대입식). while 머리는 본문이 다음 바퀴에 닿는다.
+        if _blocks(st):
+            if _header_binds(st, k):
+                return None
+            if isinstance(st, ast.While) and _binds(st, k):
+                return None
+        elif any(isinstance(n, ast.NamedExpr) and _binds(n.target, k)
+                 for n in ast.walk(st)):
+            return None
+        for level in range(len(path) - 1, -1, -1):
+            stmts, i, st, kind, in_cls = path[level]
+            if level < len(path) - 1:
+                # 하위 갈래에서 올라왔다 — 그 복합문의 성질
+                if isinstance(st, (ast.For, ast.AsyncFor, ast.While)) and _binds(
+                        st, k):
+                    return None             # 다음 바퀴(또는 else)가 닿는다
+                if isinstance(st, ast.Try) or type(st).__name__ == "TryStar":
+                    if kind != "body" and _binds(st, k):
+                        return None         # 일부만 돈 try 본문이 닿는다
+                if _header_binds(st, k):
+                    return None
+                if kind == "case" and _binds(st, k):
+                    return None             # 패턴·가드가 묶을 수 있다
+            for prev in reversed(stmts[:i]):
+                if not _binds(prev, k):
+                    continue
+                if in_cls:
+                    return None             # 클래스 본문의 이름 — 모듈 이름이 아니다
+                v = _simple_binding(prev, k)
+                return None if v is _NO else ("def", prev.lineno, v, prev)
+        if k in s.params or k in s.kwonly:
+            return ("param",)
+        return ("unbound",)
+
+    def shadowed(s, name, use=None):
         """그 이름이 공장이 아닌 다른 값으로 묶였나 — 인자·지역 대입 · 모듈의
         import 아닌 대입. 공장 import 가 바인딩에 **하나라도** 있으면 가린 게
         아니다(델타 리뷰 M1 — 부정 판정은 갈래 하나라도: `try: from
@@ -1083,6 +1882,16 @@ def _scan(sources):
         h = holder(s, name)
         if h is None:
             return False
+        if h.kind == "module":
+            b = module_binding(s, h, name, use)
+            if b is not None and b[0] == "unbound":
+                # 그 줄 앞에 묶인 것이 없다 — 어디서도 안 묶은 맨 공장 이름(픽스처
+                # 관례)만 가리지 않는다. 뒤에서 묶는 이름은 그 자리에서 없다.
+                return name in h.assigns
+            if b is not None:               # 효력 있는 바인딩 하나로 가른다
+                v = b[1][1]
+                return not (isinstance(v, tuple) and v[0] == "import"
+                            and v[1] == _DART_MOD and v[2] in _FACTORIES)
         if any(isinstance(v, tuple) and v[0] == "import" and v[1] == _DART_MOD
                and v[2] in _FACTORIES for _sc, _ln, v in ev_name(h, name)):
             return False
@@ -1101,7 +1910,7 @@ def _scan(sources):
         t, _ = target(s, e.func, lazy=False)
         if t is not None:
             return id(t) in factory_fns or real_factory(s, e.func)
-        if isinstance(e.func, ast.Name) and shadowed(s, e.func.id):
+        if isinstance(e.func, ast.Name) and shadowed(s, e.func.id, e.func):
             return False
         return _call_name(e) in s.mod.factories
 
@@ -1113,30 +1922,127 @@ def _scan(sources):
         for t in home.mod.writers.get(k, ()):
             if t is not home and holder(t, k) is home:
                 ev += [(t, ln, v) for ln, v in t.assigns.get(k, ())]
+        if home.kind == "module":
+            ev += module_attr_writes(home, k)
         if k in home.params or k in home.kwonly:
             ev.append((home, 0, ("param", k)))
         if k in (home.vararg, home.kwarg):
             ev.append((home, 0, None))      # 인자 묶음 자체는 클라이언트가 아니다
         return ev
 
+    def module_attr_writes(top, k):
+        """모듈 객체로 그 전역에 쓰는 자리 — `m.k = …` · `setattr(m, 'k', …)` ·
+        `vars(m)['k'] = …` · `globals()['k'] = …` · `sys.modules['m'].k = …` ·
+        `import_module('m').k = …`(값과 함께, 어느 모듈에서든) · 이름 모르는 쓰기
+        (`globals().update(x)` · `setattr(m, n, …)` — 값 모름). 옛 판은 else
+        판정만 이 쓰기를 막는 쪽으로 봤고 부정 판정의 보관소 규칙은 못 봤다(오탐,
+        실수 #430)."""
+        out = []
+        for sc, b in attr_stores(k)[1]:
+            if module_path(sc, b) == top.mod.name:
+                out += [(sc, ln, v) for ln, v in sc.assigns.get(f"{b}.{k}", ())]
+        if not nsdyn_idx:
+            nsdyn_idx[None] = []
+            for sc in scopes:
+                for b, ln in sc.dyn_ns:
+                    nsdyn_idx.setdefault(module_path(sc, b), []).append((sc, ln))
+        out += [(sc, ln, None) for sc, ln in nsdyn_idx.get(top.mod.name, ())]
+        return out
+
+    def container_targets(sc, b):
+        """스코프 sc 의 컨테이너 열쇠 b 가 가리킬 수 있는 보관소 [(id(스코프),
+        이름)] — 그 이름이 사는 스코프 · 그 이름이 다른 모듈에서 import 한 것이면
+        그 모듈의 이름도(같은 객체다) · `m.X` · `sys.modules['m'].X` 면 모듈 m 의 X."""
+        acc = _split(b)
+        if acc is None:
+            if b.startswith("@"):
+                return []
+            h = holder(sc, b)
+            if h is None:
+                return []
+            out = [(id(h), b)]
+            for _ln, v in h.assigns.get(b, ()):
+                if isinstance(v, tuple) and v[0] == "import" and v[1] in mods:
+                    out.append((id(mods[v[1]].top), v[2]))
+            return out
+        x, kind, nm = acc
+        if kind == "attr":
+            mp = module_path(sc, x)             # `pkg.h.CTX` 처럼 점이 여럿이어도
+            if mp in mods:
+                return [(id(mods[mp].top), nm)]
+        return []
+
+    def container_index():
+        """(id(보관 스코프), 이름) → [(스코프, 종류, 칸, 줄, 값)] — 읽은 모듈의 모든
+        칸·속성 쓰기를 그 컨테이너가 사는 보관소로 모은다(한 번 만들고, 모듈을 더
+        읽으면 비운다). 종류: "item"·"attr" · 어느 칸인지 모르면 칸이 `_DYN` ·
+        끝에 붙인 값은 "tail"."""
+        if not cs_idx:
+            cs_idx[None] = []
+            for sc in scopes:
+                for k, evs in sc.assigns.items():
+                    acc = _split(k)
+                    if acc is None or acc[1] == "get":
+                        continue
+                    b, kind, nm = acc
+                    for tgt in container_targets(sc, b):
+                        cs_idx.setdefault(tgt, []).extend(
+                            (sc, kind, nm, ln, v) for ln, v in evs)
+                for b, lines in sc.dyn_items.items():
+                    for tgt in container_targets(sc, b):
+                        cs_idx.setdefault(tgt, []).extend(
+                            (sc, "item", _DYN, ln, None) for ln in lines)
+                for b, vals in sc.tail.items():
+                    for tgt in container_targets(sc, b):
+                        cs_idx.setdefault(tgt, []).extend(
+                            (sc, "tail", None, ln, v) for ln, v in vals)
+        return cs_idx
+
     def ev_attr(cls, attr):
-        """`self.attr` — 클래스 가족(조상·자손)의 메서드 대입 + 클래스 본문."""
+        """`self.attr` — 클래스 가족(조상·자손)의 메서드 대입 + 클래스 본문.
+        `property`·`cached_property` 게터면 그 게터를 부른 값(`("call", 게터)`)."""
         ev = []
         for c in family(cls):
             for m in c.children.values():
                 if m.kind == "def" and m.params and not m.static:
                     ev += [(m, ln, v) for ln, v in
                            m.assigns.get(f"{m.params[0]}.{attr}", ())]
-            ev += [(c, ln, v) for ln, v in c.assigns.get(attr, ())]
+            gs = prop_getters(c, attr)
+            ev += [(c, ln, ("call", gs[ln]) if ln in gs else v)
+                   for ln, v in c.assigns.get(attr, ())]
         return ev
 
-    def member_ev(base_ev, kind, name, stores, seen):
+    def prop_getters(c, attr):
+        """클래스 c 본문의 `attr` def 중 property 게터 — {def 줄: def}. 장식이
+        `property`·`cached_property` **하나**일 때만(겹친 장식은 그 값을 무엇이
+        감싸는지 모른다). 그 밖의 같은 이름 def(`@dart.setter` · 다른 장식)는
+        제 바인딩 그대로다 — 클라이언트가 아닌 바인딩이 하나라도 있으면 보관소
+        규칙이 판정을 막는다(실수 #430 — 옛 판은 게터를 값 모르는 바인딩으로
+        봤고, 같은 이름 def 가 둘이면 if/else 로 고른 게터 둘까지 통째로 놓쳤다)."""
+        out = {}
+        for g in c.defs.get(attr, ()):
+            decos = g.node.decorator_list if g.kind == "def" else ()
+            if len(decos) != 1:
+                continue
+            d = decos[0]
+            if isinstance(d, ast.Name):
+                src = deco_source(c, d.id)
+            elif isinstance(d, ast.Attribute) and _key(d.value):
+                src = (module_path(c, _key(d.value)), d.attr)
+            else:
+                continue
+            if src in _PROPERTY_SRC:
+                out[g.node.lineno] = g
+        return out
+
+    def member_ev(base_ev, kind, name, stores, seen, tail=()):
         """담는 쪽(base)의 바인딩 + 그 칸에 직접 쓴 것 → 그 칸의 증거. 담는
         쪽이 리터럴이면 그 칸(없으면 그 바인딩은 이 칸을 안 채운다 — 읽으면
         KeyError 다. `.get` 으로 읽으면 기본값이 오므로 '실리지 않음' 으로 센다)
         · `C(...)` 인스턴스면 C 의 속성 · 모르는 값이면 None(무엇이 담겼는지
         모른다)."""
         ev = list(stores)
+        reach = False
         for sc, ln, v in base_ev:
             if isinstance(v, tuple) and v[0] == "import":
                 m = mods.get(v[1])
@@ -1160,12 +2066,20 @@ def _scan(sources):
                     if e[0] == "있음":
                         ev.append((sc, ln, e[1]))
                     elif kind == "get":         # 없는 칸 — 기본값이 온다
-                        ev.append((sc, ln, None))
+                        ev.append((sc, ln, _MISSING))
+                    if (isinstance(name, int) and isinstance(c, (ast.List, ast.Tuple))
+                            and not -len(c.elts) <= name < len(c.elts)):
+                        reach = True            # 끝에 붙인 값이 그 칸일 수 있다
                     continue
                 cls = instance_of(sc, c) if kind == "attr" else None
                 if cls is None:
                     return None
                 ev += ev_attr(cls, name)
+        if tail and isinstance(name, int):
+            if name < 0:
+                return None                     # 끝이 바뀌면 음수 칸은 모른다
+            if reach:
+                ev += tail
         return ev
 
     def member_ev_at(home, base, kind, name, seen=frozenset()):
@@ -1174,14 +2088,24 @@ def _scan(sources):
         if (id(home), base) in seen:
             return None
         seen = seen | {(id(home), base)}
-        mk = f"{base}.{name}" if kind == "attr" else f"{base}[{name!r}]"
-        stores = [(sc, ln, v) for sc in home.mod.scopes
-                  for ln, v in sc.assigns.get(mk, ())
-                  if holder(sc, base) is home]
+        want = "item" if kind == "get" else kind
+        stores, tail = [], []
+        for sc, k2, nm, ln, v in container_index().get((id(home), base), ()):
+            if k2 == "tail":
+                if want == "item":
+                    tail.append((sc, ln, v))
+            elif k2 != want:
+                continue
+            elif nm is _DYN:
+                stores.append((sc, ln, None))   # 어느 칸인지 모르는 쓰기
+            elif (nm == name and type(nm) is type(name)) or (
+                    isinstance(nm, int) and isinstance(name, int)
+                    and (nm < 0 or name < 0)):  # 음수 칸은 어느 칸과도 겹칠 수 있다
+                stores.append((sc, ln, v))
         ent = _arg_entry(home, base, kind, name)
         if ent is not None:
             return [(home, 0, ("ent", ent))] + stores
-        return member_ev(ev_name(home, base), kind, name, stores, seen)
+        return member_ev(ev_eff(home, base), kind, name, stores, seen, tail)
 
     def attr_member_ev(cls, attr, kind, name):
         """`self.attr` 의 칸·속성(`self.ctx['d']` · `self.h.d`)."""
@@ -1195,33 +2119,38 @@ def _scan(sources):
         return member_ev(ev_attr(cls, attr), kind, name, stores, frozenset())
 
     def all_bear(ev, bear):
-        """보관소 규칙 — 증거가 있고 **모두** 실어야."""
-        return bool(ev) and all(bear(sc, v, ln) for sc, ln, v in ev)
+        """보관소 규칙 — 증거가 있고 **모두** 실어야. 재기 중엔 가정 없이 참인
+        증거가 바닥이다(E-게이트)."""
+        if not ev:
+            return False
+        if not gstk:
+            return all(bear(sc, v, ln) for sc, ln, v in ev)
+        return all(_sub(bear, sc, v, ln) for sc, ln, v in ev)
 
     # ── 운반 판정 ────────────────────────────────────────────────────
     def bearing(s, v, line):
         """값이 클라이언트를 싣나 — 후보 하나라도(1차 규칙과 같은 엄격)."""
-        if v is None:
+        if v is None or v is _MISSING:
             return False
         if isinstance(v, tuple):
             if v[0] == "import":                    # from M import X
                 m = mods.get(v[1])
                 return bool(m) and holder_carrier(m.top, v[2])
+            if v[0] == "call":                      # property 게터를 부른 값
+                return id(v[1]) in factory_fns
             return v[1] in carrier.get(id(s), ())   # ("param"|"ent", …)
-        for c in _cands(v):
-            if is_factory_call(s, c):
-                return True
-            k = _key(c)
-            if k and is_carrier(s, k, line):
-                return True
-        return False
+        if not gstk:
+            return any(carries(s, c, line) for c in _cands(v))
+        # 재기 중엔 후보를 다 잰다 — 가정에 기댄 후보에서 멈추면 그 뒤 바닥
+        # 후보를 못 봐 E-게이트가 순서에 기댄다
+        return any([_sub(carries, s, c, line) for c in _cands(v)])
 
     def holder_carrier(home, k):
         """함수 경계를 넘는 보관소는 **모든** 바인딩이 실어야 운반자다.
         `_D = None` 같은 지연 초기화가 하나라도 있으면 그 None 판정은 살아
         있는 검사다(아직 안 만들었다)."""
         return node(("H", id(home), k),
-                    lambda: all_bear(ev_name(home, k), bearing))
+                    lambda: all_bear(ev_eff(home, k), bearing))
 
     def attr_carrier(cls, attr):
         """`self.attr` — 클래스 가족의 대입이 **모두** 실어야."""
@@ -1238,10 +2167,25 @@ def _scan(sources):
         return node(("C", id(s), k, line), lambda: _is_carrier(s, k, line))
 
     def _is_carrier(s, k, line):
+        # 같은 블록 사슬에서 닿는 값을 알면 그것 하나(실수 #430)
+        r = reaching(s, k, line)
+        if r is not None:
+            if r[0] == "def":
+                return bearing(s, r[2], r[1])
+            return r[0] == "param" and k in carrier.get(id(s), ())
         # 같은 스코프 줄 순서(1차 규칙) — 그 스코프가 직접 대입한 것
-        if any(ln <= line and bearing(s, v, ln)
-               for ln, v in s.assigns.get(_store_key(k), ())):
-            return True
+        first = [(ln, v) for ln, v in s.assigns.get(_store_key(k), ())
+                 if ln <= line]
+        if not gstk:
+            return (any(bearing(s, v, ln) for ln, v in first)
+                    or _carrier_rest(s, k, line))
+        # 재기 중엔 두 길을 다 잰다 — 앞선 대입이 순환의 가정으로 참이 되면 거기서
+        # 멈춰 보관소 쪽 바닥을 못 보고, 바닥 없는 순환으로 기각한다(E-게이트)
+        a = any([_sub(bearing, s, v, ln) for ln, v in first])
+        b = _sub(_carrier_rest, s, k, line)
+        return a or b
+
+    def _carrier_rest(s, k, line):
         acc = _split(k)
         if acc is None:
             home = holder(s, k)
@@ -1263,27 +2207,43 @@ def _scan(sources):
         # member_carrier 가 import 를 따라간다
         return member_carrier(s, base, kind, name, line)
 
-    def member_carrier(s, base, kind, name, line):
-        """`obj.attr` · `obj['k']` · `args[0]` — 담는 쪽(base)에 따라."""
+    def member_carrier(s, base, kind, name, line, missing_ok=False):
+        """`obj.attr` · `obj['k']` · `args[0]` — 담는 쪽(base)에 따라.
+        `missing_ok` — `.get` 의 기본값이 클라이언트라 없는 칸도 실음으로 센다."""
+        bear = bearing if not missing_ok else (
+            lambda sc, v, ln: v is _MISSING or bearing(sc, v, ln))
         acc = _split(base)
         if acc is None:
             home = holder(s, base)
             if home is None:
                 return False
             if home is not s:                       # 보관소 — 모든 바인딩
+                if missing_ok:
+                    return all_bear(member_ev_at(home, base, kind, name), bear)
                 return holder_member(home, base, kind, name)
         elif acc[1] == "attr":
             meth = method_of(s, acc[0])
             if meth is not None:                    # self.ctx['d'] · self.h.d
                 cls = meth.parent
+                if missing_ok:
+                    return all_bear(attr_member_ev(cls, acc[2], kind, name),
+                                    bear)
                 return node(("AM", id(cls), acc[2], kind, name),
                             lambda: all_bear(attr_member_ev(
                                 cls, acc[2], kind, name), bearing))
             mp = module_path(s, acc[0])             # m.CTX['d'] · m.CTX.d
             if mp:
+                if missing_ok:
+                    return mp in mods and all_bear(member_ev_at(
+                        mods[mp].top, acc[2], kind, name), bear)
                 return mp in mods and holder_member(mods[mp].top, acc[2],
                                                     kind, name)
         # 지역 — 앞선 바인딩 하나라도(1차 규칙): 리터럴의 그 칸 · `C(...)` 의 속성
+        # · 끝에 붙인 값(0 이상의 칸이면 그 칸일 수 있다)
+        if acc is None and isinstance(name, int) and name >= 0 and any(
+                ln <= line and v is not None and bearing(s, v, ln)
+                for ln, v in s.tail.get(base, ())):
+            return True
         for ln, v in s.assigns.get(base, ()):
             if ln > line or not isinstance(v, ast.AST):
                 continue
@@ -1292,6 +2252,8 @@ def _scan(sources):
                 if e is not None:
                     if e[0] == "있음" and bearing(s, e[1], ln):
                         return True
+                    if e[0] == "없음" and missing_ok:
+                        return True                 # 없는 칸 — 기본값이 실린다
                     continue
                 cls = instance_of(s, c) if kind == "attr" else None
                 if cls is not None and attr_carrier(cls, name):
@@ -1303,13 +2265,32 @@ def _scan(sources):
             if kind == "attr" and base in s.ann:    # def f(o: C) 의 o.d
                 cls = class_scope(s.parent or s, s.ann[base])
                 return cls is not None and attr_carrier(cls, name)
+            # 주석 없는 인자 — 부르는 쪽이 넘긴 인스턴스의 클래스(갈래 하나라도)
+            if kind == "attr" and (base in s.params or base in s.kwonly):
+                return any(attr_carrier(c, name)
+                           for c in pcls.get(id(s), {}).get(base, ()))
         return False
 
     def carries(s, e, line):
         if is_factory_call(s, e):
             return True
         k = _key(e)
-        return bool(k) and is_carrier(s, k, line)
+        if not k:
+            return False
+        if is_carrier(s, k, line):
+            return True
+        d = _get_default(e)
+        return d is not None and get_carrier(s, k, d, line)
+
+    def get_carrier(s, k, dflt, line):
+        """`x.get(k, 기본값)` — 그 칸이 없으면 기본값이 온다. 기본값이 클라이언트를
+        실을 때만 '없는 칸' 바인딩을 실음으로 센다(실수 #430 — 옛 판은 기본값을
+        버리고 없는 칸을 늘 None 으로 봐, `CTX.get('d', get_dart())` 뒤의 판정을
+        놓쳤다)."""
+        if not carries(s, dflt, line):
+            return False
+        base, kind, name = _split(k)
+        return member_carrier(s, base, kind, name, line, missing_ok=True)
 
     # ── 언제나 클라이언트인가(긍정 판정의 else 갈래) ─────────────────────
     def surely_bearing(s, v, line):
@@ -1317,12 +2298,39 @@ def _scan(sources):
         if isinstance(v, tuple) and v[0] == "import":
             m = mods.get(v[1])
             return bool(m) and node(("SH", id(m.top), v[2]), lambda: all_bear(
-                ev_name(m.top, v[2]), surely_bearing))
+                ev_eff(m.top, v[2]), surely_bearing))
+        if isinstance(v, tuple) and v[0] == "call":   # property 게터
+            t = v[1]
+            return id(t) in factory_fns and node(("SR", id(t)),
+                                                 lambda: surely_returns(t))
         if not isinstance(v, ast.AST):
-            return False                    # 모름 · 인자(부르는 쪽을 다 모른다)
-        return all(surely_call(s, c) or (
-            _key(c) is not None and surely(s, _key(c), line))
-            for c in _cands(v))
+            return False                    # 모름 · 인자 · 없는 칸(_MISSING)
+        return all(surely_expr(s, c, line) for c in _cands(v))
+
+    def surely_expr(s, c, line):
+        """식 하나가 **언제나** 클라이언트인가 — 공장 호출 · 그런 이름·칸·속성 ·
+        `.get(k, 기본값)`(없는 칸이면 기본값이 언제나 클라이언트여야)."""
+        if surely_call(s, c):
+            return True
+        k = _key(c)
+        if k is None:
+            return False
+        d = _get_default(c)
+        if d is not None:
+            b, _kind, nm = _split(k)
+            return surely_member(s, b, "get", nm, line, d)
+        return surely(s, k, line)
+
+    def dead_else(s, test, line):
+        """긍정 판정의 else 가 죽었나 — `A or B` 는 한 항이라도, `A and B` 는
+        모든 항이 언제나 클라이언트일 때(실수 #430 — 옛 판은 판정 대상이 이름
+        하나일 때만 봤다)."""
+        t = _unwrap_bool(test)
+        if isinstance(t, ast.BoolOp):
+            f = any if isinstance(t.op, ast.Or) else all
+            return f(dead_else(s, v, line) for v in t.values)
+        op = _pos_operand(t)
+        return op is not None and surely_expr(s, op, line)
 
     def surely_call(s, e):
         """부르면 **언제나** 클라이언트가 오나. 공장은 `bot.dart_client` 의 것만
@@ -1334,17 +2342,18 @@ def _scan(sources):
         return·raise). 결과를 바꿀 수 있는 장식이 붙었으면 믿지 않는다."""
         if not isinstance(e, ast.Call):
             return False
-        if isinstance(e.func, ast.Name) and not sole_binding(s, e.func.id):
+        if isinstance(e.func, ast.Name) and not sole_binding(s, e.func.id,
+                                                             e.func):
             return False
         if real_factory(s, e.func):
             return True
         t, _ = target(s, e.func, lazy=False)
         return (t is not None and id(t) in factory_fns
                 and all(transparent_deco(t.parent, d)
-                        for d in t.node.decorator_list)
+                        for d in getattr(t.node, "decorator_list", ()))
                 and node(("SR", id(t)), lambda: surely_returns(t)))
 
-    def sole_binding(s, name):
+    def sole_binding(s, name, use=None):
         """else 판정이 그 이름을 한 대상으로 해석해도 되나(델타 리뷰 M1). 이름이
         사는 스코프의 바인딩이 둘 이상이면 — `try: from bot.dart_client import
         get_dart` / `except: def get_dart(): return None` 같은 폴백 · 뒤의
@@ -1355,6 +2364,8 @@ def _scan(sources):
         h = holder(s, name)
         if h is None:
             return True
+        if h.kind == "module" and module_binding(s, h, name, use) is not None:
+            return True                     # 효력 있는 바인딩이 하나로 정해진다
         vals = [v for _sc, _ln, v in ev_name(h, name)]
         return len(vals) <= 1 or all(
             isinstance(v, tuple) and v[0] == "import" and v == vals[0]
@@ -1368,14 +2379,7 @@ def _scan(sources):
         평가되므로 s 는 그 스코프다."""
         f = d.func if isinstance(d, ast.Call) else d
         if isinstance(f, ast.Name):
-            want = _TRANSPARENT_DECOS.get(f.id)
-            if want is None:
-                return False
-            h = holder(s, f.id)
-            vals = [v for _sc, _ln, v in ev_name(h, f.id)] if h else []
-            if want == "builtins":
-                return not vals
-            return bool(vals) and all(v == ("import", want, f.id) for v in vals)
+            return deco_source(s, f.id) in _TRANSPARENT_SRC
         if isinstance(f, ast.Attribute):
             b = _key(f.value)
             want = _TRANSPARENT_DECOS.get(f.attr)
@@ -1383,28 +2387,52 @@ def _scan(sources):
                     and module_path(s, b) == want)
         return False
 
+    def deco_source(s, name, hops=0):
+        """장식 이름이 가리키는 것 — ("builtins"|모듈, 원래 이름) 또는 None. 별칭도
+        따라간다(`from functools import cache as memo` · `sm = staticmethod` —
+        실수 #430, 옛 판은 이름이 표에 있어야만 투명으로 봤다)."""
+        h = holder(s, name)
+        vals = [v for _sc, _ln, v in ev_name(h, name)] if h else []
+        if not vals:
+            return ("builtins", name)       # 어디서도 다시 묶지 않은 내장
+        if all(isinstance(v, tuple) and v[0] == "import" for v in vals):
+            srcs = {(v[1], v[2]) for v in vals}
+            return srcs.pop() if len(srcs) == 1 else None
+        if (len(vals) == 1 and isinstance(vals[0], ast.Name) and hops < 4
+                and vals[0].id != name):
+            return deco_source(h, vals[0].id, hops + 1)
+        return None
+
     def surely_returns(t):
         # 제너레이터는 여기 오지 않는다 — `returns_client` 가 공장에서 뺀다(여기
         # 두었던 같은 검사는 도달할 수 없었다, #291)
+        if t.kind == "lambda":              # 본문 식이 곧 반환값
+            return surely_bearing(t, t.node.body, t.node.lineno)
         if not isinstance(t.node.body[-1], (ast.Return, ast.Raise)):
             return False
         return all(surely_bearing(t, x.value, x.lineno) for x in t.nodes
                    if isinstance(x, ast.Return))
+
+    def attr_stores(name):
+        """읽은 모듈의 `<바탕>.name = …` 저장 [(스코프, 바탕)] 과 '이름을 모르는
+        setattr 이 있나' — 색인은 한 번 만든다(모듈을 더 읽으면 비운다). 옛 판은
+        부를 때마다 전 스코프의 대입을 훑어 레포 전수가 몇 배 느려졌다(실수 #430)."""
+        if not attr_idx:
+            attr_idx[None] = any(sc.dyn_setattr for sc in scopes)
+            for sc in scopes:
+                for k in sc.assigns:
+                    acc = _split(k)
+                    if acc is not None and acc[1] == "attr":
+                        attr_idx.setdefault(acc[2], []).append((sc, acc[0]))
+        return attr_idx[None], attr_idx.get(name, ())
 
     def attr_written_elsewhere(name, own):
         """`<무엇>.name = …` 을 증거 밖에서 쓰는 스코프가 있나 — 있으면 '언제나'
         를 믿지 않는다(리뷰 F2: 클래스 밖 `c.d = None` · `setattr(self, 'd',
         None)` · 이름을 모르는 `setattr`). `own(sc, base)` 는 그 저장이 이미 증거에
         들었나(가족 메서드의 self 등) · 다른 객체라고 확실한가."""
-        for sc in scopes:
-            if sc.dyn_setattr:
-                return True
-            for k in sc.assigns:
-                acc = _split(k)
-                if (acc is not None and acc[1] == "attr" and acc[2] == name
-                        and not own(sc, acc[0])):
-                    return True
-        return False
+        dyn, stores = attr_stores(name)
+        return dyn or any(not own(sc, b) for sc, b in stores)
 
     def surely(s, k, line):
         return node(("S", id(s), k, line), lambda: _surely(s, k, line))
@@ -1418,41 +2446,251 @@ def _scan(sources):
             home = holder(s, k)
             if home is None:
                 return False
+            r = reaching(s, k, line)
+            if r is not None:               # 그 줄에 닿는 값이 하나로 정해진다
+                if r[0] == "param":
+                    return surely_param(s, k)
+                return r[0] == "def" and surely_bearing(s, r[2], r[1])
             if home is s and (k in s.params or k in s.kwonly
                               or k in (s.vararg, s.kwarg)):
-                return False
+                return not s.assigns.get(k) and surely_param(s, k)
             # 그 이름을 쓰는 **모든** 스코프 — nonlocal·global 로 바꾸는 안쪽
             # 함수까지(리뷰 F2: `reset()` 이 `nonlocal d; d = None` 하면 else 가
             # 산다). 지역이어도 같다(`ev_name` 은 그 쓰는 쪽을 함께 준다).
             return node(("SH", id(home), k), lambda: (
                 not (home.kind == "module" and module_written(home, k))
-                and all_bear(ev_name(home, k), surely_bearing)))
+                and all_bear(ev_eff(home, k), surely_bearing)))
         base, kind, name = acc
         if kind == "attr":
             meth = method_of(s, base)
             if meth is not None:
-                cls = meth.parent
-                return node(("SA", id(cls), name), lambda: (
-                    not attr_written_elsewhere(
-                        name, lambda sc, b: family_self(cls, sc, b))
-                    and all_bear(ev_attr(cls, name), surely_bearing)))
+                return surely_self_attr(meth.parent, name)
             mp = module_path(s, base)
             if mp and mp in mods:
                 top = mods[mp].top
                 return node(("SH", id(top), name), lambda: (
                     not module_written(top, name)
                     and all_bear(ev_name(top, name), surely_bearing)))
-        return False                        # 칸·객체 속성의 else 는 보지 않는다
+        return surely_member(s, base, kind, name, line)
+
+    def surely_member(s, base, kind, name, line, dflt=None):
+        """지역 컨테이너의 칸 · 지역 인스턴스의 속성 · 닫힌 세계 인자의 속성이
+        **언제나** 클라이언트인가(실수 #430 — 옛 판은 칸·객체 속성의 else 를
+        보지 않았다). 지역 이름이 함수 밖으로 새어 나가면(다른 함수에 넘김·
+        돌려줌·담음·별칭) 남이 바꿀 수 있어 믿지 않는다. 보관소(모듈 전역·
+        `self.속성`)의 칸은 보지 않는다 — 읽지 않은 모듈이 바꿀 수 있다. `dflt` 는
+        `.get` 의 기본값(없는 칸이면 그것이 온다)."""
+        if _split(base) is not None:
+            return False
+        home = holder(s, base)
+        if home is None or home.kind not in ("def", "lambda"):
+            return False
+        if base in home.params or base in home.kwonly:
+            return (kind == "attr" and not home.assigns.get(base)
+                    and surely_param_attr(home, base, name))
+        if base in (home.vararg, home.kwarg) or escapes(home, base, kind):
+            return False
+        ev = member_ev_at(home, base, kind, name)
+        if not ev:
+            return False
+        if kind == "attr" and not all(
+                attr_closed(c, name) for c in attr_classes(home, base) or [None]):
+            return False
+
+        def sb(sc, v, ln):
+            if v is _MISSING:
+                return dflt is not None and surely_expr(s, dflt, line)
+            return surely_bearing(sc, v, ln)
+        if dflt is not None:
+            return all_bear(ev, sb)
+        return node(("SM", id(home), base, kind, name),
+                    lambda: all_bear(ev, sb))
+
+    def attr_classes(home, base):
+        """지역 이름의 **모든** 바인딩이 `C(...)` 면 그 클래스들 · 아니면 None
+        (`attr_closed(None)` 은 거짓이 아니라 아래에서 걸러야 하므로 호출부가 그
+        경우를 `[None]` 으로 바꿔 거짓을 낸다)."""
+        out = []
+        for _ln, v in home.assigns.get(base, ()):
+            if not isinstance(v, ast.AST):
+                return None
+            for c in _cands(v):
+                k = instance_of(home, c)
+                if k is None:
+                    return None
+                out.append(k)
+        return out or None
+
+    def surely_self_attr(cls, name):
+        """그 클래스 인스턴스의 속성이 **언제나** 클라이언트인가 — 가족 밖에서
+        쓰지 않고, 가족의 바인딩(게터 포함)이 모두 언제나 클라이언트."""
+        return node(("SA", id(cls), name), lambda: (
+            attr_closed(cls, name)
+            and all_bear(ev_attr(cls, name), surely_bearing)))
+
+    def attr_closed(cls, name):
+        """그 클래스 인스턴스의 속성을 가족 밖에서 쓰는 자리가 없나(이름 모르는
+        setattr 포함) — `self.d` else 판정과 같은 조건. 클래스를 모르면 거짓."""
+        return cls is not None and not attr_written_elsewhere(
+            name, lambda sc, b: family_self(cls, sc, b))
+
+    def escapes(home, base, kind):
+        """지역 이름이 새어 나가나 — 그 이름을 쓰는 스코프(안쪽 함수 포함)에서
+        칸 읽기·쓰기(`base[...]`) · 바꾸지 않는/추적하는 메서드(`base.get` ·
+        `base.update`) · 속성 접근(객체일 때) 밖의 쓰임이 하나라도 있으면 참."""
+        ck = (id(home), base, kind)
+        if ck in esc_cache:
+            return esc_cache[ck]
+        out = False
+        for sc in scopes:
+            if sc.mod is not home.mod or (sc is not home
+                                          and holder(sc, base) is not home):
+                continue
+            safe = set()
+            for x in sc.nodes:
+                v = getattr(x, "value", None)
+                if not (isinstance(v, ast.Name) and v.id == base):
+                    continue
+                if isinstance(x, ast.Subscript) and kind != "attr":
+                    safe.add(id(v))
+                elif isinstance(x, ast.Attribute) and (
+                        kind == "attr" or x.attr in _READERS | _MUTATORS):
+                    safe.add(id(v))
+            if any(isinstance(x, ast.Name) and x.id == base
+                   and isinstance(x.ctx, ast.Load) and id(x) not in safe
+                   for x in sc.nodes):
+                out = True
+                break
+        esc_cache[ck] = out
+        return out
+
+    def closed_calls(t):
+        """t 가 **닫힌 세계**의 함수인가 — 다른 함수 안에서 정의했고, 장식이 없고,
+        그 이름을 바깥에서 곧바로 부르는 데에만 쓴다(넘기거나 돌려주거나 담지
+        않는다 · 다시 묶지 않는다). 그러면 t 를 부르는 곳은 그 호출들이 전부다 —
+        [(스코프, 호출)] · 아니면 None. 모듈 맨 위·클래스의 함수는 읽지 않은
+        모듈이 부를 수 있어 아니다(실수 #430)."""
+        if id(t) in closed_cache:
+            return closed_cache[id(t)]
+        out = None
+        par = t.parent
+        if (t.kind == "def" and par is not None
+                and par.kind in ("def", "lambda") and not t.node.decorator_list
+                and len(par.defs.get(t.node.name, ())) == 1
+                and len(par.assigns.get(t.node.name, ())) == 1):
+            calls, ok = [], True
+            name = t.node.name
+            for sc in scopes:
+                if sc.mod is not t.mod or (sc is not par
+                                           and holder(sc, name) is not par):
+                    continue
+                funcs = {id(x.func) for x in sc.nodes if isinstance(x, ast.Call)}
+                for x in sc.nodes:
+                    if isinstance(x, ast.Name) and x.id == name and \
+                            isinstance(x.ctx, ast.Load):
+                        if id(x) not in funcs:
+                            ok = False
+                            break
+                    if (isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
+                            and x.func.id == name):
+                        calls.append((sc, x))
+                if not ok:
+                    break
+            out = calls if ok and calls else None
+        closed_cache[id(t)] = out
+        return out
+
+    def call_arg(t, k, call):
+        """그 호출이 인자 k 에 넘긴 식 — 넘기지 않았으면 기본값 · 별표가 끼면
+        None(어느 칸인지 모른다)."""
+        if any(isinstance(a, ast.Starred) for a in call.args) or any(
+                kw.arg is None for kw in call.keywords):
+            return None
+        if k in t.params:
+            i = t.params.index(k)
+            if i < len(call.args):
+                return call.args[i]
+        for kw in call.keywords:
+            if kw.arg == k:
+                return kw.value
+        a = t.node.args
+        if k in t.params:
+            j = t.params.index(k) - (len(t.params) - len(a.defaults))
+            return a.defaults[j] if j >= 0 else None
+        j = t.kwonly.index(k)
+        return a.kw_defaults[j]
+
+    def surely_param(t, k):
+        """닫힌 세계 함수의 인자 — 모든 호출이 언제나 클라이언트를 넘기면(넘기지
+        않은 호출은 기본값이 그래야) 그 인자는 언제나 클라이언트다."""
+        if k not in t.params and k not in t.kwonly:
+            return False
+        return node(("SP", id(t), k), lambda: _surely_param(t, k))
+
+    def _surely_param(t, k):
+        calls = closed_calls(t)
+        if not calls:
+            return False
+        for sc, call in calls:
+            e = call_arg(t, k, call)
+            if e is None:
+                return False
+            passed = any(e is a for a in call.args) or any(
+                kw.value is e for kw in call.keywords)
+            if not (surely_expr(sc, e, call.lineno) if passed else
+                    surely_expr(t.parent, e, t.node.lineno)):
+                return False
+        return True
+
+    def surely_param_attr(t, k, name):
+        """닫힌 세계 함수 인자의 속성 — 모든 호출이 `C(...)` 인스턴스를 넘기고
+        그 속성이 언제나 클라이언트일 때."""
+        calls = closed_calls(t)
+        if not calls:
+            return False
+        for sc, call in calls:
+            e = call_arg(t, k, call)
+            c = instance_of(sc, e) if isinstance(e, ast.Call) else None
+            if c is None or not surely_self_attr(c, name):
+                return False
+        return True
 
     def family_self(cls, sc, base):
         """그 저장이 이미 `ev_attr` 증거에 든 것(가족 메서드의 self·cls) ·
         가족 밖 클래스의 인스턴스라고 확실한 것."""
         fam = family(cls)
-        if (sc.kind == "def" and sc.params and not sc.static
-                and sc.parent in fam and base == sc.params[0]):
-            return True
+        if (sc.kind == "def" and sc.in_class and sc.params and not sc.static
+                and base == sc.params[0]):
+            if sc.parent in fam:
+                return True
+            # 가족 밖 클래스의 **자기** 메서드 self — 다른 객체다(실수 #430 — 옛
+            # 판은 막는 쪽으로 봐 놓쳤다). 단 그 클래스의 메서드를 클래스로 불러
+            # 남의 객체를 self 로 넘길 수 있으면(`Other.reset(c)`) 그 self 는
+            # 무엇이든 될 수 있다.
+            return not explicit_self(sc.parent)
         k = instance_class(sc, base, 10 ** 9)
         return k is not None and k not in fam
+
+    def explicit_self(c):
+        """클래스 c 의 (정적이 아닌) 메서드를 **클래스로** 참조하는 자리가 읽은
+        모듈에 있나 — `C.m(obj)` 로 부르거나 `C.m` 을 꺼내 두면 self 는 무엇이든
+        될 수 있다."""
+        if id(c) not in xself_cache:
+            hit = False
+            for sc in scopes:
+                for x in sc.nodes:
+                    if (isinstance(x, ast.Attribute)
+                            and isinstance(x.ctx, ast.Load)
+                            and class_scope(sc, x.value) is c):
+                        m = find_method(c, x.attr)
+                        if (m is not None and m.kind == "def"
+                                and not m.static and not m.classm):
+                            hit = True
+                            break
+                if hit:
+                    break
+            xself_cache[id(c)] = hit
+        return xself_cache[id(c)]
 
     def module_written(top, name):
         """다른 스코프가 `모듈.name = …` 으로 그 전역을 바꾸나(리뷰 F2)."""
@@ -1460,32 +2698,98 @@ def _scan(sources):
             name, lambda sc, b: module_path(sc, b) != top.mod.name)
 
     # ── 고정점 ───────────────────────────────────────────────────────
-    def calls(x):
-        """(호출 대상, 위치 인자, 키워드) — 미뤄 부르기도 그 함수 호출로 본다."""
+    def calls(s, x):
+        """(호출 대상, 위치 인자, 키워드) — 미뤄 부르기도 그 함수 호출로 본다.
+        이름이 흔한 것(`register`·`callback`·`enter`…)은 받는 쪽을 가린다."""
         yield x.func, x.args, x.keywords
         nm = _call_name(x)
-        if nm in _DEFER:
-            fi, ai, kw_too = _DEFER[nm]
+        spec, chk = _DEFER.get(nm), None
+        if spec is None and nm in _DEFER_CHECKED:
+            chk, *spec = _DEFER_CHECKED[nm]
+        if spec and defer_ok(s, x, chk):
+            fi, ai, kw_too = spec
             head = x.args[:ai]
             if len(x.args) > fi and not any(isinstance(a, ast.Starred)
                                             for a in head):
                 yield x.args[fi], x.args[ai:], (x.keywords if kw_too else [])
         if nm in _DEFER_KW:
-            fkw, fpos = _DEFER_KW[nm]
+            chk, (fkw, fpos), (akw, apos), (kkw, kpos) = _DEFER_KW[nm]
+            if not defer_ok(s, x, chk):
+                return
             kw = {k.arg: k.value for k in x.keywords if k.arg}
 
-            def at(name, off):
+            def at(name, i):
                 if name in kw:
                     return kw[name]
-                if fpos is not None and len(x.args) > fpos + off:
-                    return x.args[fpos + off]
+                if len(x.args) > i and not any(isinstance(a, ast.Starred)
+                                               for a in x.args[:i + 1]):
+                    return x.args[i]
                 return None
-            fn, a, k2 = at(fkw, 0), at("args", 1), at("kwargs", 2)
+            fn = at(fkw, fpos)
+            a = literal_of(s, at(akw, apos), x.lineno)
+            k2 = literal_of(s, at(kkw, kpos), x.lineno)
             if fn is not None:
                 pos = list(a.elts) if isinstance(a, (ast.Tuple, ast.List)) else []
                 more = [ast.keyword(arg=None, value=k2)] if k2 is not None else []
                 if pos or more:
                     yield fn, pos, more
+
+    def defer_ok(s, x, chk):
+        """미뤄 부르기의 받는 쪽 판정 — 없으면(표에 이름만) 그대로 · ("qual",
+        이름들) 이면 부른 것이 그 함수 · ("recv", 생성자들) 이면 그 생성자로 만든
+        객체의 메서드."""
+        if chk is None:
+            return True
+        kind, names = chk
+        if kind == "qual":
+            return qualname(s, x.func) in names
+        recv = x.func.value if isinstance(x.func, ast.Attribute) else None
+        return recv is not None and made_by(s, recv, names)
+
+    def qualname(s, func):
+        sym = symbol(s, func)
+        return f"{sym[1]}.{sym[2]}" if sym and sym[0] == "qual" else None
+
+    def made_by(s, recv, names):
+        """recv 가 그 생성자들로 만든 객체인가 — `X()` 자체 · 이름의 대입 ·
+        `with X() as name`."""
+        if isinstance(recv, ast.Call):
+            return qualname(s, recv.func) in names
+        if not isinstance(recv, ast.Name):
+            return False
+        h = holder(s, recv.id)
+        if h is None:
+            return False
+        if any(isinstance(v, ast.Call) and qualname(h, v.func) in names
+               for _ln, v in h.assigns.get(recv.id, ())):
+            return True
+        return any(isinstance(w, ast.withitem)
+                   and isinstance(w.optional_vars, ast.Name)
+                   and w.optional_vars.id == recv.id
+                   and isinstance(w.context_expr, ast.Call)
+                   and qualname(h, w.context_expr.func) in names
+                   for w in h.nodes)
+
+    def literal_of(s, e, line):
+        """이름이면 같은 블록에서 그 줄에 닿는 리터럴(튜플·리스트·dict·`dict(…)`)
+        로 — `args=a` · `*a` · `**kw` 로 넘긴 변수(실수 #430). 아니면 그대로."""
+        if isinstance(e, ast.Name):
+            r = reaching(s, e.id, line)
+            if (r is not None and r[0] == "def"
+                    and (isinstance(r[2], (ast.Tuple, ast.List, ast.Dict))
+                         or isinstance(r[2], ast.Call)
+                         and _call_name(r[2]) == "dict")):
+                return r[2]
+        return e
+
+    def fn_name(s):
+        """공장 함수의 이름 — 다른 모듈에서 그 이름을 찾아 읽는다. lambda 는 담은
+        이름(없으면 None — 이름으로 찾을 수 없다)."""
+        if s.kind != "lambda":
+            return s.node.name
+        return next((k for k, evs in sorted(s.parent.assigns.items())
+                     if k.isidentifier() and any(v is s.node for _ln, v in evs)),
+                    None)
 
     def carried(s, line, args, kws):
         """실어 보내는 자리 — (위치 [자리], 키워드 {이름}). 별표: 리터럴
@@ -1495,7 +2799,7 @@ def _scan(sources):
         i, exact = 0, True
         for a in args:
             if isinstance(a, ast.Starred):
-                v = a.value
+                v = literal_of(s, a.value, line)
                 if (isinstance(v, (ast.List, ast.Tuple))
                         and not any(isinstance(e, ast.Starred) for e in v.elts)):
                     for e in v.elts:
@@ -1507,6 +2811,15 @@ def _scan(sources):
                         and holder(s, v.id) is s and not s.assigns.get(v.id)):
                     pos += [i + e[2] for e in carrier.get(id(s), ())
                             if isinstance(e, tuple) and e[:2] == ("*", v.id)]
+                # 받은 `*args` 를 잘라 넘김(`*args[1:]`·`[1:3]`·`[::2]`) — 남는
+                # 칸만 앞으로 당겨진다
+                sl = vararg_slice(s, v) if exact else None
+                if sl is not None:
+                    lo, hi, st = sl
+                    pos += [i + (e[2] - lo) // st for e in carrier.get(id(s), ())
+                            if isinstance(e, tuple) and e[:2] == ("*", s.vararg)
+                            and e[2] >= lo and (hi is None or e[2] < hi)
+                            and (e[2] - lo) % st == 0]
                 exact = False
                 continue
             if exact and carries(s, a, line):
@@ -1517,11 +2830,19 @@ def _scan(sources):
                 if carries(s, k.value, line):
                     kwd.add(k.arg)
                 continue
-            v = k.value
-            if isinstance(v, ast.Dict) and None not in v.keys:
-                kwd |= {kk.value for kk, vv in zip(v.keys, v.values)
+            v = literal_of(s, k.value, line)
+            if isinstance(v, ast.Dict):
+                # 마지막 펼침(·상수 아닌 열쇠) 뒤의 칸만 — 그 앞은 덮였을지
+                # 모른다(`_entry`)
+                cut = max((j + 1 for j, kk in enumerate(v.keys)
+                           if not (isinstance(kk, ast.Constant)
+                                   and isinstance(kk.value, str))),
+                          default=0)
+                last = {kk.value: vv for kk, vv in zip(v.keys[cut:],
+                                                       v.values[cut:])
                         if isinstance(kk, ast.Constant)
-                        and isinstance(kk.value, str) and carries(s, vv, line)}
+                        and isinstance(kk.value, str)}
+                kwd |= {nm for nm, vv in last.items() if carries(s, vv, line)}
             elif (isinstance(v, ast.Call) and _call_name(v) == "dict"
                   and not v.args):
                 kwd |= {kw.arg for kw in v.keywords
@@ -1531,6 +2852,62 @@ def _scan(sources):
                 kwd |= {e[2] for e in carrier.get(id(s), ())
                         if isinstance(e, tuple) and e[:2] == ("**", v.id)}
         return pos, kwd
+
+    def vararg_slice(s, v):
+        """`args[lo:hi:step]`(받은 `*args` 를 다시 묶지 않았을 때) → (lo, hi,
+        step) — hi 는 끝이 없으면 None. 음수 시작·걸음은 길이를 몰라 자리를
+        모른다(음수 끝은 남는 칸이 없게 계산된다 — 못 보는 쪽으로만 틀린다 · 실수
+        #430 — 옛 판은 끝·걸음이 있으면 통째로 놓쳤다)."""
+        if not (isinstance(v, ast.Subscript) and isinstance(v.value, ast.Name)
+                and v.value.id == s.vararg and holder(s, s.vararg) is s
+                and not s.assigns.get(s.vararg) and isinstance(v.slice, ast.Slice)):
+            return None
+        sl = v.slice
+        lo = 0 if sl.lower is None else _const_index(sl.lower)
+        hi = None if sl.upper is None else _const_index(sl.upper)
+        st = 1 if sl.step is None else _const_index(sl.step)
+        if not (isinstance(lo, int) and lo >= 0 and isinstance(st, int)
+                and st >= 1 and (hi is None or isinstance(hi, int))):
+            return None
+        return lo, hi, st
+
+    def arg_classes(s, line, args, kws):
+        """넘긴 인스턴스의 클래스 — {자리 또는 키워드: 클래스} (별표 앞 위치만).
+        `C(...)` · 그렇게 묶은 이름 · 주석 있는 인자."""
+        out = {}
+        for i, a in enumerate(args):
+            if isinstance(a, ast.Starred):
+                break
+            c = value_class(s, a, line)
+            if c is not None:
+                out[i] = c
+        for k in kws:
+            if k.arg is not None:
+                c = value_class(s, k.value, line)
+                if c is not None:
+                    out[k.arg] = c
+        return out
+
+    def value_class(s, e, line):
+        if isinstance(e, ast.Call):
+            return instance_of(s, e)
+        if isinstance(e, ast.Name):
+            return instance_class(s, e.id, line)
+        return None
+
+    def add_param_classes(tgt, skip, typed):
+        """받는 쪽 인자에 그 클래스를 더한다 — 바뀌었으면 참."""
+        names = list(tgt.params)[1 if skip else 0:]
+        got = pcls.setdefault(id(tgt), {})
+        changed = False
+        for k, c in typed.items():
+            p = (names[k] if isinstance(k, int) and k < len(names) else
+                 k if isinstance(k, str) and (k in names or k in tgt.kwonly)
+                 else None)
+            if p is not None and c not in got.setdefault(p, []):
+                got[p].append(c)
+                changed = True
+        return changed
 
     def place(tgt, skip, pos, kwd):
         """실어 보낸 자리 → 받는 쪽 인자(·`*args`·`**kwargs` 의 칸)."""
@@ -1556,14 +2933,16 @@ def _scan(sources):
             return False
         own = set(s.params) | set(s.kwonly)
         bundles = {s.vararg, s.kwarg} - {None}
-        for x in s.nodes:
-            if isinstance(x, ast.Return) and x.value is not None:
-                for c in _cands(x.value):
-                    k = _key(c)
-                    if is_factory_call(s, c) or (
-                            k and k not in own and _root(k) not in bundles
-                            and is_carrier(s, k, x.lineno)):
-                        return True
+        rets = ([(s.node.body, s.node.lineno)] if s.kind == "lambda" else
+                [(x.value, x.lineno) for x in s.nodes
+                 if isinstance(x, ast.Return) and x.value is not None])
+        for v, line in rets:
+            for c in _cands(v):
+                k = _key(c)
+                if is_factory_call(s, c) or (
+                        k and k not in own and _root(k) not in bundles
+                        and is_carrier(s, k, line)):
+                    return True
         return False
 
     def fixpoint():
@@ -1571,17 +2950,18 @@ def _scan(sources):
         while changed:
             changed = False
             for s in list(scopes):
-                if (s.kind == "def" and id(s) not in factory_fns
+                if (s.kind in ("def", "lambda") and id(s) not in factory_fns
                         and returns_client(s)):
-                    factory_fns[id(s)] = s.node.name
+                    factory_fns[id(s)] = fn_name(s)
                     memo.clear()
                     changed = True
                 for x in s.nodes:
                     if not isinstance(x, ast.Call):
                         continue
-                    for func, args, kws in calls(x):
+                    for func, args, kws in calls(s, x):
                         pos, kwd = carried(s, x.lineno, args, kws)
-                        if not pos and not kwd:
+                        typed = arg_classes(s, x.lineno, args, kws)
+                        if not (pos or kwd or typed):
                             continue
                         tgt, skip = target(s, func, lazy=True)
                         if tgt is None:
@@ -1590,6 +2970,9 @@ def _scan(sources):
                                - carrier.setdefault(id(tgt), set()))
                         if new:
                             carrier[id(tgt)] |= new
+                            memo.clear()
+                            changed = True
+                        if typed and add_param_classes(tgt, skip, typed):
                             memo.clear()
                             changed = True
 
@@ -1608,7 +2991,7 @@ def _scan(sources):
         """다른 모듈이 이름으로 받아 갈 수 있는 운반자 — 공장을 감싼 def ·
         클라이언트를 담은 모듈 전역(리터럴의 칸·나중에 쓴 칸에 담은 것도) ·
         그런 클래스."""
-        out = set(factory_fns.values())
+        out = {n for n in factory_fns.values() if n}
         for m in list(mods.values()):
             # 정렬해서 훑는다 — 집합 순회는 해시 시드마다 달라 판정 순서(어느
             # 순환에 먼저 닿나)가 프로세스마다 갈렸다. 맞는 판정은 순서와
@@ -1616,6 +2999,14 @@ def _scan(sources):
             # 사라진다(2026-10-04 F5 뮤테이션이 실측 — 같은 그래프가 한
             # 프로세스에선 틀리고 다른 프로세스에선 맞았다)
             for k in sorted(set(m.top.assigns) | set(m.writers)):
+                if k.startswith("@"):
+                    # `globals()['D'] = …` — 그 모듈의 전역 D
+                    acc = _split(k)
+                    if (acc and acc[1] == "attr"
+                            and module_path(m.top, acc[0]) == m.name
+                            and holder_carrier(m.top, acc[2])):
+                        out.add(acc[2])
+                    continue
                 acc = _split(k)
                 if acc is None:
                     slots = {e for _ln, v in m.top.assigns.get(k, ())
@@ -1659,6 +3050,8 @@ def _scan(sources):
         for evs in s.assigns.values():
             bindings += sum(1 for ln, v in evs if bearing(s, v, ln))
         odd = _odd_negated(s.nodes)
+        tests = {id(_unwrap_bool(y.test)) for y in s.nodes
+                 if isinstance(y, (ast.If, ast.IfExp, ast.While, ast.Assert))}
         for x in s.nodes:
             if (isinstance(x, ast.Name) and isinstance(x.ctx, ast.Load)
                     and holder(s, x.id) not in (s, None)
@@ -1670,10 +3063,13 @@ def _scan(sources):
             # None` — 바깥 판정이 드모르간으로 가른다, 리뷰 F2).
             for op in (() if id(x) in odd else _neg_operands(x)):
                 k = _key(op)
+                dflt = _get_default(op)
                 if (isinstance(op, ast.Call) and is_factory_call(s, op)) or (
-                        k and is_carrier(s, k, x.lineno) and not any(
-                            bearing(s, v, ln)
-                            for ln, v in s.resolves.get(id(x), ()))):
+                        k and (is_carrier(s, k, x.lineno) or (
+                            dflt is not None
+                            and get_carrier(s, k, dflt, x.lineno)))
+                        and not any(bearing(s, v, ln)
+                                    for ln, v in s.resolves.get(id(x), ()))):
                     hits.append((s.mod.name, x.lineno, ast.unparse(x)))
                     break
             # 긍정 판정의 else 갈래 — 값이 **언제나** 클라이언트면 그 갈래는
@@ -1682,12 +3078,19 @@ def _scan(sources):
             if isinstance(x, (ast.If, ast.IfExp)) and x.orelse and not (
                     _trivial_branch(x.orelse) if isinstance(x, ast.If)
                     else _trivial(x.orelse)):
-                op = _pos_operand(x.test)
-                k = _key(op) if op is not None else None
-                if op is not None and (surely_call(s, op)
-                                       or (k and surely(s, k, x.lineno))):
+                if dead_else(s, x.test, x.lineno):
                     hits.append((s.mod.name, x.lineno,
                                  f"{ast.unparse(x.test)} → else"))
+            # `d or 기본값` — 앞 항이 언제나 클라이언트면 뒤 항은 한 번도 안
+            # 돈다(판정 자리의 or 는 위 else 가 본다 · 실수 #430)
+            if (isinstance(x, ast.BoolOp) and isinstance(x.op, ast.Or)
+                    and id(x) not in tests):
+                for i, v in enumerate(x.values[:-1]):
+                    if dead_else(s, v, x.lineno):
+                        if not all(_trivial(w) for w in x.values[i + 1:]):
+                            hits.append((s.mod.name, x.lineno,
+                                         f"{ast.unparse(x)} → else"))
+                        break
     return {"hits": sorted(hits), "bindings": bindings,
             "carrier_params": sum(map(len, carrier.values())),
             "cross_reads": cross_reads, "factory_fns": len(factory_fns),
@@ -1865,6 +3268,10 @@ class TestNoDeadDartGuard:
           "    u(get_dart())\n"}, "pkg.a"),
         # 공장 이름이 안 나오는 모듈 — 감싼 함수 이름으로 찾아 읽는다
         ({"pkg.w": "def mk():\n    return get_dart()\n",
+          "pkg.c": "from pkg.w import mk\n"
+          "def f():\n    d = mk()\n    if not d:\n        return\n"}, "pkg.c"),
+        # 맨 위에 lambda 로 묶은 공장(실수 #430)
+        ({"pkg.w": "mk = lambda: get_dart()\n",
           "pkg.c": "from pkg.w import mk\n"
           "def f():\n    d = mk()\n    if not d:\n        return\n"}, "pkg.c"),
         ({"pkg.h": "D = get_dart()\n", "pkg.c": "from pkg.h import D\n"
@@ -2237,8 +3644,17 @@ class TestNoDeadDartGuard:
         "            self.connect()\n",
         "def f():\n    ctx = {'x': 1}\n    if not ctx['dart']:\n        return\n",
         "def f():\n    ctx = {'dart': None}\n    if not ctx['dart']:\n        return\n",
-        "def f(base):\n    ctx = {**base, 'dart': get_dart()}\n"
+        # 펼침이 칸 **뒤** 면 덮였을지 모른다(앞이면 그 칸은 확정 — TestScannerElse
+        # AndCycles 로 옮겼다, 실수 #430) · 같은 열쇠는 마지막이 이긴다
+        "def f(base):\n    ctx = {'dart': get_dart(), **base}\n"
         "    if not ctx['dart']:\n        return\n",
+        "def f():\n    ctx = {'dart': get_dart(), 'dart': None}\n"
+        "    if not ctx['dart']:\n        return\n",
+        # 상수가 아닌 열쇠가 뒤에 오면 그 칸일 수 있다(독립 리뷰)
+        "def f(k):\n    ctx = {'dart': get_dart(), k: None}\n"
+        "    if not ctx['dart']:\n        return\n",
+        "def f(k):\n    ctx = {'dart': get_dart(), f'{k}': None}\n"
+        "    if not ctx.get('dart'):\n        return\n",
         "def f():\n    ctx = {'dart': get_dart()}\n    if not ctx['other']:\n"
         "        return\n",
         "def f():\n    xs = [get_dart()]\n    if not xs[1]:\n        return\n",
@@ -2335,14 +3751,16 @@ class TestNoDeadDartGuard:
 
     def test_scanner_cycles_terminate_without_depth_cap(self):
         """깊이 상한을 순환 감지로 바꿨다 — 보관소끼리 서로를 옮겨 담는 순환·
-        자기 자신을 다시 담는 바인딩이 멈춰야 하고(재귀 폭주·무한 반복 없음),
-        끝까지 증명되지 않은 것은 '아니다' 다(최소 고정점 — 잡지 않는다)."""
+        자기 자신을 다시 담는 바인딩이 멈춰야 한다(재귀 폭주·무한 반복 없음).
+        A↔B 는 `c()` 의 공장 호출(바닥)에 닿아 언제나 클라이언트다 — `not B` 는
+        죽었다(E-게이트 최대 고정점 · 실수 #430. 옛 최소 고정점 판은 잡지
+        못했다). `D = D` 는 바닥이 없어(값이 한 번도 안 담긴다) 잡지 않는다."""
         r = scan({"m": "def a():\n    global A\n    A = B\ndef b():\n"
                   "    global B\n    B = A\ndef c():\n    global A\n"
                   "    A = get_dart()\ndef f():\n    if not B:\n        return\n"
                   "def g():\n    global D\n    D = D\ndef h():\n    if not D:\n"
                   "        return\n"})
-        assert r["hits"] == [] and r["depth"] < 20, r
+        assert r["hits"] == [("m", 11, "not B")] and r["depth"] < 20, r
 
     def test_scanner_provisional_false_is_not_memoized(self):
         """순환 속에서 '아직 진행 중' 인 판정을 '아니다' 로 가정해 얻은 거짓은
@@ -2447,6 +3865,39 @@ def _random_carrier_graph(rng):
     rng.shuffle(fns)            # 판정 순서를 바꾼다(순환에 처음 닿는 자리)
     return n, binds, ("from bot.dart_client import get_dart\n" + "".join(head)
                       + "".join(fns))
+
+
+def _egated_gfp(binds):
+    """보관소 규칙의 **E-게이트 최대 고정점**(실수 #430) — 꼭대기(전부 '싣는다')
+    에서 내려 최대 고정점을 구하고, 거기서 바닥(공장 후보)에 닿지 않는 전역은
+    값이 한 번도 안 담기는 순환이라 '아니다' 로 굳힌 뒤 다시 내린다(굳힌 전역에
+    기대던 바인딩도 그만큼 무너진다). 바닥에 닿는 길은 최대 고정점 안의 전역만
+    따라간다. 최소 고정점은 늘 이 안에 든다."""
+    forced: set = set()
+    while True:
+        val = {i: i not in forced for i in binds}
+        changed = True
+        while changed:
+            changed = False
+            for i, bs in binds.items():
+                v = (i not in forced and bool(bs) and all(any(
+                    c == "F" or (isinstance(c, int) and val[c]) for c in b)
+                    for b in bs))
+                if val[i] and not v:
+                    val[i], changed = False, True
+        ok = {i: False for i in binds}
+        changed = True
+        while changed:
+            changed = False
+            for i, bs in binds.items():
+                if val[i] and not ok[i] and any(
+                        c == "F" or (isinstance(c, int) and val[c] and ok[c])
+                        for b in bs for c in b):
+                    ok[i] = changed = True
+        loose = {i for i in binds if val[i] and not ok[i]}
+        if not loose:
+            return ok
+        forced |= loose
 
 
 def _least_fixpoint(binds):
@@ -2581,8 +4032,6 @@ class TestScannerTrustAndCycles:
         "def f():\n    d = get_dart()\n" + _IF_D,
         "from bot.dart_client import get_dart\nget_dart = lambda: None\n"
         "def f():\n    d = get_dart()\n" + _IF_D,
-        "def get_dart():\n    return None\nfrom bot.dart_client import get_dart\n"
-        "def f():\n    d = get_dart()\n" + _IF_D,
         "def f():\n    try:\n        from bot.dart_client import get_dart\n"
         "    except Exception:\n        get_dart = lambda: None\n"
         "    d = get_dart()\n" + _IF_D,
@@ -2708,6 +4157,11 @@ class TestScannerTrustAndCycles:
         # L4 의 반대 증거 — functools 에서 온 `cache` 는 결과를 바꾸지 않는다
         ("from functools import cache\n@cache\ndef mk():\n    return get_dart()\n"
          "def use():\n    d = mk()\n" + _IF_D, (7, "d → else")),
+        # ── 실수 #430 — 모듈 맨 위의 **마지막** 바인딩이 이긴다(직선 코드, 사이에
+        # import 시점 호출 없음). 옛 판은 바인딩이 둘이면 '섞였다' 로 봐 앞의
+        # 정의 뒤 import 를 놓쳤다(옛 반대 증거 — 지우지 않고 뒤집는다, #222) ──
+        ("def get_dart():\n    return None\nfrom bot.dart_client import get_dart\n"
+         "def f():\n    d = get_dart()\n" + _IF_D, (6, "d → else")),
     ])
     def test_fires_on_the_real_shapes(self, src, want):
         assert dead_guards(src) == [want], src
@@ -2773,8 +4227,9 @@ class TestScannerTrustAndCycles:
         assert r["built"] == ["pkg.h", "pkg.r"], r   # 읽고도 막지 않는다
 
     def test_cycles_reach_the_least_fixpoint(self):
-        """무작위 그래프 300개 — 판정이 최소 고정점(끝까지 따라가 증명된 것만
-        참)과 같아야 한다. 잠정 '아니다' 를 메모하거나(옛 판의 깊이 메모 병) ·
+        """무작위 그래프 600개 — 판정이 E-게이트 최대 고정점(`_egated_gfp` —
+        서로 옮겨 담는 순환도 바닥에 닿으면 참 · 실수 #430. 옛 판은 최소 고정점
+        이었다)과 같아야 하고, 최소 고정점은 늘 그 안에 든다. 잠정 '아니다' 를 메모하거나(옛 판의 깊이 메모 병) ·
         뿌리가 참으로 끝났는데 그 아래 잠정을 남기거나 · 기대는 자리를 위로
         안 올리면 순서에 따라 답이 갈린다(한 픽스처로는 안 보인다). 시드를
         고정했고 판정 순서도 해시 시드와 무관하게 정렬했다(`exported()`) —
@@ -2782,14 +4237,19 @@ class TestScannerTrustAndCycles:
         300개로는 안 걸려 아래에 줄인 반례를 따로 둔다."""
         import random
         rng = random.Random(20261004)
-        hit_total, checks, bad = 0, 0, []
-        for t in range(300):
+        hit_total, checks, bad, gfp_only = 0, 0, [], 0
+        for t in range(600):
             n, binds, src = _random_carrier_graph(rng)
-            want = _least_fixpoint(binds)
+            want = _egated_gfp(binds)
+            lfp = _least_fixpoint(binds)
+            assert all(want[i] for i in binds if lfp[i]), (t, src)
+            gfp_only += sum(1 for i in binds if want[i] and not lfp[i])
             lines = src.splitlines()
             at = {i: lines.index(f"    if not G{i}:") + 1 for i in range(n)}
             r = scan({"m": src})
-            got = {ln for _m, ln, _e in r["hits"]}
+            # 판정 줄만 — 같은 그래프의 `G3 or G2`(앞 항이 늘 클라이언트라 뒤
+            # 항이 안 도는 자리)도 잡히지만 그건 이 오라클이 재는 것이 아니다
+            got = {ln for _m, ln, e in r["hits"] if not e.endswith("→ else")}
             exp = {at[i] for i in range(n) if want[i]}
             hit_total += len(exp)
             checks += n
@@ -2799,6 +4259,9 @@ class TestScannerTrustAndCycles:
         # 참·거짓이 둘 다 충분히 나와야 판정을 잰다(한쪽뿐이면 상수로도 통과)
         assert hit_total >= 100 and checks - hit_total >= 100, (hit_total,
                                                                 checks)
+        # 최대 고정점에서만 참인 전역(순환으로만 증명되는 것)도 충분히 나와야
+        # 그 갈래를 잰다
+        assert gfp_only >= 100, gfp_only
 
     def test_memo_reset_also_resets_cycle_provisionals(self):
         """고정점이 운반 인자를 새로 찾아 메모를 비우면 순환의 잠정 거짓도
@@ -2827,7 +4290,9 @@ class TestScannerTrustAndCycles:
                "def w1_0(c):\n    global G1\n    G1 = G0\n"
                "def r4():\n    if not G4:\n        return\n"
                "def w4_0(c):\n    global G4\n    G4 = G1 or get_dart()\n")
-        assert dead_guards(src) == [(16, "not G4")]
+        # 부정 판정만 — `or` 꼬리 판정(실수 #430)은 이 반례가 재는 것이 아니다
+        assert [h for h in dead_guards(src)
+                if not h[1].endswith("→ else")] == [(16, "not G4")]
 
     def test_lowered_dependency_survives_its_owner(self):
         """잠정으로 끝난 판정이 기대던 자리를 그 아래 잠정들에게 물려준다 — 안
@@ -2843,7 +4308,8 @@ class TestScannerTrustAndCycles:
                "def w6_0(c):\n    global G6\n    G6 = G7\n"
                "def w0_0(c):\n    global G0\n    G0 = G8 or G3\n"
                "def w5_1(c):\n    global G5\n    G5 = G3\n")
-        assert dead_guards(src) == [(4, "not G8")]
+        assert [h for h in dead_guards(src)
+                if not h[1].endswith("→ else")] == [(4, "not G8")]
 
     @pytest.mark.parametrize("n", [10, 22, 40])
     def test_cycle_evals_stay_linear(self, n):
@@ -2858,10 +4324,858 @@ class TestScannerTrustAndCycles:
         lines.append("def z():\n    global G0\n    G0 = get_dart()")
         lines.append("def r():\n    if not G3:\n        return")
         r = scan({"m": "\n".join(lines) + "\n"})
-        # G0 만 공장을 받고 나머지는 서로를 받는다 — 바인딩이 모두 실어야 하는
-        # 보관소 규칙에서 G3 은 증명되지 않는다
-        assert r["hits"] == [], r["hits"]
-        assert n <= r["evals"] <= 10 * n, (n, r["evals"])
+        # G0 만 공장을 받고 나머지는 서로를 받는다 — 서로 옮겨 담는 순환이
+        # G0 의 공장 호출(바닥)에 닿으므로 모든 전역이 언제나 클라이언트다(E-게이트
+        # 최대 고정점 · 실수 #430. 옛 판의 최소 고정점은 증명하지 못했다)
+        assert [e for _m, _ln, e in r["hits"]] == ["not G3"], r["hits"]
+        # 재기가 순환을 회차마다 다시 재므로(직전 회차의 참을 가정해 한 번 더 →
+        # 같으면 멈춤) 상수는 커졌지만 여전히 N 에 비례한다(실측 15N+2 · 옛
+        # 최소 고정점 판은 5N+5)
+        assert n <= r["evals"] <= 20 * n, (n, r["evals"])
+
+
+class TestScannerFlowAndClasses:
+    """실수 #430 — #429 가 '못 보는 축' 으로 남긴 흐름·클래스 축. 갈래마다 발화와
+    반대 증거(#25)를 같이 둔다.
+
+    · 같은 블록 도달 정의 — 옛 판은 같은 스코프의 앞선 바인딩 **하나라도** 봐
+      `d = get_dart(); d = None; if d is None:` 을 잡았다(오탐). 위로 거슬러 첫
+      바인딩이 단순하고 갈래·반복·예외가 끼지 않으면 그 값 하나다.
+    · 모듈 맨 위 마지막 바인딩 — 맨 위 직선 코드(사이에 import 시점 호출 없음)면
+      함수 안에서 읽는 값은 마지막 바인딩이다(`_D = None; _D = get_dart()`).
+      맨 위 문장·맨 위 클래스 본문의 호출은 import 시점에 돌므로 **그 줄에 닿는**
+      바인딩이다(`_D = get_dart()` 뒤 `def get_dart()` 는 그 자리에 없다).
+    · 장식 별칭 — `from functools import cache as memo` · `sm = staticmethod`.
+    · C3 — 다이아몬드에서 파이썬과 같은 메서드를 고른다.
+    · 가족 밖 클래스가 **자기** 메서드에서 쓰는 `self.d` 는 다른 객체다(그
+      메서드를 클래스로 불러 남의 객체를 넘기는 자리가 없을 때)."""
+
+    @pytest.mark.parametrize("src, want", [
+        # ── C3 ──
+        ("class A:\n    def mk(self):\n        return None\nclass B(A):\n"
+         "    pass\nclass C(A):\n    def mk(self):\n        return get_dart()\n"
+         "class D(B, C):\n    def f(self):\n        d = self.mk()\n"
+         "        if not d:\n            return\n", [(12, "not d")]),
+        # ── 가족 밖 클래스의 자기 메서드 self · classmethod 의 cls ──
+        (_C_SELF_D + "class Other:\n    def reset(self):\n        self.d = None\n",
+         [(5, "self.d → else")]),
+        (_C_SELF_D + "class Other:\n    @classmethod\n    def reset(cls):\n"
+         "        cls.d = None\n", [(5, "self.d → else")]),
+        # ── 모듈 맨 위 마지막 바인딩 ──
+        ("_D = None\n_D = get_dart()\ndef f():\n    if not _D:\n        return\n",
+         [(4, "not _D")]),
+        ("_D = None\n_D = get_dart()\ndef f():\n    if _D:\n        work()\n"
+         "    else:\n        log('키 없음')\n", [(4, "_D → else")]),
+        # 장식이 붙은 재정의는 import 시점에 무엇을 부를지 모른다 — 옛 규칙(엄격)
+        ("from bot.dart_client import get_dart\n@deco\ndef get_dart():\n"
+         "    return None\ndef f():\n    d = get_dart()\n    if not d:\n"
+         "        return\n", [(7, "not d")]),
+        # ── 장식 별칭 ──
+        ("from functools import cache as memo\n@memo\ndef mk():\n"
+         "    return get_dart()\ndef use():\n    d = mk()\n" + _IF_D,
+         [(7, "d → else")]),
+        ("from functools import cache as lru_cache\n@lru_cache\ndef mk():\n"
+         "    return get_dart()\ndef use():\n    d = mk()\n" + _IF_D,
+         [(7, "d → else")]),
+        ("sm = staticmethod\nclass K:\n    @sm\n    def mk():\n"
+         "        return get_dart()\ndef use():\n    d = K.mk()\n" + _IF_D,
+         [(8, "d → else")]),
+        # ── 같은 블록 도달 정의 ──
+        ("def f():\n    d = None\n    d = get_dart()\n    if d is None:\n"
+         "        return\n", [(4, "d is None")]),
+        ("def f():\n    d = None\n    d = get_dart()\n" + _IF_D, [(4, "d → else")]),
+        ("def f(d):\n    d = get_dart()\n    if not d:\n        return\n",
+         [(3, "not d")]),
+        # 갈래·예외·한 줄 여러 문장·대입식 — 옛 규칙(앞선 바인딩 하나라도)
+        ("def f(x):\n    d = get_dart()\n    if x:\n        d = None\n"
+         "    if not d:\n        return\n", [(5, "not d")]),
+        ("def f():\n    d = get_dart()\n    try:\n        d = None\n"
+         "    except Exception:\n        pass\n    if not d:\n        return\n",
+         [(7, "not d")]),
+        ("def f():\n    d = get_dart(); d = None; ok = d is None\n",
+         [(2, "d is None")]),
+        ("def f():\n    d = None\n    if (d := get_dart()) and not d:\n"
+         "        return\n", [(3, "not d")]),
+        # 안쪽 갈래 안에서 받은 뒤의 판정 — 그 갈래 안에서는 하나로 정해진다
+        ("def f(x):\n    d = None\n    if x:\n        d = get_dart()\n"
+         "        if not d:\n            return\n", [(5, "not d")]),
+        # classmethod 를 클래스로 부르는 것은 cls 가 그 클래스다(남의 객체가 아니다)
+        (_C_SELF_D + "class Other:\n    @classmethod\n    def reset(cls):\n"
+         "        cls.d = None\nOther.reset()\n", [(5, "self.d → else")]),
+        # 반복문의 다음 바퀴 · while 머리 · try 의 except · 바깥 if 머리의 대입식 ·
+        # 모듈 맨 위를 global 로 쓰는 함수 · nonlocal 로 쓰는 안쪽 함수 · 기본값에
+        # 호출이 있는 재정의 — 하나로 정할 수 없어 옛 규칙(앞선 바인딩 하나라도)
+        ("def f(xs):\n    d = get_dart()\n    d = None\n    for x in xs:\n"
+         "        if not d:\n            return\n        d = get_dart()\n",
+         [(5, "not d")]),
+        ("def f():\n    d = get_dart()\n    d = None\n    while not d:\n"
+         "        d = get_dart()\n", [(4, "not d")]),
+        ("def f():\n    d = None\n    try:\n        d = get_dart()\n"
+         "    except Exception:\n        if not d:\n            return\n",
+         [(6, "not d")]),
+        ("def f():\n    d = None\n    if (d := get_dart()):\n        if not d:\n"
+         "            return\n", [(4, "not d")]),
+        ("def reset():\n    global d\n    d = get_dart()\nd = get_dart()\nd = None\n"
+         "reset()\nif d is None:\n    pass\n", [(7, "d is None")]),
+        ("def f():\n    d = get_dart()\n    d = None\n    def g():\n"
+         "        nonlocal d\n        d = get_dart()\n    g()\n    if d is None:\n"
+         "        return\n", [(8, "d is None")]),
+        ("from bot.dart_client import get_dart\ndef get_dart(x=init()):\n"
+         "    return None\ndef f():\n    d = get_dart()\n    if not d:\n"
+         "        return\n", [(6, "not d")]),
+        # ── import 시점 코드는 그 줄에 닿는 바인딩 ──
+        # 맨 위 문장이 부른 공장 — 뒤의 재정의는 그 자리에 없다(옛 판은 마지막
+        # 바인딩을 봐 놓쳤고, 앞 둘은 맨 위 판정이 자기를 다시 불러 끝없이 돌았다)
+        ("from bot.dart_client import get_dart\nget_dart = get_dart()\n"
+         "def f():\n    if not get_dart:\n        return\n",
+         [(4, "not get_dart")]),
+        ("from bot.dart_client import get_dart\n_D = get_dart()\n"
+         "def get_dart():\n    return None\ndef f():\n    if not _D:\n"
+         "        return\n", [(6, "not _D")]),
+        ("from bot.dart_client import get_dart\n_D = get_dart()\n"
+         "get_dart = None\ndef f():\n    if not _D:\n        return\n",
+         [(5, "not _D")]),
+        ("from bot.dart_client import get_dart\n_D = get_dart()\nif _D:\n"
+         "    pass\nelse:\n    log('키 없음')\nget_dart = None\n",
+         [(3, "_D → else")]),
+        # 맨 위 클래스 본문도 import 시점에 돈다 · 중첩 클래스는 바깥 클래스
+        # 본문의 이름을 못 본다(전역으로 간다 — 옛 판은 바깥 클래스 이름으로 읽었다)
+        ("from bot.dart_client import get_dart\nclass K:\n    d = get_dart()\n"
+         "    def f(self):\n        if not self.d:\n            return\n"
+         "def get_dart():\n    return None\n", [(5, "not self.d")]),
+        ("from bot.dart_client import get_dart\nclass A:\n    get_dart = None\n"
+         "    class B:\n        d = get_dart()\n        def f(self):\n"
+         "            if not self.d:\n                return\n",
+         [(7, "not self.d")]),
+        # 한 줄 여러 문장이라 그 줄에 닿는 것을 못 가르면 옛 규칙 — 마지막 바인딩
+        # 으로 가지 않는다(가면 맨 위 판정이 자기를 다시 불러 끝없이 돈다)
+        ("from bot.dart_client import get_dart\n_D = get_dart(); x = 1\n"
+         "def get_dart():\n    return None\ndef f():\n    if not _D:\n"
+         "        return\n", [(6, "not _D")]),
+        # 맨 위 바인딩 사이의 설명 문자열은 아무것도 부르지 않는다 · 재정의의 반환
+        # 주석·키워드 기본값·인자 주석은 import 시점에 평가된다(호출이 있으면 옛 규칙)
+        ("_D = None\n'\'\'설명\'\'\'\n_D = get_dart()\ndef f():\n    if not _D:\n"
+         "        return\n", [(5, "not _D")]),
+        ("from bot.dart_client import get_dart\ndef get_dart() -> init():\n"
+         "    return None\ndef f():\n    d = get_dart()\n    if not d:\n"
+         "        return\n", [(6, "not d")]),
+        ("from bot.dart_client import get_dart\ndef get_dart(*, x=init()):\n"
+         "    return None\ndef f():\n    d = get_dart()\n    if not d:\n"
+         "        return\n", [(6, "not d")]),
+        ("from bot.dart_client import get_dart\ndef get_dart(x: init()):\n"
+         "    return None\ndef f():\n    d = get_dart()\n    if not d:\n"
+         "        return\n", [(6, "not d")]),
+    ])
+    def test_fires(self, src, want):
+        assert dead_guards(src) == want, src
+
+    @pytest.mark.parametrize("src", [
+        # C3 의 반대 — A 가 공장이어도 C 의 None 이 이긴다(옛 판은 A 를 골랐다)
+        "class A:\n    def mk(self):\n        return get_dart()\nclass B(A):\n"
+        "    pass\nclass C(A):\n    def mk(self):\n        return None\n"
+        "class D(B, C):\n    def f(self):\n        d = self.mk()\n"
+        "        if not d:\n            return\n",
+        # 가족 밖 클래스 메서드를 클래스로 부르거나 꺼내 두면 self 는 무엇이든 된다
+        _C_SELF_D + "class Other:\n    def reset(self):\n        self.d = None\n"
+        "def g(c):\n    Other.reset(c)\n",
+        _C_SELF_D + "class Other:\n    def reset(self):\n        self.d = None\n"
+        "h = Other.reset\n",
+        # 가족(믹스인)의 자기 메서드는 증거다
+        "class M:\n    def reset(self):\n        self.d = None\nclass C(M):\n"
+        "    def __init__(self):\n        self.d = get_dart()\n"
+        "    def f(self):\n" + _IF_SELF_D,
+        # 마지막 바인딩의 반대 — 마지막이 None · 사이에 호출 · 중첩 바인딩 ·
+        # global 로 쓰는 함수(옛 규칙: 바인딩이 모두 실어야)
+        "_D = get_dart()\n_D = None\ndef f():\n    if not _D:\n        return\n",
+        "_D = None\ninit()\n_D = get_dart()\ndef f():\n    if not _D:\n"
+        "        return\n",
+        "_D = None\nif X:\n    _D = get_dart()\ndef f():\n    if not _D:\n"
+        "        return\n",
+        "D = get_dart()\nD = None\ndef reset():\n    global D\n    D = get_dart()\n"
+        "def f():\n    if not D:\n        return\n",
+        # import 뒤에 재정의한 공장 이름 — 효력 있는 것은 재정의다(옛 판은 부정
+        # 판정에서 공장으로 봤다 — 오탐)
+        "from bot.dart_client import get_dart\ndef get_dart():\n    return None\n"
+        "def f():\n    d = get_dart()\n    if not d:\n        return\n",
+        # 장식 별칭의 반대 — 만든 래퍼 · 다른 라이브러리의 cache
+        "memo = make_wrapper()\n@memo\ndef mk():\n    return get_dart()\n"
+        "def use():\n    d = mk()\n" + _IF_D,
+        "from mylib import cache as memo\n@memo\ndef mk():\n"
+        "    return get_dart()\ndef use():\n    d = mk()\n" + _IF_D,
+        # 같은 블록 도달 정의의 반대 — 마지막이 None(옛 판의 오탐) · 모듈 맨 위 ·
+        # while 머리(본문이 다음 바퀴에 닿는다)
+        "def f():\n    d = get_dart()\n    d = None\n    if d is None:\n"
+        "        return\n",
+        "def f():\n    d = get_dart()\n    d = None\n" + _IF_D,
+        "d = get_dart()\nd = None\nif d is None:\n    pass\n",
+        "def f():\n    d = None\n    while not d:\n        d = get_dart()\n",
+        # 맨 위 마지막 바인딩이 클라이언트여도 global 로 None 을 쓰는 함수가 있으면
+        # 옛 규칙(바인딩이 모두 실어야)
+        "D = None\nD = get_dart()\ndef reset():\n    global D\n    D = None\n"
+        "def f():\n    if not D:\n        return\n",
+        # 공장 import 뒤에 다른 값(호출 없는 대입)으로 재정의 — 효력 있는 것은 그 값
+        "from bot.dart_client import get_dart\nget_dart = other_getter\n"
+        "def f():\n    d = get_dart()\n    if not d:\n        return\n",
+        # 함수 안의 같은 이름 def 둘 — 뒤의 것이 이긴다
+        "def outer():\n    def mk():\n        return get_dart()\n    def mk():\n"
+        "        return None\n    d = mk()\n    if not d:\n        return\n",
+        # else 판정 — with … as · match 패턴 · try 본문(except 에서) · 반복문의 뒷줄이
+        # 그 이름을 다시 묶으면 '언제나' 가 아니다(하나로 정할 수 없다)
+        "def f():\n    d = get_dart()\n    with open(x) as d:\n        if d:\n"
+        "            work(d)\n        else:\n            log('키 없음')\n",
+        "def f(x):\n    d = get_dart()\n    match x:\n        case {'k': d}:\n"
+        "            if d:\n                work(d)\n            else:\n"
+        "                log('키 없음')\n",
+        "def f():\n    d = get_dart()\n    try:\n        d = load()\n"
+        "    except Exception:\n        if d:\n            work(d)\n        else:\n"
+        "            log('키 없음')\n",
+        "def f(xs):\n    d = get_dart()\n    for x in xs:\n        if d:\n"
+        "            work(d)\n        else:\n            log('키 없음')\n"
+        "        d = load(x)\n",
+        # `except … as` · match 캡처(`*d` · `**d`)도 바인딩이다(옛 판은 안 셌다)
+        "def f():\n    d = get_dart()\n    try:\n        work()\n"
+        "    except Exception as d:\n        pass\n" + _IF_D,
+        "def f(x):\n    d = get_dart()\n    match x:\n        case [*d]:\n"
+        "            pass\n" + _IF_D,
+        "def f(x):\n    d = get_dart()\n    match x:\n        case {**d}:\n"
+        "            pass\n" + _IF_D,
+        # import 시점의 반대 — 클래스 본문 앞에서 재정의 · 함수 본문은 import 가
+        # 끝난 뒤 돈다(마지막 바인딩) · lambda 본문도 나중에 돈다
+        "from bot.dart_client import get_dart\ndef get_dart():\n    return None\n"
+        "class K:\n    d = get_dart()\n    def f(self):\n"
+        "        if not self.d:\n            return\n",
+        "from bot.dart_client import get_dart\ndef f():\n    d = get_dart()\n"
+        "    if not d:\n        return\ndef get_dart():\n    return None\n",
+        "from bot.dart_client import get_dart\nmk = lambda: get_dart()\n"
+        "def get_dart():\n    return None\ndef f():\n    d = mk()\n"
+        "    if not d:\n        return\n",
+        # 맨 위에서 바로 부른 lambda — 무엇을 부를지 따라가지 않는다(놓치는 쪽 ·
+        # 옛 판은 여기서 끝없이 돌았다)
+        "from bot.dart_client import get_dart\nget_dart = (lambda: get_dart())()\n"
+        "def f():\n    if not get_dart:\n        return\n",
+        # 맨 위 클래스 본문 뒤의 import 는 그 본문에서 안 보인다(그때는 사용자 함수)
+        "def get_dart():\n    return None\nclass K:\n    d = get_dart()\n"
+        "    def f(self):\n        if not self.d:\n            return\n"
+        "from bot.dart_client import get_dart\n",
+        # 그 줄 앞에 묶인 것이 없는 이름 — 뒤의 import 는 그 자리에 없다(import 가
+        # NameError 로 멈춘다 · 부정·else 판정 모두)
+        "_D = get_dart()\nfrom bot.dart_client import get_dart\ndef f():\n"
+        "    if not _D:\n        return\n",
+        "_D = get_dart()\nfrom bot.dart_client import get_dart\nif _D:\n    pass\n"
+        "else:\n    log('키 없음')\n",
+        # 같은 단순문 안의 대입식이 판정보다 먼저 다시 묶는다(else 는 산다)
+        "def f():\n    d = get_dart()\n"
+        "    ok = (d := load()) and (d.x() if d else log('키 없음'))\n",
+        # 서로를 가리키는 장식 별칭 — 끝없이 따라가지 않는다(투명하지 않다)
+        "a = b\nb = a\n@a\ndef mk():\n    return get_dart()\ndef use():\n"
+        "    d = mk()\n" + _IF_D,
+    ])
+    def test_spares(self, src):
+        assert not dead_guards(src), src
+
+    def test_inconsistent_hierarchy_does_not_crash(self):
+        """C3 가 서지 않는 계층(파이썬은 TypeError) — 옛 근사로 둔다."""
+        r = scan({"m": "class A:\n    def mk(self):\n        return get_dart()\n"
+                  "class B(A):\n    pass\nclass X(A, B):\n    def f(self):\n"
+                  "        d = self.mk()\n        if not d:\n            return\n"})
+        assert r["hits"] == [("m", 9, "not d")], r
+
+    def test_module_last_binding_sees_other_module_writes(self):
+        """다른 모듈이 `pkg.h.D = None` 으로 쓰면 맨 위 마지막 바인딩을 믿지 않는다."""
+        r = scan({"pkg.h": "D = None\nD = get_dart()\ndef f():\n    if not D:\n"
+                  "        return\n",
+                  "pkg.r": "import pkg.h\ndef reset():\n    pkg.h.D = None\n"})
+        assert r["hits"] == [] and "pkg.r" in r["built"], r
+        r = scan({"pkg.h": "D = None\nD = get_dart()\ndef f():\n    if not D:\n"
+                  "        return\n",
+                  "pkg.r": "import pkg.other\ndef reset():\n    pkg.other.D = None\n"})
+        assert r["hits"] == [("pkg.h", 4, "not D")], r
+
+    def test_duplicate_def_last_wins(self):
+        """같은 이름의 def 가 여럿이면 뒤의 것 — 옛 판은 뒤에서부터 훑어 앞의
+        정의가 남았다(공장이 아닌 뒤 정의를 공장으로 봤다)."""
+        src = ("def mk():\n    return get_dart()\ndef mk():\n    return None\n"
+               "def f():\n    d = mk()\n    if not d:\n        return\n")
+        assert dead_guards(src) == []
+        src2 = ("def mk():\n    return None\ndef mk():\n    return get_dart()\n"
+                "def f():\n    d = mk()\n    if not d:\n        return\n")
+        assert dead_guards(src2) == [(7, "not d")]
+
+
+class TestScannerWrites:
+    """실수 #430 — #429 가 '못 보는 축' 으로 남긴 **쓰기** 축. 보관소 규칙(모든
+    바인딩이 실어야 운반자)은 그 칸·전역을 바꾸는 쓰기를 **모두** 봐야 한다 —
+    옛 판은 아래 쓰기를 못 봐 바꾸는 함수가 있어도 판정을 잡았다(오탐).
+
+    · 다른 모듈의 쓰기 — `m.D = …` · `m.CTX['d'] = …` · `from m import CTX`
+      뒤 `CTX['d'] = …`(같은 객체) · `m.NS.d = …`.
+    · 컨테이너를 바꾸는 메서드 — `update`·`setdefault`·`__setitem__` 은 그 칸에
+      쓴다 · `pop`·`del`·`__delitem__` 은 그 칸을 없앤다 · `clear`·`popitem`·
+      모르는 `update`·`insert`·`remove`·`sort`·`reverse` 는 어느 칸인지 모른다 ·
+      `append`·`extend` 는 끝에 붙인다(리터럴 길이 밖의 칸 후보 · 음수 칸은 모른다).
+    · 식별자가 아닌 문자열 칸 · 음수 칸(쓰기는 어느 칸과 겹칠지 모른다) · 변수 칸.
+    · 이름공간 — `globals()['D']` · `vars(m)['D']` · `m.__dict__['D']` ·
+      `sys.modules['m'].D` · `sys.modules[__name__].D` ·
+      `importlib.import_module('m').D` 는 그 모듈 전역이다."""
+
+    @pytest.mark.parametrize("src, want", [
+        # 식별자가 아닌 문자열 칸 · 음수 칸(리터럴 그대로) — 이제 열쇠가 된다
+        ("CTX = {'api-key': get_dart()}\ndef f():\n    if not CTX['api-key']:\n"
+         "        return\n", [(3, "not CTX['api-key']")]),
+        ("CTX = {'a[b': get_dart()}\ndef f():\n    if not CTX['a[b']:\n"
+         "        return\n", [(3, "not CTX['a[b']")]),
+        ("L = [None, get_dart()]\ndef f():\n    if not L[-1]:\n        return\n",
+         [(3, "not L[-1]")]),
+        # 메서드로 채운 칸 — 맨 위 · 지역
+        ("CTX = {}\nCTX.update(d=get_dart())\ndef f():\n    if not CTX['d']:\n"
+         "        return\n", [(4, "not CTX['d']")]),
+        ("CTX = {}\nCTX.update({'d': get_dart()})\ndef f():\n"
+         "    if not CTX['d']:\n        return\n", [(4, "not CTX['d']")]),
+        ("CTX = {}\nCTX.setdefault('d', get_dart())\ndef f():\n"
+         "    if not CTX['d']:\n        return\n", [(4, "not CTX['d']")]),
+        ("def f():\n    ctx = {}\n    ctx.update(d=get_dart())\n"
+         "    if not ctx['d']:\n        return\n", [(4, "not ctx['d']")]),
+        # 끝에 붙인 값 — 리터럴 길이 밖의 칸 후보(모두 실으면 잡는다)
+        ("L = []\nL.append(get_dart())\ndef f():\n    if not L[0]:\n"
+         "        return\n", [(4, "not L[0]")]),
+        ("def f():\n    xs = []\n    xs.append(get_dart())\n    if not xs[0]:\n"
+         "        return\n", [(4, "not xs[0]")]),
+        # 끝에 붙여도 리터럴 길이 안의 칸은 그대로다
+        ("L = [get_dart()]\nL.append(None)\ndef f():\n    if not L[0]:\n"
+         "        return\n", [(4, "not L[0]")]),
+        # 다른 칸에 쓰는 것은 막지 않는다(반대 증거)
+        ("CTX = {'d': get_dart()}\ndef reset():\n    CTX.update(e=None)\n"
+         "    CTX.pop('e')\n    del CTX['e']\ndef f():\n    if not CTX['d']:\n"
+         "        return\n", [(7, "not CTX['d']")]),
+        # 이름공간으로 쓴 전역 — 이름 바인딩이 없어도 그 전역이다
+        ("globals()['D'] = get_dart()\ndef f():\n    if not D:\n        return\n",
+         [(3, "not D")]),
+        ("import sys\nsys.modules[__name__].D = get_dart()\ndef f():\n"
+         "    if not D:\n        return\n", [(4, "not D")]),
+        ("globals().update(D=get_dart())\ndef f():\n    if not D:\n"
+         "        return\n", [(3, "not D")]),
+        # 리터럴 extend 는 그 값들이 끝에 붙는다
+        ("L = []\nL.extend([get_dart()])\ndef f():\n    if not L[0]:\n"
+         "        return\n", [(4, "not L[0]")]),
+        # 속성과 칸은 다른 자리다 — 같은 이름 속성에 쓰는 것은 그 칸을 막지 않는다
+        ("CTX = {'d': get_dart()}\ndef reset():\n    CTX.d = None\ndef f():\n"
+         "    if not CTX['d']:\n        return\n", [(5, "not CTX['d']")]),
+    ])
+    def test_fires(self, src, want):
+        assert dead_guards(src) == want, src
+
+    @pytest.mark.parametrize("src", [
+        # 그 칸을 바꾸는 메서드·del · 어느 칸인지 모르는 쓰기
+        "CTX = {'d': get_dart()}\ndef reset():\n    CTX.update(d=None)\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset():\n    CTX.update({'d': None})\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset():\n    CTX.pop('d')\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset():\n    del CTX['d']\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset():\n    CTX.__delitem__('d')\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset():\n    CTX.__setitem__('d', None)\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset():\n    CTX.clear()\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset(other):\n    CTX.update(other)\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset(**kw):\n    CTX.update(**kw)\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset(k):\n    CTX[k] = None\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        "CTX = {'d': get_dart()}\ndef reset(k):\n    CTX.setdefault(k, None)\n"
+        "def f():\n    if not CTX['d']:\n        return\n",
+        # 음수 칸 쓰기는 어느 칸과 겹칠지 모른다 · 양수 칸 쓰기는 음수 읽기와 겹친다
+        "L = [get_dart()]\ndef reset():\n    L[-1] = None\n"
+        "def f():\n    if not L[0]:\n        return\n",
+        "L = [get_dart()]\ndef reset():\n    L[0] = None\n"
+        "def f():\n    if not L[-1]:\n        return\n",
+        # 칸이 밀리는 메서드 · 끝이 바뀌면 음수 칸은 모른다
+        "L = [get_dart()]\ndef reset():\n    L.insert(0, None)\n"
+        "def f():\n    if not L[0]:\n        return\n",
+        "L = [get_dart()]\ndef reset():\n    L.append(None)\n"
+        "def f():\n    if not L[-1]:\n        return\n",
+        "L = []\nL.append(get_dart())\nL.append(None)\ndef f():\n"
+        "    if not L[1]:\n        return\n",
+        # 이름공간으로 바꾸는 전역 — 같은 모듈의 globals() · 모르는 이름
+        "D = get_dart()\ndef reset():\n    globals()['D'] = None\n"
+        "def f():\n    if not D:\n        return\n",
+        "D = get_dart()\ndef reset():\n    globals().update(D=None)\n"
+        "def f():\n    if not D:\n        return\n",
+        "D = get_dart()\ndef reset(name):\n    globals()[name] = None\n"
+        "def f():\n    if not D:\n        return\n",
+        "import sys\nD = get_dart()\ndef reset():\n"
+        "    setattr(sys.modules[__name__], 'D', None)\ndef f():\n    if not D:\n"
+        "        return\n",
+        "import sys\nD = get_dart()\ndef reset(n):\n"
+        "    setattr(sys.modules[__name__], n, None)\ndef f():\n    if not D:\n"
+        "        return\n",
+        "D = get_dart()\ndef reset():\n    del globals()['D']\n"
+        "def f():\n    if not D:\n        return\n",
+        # else 판정도 같은 쓰기를 본다(모듈 전역을 이름공간으로 바꾼다)
+        "D = get_dart()\ndef reset():\n    globals()['D'] = None\ndef f():\n"
+        "    if D:\n        work()\n    else:\n        log('키 없음')\n",
+        "import sys\nD = get_dart()\ndef reset():\n"
+        "    sys.modules[__name__].D = None\ndef f():\n    if D:\n        work()\n"
+        "    else:\n        log('키 없음')\n",
+        # 모르는 객체의 이름공간 쓰기는 아무 속성이나로 본다(else 판정)
+        "class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+        "    def f(self):\n        if self.d:\n            work()\n        else:\n"
+        "            log('키 없음')\ndef g(o):\n    vars(make(o))['d'] = None\n",
+        # 모듈 객체를 돌려주는 함수는 공장이 아니다(끝없이 묻지 않는다)
+        "import importlib\nfrom bot.dart_client import get_dart\ndef mk():\n"
+        "    return importlib.import_module('pkg.h')\ndef f():\n    m = mk()\n"
+        "    if not m:\n        return\n",
+        # 리스트 pop(번호)은 뒤 칸을 당긴다 — 그 번호 칸만의 쓰기가 아니다
+        "L = [None, get_dart(), None]\ndef reset():\n    L.pop(0)\ndef f():\n"
+        "    if not L[1]:\n        return\n",
+        # 모르는 객체의 이름공간을 메서드로 바꾸는 것도 아무 속성이나(else 판정)
+        "class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+        "    def f(self):\n        if self.d:\n            work()\n        else:\n"
+        "            log('키 없음')\ndef g(o):\n    vars(make(o)).update(d=None)\n",
+    ])
+    def test_spares(self, src):
+        assert not dead_guards(src), src
+
+    def test_namespace_global_reaches_importers(self):
+        """`globals()['D'] = get_dart()` 로만 묶인 전역도 다른 모듈이 받아 간다 —
+        그 이름을 쓰는 모듈을 읽는다."""
+        r = scan({"pkg.h": "globals()['D'] = get_dart()\n",
+                  "pkg.u": "from pkg.h import D\ndef f():\n    if not D:\n"
+                  "        return\n"})
+        assert r["hits"] == [("pkg.u", 3, "not D")], r
+
+    @pytest.mark.parametrize("writer", [
+        "import pkg.h\ndef reset():\n    pkg.h.D = None\n",
+        "from pkg import h\ndef reset():\n    h.D = None\n",
+        "import pkg.h\ndef reset():\n    setattr(pkg.h, 'D', None)\n",
+        "import pkg.h\ndef reset():\n    vars(pkg.h)['D'] = None\n",
+        "import pkg.h\ndef reset():\n    pkg.h.__dict__['D'] = None\n",
+        "import sys\ndef reset():\n    sys.modules['pkg.h'].D = None\n",
+        "import importlib\ndef reset():\n"
+        "    importlib.import_module('pkg.h').D = None\n",
+        "from importlib import import_module\ndef reset():\n"
+        "    import_module('pkg.h').D = None\n",
+        "import pkg.h\ndef reset():\n    vars(pkg.h).update(D=None)\n",
+    ])
+    def test_spares_module_global_written_elsewhere(self, writer):
+        """다른 모듈이 그 전역을 바꾼다 — 부정 판정도 그 쓰기를 증거로 본다(옛
+        판은 else 판정만 막고 부정 판정은 잡았다 — 오탐)."""
+        r = scan({"pkg.h": "D = get_dart()\ndef f():\n    if not D:\n"
+                  "        return\n", "pkg.r": writer})
+        assert r["hits"] == [] and "pkg.r" in r["built"], r
+
+    @pytest.mark.parametrize("writer", [
+        "import pkg.h\ndef reset():\n    pkg.h.CTX['d'] = None\n",
+        "from pkg.h import CTX\ndef reset():\n    CTX['d'] = None\n",
+        "from pkg.h import CTX\ndef reset():\n    CTX.pop('d')\n",
+        "from pkg.h import CTX\ndef reset():\n    CTX.clear()\n",
+        "def reset():\n    from pkg.h import CTX\n    CTX['d'] = None\n",
+        "import sys\ndef reset():\n    sys.modules['pkg.h'].CTX['d'] = None\n",
+    ])
+    def test_spares_slot_written_elsewhere(self, writer):
+        r = scan({"pkg.h": "CTX = {'d': get_dart()}\ndef f():\n"
+                  "    if not CTX['d']:\n        return\n", "pkg.r": writer})
+        assert r["hits"] == [] and "pkg.r" in r["built"], r
+
+    def test_attr_and_other_slots_written_elsewhere(self):
+        """속성 칸도 같다 · 다른 칸·다른 모듈의 같은 이름에 쓰는 것은 막지 않는다
+        (반대 증거)."""
+        h = ("class N:\n    pass\nNS = N()\nNS.d = get_dart()\ndef f():\n"
+             "    if not NS.d:\n        return\n")
+        r = scan({"pkg.h": h, "pkg.r": "import pkg.h\ndef reset():\n"
+                  "    pkg.h.NS.d = None\n"})
+        assert r["hits"] == [], r
+        ctx = ("CTX = {'d': get_dart()}\ndef f():\n    if not CTX['d']:\n"
+               "        return\n")
+        for w in ("import pkg.h\ndef reset():\n    pkg.h.CTX['e'] = None\n",
+                  "import pkg.other\ndef reset():\n    pkg.other.CTX['d'] = None\n",
+                  "from pkg.other import CTX\ndef reset():\n    CTX['d'] = None\n"):
+            r = scan({"pkg.h": ctx, "pkg.r": w})
+            assert r["hits"] == [("pkg.h", 3, "not CTX['d']")], (w, r)
+        r = scan({"pkg.h": "D = get_dart()\ndef f():\n    if not D:\n"
+                  "        return\n",
+                  "pkg.r": "import pkg.other\ndef reset():\n    pkg.other.D = None\n"})
+        assert r["hits"] == [("pkg.h", 3, "not D")], r
+
+    def test_cross_module_write_reads(self):
+        """`sys.modules['m'].D` · `importlib.import_module('m').D` 로 **읽는** 것도
+        그 모듈 전역이다."""
+        for u in ("import sys\ndef g():\n    if not sys.modules['pkg.h'].D:\n"
+                  "        return\n",
+                  "import importlib\ndef g():\n"
+                  "    if not importlib.import_module('pkg.h').D:\n        return\n"):
+            r = scan({"pkg.h": "D = get_dart()\n", "pkg.u": u})
+            assert r["hits"] == [("pkg.u", 3, u.split("if ")[1].split(":")[0])], r
+
+    def test_split_round_trips_awkward_keys(self):
+        """칸 열쇠는 repr 로 적는다 — 문자열 안의 괄호·점·물음표에 속지 않는다."""
+        for k, want in (("CTX['a[b']", ("CTX", "item", "a[b")),
+                        ("CTX['a]']", ("CTX", "item", "a]")),
+                        ("CTX['x.y']", ("CTX", "item", "x.y")),
+                        ("CTX['what?']", ("CTX", "item", "what?")),
+                        ("CTX['a[b']?", ("CTX", "get", "a[b")),
+                        ("L[-1]", ("L", "item", -1)),
+                        ("a['k'].b", ("a['k']", "attr", "b")),
+                        ("@pkg:h.D", ("@pkg:h", "attr", "D"))):
+            assert _split(k) == want, (k, _split(k))
+
+
+_CB = "def cb(d):\n    if not d:\n        return\n"
+_C_D = "class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+
+
+class TestScannerCalls:
+    """실수 #430 — #429 가 '못 보는 축' 으로 남긴 **호출** 축. 클라이언트가 그
+    함수의 인자·반환·속성으로 흘러가는 길을 더 따라간다.
+
+    · 콜백 등록 — `atexit.register` · `weakref.finalize` · `add_reader`·
+      `add_writer`·`add_signal_handler` · `ExitStack.callback` ·
+      `sched.scheduler.enter`/`enterabs` · `Pool.apply_async`. 이름이 흔한 것은
+      **받는 쪽**을 가린다(아무 객체의 `register`·`callback`·`enter` 를 콜백
+      등록으로 보면 오탐이다).
+    · `Thread`/`Process` 의 **위치** target · 이름으로 넘긴 `args=`·`kwargs=`
+      변수(같은 블록에서 닿는 리터럴) · `*args[1:]` 슬라이스 · `a, b = args` 풀기.
+    · lambda 에 담은 공장 · `property`·`cached_property` 로 읽는 클라이언트 ·
+      `await` 한 결과.
+    · 주석 없는 인자의 속성 — 부르는 쪽이 넘긴 인스턴스의 클래스로(부정 판정은
+      갈래 하나라도) · `Optional[C]` · `Union[C, None]` · `C | None` 주석."""
+
+    @pytest.mark.parametrize("src, want", [
+        # ── 콜백 등록 ──
+        ("import atexit\n" + _CB + "def g():\n    atexit.register(cb, get_dart())\n",
+         [(3, "not d")]),
+        ("from atexit import register\n" + _CB
+         + "def g():\n    register(cb, d=get_dart())\n", [(3, "not d")]),
+        ("import weakref\n" + _CB
+         + "def g(o):\n    weakref.finalize(o, cb, get_dart())\n", [(3, "not d")]),
+        (_CB + "def g(loop, fd):\n    loop.add_reader(fd, cb, get_dart())\n",
+         [(2, "not d")]),
+        (_CB + "def g(loop, sig):\n    loop.add_signal_handler(sig, cb, get_dart())\n",
+         [(2, "not d")]),
+        ("import contextlib\n" + _CB + "def g():\n"
+         "    with contextlib.ExitStack() as st:\n        st.callback(cb, get_dart())\n",
+         [(3, "not d")]),
+        ("from contextlib import ExitStack\n" + _CB + "def g():\n"
+         "    st = ExitStack()\n    st.callback(cb, get_dart())\n", [(3, "not d")]),
+        ("import sched, time\n" + _CB + "def g():\n"
+         "    s = sched.scheduler(time.time, time.sleep)\n"
+         "    s.enter(1, 1, cb, (get_dart(),))\n", [(3, "not d")]),
+        ("import sched, time\n" + _CB + "def g():\n"
+         "    s = sched.scheduler(time.time, time.sleep)\n"
+         "    s.enterabs(1, 1, cb, kwargs={'d': get_dart()})\n", [(3, "not d")]),
+        ("from multiprocessing import Pool\n" + _CB + "def g():\n"
+         "    with Pool() as p:\n        p.apply_async(cb, args=(get_dart(),))\n",
+         [(3, "not d")]),
+        ("import multiprocessing\n" + _CB + "def g():\n"
+         "    p = multiprocessing.Pool()\n    p.apply_async(cb, (), {'d': get_dart()})\n",
+         [(3, "not d")]),
+        # ── Thread 위치 target · 이름으로 넘긴 args·kwargs ──
+        ("import threading\n" + _CB + "def g():\n"
+         "    threading.Thread(None, cb, None, (get_dart(),)).start()\n",
+         [(3, "not d")]),
+        ("import threading\n" + _CB + "def g():\n    a = (get_dart(),)\n"
+         "    threading.Thread(target=cb, args=a).start()\n", [(3, "not d")]),
+        ("import threading\n" + _CB + "def g():\n    kw = {'d': get_dart()}\n"
+         "    threading.Thread(target=cb, kwargs=kw).start()\n", [(3, "not d")]),
+        # ── 받은 *args 의 슬라이스 · 풀기 · 지역 리터럴 펼치기 ──
+        (_CB + "def relay(*args):\n    cb(*args[1:])\ndef g():\n"
+         "    relay(None, get_dart())\n", [(2, "not d")]),
+        ("def f(*args):\n    a, b = args\n    if not b:\n        return\n"
+         "def g():\n    f(None, get_dart())\n", [(3, "not b")]),
+        ("def f():\n    a, b = None, get_dart()\n    if not b:\n        return\n",
+         [(3, "not b")]),
+        (_CB + "def g():\n    a = (get_dart(),)\n    cb(*a)\n", [(2, "not d")]),
+        (_CB + "def g():\n    kw = {'d': get_dart()}\n    cb(**kw)\n",
+         [(2, "not d")]),
+        # 끝·걸음이 있는 슬라이스 — 남는 칸만 당겨진다
+        (_CB + "def relay(*args):\n    cb(*args[1:2])\ndef g():\n"
+         "    relay(None, get_dart())\n", [(2, "not d")]),
+        (_CB + "def relay(*args):\n    cb(*args[1::2])\ndef g():\n"
+         "    relay(None, get_dart(), None)\n", [(2, "not d")]),
+        # 별표 하나 낀 풀기 — 앞은 v[i] · 리터럴이면 뒤는 v[-k]
+        ("def f(*args):\n    a, *b = args\n    if not a:\n        return\n"
+         "def g():\n    f(get_dart(), None)\n", [(3, "not a")]),
+        ("def f():\n    *a, b = None, get_dart()\n    if not b:\n        return\n",
+         [(3, "not b")]),
+        # 등록 대상을 그 자리에서 만든 객체(`ExitStack().callback`)
+        ("import contextlib\n" + _CB + "def g():\n"
+         "    contextlib.ExitStack().callback(cb, get_dart())\n", [(3, "not d")]),
+        # ── lambda 공장 ──
+        ("mk = lambda: get_dart()\ndef f():\n    d = mk()\n    if not d:\n"
+         "        return\n", [(4, "not d")]),
+        ("def f():\n    mk = lambda: get_dart()\n    d = mk()\n    if not d:\n"
+         "        return\n", [(4, "not d")]),
+        ("mk = lambda: get_dart()\ndef f():\n    d = mk()\n" + _IF_D,
+         [(4, "d → else")]),
+        # ── property · cached_property ──
+        # if/else 로 고른 게터 둘 — 둘 다 클라이언트를 주면 그 속성은 클라이언트
+        ("import sys\nclass C:\n    if sys.platform:\n        @property\n"
+         "        def dart(self):\n            return get_dart()\n    else:\n"
+         "        @property\n        def dart(self):\n            return get_dart()\n"
+         "    def f(self):\n        if not self.dart:\n            return\n",
+         [(12, "not self.dart")]),
+        ("class C:\n    @property\n    def dart(self):\n        return get_dart()\n"
+         "    def f(self):\n        if not self.dart:\n            return\n",
+         [(6, "not self.dart")]),
+        ("class C:\n    @property\n    def dart(self):\n        return get_dart()\n"
+         "def f():\n    c = C()\n    if not c.dart:\n        return\n",
+         [(7, "not c.dart")]),
+        ("import functools\nclass C:\n    @functools.cached_property\n"
+         "    def dart(self):\n        return get_dart()\n    def f(self):\n"
+         "        if self.dart:\n            work()\n        else:\n"
+         "            log('키 없음')\n", [(7, "self.dart → else")]),
+        # ── await ──
+        ("async def mk():\n    return get_dart()\nasync def f():\n"
+         "    d = await mk()\n    if not d:\n        return\n", [(5, "not d")]),
+        ("async def mk():\n    return get_dart()\nasync def f():\n"
+         "    d = await mk()\n" + _IF_D, [(5, "d → else")]),
+        # ── 주석 없는 인자의 속성(부르는 쪽 인스턴스) · Optional 주석 ──
+        (_C_D + "def f(o):\n    if not o.d:\n        return\ndef g():\n    f(C())\n",
+         [(5, "not o.d")]),
+        (_C_D + "def f(o):\n    if not o.d:\n        return\ndef g():\n"
+         "    c = C()\n    f(o=c)\n", [(5, "not o.d")]),
+        ("from typing import Optional\n" + _C_D
+         + "def f(o: Optional[C]):\n    if not o.d:\n        return\n",
+         [(6, "not o.d")]),
+        (_C_D + "def f(o: 'Optional[C]'):\n    if not o.d:\n        return\n",
+         [(5, "not o.d")]),
+        (_C_D + "def f(o: C | None):\n    if not o.d:\n        return\n",
+         [(5, "not o.d")]),
+        ("from typing import Union\n" + _C_D
+         + "def f(o: Union[C, None]):\n    if not o.d:\n        return\n",
+         [(6, "not o.d")]),
+        # 메서드로 받은 인자 — self 를 건너뛴 자리에 클래스를 단다
+        (_C_D + "class K:\n    def m(self, o):\n        if not o.d:\n"
+         "            return\ndef g():\n    k = K()\n    k.m(C())\n",
+         [(6, "not o.d")]),
+        # 인자 클래스가 늦게 붙어도(부르는 함수가 먼저 나온다) 다시 판정한다
+        (_C_D + "def g():\n    f(C())\ndef f(o):\n    use(o.d)\ndef use(d):\n"
+         "    if not d:\n        return\n", [(9, "not d")]),
+    ])
+    def test_fires(self, src, want):
+        assert dead_guards(src) == want, src
+
+    @pytest.mark.parametrize("src", [
+        # 이름이 흔한 등록 — 받는 쪽이 그것이 아니면 콜백 호출이 아니다
+        _CB + "def g(app):\n    app.register(cb, get_dart())\n",
+        _CB + "def g(obj):\n    obj.callback(cb, get_dart())\n",
+        _CB + "def g(x):\n    x.enter(1, 1, cb, (get_dart(),))\n",
+        _CB + "def g(x):\n    x.apply_async(cb, (get_dart(),))\n",
+        _CB + "def g(o):\n    finalize(o, cb, get_dart())\n",
+        # 위치 target 앞에 별표가 있으면 자리를 모른다
+        "import threading\n" + _CB + "def g(xs):\n"
+        "    threading.Thread(*xs, cb, None, (get_dart(),)).start()\n",
+        # 슬라이스 시작보다 앞 칸은 넘어가지 않는다
+        _CB + "def relay(*args):\n    cb(*args[1:])\ndef g():\n"
+        "    relay(get_dart(), None)\n",
+        # lambda 공장의 반대 — 갈래에 None 이 있으면 else 는 산다
+        "mk = lambda k: get_dart() if k else None\ndef f(k):\n    d = mk(k)\n"
+        + _IF_D,
+        # property 에 setter 가 있으면 무엇이 들어올지 모른다
+        "class C:\n    @property\n    def dart(self):\n        return get_dart()\n"
+        "    @dart.setter\n    def dart(self, v):\n        self._d = v\n"
+        "    def f(self):\n        if not self.dart:\n            return\n",
+        # 끝·걸음 밖의 칸은 넘어가지 않는다
+        "def cb(x, d=None):\n    if not d:\n        return\n"
+        "def relay(*args):\n    cb(*args[0:1])\ndef g():\n"
+        "    relay(None, get_dart())\n",
+        # 음수 시작은 길이를 몰라 어느 칸인지 모른다
+        "def cb(x, d=None):\n    if not d:\n        return\n"
+        "def relay(*args):\n    cb(*args[-1:])\ndef g():\n"
+        "    relay(get_dart(), None)\n",
+        _CB + "def relay(*args):\n    cb(*args[0::2])\ndef g():\n"
+        "    relay(None, get_dart(), None)\n",
+        # 별표 뒤 자리는 길이를 모르는 받은 묶음에선 모른다 · 리터럴이면 그 칸
+        "def f(*args):\n    *a, b = args\n    if not b:\n        return\n"
+        "def g():\n    f(None, get_dart(), None)\n",
+        "def f():\n    *a, b = get_dart(), None\n    if not b:\n        return\n",
+        # 길이가 안 맞는 리터럴 풀기는 자리를 모른다(실행하면 ValueError)
+        "def f():\n    a, b = (None, get_dart(), None)\n    if not b:\n        return\n",
+        # 갈래 하나의 게터가 None — 보관소 규칙(바인딩 전부)으로 판정 안 함
+        "import sys\nclass C:\n    if sys.platform:\n        @property\n"
+        "        def dart(self):\n            return get_dart()\n    else:\n"
+        "        @property\n        def dart(self):\n            return None\n"
+        "    def f(self):\n        if not self.dart:\n            return\n",
+        # 겹친 장식 · 모르는 장식 — 그 값을 무엇이 감싸는지 모른다
+        "class C:\n    @wrap\n    @property\n    def dart(self):\n"
+        "        return get_dart()\n    def f(self):\n        if not self.dart:\n"
+        "            return\n",
+        "class C:\n    @weird\n    def dart(self):\n        return get_dart()\n"
+        "    def f(self):\n        if not self.dart:\n            return\n",
+        # 클래스가 둘 이상인 Union — 어느 객체인지 모른다
+        "from typing import Union\n" + _C_D + "class E:\n    def __init__(self):\n"
+        "        self.d = None\ndef f(o: Union[C, E, None]):\n    if not o.d:\n"
+        "        return\n",
+        # 이름 없는 lambda 공장 — 그 함수가 돌려주는 것은 map 객체다
+        "def f(xs):\n    ys = map(lambda x: get_dart(), xs)\n    return ys\n"
+        "def g(xs):\n    d = f(xs)\n    if not d:\n        return\n",
+        # 다른 클래스 인스턴스만 넘어온다
+        _C_D + "class D:\n    def __init__(self):\n        self.d = None\n"
+        "def f(o):\n    if not o.d:\n        return\ndef g():\n    f(D())\n",
+    ])
+    def test_spares(self, src):
+        assert not dead_guards(src), src
+
+
+_ELSE = "    else:\n        log('키 없음')\n"
+_ELSE2 = "        else:\n            log('키 없음')\n"
+
+
+class TestScannerElseAndCycles:
+    """실수 #430 — #429 가 '못 보는 축' 으로 남긴 **else·순환** 축.
+
+    · `A or B` 판정의 else(한 항이라도 언제나 클라이언트) · `A and B`(모든 항) ·
+      판정 밖의 `d or 기본값`(앞 항이 언제나 클라이언트면 뒤 항은 안 돈다).
+    · 지역 컨테이너의 칸 · 지역 인스턴스의 속성 else — 그 이름이 함수 밖으로
+      새어 나가지 않을 때만(넘김·돌려줌·별칭·담음이 없고, 쓰기는 추적된다).
+    · `.get(k, 기본값)` — 없는 칸이면 기본값이 온다(부정 판정·else 둘 다).
+    · 닫힌 세계 인자 else — 함수 안에서 정의해 이름을 곧바로 부르는 데에만
+      쓰면 부르는 곳이 전부다(장식 없음 · 다시 묶지 않음 · 별표 없음).
+    · 보관소끼리 서로 옮겨 담는 순환 — 최소 고정점이 '아니다' 로 끝낸 순환의
+      뿌리를 참으로 가정해 다시 잰다(E-게이트 최대 고정점 — 바닥에 닿아야)."""
+
+    @pytest.mark.parametrize("src, want", [
+        # ── or / and 판정 · d or 기본값 ──
+        ("def f(x):\n    d = get_dart()\n    if d or x:\n        work()\n" + _ELSE,
+         [(3, "d or x → else")]),
+        ("def f():\n    d = get_dart()\n    e = get_dart()\n    if d and e:\n"
+         "        work()\n" + _ELSE, [(4, "d and e → else")]),
+        ("def f():\n    d = get_dart() or make()\n    return d\n",
+         [(2, "get_dart() or make() → else")]),
+        # ── 지역 컨테이너의 칸 · 지역 인스턴스의 속성 ──
+        ("def f():\n    ctx = {'d': get_dart()}\n    if ctx['d']:\n        work()\n"
+         + _ELSE, [(3, "ctx['d'] → else")]),
+        ("def f():\n    L = [get_dart()]\n    if L[0]:\n        work()\n" + _ELSE,
+         [(3, "L[0] → else")]),
+        (_C_D + "def f():\n    o = C()\n    if o.d:\n        work()\n" + _ELSE,
+         [(6, "o.d → else")]),
+        # ── .get 기본값 ──
+        ("def f():\n    ctx = {}\n    if ctx.get('d', get_dart()):\n        work()\n"
+         + _ELSE, [(3, "ctx.get('d', get_dart()) → else")]),
+        ("def f():\n    ctx = {}\n    if not ctx.get('d', get_dart()):\n        return\n",
+         [(3, "not ctx.get('d', get_dart())")]),
+        ("CTX = {}\ndef f():\n    if not CTX.get('d', get_dart()):\n        return\n",
+         [(3, "not CTX.get('d', get_dart())")]),
+        ("CTX = {}\ndef f():\n    d = CTX.get('d', get_dart())\n    if not d:\n"
+         "        return\n", [(4, "not d")]),
+        # ── 닫힌 세계 인자 ──
+        ("def outer():\n    def use(d):\n        if d:\n            work()\n" + _ELSE2
+         + "    use(get_dart())\n", [(3, "d → else")]),
+        ("def outer():\n    def use(d=get_dart()):\n        if d:\n            work()\n"
+         + _ELSE2 + "    use()\n", [(3, "d → else")]),
+        ("def outer():\n    def use(x, d=None):\n        if d:\n            work()\n"
+         + _ELSE2 + "    use(1, d=get_dart())\n", [(3, "d → else")]),
+        (_C_D + "def outer():\n    def use(o):\n        if o.d:\n            work()\n"
+         + _ELSE2 + "    use(C())\n", [(6, "o.d → else")]),
+        # ── 펼친 dict — 마지막 펼침 뒤에 적은 칸은 무엇이 펼쳐지든 그 값 ──
+        ("def f(base):\n    ctx = {**base, 'd': get_dart()}\n    if not ctx['d']:\n"
+         "        return\n", [(3, "not ctx['d']")]),
+        ("def f():\n    ctx = {'d': None, 'd': get_dart()}\n    if not ctx['d']:\n"
+         "        return\n", [(3, "not ctx['d']")]),
+        ("def outer(a):\n    def use(d=None):\n        if not d:\n            return\n"
+         "    use(**{**a, 'd': get_dart()})\n", [(3, "not d")]),
+        # ── 순환 — 바닥(공장 호출)에 닿는 서로 옮겨 담기 ──
+        ("def wa(c):\n    global A\n    A = B\ndef wb(c):\n    global B\n    B = A\n"
+         "def wb2(c):\n    global B\n    B = get_dart()\ndef r():\n    if not A:\n"
+         "        return\n", [(11, "not A")]),
+        ("def w0(c):\n    global G\n    G = G\ndef w1(c):\n    global G\n"
+         "    G = get_dart()\ndef r():\n    if not G:\n        return\n",
+         [(8, "not G")]),
+        # 자기 자신을 다시 담는 전역 — 바닥(맨 위 공장 호출)에 닿아 언제나
+        # 클라이언트다. 그 줄의 `or` 꼬리도 죽었다
+        ("_D = get_dart()\ndef f():\n    global _D\n    _D = _D or get_dart()\n"
+         "def g():\n    if _D:\n        work()\n" + _ELSE,
+         [(4, "_D or get_dart() → else"), (6, "_D → else")]),
+        # 앞선 대입(첫 규칙)이 가정한 참에만 기대도 보관소 규칙(나머지)을 마저
+        # 재야 바닥이 모인다 — `G1 = None or G1` 은 G1 가정에만 기대지만 G1 의
+        # 다른 바인딩 G4 → G2 → 공장이 바닥이다. 첫 규칙에서 단락하면 G3 가
+        # 바닥 없는 순환으로 기각된다(차분 퍼징이 찾은 반례 — 뮤테이션 D28)
+        ("def w3(c):\n    global G0, G1, G3\n    G1 = None or G1\n    G3 = G1\n"
+         "    G1 = G4\ndef w4(c):\n    global G0, G2, G4\n    G4 = G2\n"
+         "    G0 = G3\n    G2 = get_dart()\n    if not G3:\n        return\n",
+         [(11, "not G3")]),
+    ])
+    def test_fires(self, src, want):
+        assert dead_guards(src) == want, src
+
+    @pytest.mark.parametrize("src", [
+        # and 는 모든 항이 언제나 클라이언트여야
+        "def f(x):\n    d = get_dart()\n    if d and x:\n        work()\n" + _ELSE,
+        # 기본값만 두는 or 꼬리 · 앞 항을 모르는 or
+        "def f():\n    d = get_dart() or None\n    return d\n",
+        "def f(x):\n    d = x or make()\n    return d\n",
+        # 새어 나가는 지역 컨테이너 — 넘김 · 별칭 · 돌려줌
+        "def f():\n    ctx = {'d': get_dart()}\n    g(ctx)\n    if ctx['d']:\n"
+        "        work()\n" + _ELSE,
+        "def f():\n    ctx = {'d': get_dart()}\n    c2 = ctx\n    c2['d'] = None\n"
+        "    if ctx['d']:\n        work()\n" + _ELSE,
+        "def f():\n    ctx = {'d': get_dart()}\n    if ctx['d']:\n        work()\n"
+        + _ELSE + "    return ctx\n",
+        # 추적되는 쓰기 — 칸 쓰기 · 바꾸는 메서드
+        "def f():\n    ctx = {'d': get_dart()}\n    ctx['d'] = None\n    if ctx['d']:\n"
+        "        work()\n" + _ELSE,
+        "def f():\n    L = [get_dart()]\n    L.insert(0, None)\n    if L[0]:\n"
+        "        work()\n" + _ELSE,
+        # 없는 칸은 None — 기본값이 없거나 None
+        "def f():\n    ctx = {}\n    if ctx.get('d'):\n        work()\n" + _ELSE,
+        "CTX = {}\ndef f():\n    if not CTX.get('d', None):\n        return\n",
+        # 칸이 있으면 기본값은 안 온다 — 그 칸이 None
+        "CTX = {'d': None}\ndef f():\n    if not CTX.get('d', get_dart()):\n"
+        "        return\n",
+        # 객체 속성을 다른 곳에서 바꾼다
+        _C_D + "def f():\n    o = C()\n    o.d = None\n    if o.d:\n        work()\n"
+        + _ELSE,
+        _C_D + "def r(x):\n    x.d = None\ndef f():\n    o = C()\n    if o.d:\n"
+        "        work()\n" + _ELSE,
+        # 닫힌 세계가 아니다 — 다른 값도 넘김 · 이름이 새어 나감 · 맨 위 함수 ·
+        # 별표 · 장식
+        "def outer(x):\n    def use(d):\n        if d:\n            work()\n" + _ELSE2
+        + "    use(get_dart())\n    use(x)\n",
+        "def outer():\n    def use(d):\n        if d:\n            work()\n" + _ELSE2
+        + "    use(get_dart())\n    return use\n",
+        "def use(d):\n    if d:\n        work()\n" + _ELSE + "def g():\n    use(get_dart())\n",
+        "def outer(a):\n    def use(d):\n        if d:\n            work()\n" + _ELSE2
+        + "    use(*a)\n",
+        "def outer():\n    @wrap\n    def use(d):\n        if d:\n            work()\n"
+        + _ELSE2 + "    use(get_dart())\n",
+        # 모르는 메서드로 꺼낸 지역 컨테이너는 새어 나갔다고 본다
+        "def f():\n    ctx = {'d': get_dart()}\n    ctx.frob()\n    if ctx['d']:\n"
+        "        work()\n" + _ELSE,
+        # 보관소(모듈 전역)의 칸 else 는 보지 않는다 — 읽지 않은 모듈이 바꿀 수 있다
+        "CTX = {'d': get_dart()}\ndef f():\n    if CTX['d']:\n        work()\n" + _ELSE,
+        # 기본값이 클라이언트가 아니면 없는 칸은 실리지 않는다
+        "CTX = {}\ndef f():\n    if not CTX.get('d', make()):\n        return\n",
+        # 닫힌 세계 인자의 속성 — 넘긴 인스턴스의 속성이 None
+        _C_D + "class E:\n    def __init__(self):\n        self.d = None\n"
+        "def outer():\n    def use(o):\n        if o.d:\n            work()\n" + _ELSE2
+        + "    use(E())\n",
+        # 상수가 아닌 열쇠가 뒤에 오면 그 칸일 수 있다(else · `**` 넘기기)
+        "def r(k):\n    E2 = {'d': get_dart(), k: None}\n    if E2['d']:\n"
+        "        work()\n" + _ELSE,
+        "def outer(k):\n    def use(d=None):\n        if not d:\n            return\n"
+        "    use(**{'d': get_dart(), k: None})\n",
+        # 펼침이 넘긴 칸 뒤에 오면 덮였을지 모른다
+        "def outer(a):\n    def use(d=None):\n        if not d:\n            return\n"
+        "    use(**{'d': get_dart(), **a})\n",
+        # 순환 — 바닥 없이 서로만 가리키면 값이 한 번도 안 담긴다
+        "def w(c):\n    global D\n    D = D\ndef r():\n    if not D:\n        return\n",
+        "def wa(c):\n    global A\n    A = B\ndef wb(c):\n    global B\n    B = A\n"
+        "def r():\n    if not A:\n        return\n",
+        # 순환에 None 바인딩이 끼면 바닥이 있어도 살아 있다
+        "def wa(c):\n    global A\n    A = B\ndef wb(c):\n    global B\n    B = A\n"
+        "def wb2(c):\n    global B\n    B = get_dart()\ndef wa2(c):\n    global A\n"
+        "    A = None\ndef r():\n    if not A:\n        return\n",
+    ])
+    def test_spares(self, src):
+        # 공장 이름이 한 번도 안 나오면 스캐너가 그 모듈을 읽지도 않는다 — 반대
+        # 증거가 빈 픽스처가 되지 않게 import 를 붙여 반드시 읽힌다(#291)
+        src = "from bot.dart_client import get_dart\n" + src
+        r = scan({"m": src})
+        assert r["built"] == ["m"] and not r["hits"], (src, r["hits"])
 
 
 class TestDetailDiagnoseDartName:

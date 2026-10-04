@@ -4636,14 +4636,77 @@ def dividend_yield_pct(si: dict) -> tuple:
 
 
 # 키 없이 만든 스냅샷의 빈 재무를 **키로 다시 물었는데도** 빈손이었던 종목 →
-# 그 시각(실수 #429 리뷰 F3). 저장본은 렌더마다 디스크에서 **새로** 읽혀(사본)
-# dict 에 적은 표시는 다음 렌더에 남지 않는다 — 프로세스가 기억하지 않으면 같은
-# 13번 조회(현년 + 연간 시계열)를 렌더마다 되풀이한다. 영구로는 믿지 않는다:
-# `get_normalized_financials` 는 원천의 '없다'(013)와 수신 실패를 같은 None 으로
-# 준다. 이 경로는 신선 수집이 실패해 **저장본으로 폴백**했을 때만 타므로, 그 동안
-# 재무가 몇 시간 늦게 돌아오는 것은 이미 낡은 저장본을 보여 주는 화면과 같은 급이다.
-_KR_FIN_KEYED_EMPTY: dict[str, float] = {}
+# (그 시각, 믿는 시간)(실수 #429 리뷰 F3). 저장본은 렌더마다 디스크에서 **새로**
+# 읽혀(사본) dict 에 적은 표시는 다음 렌더에 남지 않는다 — 프로세스가 기억하지
+# 않으면 같은 13번 조회(현년 + 연간 시계열)를 렌더마다 되풀이한다.
+# 믿는 시간은 **빈손의 사유**가 정한다(실수 #430 — 옛 판은 원천의 '없다'(013)와
+# 수신 실패를 같은 None 으로 받아 둘 다 6시간 믿었다. 일시 실패 한 번이 6시간
+# 빈 재무가 됐다): 원천이 답한 '없다'(`dart_client.FIN_EMPTY_ANSWERED`)는 다음
+# 보고서까지 같은 답이라 6시간, 그 밖(수신 실패·한도·회사 목록 …)과 사유를 모르는
+# 빈손은 30분(`dart_client.PROVISIONAL_TTL_SEC` — 표 롤링·수주잔고와 같은 '권위
+# 없는 결과' 의 수명, #38).
+_KR_FIN_KEYED_EMPTY: dict[str, tuple[float, float]] = {}
 _KR_FIN_KEYED_EMPTY_TTL = 6 * 3600
+
+# 키 없이 모은 저장본의 **법인 정보·임원 지분** 칸 → 다시 받는 수집기
+# (`stock_snapshot` 의 함수 이름). 재무(`_e_kr_financials`)·공시(⑧)와 같은 길이다
+# — 옛 판은 이 두 칸을 다시 받지 않아 재수집 전까지 '수집 당시 키 없음' 이 남았다
+# (실수 #430). 키로 다시 물었는데 빈손이면 (종목, 칸) → 그 시각을 기억한다(실수
+# #429 리뷰 F3 — 렌더마다 되묻지 않는다). 두 메서드는 원천의 '없다' 와 수신 실패를
+# 같은 빈손으로 주므로 짧게만(`dart_client.PROVISIONAL_TTL_SEC`) 믿는다.
+_KR_REASK_SECTIONS = {"company": "collect_kr_company",
+                      "insiders": "collect_kr_insiders"}
+_KR_REASK_EMPTY: dict[tuple[str, str], float] = {}
+# 키로 다시 받아 **값이 온** (종목, 칸) → (그 시각, 받은 값). 저장본은 렌더마다
+# 디스크에서 새로 읽혀 '키 없음' 기록을 그대로 들고 오므로, 기억하지 않으면 렌더마다
+# 같은 수집을 되풀이한다 — 임원 지분은 디스크 캐시가 없어 매번 동기 HTTP(10초 상한)
+# 였다(실수 #430 독립 리뷰). 지분·법인 정보는 하루에 많아야 한 번 바뀌므로
+# `_KR_FIN_KEYED_EMPTY_TTL`(6시간) 동안 그 값을 다시 싣는다.
+_KR_REASK_GOT: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+def _reask_keyless_sections(ticker: str, kr: dict) -> None:
+    """저장본에 '키 없이 빈손' 기록이 있는 법인·임원 칸을 **키가 생겼으면** 다시
+    받는다. 받으면 값을 싣고 기록을 지운다. 키로 물었는데 빈손이어도 기록은
+    지운다 — 키는 더는 그 칸의 사유가 아니다(실수 #429 리뷰 F7). 키가 여전히
+    없으면 아무것도 묻지 않는다(기록이 사실 그대로 남는다). 예외는 일시 장애일
+    수 있어 기억하지 않는다 — 다음 렌더가 다시 묻는다."""
+    from bot.dart_client import (PROVISIONAL_TTL_SEC, clear_keyless,
+                                 dart_ready, get_dart, keyless_when)
+    todo = [sec for sec in _KR_REASK_SECTIONS if keyless_when(kr, sec)]
+    if not todo or not dart_ready(get_dart()):
+        return
+    import time as _time
+
+    import bot.stock_snapshot as _ss
+    code = (ticker or "").split(".")[0]
+    for sec in todo:
+        hit = _KR_REASK_GOT.get((ticker, sec))
+        if hit is not None and _time.time() - hit[0] < _KR_FIN_KEYED_EMPTY_TTL:
+            kr.update(hit[1])             # 키로 이미 받았다 — 다시 묻지 않는다
+            clear_keyless(kr, sec)
+            continue
+        at = _KR_REASK_EMPTY.get((ticker, sec))
+        if at is not None and _time.time() - at < PROVISIONAL_TTL_SEC:
+            clear_keyless(kr, sec)        # 키로 이미 물어 빈손이었다
+            continue
+        try:
+            got = (getattr(_ss, _KR_REASK_SECTIONS[sec])(code) or {}).get("kr") or {}
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("_ensure_detail_enrichment: DART %s %s: %s", sec, ticker, exc)
+            continue
+        if got:
+            # DART 가 우선이다 — 스냅샷 수집도 DART 결과를 FSC(법인등록번호)보다
+            # 먼저 병합한다(`stock_snapshot._enrich_kr`). 키를 방금 확인했으므로
+            # 수집기가 '키 없음' 기록을 싣는 일은 없다(실려도 아래에서 지운다).
+            kr.update(got)
+            _KR_REASK_GOT[(ticker, sec)] = (_time.time(), dict(got))
+        else:
+            _KR_REASK_EMPTY[(ticker, sec)] = _time.time()
+            log.info("_ensure_detail_enrichment: %s 키 없이 만든 스냅샷의 %s 칸을 "
+                     "키로 다시 물었지만 빈손 — %d분 다시 묻지 않음", ticker, sec,
+                     PROVISIONAL_TTL_SEC // 60)
+        clear_keyless(kr, sec)
 
 
 def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
@@ -4840,8 +4903,8 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             if not dart_ready(get_dart()):
                 return                   # 여전히 키가 없다 — 물어볼 수 없다
             import time as _time
-            _at = _KR_FIN_KEYED_EMPTY.get(ticker)
-            if _at is not None and _time.time() - _at < _KR_FIN_KEYED_EMPTY_TTL:
+            _rec = _KR_FIN_KEYED_EMPTY.get(ticker)
+            if _rec is not None and _time.time() - _rec[0] < _rec[1]:
                 # 키로 이미 물어 빈손이었다(F3) — 다시 안 묻고, 그 칸의 '키 없음'
                 # 기록은 더는 사유가 아니므로 지운다(F7 — 키 있는 신선 스냅샷이
                 # 빈 재무를 그리는 것과 같은 화면).
@@ -4855,8 +4918,9 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         if ((_kr.get("financials_ver") or 0) >= _KR_FIN_SCHEMA_VER
                 and (not _sig or _kr.get("financials_sig") == _sig)):
             return
+        _why: list = []                  # 빈손이면 그 사유(실수 #430)
         try:
-            fresh = (collect_kr_financials(ticker) or {}).get("kr") or {}
+            fresh = (collect_kr_financials(ticker, why=_why) or {}).get("kr") or {}
         except Exception as exc:
             # 예외는 일시 장애일 수 있다 — 기억하지 않고 다음 렌더가 다시 묻는다.
             log.debug("_ensure_detail_enrichment: kr fin %s: %s", ticker, exc)
@@ -4874,11 +4938,15 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             # 그걸 붙이는 것은 이 갈래의 일이 아니다. 키 없이 만든 빈 스냅샷이
             # 아니면 애초에 여기 안 온다.
             import time as _time
-            _KR_FIN_KEYED_EMPTY[ticker] = _time.time()
+
+            from bot.dart_client import PROVISIONAL_TTL_SEC, fin_empty_answered
+            _ttl = (_KR_FIN_KEYED_EMPTY_TTL if fin_empty_answered(_why)
+                    else PROVISIONAL_TTL_SEC)
+            _KR_FIN_KEYED_EMPTY[ticker] = (_time.time(), _ttl)
             clear_keyless(si.setdefault("kr", {}), "financials")
             log.info("_ensure_detail_enrichment: %s 키 없이 만든 스냅샷의 재무를 "
-                     "키로 다시 물었지만 빈손 — %d시간 다시 묻지 않음", ticker,
-                     _KR_FIN_KEYED_EMPTY_TTL // 3600)
+                     "키로 다시 물었지만 빈손(%s) — %d분 다시 묻지 않음", ticker,
+                     " · ".join(_why) or "사유 모름", _ttl // 60)
             return
         # 선행 PER 재료(네이버 추정 EPS)도 아카이브엔 없다 — 같은 자리에서
         # 채운다. 없으면 화면은 예전대로 yfinance 값을 쓴다(무해).
@@ -5018,6 +5086,12 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                         clear_keyless(kr, "disclosures")
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: DART disclosures %s: %s", ticker, exc)
+        # ⑧-b 법인 정보 · 임원 지분 — 키 없이 모은 저장본의 그 칸을 키가 생기면
+        # 다시 받는다(재무·공시와 같은 길, 실수 #430).
+        try:
+            _reask_keyless_sections(ticker, kr)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("_ensure_detail_enrichment: DART 법인·임원 %s: %s", ticker, exc)
     elif tkr.endswith(".T"):
         jp = si.setdefault("jp", {})
         if not jp.get("disclosures"):
@@ -6848,8 +6922,9 @@ def _render_stock_info_html(rec: dict) -> str:
     from bot.dart_client import keyless_note as _keyless_note
     from bot.dart_client import keyless_when as _keyless_when
 
-    def _kl(section: str, what: str) -> str:
-        return _keyless_note(kr, section, what) if is_kr else ""
+    def _kl(section: str) -> str:
+        # 대상 문구는 `dart_client.KEYLESS_WHAT` 한 곳 — 감사가 같은 표로 잰다(#38)
+        return _keyless_note(kr, section) if is_kr else ""
 
     # ── 밴드차트 탭 (PER/PBR) ──────────────────────────────────────
     # KR: FnGuide 밴드차트를 그대로(자체 보간 근사 대신 원천의 밴드선·멀티플·
@@ -6968,7 +7043,7 @@ def _render_stock_info_html(rec: dict) -> str:
             if len(est) == 8:
                 est = f"{est[:4]}-{est[4:6]}-{est[6:]}"
             kr_company_rows += grid_row("설립일", est)
-        _kl_company = _kl("company", "대표자·설립일·주소·결산월·산업분류를")
+        _kl_company = _kl("company")
         if _kl_company and not any(kr.get(k) for k in (
                 "ceo", "address", "established", "ksic_code", "fiscal_month")):
             kr_company_rows += grid_row("DART 법인 정보", _kl_company)
@@ -7071,7 +7146,7 @@ def _render_stock_info_html(rec: dict) -> str:
     # K-IFRS 재무 요약 자리 — 키 없이 물어 비었으면 그 사실을(#43). 출처 줄의
     # 'K-IFRS 재무 요약 DART' 는 표가 있을 때만이라 이 문단과 섞이지 않는다.
     _kr_fin_keyless_html = ""
-    _kl_fin = _kl("financials", "DART 재무제표를")
+    _kl_fin = _kl("financials")
     if _kl_fin and not kr_financial_html:
         _kr_fin_keyless_html = (
             '<div class="si-section"><div class="si-section-title">K-IFRS 재무 '
@@ -7890,7 +7965,8 @@ def _render_stock_info_html(rec: dict) -> str:
     _holders_keyless_now = False
     _kl_ins = _keyless_when(kr, "insiders") if is_kr else None
     if _kl_ins and not kr_insiders:
-        _holders_keyless.append("임원·주요주주 지분")
+        from bot.dart_client import KEYLESS_WHAT as _KW
+        _holders_keyless.append(_KW["insiders"])
         _holders_keyless_now = _kl_ins == "now"
     if kr_insiders:
         # ⚠️ **최신이 위로.** DART 소유보고는 접수 순(오래된 것부터)으로 오는데
@@ -8818,7 +8894,7 @@ def _render_stock_info_html(rec: dict) -> str:
     # Placeholder so the JS overlay can find the element by ID during
     # batch regen (when all live-fetch blocks are skipped → disclosures_pane="").
     if not disclosures_pane:
-        _kl_disc = _kl("disclosures", "공시 목록을")
+        _kl_disc = _kl("disclosures")
         if _kl_disc:
             # 키 없이 물어 빈 공시 목록 — 빈 탭으로 두면 '공시가 없는 회사' 로
             # 읽힌다(#43·#82). 오버레이가 나중에 채우면 이 문단은 갈아끼워진다.

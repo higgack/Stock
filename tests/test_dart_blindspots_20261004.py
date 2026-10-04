@@ -628,7 +628,7 @@ class TestKeylessReasons:
                                     lambda self, *a, **k: [{"x": 1}]
                                     if "holdings" in meth or "disclosures" in meth
                                     else {"status": "000"})
-        monkeypatch.setattr(ss, "collect_kr_financials", lambda t: {})
+        monkeypatch.setattr(ss, "collect_kr_financials", lambda t, **k: {})
         snap: dict = {}
         ss._enrich_kr("018260.KS", snap)
         kr = snap.get("kr") or {}
@@ -640,7 +640,7 @@ class TestKeylessReasons:
     def test_keyed_collection_records_nothing(self, keyed_dart, monkeypatch):
         """반대 증거 — 키가 있으면 빈손이어도 적지 않는다(원천이 빈 것이다)."""
         import bot.stock_snapshot as ss
-        monkeypatch.setattr(ss, "collect_kr_financials", lambda t: {})
+        monkeypatch.setattr(ss, "collect_kr_financials", lambda t, **k: {})
         snap: dict = {}
         ss._enrich_kr("018260.KS", snap)
         assert not [k for k in (snap.get("kr") or {})
@@ -776,7 +776,7 @@ class TestKeylessReasons:
         import bot.dashboard as d
         import bot.stock_snapshot as ss
         calls: list = []
-        monkeypatch.setattr(ss, "collect_kr_financials", lambda t: (
+        monkeypatch.setattr(ss, "collect_kr_financials", lambda t, **k: (
             calls.append(t) or {"kr": {"financials": {"매출액": 1.0}}}))
         si = {"kr": {"dart_keyless_financials": "collection"}}
         d._ensure_detail_enrichment("018260.KS", si)
@@ -795,7 +795,7 @@ class TestKeylessReasons:
         import bot.stock_snapshot as ss
         calls: list = []
         monkeypatch.setattr(ss, "collect_kr_financials",
-                            lambda t: calls.append(t) or {})
+                            lambda t, **k: calls.append(t) or {})
         d._ensure_detail_enrichment(
             "018260.KS", {"kr": {"dart_keyless_financials": "collection"}})
         assert calls == [], "키가 여전히 없는데 물어보러 갔다"
@@ -1134,27 +1134,27 @@ class TestKeylessScope:
     def test_keyed_render_clears_the_sections_it_asked(self, keyed_dart,
                                                        monkeypatch):
         """키 없이 모은 저장본(네 칸 전부 기록)을 **키 있는** 프로세스가 렌더 —
-        다시 물은 칸(공시·재무)은 기록을 지우고, 다시 묻지 않는 칸(법인 정보·
-        임원 지분)은 '수집 당시' 그대로 남는다(둘 다 사실이다)."""
+        네 칸을 **모두** 다시 묻고 기록을 지운다. 빈손이어도(원천이 정말 비었다)
+        키 탓을 하지 않는다(키는 더는 사유가 아니다, 실수 #429 리뷰 F7).
+
+        ⚠️ 옛 계약은 '다시 묻지 않는 칸(법인 정보·임원 지분)은 수집 당시 그대로'
+        였다 — 그 두 칸은 재수집 전까지 키를 넣어도 '수집 당시 키 없음' 이
+        남았다(실수 #430 이 다시 받게 바꿨다, #222 지우지 않고 다시 쓴다)."""
         import bot.dart_client as dc
         import bot.dashboard as d
         import bot.stock_snapshot as ss
         monkeypatch.setattr(d, "_BATCH_REGEN", False)
         monkeypatch.setattr(d, "_KR_FIN_KEYED_EMPTY", {})
-        monkeypatch.setattr(ss, "collect_kr_financials", lambda t: {})
+        monkeypatch.setattr(d, "_KR_REASK_EMPTY", {})
+        monkeypatch.setattr(d, "_KR_REASK_GOT", {})
+        monkeypatch.setattr(ss, "collect_kr_financials", lambda t, **k: {})
         si = {"currency": "KRW", "kr": _all_keyless()}
         d._ensure_detail_enrichment("018260.KS", si)
         assert {s: dc.keyless_when(si["kr"], s) for s in dc.KEYLESS_SECTIONS} \
-            == {"company": "collection", "insiders": "collection",
-                "disclosures": None, "financials": None}, si["kr"]
+            == dict.fromkeys(dc.KEYLESS_SECTIONS), si["kr"]
         parts = _panes(si)
-        comp = _pane(parts, "si-company")
-        assert ("수집 당시 DART_API_KEY 없음 — 대표자·설립일·주소·결산월·"
-                "산업분류를") in comp, comp
-        assert "DART 재무제표를" not in comp
-        assert ("수집 당시 DART_API_KEY 없음 — 임원·주요주주 지분 표를"
-                in _pane(parts, "si-holders"))
-        assert "DART_API_KEY" not in _pane(parts, "si-disclosures")
+        for pane in ("si-company", "si-holders", "si-disclosures"):
+            assert "DART_API_KEY" not in _pane(parts, pane), pane
 
     def test_now_records_never_say_at_collection(self, keyless_dart,
                                                  monkeypatch):
@@ -1212,8 +1212,14 @@ class TestKeylessRecollectMemo:
         got = {"fin": 0, "q": 0, "extra": 0, "fin_value": None}
         monkeypatch.setattr(d, "_KR_FIN_KEYED_EMPTY", {})
 
-        def gnf(self, ticker, year=None, fs_div="CFS", reprt_code="11011"):
+        got["why"] = "status=013"          # 빈손의 사유(원천이 답했다)
+
+        def gnf(self, ticker, year=None, fs_div="CFS", reprt_code="11011",
+                **kw):
             got["fin"] += 1
+            if got["fin_value"] is None and kw.get("why") is not None \
+                    and got["why"]:
+                kw["why"].append(got["why"])
             return got["fin_value"]
 
         def bump(key):
@@ -1255,26 +1261,53 @@ class TestKeylessRecollectMemo:
             "렌더마다 같은 조회를 되풀이했다(리뷰어 실측 13→26→39)"
 
     def test_memo_is_bounded_in_time(self, calls):
-        """영구로는 믿지 않는다 — 원천의 '없다' 와 수신 실패가 같은 None 이다.
-        크기도 못박는다: 상수를 그대로 읽어 비교하면 1초로 줄여도 통과한다(#66)."""
+        """영구로는 믿지 않는다 — 기억은 (그 시각, 믿는 시간)이고 그 시간이
+        지나면 다시 묻는다. 크기도 못박는다: 상수를 그대로 읽어 비교하면 1초로
+        줄여도 통과한다(#66)."""
         import time
 
         import bot.dashboard as d
-        assert d._KR_FIN_KEYED_EMPTY_TTL == 6 * 3600
-        d._KR_FIN_KEYED_EMPTY["456789.KQ"] = (
-            time.time() - d._KR_FIN_KEYED_EMPTY_TTL + 60)
+        ttl = d._KR_FIN_KEYED_EMPTY_TTL
+        assert ttl == 6 * 3600
+        d._KR_FIN_KEYED_EMPTY["456789.KQ"] = (time.time() - ttl + 60, ttl)
         self._render()
         assert self._cost(calls) == (0, 0, 0), "기억이 살아 있는데 다시 물었다"
-        d._KR_FIN_KEYED_EMPTY["456789.KQ"] = (
-            time.time() - d._KR_FIN_KEYED_EMPTY_TTL - 1)
+        d._KR_FIN_KEYED_EMPTY["456789.KQ"] = (time.time() - ttl - 1, ttl)
         self._render()
         assert calls["fin"] >= 1, "기억이 지났는데 다시 묻지 않았다"
+
+    @pytest.mark.parametrize("why, ttl_min", [
+        ("status=013", 360),               # 원천이 '없다' 고 답했다 — 6시간
+        ("계정 없음", 360),                 # 보고서는 왔는데 아는 계정이 없다
+        ("수신 실패: Timeout", 30),          # 답을 못 들었다 — 30분
+        ("status=020", 30),                # 한도 초과 — 곧 다시 물으면 바뀐다
+        ("", 30),                          # 사유를 모른다 — 짧게
+    ])
+    def test_memo_length_follows_the_reason(self, calls, why, ttl_min):
+        """실수 #430 — 옛 판은 원천의 '없다'(013)와 수신 실패를 같은 None 으로
+        받아 둘 다 6시간 믿었다(일시 실패 한 번이 6시간 빈 재무). 이제 빈손의
+        **사유**가 믿는 시간을 정한다. 수치로 못박는다(#66)."""
+        import bot.dashboard as d
+        calls["why"] = why
+        self._render()
+        _at, ttl = d._KR_FIN_KEYED_EMPTY["456789.KQ"]
+        assert ttl == ttl_min * 60, (why, ttl)
+
+    def test_mixed_reasons_are_not_trusted_long(self, calls, monkeypatch):
+        """사유가 섞이면(하나라도 실패) 원천의 답으로 보지 않는다 — 판정은
+        제품 함수(`fin_empty_answered`)를 태운다(인라인 재구현 금지, #286)."""
+        import bot.dart_client as dc
+        assert dc.fin_empty_answered(["status=013"]) is True
+        assert dc.fin_empty_answered(["status=013", "수신 실패: X"]) is False
+        assert dc.fin_empty_answered([]) is False
+        assert dc.fin_empty_answered(None) is False
 
     def test_memo_is_per_ticker(self, calls):
         import time
 
         import bot.dashboard as d
-        d._KR_FIN_KEYED_EMPTY["018260.KS"] = time.time()
+        d._KR_FIN_KEYED_EMPTY["018260.KS"] = (time.time(),
+                                              d._KR_FIN_KEYED_EMPTY_TTL)
         self._render("456789.KQ")
         assert calls["fin"] >= 1, "다른 종목의 기억으로 이 종목을 건너뛰었다"
 
@@ -1298,7 +1331,7 @@ class TestKeylessRecollectMemo:
         import bot.stock_snapshot as ss
         tries: list = []
 
-        def boom(t):
+        def boom(t, **kw):
             tries.append(t)
             raise RuntimeError("일시 장애")
         monkeypatch.setattr(ss, "collect_kr_financials", boom)
