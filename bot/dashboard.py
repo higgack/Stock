@@ -3598,7 +3598,6 @@ _CHART_JS = """
       control:     { l:'최대주주변경', c:'#f78fb3', d:'최대주주·경영권 변경 — 지배구조 변화' },
       other:       { l:'공시',     c:'#94a3b8', d:'기타 공시' }
     };
-    var DISC_HINT = '<span class="cd-empty">📋 공시 마커(■)에 마우스를 올리면 그 날 공시의 종류·제목·설명·원문 링크가 여기 표시됩니다.</span>';
     function showDisc(time){
       if (!discEl || !(ind.events && d.events && d.events.length)) return;
       var evs = d.events.filter(function(e){ return e.time === time; });
@@ -3614,8 +3613,9 @@ _CHART_JS = """
       }
       if (evs.length > 8) html += '<div class="cd-empty">+' + (evs.length - 8) + '건 더</div>';
       discEl.innerHTML = html;
+      discEl.setAttribute('data-hint', '0');   // 이제 안내가 아니라 그 날 공시다
     }
-    if (discEl && !discEl.innerHTML) discEl.innerHTML = DISC_HINT;
+    applyDiscHint(d);
 
     // 크로스헤어 hover 툴팁 — 커서 지점의 날짜 + 활성 지표 값(OHLC/종가/이평선/
     // 볼린저/RSI/MACD/거래량). 가격 행은 통화 기호 prefix(fmtPrice).
@@ -4014,7 +4014,29 @@ _CHART_JS = """
      일목+이격도 59.7초 · 공시 3.3초). lite 로 먼저 그리고 나머지는 백그라운드로
      받아 합친다(사용자 2026-08-22 "종합탭은 다른것보다 빨리 나와야"). */
   var REST_IND = { ichi:1, disp:1, fib:1, wave:1, events:1 };
-  var REST_KEYS = ['ichimoku','disparity','elliott','events'];
+  /* events_note 는 events 와 한 쌍이다 — 마커가 왜 없는지(키 없이 물은 빈손)는
+     공시를 물은 응답만 안다. 빠지면 그 사유가 화면에 영영 안 닿는다(실수 #429
+     독립 리뷰 F1: lite 첫 응답엔 공시가 없고 나머지 응답만 그걸 실어 온다). */
+  var REST_KEYS = ['ichimoku','disparity','elliott','events','events_note'];
+  /* 공시 패널의 안내 — 마커가 없는 이유를 서버가 알면 그 사유를, 아니면 종전 안내를(#43).
+     ⚠️ 공시를 **실은** 응답(events 키가 있다 — lite·분봉 응답엔 없다)만 그 판정을 안다:
+     그때는 패널이 안내를 띄우고 있으면 바꿔 끼운다(앞 응답의 사유가 남지 않게 —
+     아카이브의 '수집 당시' 사유 위에 지금 상태가 올라온다). 공시를 안 실은 응답은
+     아무것도 모르므로 빈 패널만 채운다. 그 날 공시를 띄운 패널(data-hint=0)은 안 건드린다. */
+  function discHint(d){
+    var esc = function(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+    return (d && d.events_note)
+      ? '<span class="cd-empty">📋 ' + esc(d.events_note) + '</span>'
+      : '<span class="cd-empty">📋 공시 마커(■)에 마우스를 올리면 그 날 공시의 종류·제목·설명·원문 링크가 여기 표시됩니다.</span>';
+  }
+  function applyDiscHint(d){
+    var p = document.getElementById('chart-disc');
+    if (!p) return;
+    if (!p.innerHTML || (d && d.events !== undefined && p.getAttribute('data-hint') === '1')) {
+      p.innerHTML = discHint(d);
+      p.setAttribute('data-hint', '1');
+    }
+  }
   var restReady = false, restWant = null;
   function needsRest(){ for (var k in REST_IND) if (ind[k]) return true; return false; }
   function loadRest(iv, rg){
@@ -4031,6 +4053,8 @@ _CHART_JS = """
           if (j.chart[k] !== undefined) lastData[k] = j.chart[k];
         }
         restReady = true;
+        /* 공시 안내는 공시 오버레이가 꺼져 있어도 패널에 뜬다 — 재렌더 여부와 무관하게 갱신 */
+        applyDiscHint(lastData);
         if (needsRest()) { render(lastData, true); status(''); }
       })
       .catch(function(err){
@@ -4244,7 +4268,8 @@ _PER_SHARE_ITEMS = frozenset({
 })
 
 # ⚠️ **렌더러 버전.** `/api/quote?full=1` 의 디스크 캐시 키에 들어간다
-# (`{ticker}_full_v{N}.json`). 그 캐시는 TTL 4h 인데다 stale-while-revalidate
+# (`{ticker}_full_v{N}_k{0|1}.json` — `dashboard_server._quote_cache_name`, 끝은
+# DART 키 유무). 그 캐시는 TTL 4h 인데다 stale-while-revalidate
 # 라 **아무리 오래된 파일도 먼저 서빙**한다 — 렌더 로직을 고쳐도 옛 HTML 이
 # 계속 나오는 이유다(사용자 2026-08-17 '아직도 연간→분기 순서인 게 있다').
 # 표 순서·포맷·섹션 구성 등 **화면 산출물이 바뀌는 변경을 하면 반드시 올린다.**
@@ -4610,6 +4635,17 @@ def dividend_yield_pct(si: dict) -> tuple:
                          si.get("current_price")), "yfinance")
 
 
+# 키 없이 만든 스냅샷의 빈 재무를 **키로 다시 물었는데도** 빈손이었던 종목 →
+# 그 시각(실수 #429 리뷰 F3). 저장본은 렌더마다 디스크에서 **새로** 읽혀(사본)
+# dict 에 적은 표시는 다음 렌더에 남지 않는다 — 프로세스가 기억하지 않으면 같은
+# 13번 조회(현년 + 연간 시계열)를 렌더마다 되풀이한다. 영구로는 믿지 않는다:
+# `get_normalized_financials` 는 원천의 '없다'(013)와 수신 실패를 같은 None 으로
+# 준다. 이 경로는 신선 수집이 실패해 **저장본으로 폴백**했을 때만 타므로, 그 동안
+# 재무가 몇 시간 늦게 돌아오는 것은 이미 낡은 저장본을 보여 주는 화면과 같은 급이다.
+_KR_FIN_KEYED_EMPTY: dict[str, float] = {}
+_KR_FIN_KEYED_EMPTY_TTL = 6 * 3600
+
+
 def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     """Fill the news / research / consensus tabs in-place when they're
     missing from ``si``. These come from our own market clients (Naver /
@@ -4790,9 +4826,28 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         except Exception as exc:
             log.debug("_ensure_detail_enrichment: kr fin import %s: %s", ticker, exc)
             return
+        from bot.dart_client import clear_keyless, keyless_when
         _kr = si.get("kr") or {}
+        _was_keyless = False
         if not _kr.get("financials"):
-            return                       # 애초에 없던 것 — 새로 받지 않는다
+            # 애초에 없던 것은 새로 받지 않는다 — 단 **키가 없어서** 못 받았던
+            # 것(`dart_keyless_financials`)은 키가 생기면 받는다. 안 그러면 키
+            # 없이 만든 스냅샷의 빈칸이 영원히 남는다(#18 구운 값은 코드를 고쳐도
+            # 안 바뀐다).
+            if not keyless_when(_kr, "financials"):
+                return
+            from bot.dart_client import dart_ready, get_dart
+            if not dart_ready(get_dart()):
+                return                   # 여전히 키가 없다 — 물어볼 수 없다
+            import time as _time
+            _at = _KR_FIN_KEYED_EMPTY.get(ticker)
+            if _at is not None and _time.time() - _at < _KR_FIN_KEYED_EMPTY_TTL:
+                # 키로 이미 물어 빈손이었다(F3) — 다시 안 묻고, 그 칸의 '키 없음'
+                # 기록은 더는 사유가 아니므로 지운다(F7 — 키 있는 신선 스냅샷이
+                # 빈 재무를 그리는 것과 같은 화면).
+                clear_keyless(si.setdefault("kr", {}), "financials")
+                return
+            _was_keyless = True
         # ⚠️ 버전 **숫자**만 보면 손으로 안 올린 날 화면이 조용히 옛 값을
         # 그대로 보여준다(2026-08-23 기아 ROE 12.3% 가 fix 후에도 그대로).
         # 소스 지문까지 대조한다 — 규율 대신 구조(#119).
@@ -4803,10 +4858,28 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         try:
             fresh = (collect_kr_financials(ticker) or {}).get("kr") or {}
         except Exception as exc:
+            # 예외는 일시 장애일 수 있다 — 기억하지 않고 다음 렌더가 다시 묻는다.
             log.debug("_ensure_detail_enrichment: kr fin %s: %s", ticker, exc)
             return
         if fresh.get("financials"):
             si.setdefault("kr", {}).update(fresh)
+            clear_keyless(si["kr"], "financials")
+        elif _was_keyless:
+            # 키로 다시 물었는데 빈손 — 그 사실을 기억하고(F3) '키 없음' 기록은
+            # 지운다(F7). 아래 보강(선행 PER·배당 재료 `naver_val` · BPS 분모)은
+            # 받지 않는다 — 재무가 없는 스냅샷은 키 기록이 없을 때도 위에서 바로
+            # 돌아가 그 보강을 받지 않았으므로 같은 화면으로 둔다. `naver_val` 은
+            # 재무 없이도 선행 EPS·PER·배당수익률에 쓰이지만(델타 리뷰 L3 — 옛
+            # 주석은 '재무가 있을 때만 쓰인다' 고 적었다), 재무 없는 스냅샷에
+            # 그걸 붙이는 것은 이 갈래의 일이 아니다. 키 없이 만든 빈 스냅샷이
+            # 아니면 애초에 여기 안 온다.
+            import time as _time
+            _KR_FIN_KEYED_EMPTY[ticker] = _time.time()
+            clear_keyless(si.setdefault("kr", {}), "financials")
+            log.info("_ensure_detail_enrichment: %s 키 없이 만든 스냅샷의 재무를 "
+                     "키로 다시 물었지만 빈손 — %d시간 다시 묻지 않음", ticker,
+                     _KR_FIN_KEYED_EMPTY_TTL // 3600)
+            return
         # 선행 PER 재료(네이버 추정 EPS)도 아카이브엔 없다 — 같은 자리에서
         # 채운다. 없으면 화면은 예전대로 yfinance 값을 쓴다(무해).
         if not (si.get("kr") or {}).get("naver_val"):
@@ -4921,13 +4994,28 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         kr = si.setdefault("kr", {})
         if not kr.get("disclosures"):
             try:
-                from bot.dart_client import get_dart
+                from bot.dart_client import (clear_keyless, dart_ready,
+                                             get_dart, mark_keyless)
                 dart = get_dart()
                 if dart:
                     stock_code = ticker.split(".")[0]
-                    disclosures = dart.get_recent_disclosures(stock_code, days_back=365, limit=50)
+                    disclosures = dart.get_recent_disclosures(
+                        stock_code, days_back=365, limit=50)
                     if disclosures:
                         kr["disclosures"] = disclosures
+                    if not disclosures and not dart_ready(dart):
+                        # 공시 탭이 빈칸의 사유를 말한다(#43) — **이 렌더가 방금**
+                        # 키 없이 물은 빈손이다(스냅샷엔 안 쓴다 — 이 렌더 본문을
+                        # 굽는 `/api/quote` 캐시는 키 유무로 이름이 갈린다,
+                        # `dashboard_server._quote_cache_name`). 공시 칸에만
+                        # 적는다 — 스냅샷 전체에 적으면 키로 받아 정말 빈 다른
+                        # 칸까지 '키 없음' 이 된다(실수 #429 리뷰 F7).
+                        mark_keyless(kr, "disclosures", "now")
+                    elif dart_ready(dart):
+                        # 키로 물었다 — 저장본의 '수집 당시 키 없음' 은 더는 이
+                        # 칸의 사유가 아니다(받았으면 목록이 있고, 빈손이면
+                        # 원천이 빈 것).
+                        clear_keyless(kr, "disclosures")
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: DART disclosures %s: %s", ticker, exc)
     elif tkr.endswith(".T"):
@@ -6752,6 +6840,16 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         mkt = si.get("us", {})
     kr = si.get("kr", {})
+    # DART 를 **키 없이** 물어 비었다는 기록 — **칸마다** 따로다(`kr.dart_keyless_
+    # <칸>`, `dart_client.mark_keyless`). 빈 칸마다 **그 칸의** 기록으로만 사유를
+    # 말한다(#43·#82): 다른 칸의 키 부재로 말하면, 키로 받아 정말 빈 칸까지 '키
+    # 없음' 이 된다(실수 #429 리뷰 F7). 기록이 없으면 말하지 않는다 — 원천이
+    # 정말 비었을 수 있고, 그걸 키 탓으로 지어내면 거짓이다(#165).
+    from bot.dart_client import keyless_note as _keyless_note
+    from bot.dart_client import keyless_when as _keyless_when
+
+    def _kl(section: str, what: str) -> str:
+        return _keyless_note(kr, section, what) if is_kr else ""
 
     # ── 밴드차트 탭 (PER/PBR) ──────────────────────────────────────
     # KR: FnGuide 밴드차트를 그대로(자체 보간 근사 대신 원천의 밴드선·멀티플·
@@ -6870,6 +6968,10 @@ def _render_stock_info_html(rec: dict) -> str:
             if len(est) == 8:
                 est = f"{est[:4]}-{est[4:6]}-{est[6:]}"
             kr_company_rows += grid_row("설립일", est)
+        _kl_company = _kl("company", "대표자·설립일·주소·결산월·산업분류를")
+        if _kl_company and not any(kr.get(k) for k in (
+                "ceo", "address", "established", "ksic_code", "fiscal_month")):
+            kr_company_rows += grid_row("DART 법인 정보", _kl_company)
         # minority holders
         mh = kr.get("minority", {})
         if mh.get("smam_ratio"):
@@ -6966,6 +7068,15 @@ def _render_stock_info_html(rec: dict) -> str:
 
     _src_foot = '<div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">'
 
+    # K-IFRS 재무 요약 자리 — 키 없이 물어 비었으면 그 사실을(#43). 출처 줄의
+    # 'K-IFRS 재무 요약 DART' 는 표가 있을 때만이라 이 문단과 섞이지 않는다.
+    _kr_fin_keyless_html = ""
+    _kl_fin = _kl("financials", "DART 재무제표를")
+    if _kl_fin and not kr_financial_html:
+        _kr_fin_keyless_html = (
+            '<div class="si-section"><div class="si-section-title">K-IFRS 재무 '
+            f'요약</div><div class="si-empty">{esc(_kl_fin)}</div></div>')
+
     company_pane = f"""<div class="si-pane" id="si-company">
   <div class="si-section">
     <div class="si-section-title">개요</div>
@@ -7002,7 +7113,7 @@ def _render_stock_info_html(rec: dict) -> str:
       {grid_row("발행주식수", shares_str)}
     </div>
   </div>
-  {kr_financial_html}
+  {kr_financial_html}{_kr_fin_keyless_html}
   {_src_foot}출처: {("개요 네이버 · 그 외 yfinance" if _nv_desc else "yfinance")
                   + (" · K-IFRS 재무 요약 DART" if kr_financial_html else "")}</div>
 </div>"""
@@ -7772,6 +7883,15 @@ def _render_stock_info_html(rec: dict) -> str:
     # KR DART insider holdings (임원·주요주주)
     kr_insider_html = ""
     kr_insiders = kr.get("insider_holdings", [])
+    # 키 없이 물어 빈 DART 표들 — 주주 탭에 **한 줄로** 모아 말한다(#43 · 같은
+    # 사유를 표마다 되풀이하면 소음이다 #395). `_now` = 이 렌더가 지금 키 없이
+    # 물은 것(최대주주·계열회사) — 스냅샷 기록만이면 '수집 당시' 로 적는다.
+    _holders_keyless: list[str] = []
+    _holders_keyless_now = False
+    _kl_ins = _keyless_when(kr, "insiders") if is_kr else None
+    if _kl_ins and not kr_insiders:
+        _holders_keyless.append("임원·주요주주 지분")
+        _holders_keyless_now = _kl_ins == "now"
     if kr_insiders:
         # ⚠️ **최신이 위로.** DART 소유보고는 접수 순(오래된 것부터)으로 오는데
         # 그대로 그리면 1년 전 변동이 맨 위에 있고 최근 거래는 스크롤 끝에
@@ -7911,6 +8031,8 @@ def _render_stock_info_html(rec: dict) -> str:
                     log.info("dart: get_major_shareholders(%s) returned empty", stock_code)
             else:
                 log.info("dart: DART_API_KEY 없음 — 최대주주 표 생략")
+                _holders_keyless.append("최대주주")
+                _holders_keyless_now = True
         except Exception as exc:
             log.warning("detail: DART major shareholders %s: %s", ticker, exc)
 
@@ -7953,8 +8075,19 @@ def _render_stock_info_html(rec: dict) -> str:
                     log.info("dart: get_affiliate_investments(%s) returned empty", stock_code2)
             else:
                 log.info("dart: DART_API_KEY 없음 — 계열회사 표 생략")
+                _holders_keyless.append("계열회사")
+                _holders_keyless_now = True
         except Exception as exc:
             log.warning("detail: DART affiliate investments %s: %s", ticker, exc)
+
+    kr_dart_keyless_html = ""
+    if _holders_keyless:
+        from bot.dart_client import keyless_reason
+        kr_dart_keyless_html = (
+            '<div class="si-section"><div class="si-empty">'
+            + esc(keyless_reason("·".join(_holders_keyless) + " 표를",
+                                 at_collection=not _holders_keyless_now))
+            + '</div></div>')
 
     # holders_pane assembled later (after us_insider_html defined)
 
@@ -8685,7 +8818,17 @@ def _render_stock_info_html(rec: dict) -> str:
     # Placeholder so the JS overlay can find the element by ID during
     # batch regen (when all live-fetch blocks are skipped → disclosures_pane="").
     if not disclosures_pane:
-        disclosures_pane = '<div class="si-pane" id="si-disclosures"></div>'
+        _kl_disc = _kl("disclosures", "공시 목록을")
+        if _kl_disc:
+            # 키 없이 물어 빈 공시 목록 — 빈 탭으로 두면 '공시가 없는 회사' 로
+            # 읽힌다(#43·#82). 오버레이가 나중에 채우면 이 문단은 갈아끼워진다.
+            disclosures_pane = (
+                '<div class="si-pane" id="si-disclosures"><div class="si-section">'
+                '<div class="si-section-title">공시</div><div class="si-empty">'
+                + esc(_kl_disc)
+                + '</div></div></div>')
+        else:
+            disclosures_pane = '<div class="si-pane" id="si-disclosures"></div>'
 
     # ── 이벤트 타임라인 pane ────────────────────────────────────
     _tl_sources = " · ".join(dict.fromkeys(
@@ -9690,6 +9833,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {short_html}
   {us_insider_summary_html}
   {kr_foreign_html}
+  {kr_dart_keyless_html}
   {kr_insider_html}
   {kr_minority_html}
   {kr_affiliates_html}
@@ -16685,6 +16829,17 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         if _vis and _kr_last and _dart_asof < _kr_last:
             _dart_lag = (f' <span style="color:#f5a623" title="마지막 거래일 '
                          f'{_kr_last} 공시가 아직 없습니다">⚠️ 지연</span>')
+    except Exception:
+        pass
+    # 키가 없으면 새 공시를 **아예** 못 받는다 — '⚠️ 지연' 만 붙이면 원천이 늦는
+    # 것처럼 읽힌다(#82). 판정은 수집기와 같은 키 경로(`_dart_api_key`)로(#35).
+    try:
+        from bot.dart_feed import _dart_api_key
+        if not _dart_api_key():
+            from bot.dart_client import keyless_reason
+            _dart_lag += (' <span style="color:#f5a623">⚠️ '
+                          + _html.escape(keyless_reason("새 공시를"))
+                          + ' — 아래는 저장분</span>')
     except Exception:
         pass
     # 관계후보 발굴 비용(kg_dart) — 공시 수집·파싱은 무료(공공 API)지만 계약공시

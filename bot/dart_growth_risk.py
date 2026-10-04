@@ -294,6 +294,11 @@ def build_growth_risk(dart, ticker: str, year: int, reprt_code: str,
     code = (ticker or "").upper().split(".")[0]
     rep = dart.find_periodic_report(code, year, reprt_code) if dart else None
     if not rep or not rep.get("rcept_no"):
+        from bot.dart_client import dart_ready, keyless_reason
+        if not dart_ready(dart):
+            # 키가 없으면 보고서를 **찾을 수조차** 없다 — 'rcept_no 미확인' 은
+            # 원천에 보고서가 없는 것처럼 읽힌다(#82).
+            return {"ok": False, "error": keyless_reason("근거가 될 정기보고서를")}
         return {"ok": False, "error": "정기보고서 rcept_no 미확인"}
     rcept_no = rep["rcept_no"]
     cached = cached_summary(ticker, rcept_no)

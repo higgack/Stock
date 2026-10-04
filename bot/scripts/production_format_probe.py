@@ -181,9 +181,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="수주잔고 검사 생략(40MB 재파싱이 느릴 때)")
     args = ap.parse_args(argv)
 
-    from bot.dart_client import dart_ready, get_dart
+    from bot.dart_client import dart_ready, get_dart, list_failure
     from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
-                               _fetch_doc_text)
+                               _fetch_doc_text, source_has_no_document)
     from bot.dart_feed import doc_was_truncated as dp_trunc
     from bot import dart_production as dp
 
@@ -227,9 +227,16 @@ def main(argv: list[str] | None = None) -> int:
         # 제품표 덤프가 화면(최신 분기)과 다른 보고서를 보여 준다(2026-08-21
         # 300120 실측: 화면 26.2Q, 덤프 25.4Q — #35 의 재발).
         prod, prod_basis, prod_rn = None, "", ""
+        # 원천이 '없다' 고 답한 게 아니라 **답을 못 들은** 곳(목록 조회 실패 ·
+        # 013/014 가 아닌 원문 실패) — 그것뿐이면 '원문미제공' 이 아니라
+        # '못받음' 이다(실수 #429 리뷰 F6 · #82). 다시 돌리면 달라질 수 있다.
+        unheard = ""
         for q in reversed(qs):
-            rn = (dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
-                  or [{}])[0].get("rcept_no") or ""
+            _reps = dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
+            _lf = list_failure(_reps)
+            if _lf and not unheard:
+                unheard = f"{q.get('label', '')} 목록:{_lf}"
+            rn = (_reps or [{}])[0].get("rcept_no") or ""
             if not rn:
                 continue
             # ⚠️ **제품 경로와 같은 순서로 상한을 올린다**(실수 #35).
@@ -240,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
             for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
                 mk = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
                                      raw_markup=True)
+                if not mk and not unheard and not source_has_no_document(rn):
+                    unheard = f"{q.get('label', '')} 원문 {rn}"
                 # ⚠️ 길이로 추정하지 않는다 — 상한은 **바이트**, 반환은
                 # 정규화된 **문자열**이라 항상 더 짧아 판정이 늘 '안 잘림'
                 # 으로 기운다. v3 에서 삼성전자가 2,826k자/3,000k바이트로
@@ -260,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                     break          # 잘리지 않았는데 못 찾으면 올려도 같다
             if verdict in _OK:
                 break
+        if markup is None and unheard:
+            verdict = "못받음"
         tally[verdict] = tally.get(verdict, 0) + 1
         got = dp.parse_production(markup) if markup else None
         if prod is None and markup:       # 루프에서 못 잡았으면 마지막 원문
@@ -324,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
               f" {dlen//1000:>5}k{'✂' if cutmark else ' '}"
               f" {(got or {}).get('anchor', ''):<12} {kinds}"
               f"  {fmt_eta(i, len(tickers), _t0)}")
+        if verdict == "못받음":
+            print(f"      ↳ 원천이 '없다' 고 답한 게 아니다 — 답을 못 들은 곳: "
+                  f"{unheard}")
         # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
         if not got:
             head = ""

@@ -636,5 +636,85 @@ class AsofLineTests20260820(unittest.TestCase):
         self.assertIn("관세청 데이터 2026-07", h)
 
 
+
+class KeylessProductsReasonTests20261004(unittest.TestCase):
+    """제품 구성이 비었는데 그 이유가 **DART 키 부재**면 화면이 그렇게 말한다 —
+    '미확보(비상장·해외·미발견)' 로 두면 원천 부재로 읽힌다(#43·#82, 실수 #428
+    후속 ②). 판정은 매출표 수집과 같은 `dart_revenue.dart_key`(#38)."""
+
+    def _gather(self, env_key, *, api_key=None, inventory=None):
+        import os
+        from unittest import mock
+
+        class _Dart:
+            stock_code_to_name = lambda self, c: "어떤회사"
+            find_by_name = lambda self, q: []
+            stock_code_to_corp_code = lambda self, c: "0009"
+
+        env = {k: v for k, v in os.environ.items() if k != "DART_API_KEY"}
+        if env_key:
+            env["DART_API_KEY"] = env_key
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("bot.dart_client.get_dart", return_value=_Dart()), \
+                mock.patch.object(C, "_load_alerts", return_value=[]), \
+                mock.patch("trade.dart_revenue.load_inventory",
+                           return_value=inventory or {}), \
+                mock.patch("trade.dart_revenue.fetch_company_products",
+                           return_value=None), \
+                mock.patch("trade.customs.session"), \
+                mock.patch("trade.industry.load_mti_stored", return_value={}), \
+                mock.patch("trade.industry.load_mti_imports", return_value={}), \
+                mock.patch("trade.mti_companies.load_channel_pairs",
+                           return_value=[]):
+            return C.gather("000009", api_key=api_key)
+
+    def test_keyless_says_so_on_screen(self):
+        data = self._gather("")
+        want = "DART_API_KEY 없음 — DART 매출표를 받지 못했습니다"
+        self.assertEqual(data["products_why"], want)
+        html = C.render_free(data)
+        self.assertIn("📦 제품 구성 — " + want, html)
+        self.assertNotIn("미확보(비상장·해외·미발견)", html)
+
+    def test_keyed_keeps_the_old_reason(self):
+        """반대 증거 — 키가 있는데 비었으면 원천 쪽 사유가 맞다."""
+        data = self._gather("k-1234567890")
+        self.assertEqual(data["products_why"], "")
+        self.assertIn("DART 매출표 미확보(비상장·해외·미발견)",
+                      C.render_free(data))
+
+    def test_present_products_carry_no_reason(self):
+        """값이 있는 칸은 조용하다 — 인벤토리가 매출표를 주면 키가 없어도 사유를
+        싣지 않는다(리뷰 K24: `not products` 를 빼도 화면은 표를 그려 아무 테스트도
+        못 봤다 — 데이터에 사유가 남아 표 옆의 거짓이 된다)."""
+        inv = {"000009": {"products": [{"name": "부품", "share_pct": 70.0}]}}
+        data = self._gather("", inventory=inv)
+        self.assertEqual([p["name"] for p in data["products"]], ["부품"])
+        self.assertEqual(data["products_why"], "")
+
+    def test_passed_key_decides_over_the_environment(self):
+        """부른 쪽이 넘긴 키가 환경변수보다 앞선다 — 화면의 사유도 그 키로
+        판정한다(리뷰 K25: `dart_key(None)` 으로 바꿔도 살아남았다 — 픽스처가 늘
+        환경변수만 썼다). 넘긴 키가 있으면 조용하고, 빈 키를 넘기면 환경변수가
+        있어도 키 없음이다(매출표 수집도 그 키로 묻는다)."""
+        # 가짜 키는 조립한다 — `api_key="…"` 리터럴은 시크릿 스캐너가 진짜 키로
+        # 읽는다(실수 #407 · tests/test_no_secrets_committed.py).
+        key = "k-" + "1234567890"
+        self.assertEqual(self._gather("", api_key=key)["products_why"], "")
+        self.assertEqual(self._gather(key, api_key="")["products_why"],
+                         "DART_API_KEY 없음 — DART 매출표를 받지 못했습니다")
+
+    def test_one_key_predicate(self):
+        """수집 네 곳과 화면이 같은 판정을 쓴다 — 인자가 환경변수보다 앞선다."""
+        import os
+        from unittest import mock
+
+        from trade import dart_revenue as dr
+        with mock.patch.dict(os.environ, {"DART_API_KEY": " env "}):
+            self.assertEqual(dr.dart_key(), "env")
+            self.assertEqual(dr.dart_key("arg"), "arg")
+            self.assertEqual(dr.dart_key(""), "")
+
+
 if __name__ == "__main__":
     unittest.main()

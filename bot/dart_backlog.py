@@ -69,6 +69,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path as _Path
 
 log = logging.getLogger("bot.dart_backlog")
@@ -2061,18 +2062,31 @@ def _bl_cached(key: str):
         from bot.finviz_client import _cached
         hit = _cached(key, ttl=_BL_TTL)
         if isinstance(hit, dict) and "why" in hit:
+            if hit.get("short"):
+                # 권위 없는 답은 짧게만 — 나이는 기록 안의 시각으로(#160).
+                from bot.dart_client import PROVISIONAL_TTL_SEC
+                at = hit.get("at")
+                if (not isinstance(at, (int, float))
+                        or time.time() - at >= PROVISIONAL_TTL_SEC):
+                    return None
             return hit.get("v"), hit["why"]
     except Exception as exc:                                   # noqa: BLE001
         log.debug("backlog cache read(%s): %s", key, exc)
     return None
 
 
-def _bl_cache_write(key: str, value, why: str) -> None:
+def _bl_cache_write(key: str, value, why: str, *, short: bool = False) -> None:
+    """`short=True` 는 권위 없는 답 — 걷는 동안 못 물어본 곳(목록·원문의 일시
+    실패)이 있었다. `dart_client.PROVISIONAL_TTL_SEC` 동안만 믿는다(표 롤링과
+    같은 규약, #38)."""
     if _parse_sig() == "nosig":
         return
     try:
         from bot.finviz_client import _cache_write
-        _cache_write(key, {"v": value, "why": why})
+        rec: dict = {"v": value, "why": why}
+        if short:
+            rec.update(short=True, at=time.time())
+        _cache_write(key, rec)
     except Exception as exc:                                   # noqa: BLE001
         log.debug("backlog cache write(%s): %s", key, exc)
 
@@ -2107,11 +2121,18 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         # `v, why = backlog_probe(...)` 가 TypeError 로 터진다.
         return None, "DART없음"
     try:
-        from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
+        from bot.dart_client import list_failure
+        from bot.dart_feed import (_DOC_TEXT_MAX_FULL, _fetch_doc_text,
+                                   source_has_no_document)
         # ⚠️ 후보를 **순서대로** 시도한다. 가장 최근 접수건에 문서가 없는
         # 경우가 있어(한화에어로 사업보고서·1분기보고서 실측: document.xml 이
         # `status=014 파일이 존재하지 않습니다`) 1건만 보면 원본이 가려진다.
         reps = dart.find_periodic_reports(ticker, year, reprt_code)
+        # 목록·원문 조회의 답을 **못 들은 곳**이 있었나 — 있으면 이번 답은
+        # 권위가 없다(앞 후보 = 정정본을 못 받고 원본을 읽었을 수 있다). 24시간
+        # 굳히지 않고 짧게만 굽는다(표 롤링 `tables_rolling` 과 같은 규약 —
+        # 실수 #428 델타 리뷰 L4 의 형제, #38).
+        missed = bool(list_failure(reps))
         if not reps:
             rep = dart.find_periodic_report(ticker, year, reprt_code)
             reps = [rep] if rep and rep.get("rcept_no") else []
@@ -2123,10 +2144,15 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
                                    max_bytes=_DOC_TEXT_MAX_FULL) or ""
             if text:
                 break
+            if not source_has_no_document(rep["rcept_no"]):
+                missed = True          # 원천이 '파일 없음' 이라 답한 게 아니다
+        if missed and text:            # 아무것도 못 읽었으면 애초에 안 굽는다
+            log.info("backlog_probe(%s %s/%s): 못 물어본 곳이 있어 짧게만 "
+                     "굽는다", ticker, year, reprt_code)
         got = parse_backlog(text)
         if got:
             if ck and text:
-                _bl_cache_write(ck, got["value"], "정상")
+                _bl_cache_write(ck, got["value"], "정상", short=missed)
             # ⚠️ 값이 나왔으면 그 분기의 **개선 여지 줄은 이미 해소**다
             # (2026-10-02 391710 — 09-19 에 고친 표가 원장에 남아 2주 뒤 보고서가
             # 그걸 '고칠 것' 으로 실었다). 지우는 경로가 `--refill`(발췌 없는
@@ -2159,7 +2185,7 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         # ⚠️ **원문을 받아 본 경우에만** 캐시한다. 원문미제공은 원천 장애일
         # 수 있는데 그걸 24시간 믿으면 공시하는 회사가 하루 종일 빈칸이 된다.
         if ck and text:
-            _bl_cache_write(ck, None, _why)
+            _bl_cache_write(ck, None, _why, short=missed)
         return None, _why
     except Exception as exc:
         log.debug("dart_backlog: %s %s/%s: %s", ticker, year, reprt_code, exc)

@@ -142,6 +142,14 @@ def audit_inventory(inv: dict | None = None) -> list[dict]:
     return out
 
 
+def dart_key(api_key: str | None = None) -> str:
+    """이 모듈이 쓰는 DART 키 — 인자가 있으면 그것, 없으면 환경변수(없으면 "").
+    매출표 수집 네 곳과 화면(회사 리포트의 '키 없음' 사유)이 **같은 판정**을
+    쓴다(#38 — 같은 식을 네 번 적어 두면 한 곳만 바뀐다)."""
+    return (api_key if api_key is not None
+            else os.environ.get("DART_API_KEY") or "").strip()
+
+
 def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict | None:
     """6자리 stock_code → {code, company, report, rcept_no, products:[{name,
     share_pct, amount}]} 또는 None. DART 사업보고서 매출표 1개를 골라 제품·비중 추출.
@@ -149,7 +157,7 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
     프로브의 검증된 단계를 재사용: corp_code → 최신 정기보고서 → document.xml 원문
     → best_revenue_table(매출표 선택) → products_from_rows(제품/비중/금액). 키 부재·
     미발견·실패 시 None(graceful)."""
-    key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
+    key = dart_key(api_key)
     if not key:
         return None
     # 프로브(검증·테스트된 추출 primitives) 재사용 — 단일 소스, dup 없음.
@@ -205,7 +213,7 @@ def build_inventory(stock_codes: list[str], api_key: str | None = None,
                     sleep: float = 0.4) -> dict:
     """여러 종목 → {code: fetch_company_products(...)} 인벤토리 + 디스크 저장
     (<DATA>/dart_revenue_inventory.json, read-only 검토용). 실패 종목은 생략."""
-    key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
+    key = dart_key(api_key)
     inv: dict = {}
     for code in stock_codes:
         try:
@@ -252,7 +260,7 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
     force=True 면 rcept 변경 없어도 전수 재파싱(파서 개선 반영용, 사용자 2026-06-18).
 
     Returns {built, skipped, failed, total}. 진척 로그(silent-fail 금지·실수기록 #12d)."""
-    key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
+    key = dart_key(api_key)
     if not key:
         log.warning("refresh_inventory: DART_API_KEY 없음")
         return {"built": 0, "skipped": 0, "failed": 0, "total": 0}
@@ -328,7 +336,7 @@ def reparse_stale_inventory(budget: int = 400, api_key: str | None = None) -> di
     ('빈칸 > stale/오매핑'; 월간 --refresh 가 재시도해 진짜 불가면 실패목록행), 예외
     (transient) → stale 유지(다음 런 재시도). 네트워크만·₩0. Returns
     {stale, reparsed, removed, remaining}."""
-    key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
+    key = dart_key(api_key)
     if not key:
         log.warning("reparse_stale_inventory: DART_API_KEY 없음")
         return {"stale": 0, "reparsed": 0, "removed": 0, "remaining": 0}

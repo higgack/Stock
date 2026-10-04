@@ -725,6 +725,32 @@ def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
     return _kr_band_tables(band, ticker)[0]
 
 
+def _quote_cache_name(safe: str, kind: str) -> str:
+    """`/api/quote` 디스크 캐시 파일 이름.
+
+    ⚠️ 렌더러 버전(`dashboard._RENDER_VER` 단일 출처)이 들어간다 — 렌더러를
+    고치고 버전을 안 올리면 stale-while-revalidate 가 옛 HTML 을 무기한
+    서빙한다(TTL 만료도 소용없다, 2026-08-17 실측).
+
+    ⚠️ **DART 키 유무**도 들어간다(실수 #429 델타 리뷰 L1). 키 없이 그린 무거운
+    본문은 공시 탭이 '지금 DART_API_KEY 없음' 을 말하는데, 그 본문이 4시간(그
+    뒤엔 stale 로 무기한) 남아 키를 넣고 재시작해도 거짓 문장이 계속 나왔다 —
+    신선 캐시 반환이 `force` 보다 먼저라 수동 🔄 도 못 우회했다. 키 유무로
+    가르면 키가 생긴 첫 조회가 새로 그린다. 판정은 렌더와 같은 술어
+    (`dart_ready`, #38). 전 시장 공통이다 — 키 상태가 바뀔 때 한 번 다시 그릴
+    뿐이고, 어느 시장 본문이 키 문장을 담는지 여기서 가르지 않는다.
+    """
+    from bot.dashboard import _RENDER_VER
+    try:
+        from bot.dart_client import dart_ready, get_dart
+        tag = "k1" if dart_ready(get_dart()) else "k0"
+    except Exception as exc:                                   # noqa: BLE001
+        # 키 상태를 모르면 따로 둔다 — 키 있음·없음 어느 본문과도 섞지 않는다
+        log.warning("quote cache: DART 키 상태 판정 실패 — %s", exc)
+        tag = "kx"
+    return f"{safe}_{kind}_v{_RENDER_VER}_{tag}.json"
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
     URL-token and Basic-Auth gating."""
@@ -1697,11 +1723,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
             kind = "full" if full else "light"
-            # ⚠️ 버전은 `dashboard._RENDER_VER` 단일 출처 — 렌더러를 고치고
-            # 여기를 안 올리면 stale-while-revalidate 가 옛 HTML 을 무기한
-            # 서빙한다(TTL 만료도 소용없다, 2026-08-17 실측).
-            from bot.dashboard import _RENDER_VER
-            cache_f = cache_dir / f"{safe}_{kind}_v{_RENDER_VER}.json"
+            # ⚠️ 이름은 `_quote_cache_name` 한 곳 — 렌더러 버전과 DART 키 유무가
+            # 둘 다 들어간다(아래 함수 설명).
+            cache_f = cache_dir / _quote_cache_name(safe, kind)
             # FULL is slow-moving (filings quarterly, 수급 daily) → 4 h.
             # LIGHT is intraday → 5 min (matches the chart API cadence).
             ttl = 14400 if full else 300  # FULL=4h, LIGHT=5min
