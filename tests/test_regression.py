@@ -603,7 +603,13 @@ class TestPriceChartRender:
         from bot.dashboard_server import chart_cache_name
         nm = chart_cache_name("005930_KS", "1d", "1y")
         assert "_v" in nm and nm.endswith(".json"), nm
-        assert "< 300:" in srv, "캐시 TTL 5분 누락"
+        # TTL 은 상수로 올렸다(실수 #430 — 핸들러와 옛 파일 정리 루틴이 같은 수명을
+        # 읽는다). 옛 판은 소스의 리터럴 `< 300:` 을 단언해 같은 계약을 지키는
+        # 리팩터에 깨졌다(#19) — 값을 재고, 핸들러가 그 상수를 읽는지는
+        # `tests/test_cache_purge_20261004.py::TestHandlerAndPurgeAgree` 가 핸들러를
+        # 태워 잰다.
+        from bot.dashboard_server import _CHART_TTL
+        assert _CHART_TTL == 300, "캐시 TTL 5분 누락"
 
     def test_chart_indicators_volume_rsi_bb_macd_candle(self):
         """보조지표 배선 — 거래량/RSI/볼린저/MACD/캔들 + 토글 (2026-06-04)."""

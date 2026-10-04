@@ -40,22 +40,21 @@
    키를 스스로 보고, `stock_code_to_name` 처럼 키 없이 디스크 캐시로 답하는
    것이 있어 막으면 그 답을 잃는다.
 
-⚠️ 못 보는 축(#274) — #429 뒤에 남은 것: 함수 경계를 넘는 보관소에 **클라이언트가
-아닌 바인딩이 하나라도** 있으면(`_D = None` 지연 초기화) 그 판정은 살아 있는
-검사로 보고 넘긴다(`get_dart` 자신이 그 모양이다) · 타입 주석 없는 인자의 속성
-(`def f(o): o.d` — 어느 객체인지 모른다) · `Optional[C]` 같은 주석 · 다른 모듈이
-그 객체의 칸을 쓰는 것(`import m; m.CTX['d'] = None` — 보관소 규칙이 그 쓰기를
-못 봐 **오탐** 쪽이다) · 컨테이너를 바꾸는 메서드(`update`·`setdefault`·`append`)
-· 펼친 dict(`{**a, 'k': …}` — 모른다로 본다) · 식별자가 아닌 문자열 칸 · 음수·변수
-칸 · 표에 없는 콜백 등록(`atexit.register` 등) · 위치로 넘긴 `Thread` 의 target ·
-이름으로 넘긴 `args=` · 슬라이스·풀기로 옮긴 `*args` · 여러 조상(다이아몬드)의
-메서드 순서(왼쪽 우선 깊이 우선으로 근사) · else 판정의 칸·객체 속성·`d or 기본값`
-· 인자의 else(부르는 쪽을 다 모른다) · 보관소끼리 서로 옮겨 담는 순환(최소
-고정점이라 증명되지 않는다) · 반복문에서 몇 번째 바퀴인지로 막은 판정
-(`if i > 0 and not d`). 판정 사슬 상한 400 은 넘으면 '아니다' 로 접지 않고
-실패한다(레포 실측 깊이 4). 오탐 쪽: 같은 스코프에서 다시 묶은 이름
-(`d = get_dart(); d = None; if d is None`)은 첫 묶음을 기억해 잡는다(엄격 —
-고칠 곳은 늘 `dart_ready` 다).
+⚠️ 못 보는 축(#274) — #430 이 #429 의 목록(쓰기 축 · 호출 축 · 흐름·클래스 축 ·
+else 판정 · 보관소 순환)을 메운 뒤 남은 것은 **정적으로 가를 수 없는** 경계다:
+보관소에 클라이언트가 아닌 바인딩이 하나라도 있으면(`_D = None` 지연 초기화) 살아
+있는 검사로 본다 — 의도다(`get_dart` 자신이 그 모양이고, 값을 담기 전에 읽히는
+순서는 실행이 정한다) · 반복문에서 몇 번째 바퀴인지로 막은 판정(`if i > 0 and not
+d`) — 값이 아니라 실행 횟수에 달렸다 · 실행 중에 정해지는 이름(`getattr(o, name)`
+의 변수 이름 · 변수로 고른 모듈) — 모른다로 본다 · 칸 **뒤** 에 펼침이 오는 dict
+(`{'d': X, **a}`) — 덮였을지 모른다(펼침 앞의 칸은 확정, 같은 열쇠는 마지막이
+이긴다) · 인자의 else 는 닫힌 세계(함수 안에서 정의해 그 이름을 곧바로 부르는
+데에만 쓴 함수)에서만 — 열린 함수는 부르는 곳을 다 모른다 · 대상을 못 찾은 메서드
+이름(`x.get_dart()`)은 이름으로 본다(엄격 쪽). 순환은 E-게이트 최대 고정점으로
+잰다(바닥 — 공장 호출 — 에 닿아야 참, 무작위 보관소 그래프에서 기대값과 정확히
+일치). 판정 사슬 상한 400 은 넘으면 '아니다' 로 접지 않고 실패한다(레포 실측 깊이
+5). 오탐 쪽: 같은 스코프에서 다시 묶은 이름(`d = get_dart(); d = None; if d is
+None`)은 첫 묶음을 기억해 잡는다(엄격 — 고칠 곳은 늘 `dart_ready` 다).
 """
 from __future__ import annotations
 
@@ -427,11 +426,12 @@ def _split(k):
 
 
 def _get_default(e):
-    """`x.get(k, 기본값)` 의 기본값 식 — 기본값이 None·빈 값이거나 `.get` 이
-    아니면 None(없는 칸은 None 이 온다)."""
+    """`x.get(k, 기본값)` 의 기본값 식 — `.get` 이 아니면 None. 기본값이 None·빈
+    값이어도 그대로 돌려준다: 그런 식은 어느 판정에서도 클라이언트를 싣지 않아
+    걸러 두면 같은 답을 두 번 막는 죽은 가드였다(뮤테이션 D33 — 지우는 변형이
+    전 슈트·레포 스캔에서 같은 답이었다)."""
     if (isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute)
-            and e.func.attr == "get" and len(e.args) == 2 and not e.keywords
-            and not _trivial(e.args[1])):
+            and e.func.attr == "get" and len(e.args) == 2 and not e.keywords):
         return e.args[1]
     return None
 
@@ -647,9 +647,13 @@ def _entry(v, kind, name):
     if kind == "get":
         kind = "item"
     if kind == "item" and isinstance(v, ast.Dict):
-        if any(k is None for k in v.keys):          # {**다른것} — 덮였을지 모른다
-            return None
-        for kk, vv in zip(v.keys, v.values):
+        # 뒤에서부터 — 같은 열쇠는 마지막이 이긴다. `{**다른것}` 을 먼저 만나면
+        # 그 앞의 칸은 덮였을지 모르고 그 칸이 거기서 올지도 모른다(모른다).
+        # 펼침 **뒤** 에 적은 칸은 무엇이 펼쳐지든 그 값이다(실수 #430 — 옛
+        # 판은 펼침이 하나라도 있으면 전부 모른다로 봤다)
+        for kk, vv in zip(reversed(v.keys), reversed(v.values)):
+            if kk is None:
+                return None
             c = _const_index(kk)
             if c == name and type(c) is type(name):
                 return ("있음", vv)
@@ -1187,7 +1191,10 @@ def _scan(sources):
 
     def _sub(fn, *a):
         """하위 판정 하나를 따로 재서 (값, 기댄 깊이, 바닥) — 참이면 그 기댐·바닥을
-        지금 판정에 올린다(거짓은 가정을 더해도 거짓이라 아무것도 안 올린다)."""
+        지금 판정에 올린다(거짓은 가정을 더해도 거짓이라 아무것도 안 올린다).
+        ⚠️ 거짓의 기댐까지 올리는 변형(D22)은 결과를 바꾸는 입력을 못 찾았다
+        (무작위 보관소 그래프 4,000 · 앞선 대입 사슬 차분 3,000) — 더 보수적인
+        쪽이라 답은 같고 재기만 는다. 도달 불가라고 재지는 않았다(#377)."""
         frames.append([_NODEP, False])
         try:
             r = fn(*a)
@@ -1352,7 +1359,11 @@ def _scan(sources):
                 _ground()
             return True
         for key, hv in g["tmemo"].items():
-            if hv[2] >= k:                  # 이 뿌리의 가정에만 기댔다 — 확정
+            # 이 뿌리의 가정에만 기댔다 — 확정. 바깥에 기댄 참은 거짓 가지에서만
+            # 생기는데 그 가지는 첫 회차에 메모돼 마지막 회차 tmemo 엔 거의 안
+            # 남는다 — 늘 확정하는 변형(D24)이 바꾸는 입력은 못 찾았다(위 D22 와
+            # 같은 퍼징). 방어로 둔다
+            if hv[2] >= k:
                 memo[key] = True
             else:                           # 바깥에 기댄 거짓 가지의 참 — 넘긴다
                 gstk[-1]["tmemo"][key] = hv
@@ -2816,10 +2827,15 @@ def _scan(sources):
                     kwd.add(k.arg)
                 continue
             v = literal_of(s, k.value, line)
-            if isinstance(v, ast.Dict) and None not in v.keys:
-                kwd |= {kk.value for kk, vv in zip(v.keys, v.values)
+            if isinstance(v, ast.Dict):
+                # 마지막 펼침 뒤의 칸만 — 그 앞은 덮였을지 모른다(`_entry`)
+                cut = max((j + 1 for j, kk in enumerate(v.keys) if kk is None),
+                          default=0)
+                last = {kk.value: vv for kk, vv in zip(v.keys[cut:],
+                                                       v.values[cut:])
                         if isinstance(kk, ast.Constant)
-                        and isinstance(kk.value, str) and carries(s, vv, line)}
+                        and isinstance(kk.value, str)}
+                kwd |= {nm for nm, vv in last.items() if carries(s, vv, line)}
             elif (isinstance(v, ast.Call) and _call_name(v) == "dict"
                   and not v.args):
                 kwd |= {kw.arg for kw in v.keywords
@@ -3621,7 +3637,11 @@ class TestNoDeadDartGuard:
         "            self.connect()\n",
         "def f():\n    ctx = {'x': 1}\n    if not ctx['dart']:\n        return\n",
         "def f():\n    ctx = {'dart': None}\n    if not ctx['dart']:\n        return\n",
-        "def f(base):\n    ctx = {**base, 'dart': get_dart()}\n"
+        # 펼침이 칸 **뒤** 면 덮였을지 모른다(앞이면 그 칸은 확정 — TestScannerElse
+        # AndCycles 로 옮겼다, 실수 #430) · 같은 열쇠는 마지막이 이긴다
+        "def f(base):\n    ctx = {'dart': get_dart(), **base}\n"
+        "    if not ctx['dart']:\n        return\n",
+        "def f():\n    ctx = {'dart': get_dart(), 'dart': None}\n"
         "    if not ctx['dart']:\n        return\n",
         "def f():\n    ctx = {'dart': get_dart()}\n    if not ctx['other']:\n"
         "        return\n",
@@ -4195,7 +4215,7 @@ class TestScannerTrustAndCycles:
         assert r["built"] == ["pkg.h", "pkg.r"], r   # 읽고도 막지 않는다
 
     def test_cycles_reach_the_least_fixpoint(self):
-        """무작위 그래프 300개 — 판정이 E-게이트 최대 고정점(`_egated_gfp` —
+        """무작위 그래프 600개 — 판정이 E-게이트 최대 고정점(`_egated_gfp` —
         서로 옮겨 담는 순환도 바닥에 닿으면 참 · 실수 #430. 옛 판은 최소 고정점
         이었다)과 같아야 하고, 최소 고정점은 늘 그 안에 든다. 잠정 '아니다' 를 메모하거나(옛 판의 깊이 메모 병) ·
         뿌리가 참으로 끝났는데 그 아래 잠정을 남기거나 · 기대는 자리를 위로
@@ -4206,7 +4226,7 @@ class TestScannerTrustAndCycles:
         import random
         rng = random.Random(20261004)
         hit_total, checks, bad, gfp_only = 0, 0, [], 0
-        for t in range(300):
+        for t in range(600):
             n, binds, src = _random_carrier_graph(rng)
             want = _egated_gfp(binds)
             lfp = _least_fixpoint(binds)
@@ -4229,7 +4249,7 @@ class TestScannerTrustAndCycles:
                                                                 checks)
         # 최대 고정점에서만 참인 전역(순환으로만 증명되는 것)도 충분히 나와야
         # 그 갈래를 잰다
-        assert gfp_only >= 30, gfp_only
+        assert gfp_only >= 100, gfp_only
 
     def test_memo_reset_also_resets_cycle_provisionals(self):
         """고정점이 운반 인자를 새로 찾아 메모를 비우면 순환의 잠정 거짓도
@@ -5039,6 +5059,13 @@ class TestScannerElseAndCycles:
          + _ELSE2 + "    use(1, d=get_dart())\n", [(3, "d → else")]),
         (_C_D + "def outer():\n    def use(o):\n        if o.d:\n            work()\n"
          + _ELSE2 + "    use(C())\n", [(6, "o.d → else")]),
+        # ── 펼친 dict — 마지막 펼침 뒤에 적은 칸은 무엇이 펼쳐지든 그 값 ──
+        ("def f(base):\n    ctx = {**base, 'd': get_dart()}\n    if not ctx['d']:\n"
+         "        return\n", [(3, "not ctx['d']")]),
+        ("def f():\n    ctx = {'d': None, 'd': get_dart()}\n    if not ctx['d']:\n"
+         "        return\n", [(3, "not ctx['d']")]),
+        ("def outer(a):\n    def use(d=None):\n        if not d:\n            return\n"
+         "    use(**{**a, 'd': get_dart()})\n", [(3, "not d")]),
         # ── 순환 — 바닥(공장 호출)에 닿는 서로 옮겨 담기 ──
         ("def wa(c):\n    global A\n    A = B\ndef wb(c):\n    global B\n    B = A\n"
          "def wb2(c):\n    global B\n    B = get_dart()\ndef r():\n    if not A:\n"
@@ -5051,6 +5078,14 @@ class TestScannerElseAndCycles:
         ("_D = get_dart()\ndef f():\n    global _D\n    _D = _D or get_dart()\n"
          "def g():\n    if _D:\n        work()\n" + _ELSE,
          [(4, "_D or get_dart() → else"), (6, "_D → else")]),
+        # 앞선 대입(첫 규칙)이 가정한 참에만 기대도 보관소 규칙(나머지)을 마저
+        # 재야 바닥이 모인다 — `G1 = None or G1` 은 G1 가정에만 기대지만 G1 의
+        # 다른 바인딩 G4 → G2 → 공장이 바닥이다. 첫 규칙에서 단락하면 G3 가
+        # 바닥 없는 순환으로 기각된다(차분 퍼징이 찾은 반례 — 뮤테이션 D28)
+        ("def w3(c):\n    global G0, G1, G3\n    G1 = None or G1\n    G3 = G1\n"
+         "    G1 = G4\ndef w4(c):\n    global G0, G2, G4\n    G4 = G2\n"
+         "    G0 = G3\n    G2 = get_dart()\n    if not G3:\n        return\n",
+         [(11, "not G3")]),
     ])
     def test_fires(self, src, want):
         assert dead_guards(src) == want, src
@@ -5095,6 +5130,20 @@ class TestScannerElseAndCycles:
         + "    use(*a)\n",
         "def outer():\n    @wrap\n    def use(d):\n        if d:\n            work()\n"
         + _ELSE2 + "    use(get_dart())\n",
+        # 모르는 메서드로 꺼낸 지역 컨테이너는 새어 나갔다고 본다
+        "def f():\n    ctx = {'d': get_dart()}\n    ctx.frob()\n    if ctx['d']:\n"
+        "        work()\n" + _ELSE,
+        # 보관소(모듈 전역)의 칸 else 는 보지 않는다 — 읽지 않은 모듈이 바꿀 수 있다
+        "CTX = {'d': get_dart()}\ndef f():\n    if CTX['d']:\n        work()\n" + _ELSE,
+        # 기본값이 클라이언트가 아니면 없는 칸은 실리지 않는다
+        "CTX = {}\ndef f():\n    if not CTX.get('d', make()):\n        return\n",
+        # 닫힌 세계 인자의 속성 — 넘긴 인스턴스의 속성이 None
+        _C_D + "class E:\n    def __init__(self):\n        self.d = None\n"
+        "def outer():\n    def use(o):\n        if o.d:\n            work()\n" + _ELSE2
+        + "    use(E())\n",
+        # 펼침이 넘긴 칸 뒤에 오면 덮였을지 모른다
+        "def outer(a):\n    def use(d=None):\n        if not d:\n            return\n"
+        "    use(**{'d': get_dart(), **a})\n",
         # 순환 — 바닥 없이 서로만 가리키면 값이 한 번도 안 담긴다
         "def w(c):\n    global D\n    D = D\ndef r():\n    if not D:\n        return\n",
         "def wa(c):\n    global A\n    A = B\ndef wb(c):\n    global B\n    B = A\n"
@@ -5105,7 +5154,11 @@ class TestScannerElseAndCycles:
         "    A = None\ndef r():\n    if not A:\n        return\n",
     ])
     def test_spares(self, src):
-        assert not [h for h in dead_guards(src)], src
+        # 공장 이름이 한 번도 안 나오면 스캐너가 그 모듈을 읽지도 않는다 — 반대
+        # 증거가 빈 픽스처가 되지 않게 import 를 붙여 반드시 읽힌다(#291)
+        src = "from bot.dart_client import get_dart\n" + src
+        r = scan({"m": src})
+        assert r["built"] == ["m"] and not r["hits"], (src, r["hits"])
 
 
 class TestDetailDiagnoseDartName:
