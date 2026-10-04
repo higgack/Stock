@@ -29147,16 +29147,32 @@ class TestBacklogObservability20260817:
         assert val is None and why == "미공시", (val, why)
         assert seen and seen[0][3] == "미공시", seen
 
-    def test_render_version_busts_the_full_quote_cache(self):
+    def test_render_version_busts_the_full_quote_cache(self, monkeypatch):
         """`/api/quote?full=1` 디스크 캐시는 TTL 4h 인데다 stale-while-
         revalidate 라 **아무리 오래된 파일도 먼저 서빙**한다 — 렌더러를 고쳐도
         옛 HTML 이 무기한 남는다(사용자 2026-08-17 '아직도 연간→분기'). 캐시
-        키가 렌더러 버전 상수를 참조해야 한 번 올리면 전부 무효화된다."""
+        키가 렌더러 버전 상수를 참조해야 한 번 올리면 전부 무효화된다.
+
+        2026-10-04 다시 씀(#222): 옛 판은 이름 조립 **소스 문자열**을 단언해
+        (#19) 이름에 DART 키 유무를 더하자(실수 #429 델타 리뷰 L1) 멀쩡한 배선을
+        틀렸다고 했다. 계약은 그대로 '버전을 올리면 이름이 바뀐다' 이고, 이제
+        값으로 잰다. 핸들러가 그 함수를 쓰는지는 AST 로(동작은
+        tests/test_dart_blindspots_20261004.py 의 E2E 가 잰다)."""
+        import ast
         import inspect
+        import textwrap
+
         from bot import dashboard, dashboard_server
         assert isinstance(dashboard._RENDER_VER, int)
+        a = dashboard_server._quote_cache_name("X", "full")
+        monkeypatch.setattr(dashboard, "_RENDER_VER", dashboard._RENDER_VER + 1)
+        b = dashboard_server._quote_cache_name("X", "full")
+        assert a != b and f"_v{dashboard._RENDER_VER}_" in b, (a, b)
+        fn = inspect.getsource(dashboard_server.DashboardHandler._handle_quote_api)
+        calls = {n.func.id for n in ast.walk(ast.parse(textwrap.dedent(fn)))
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_quote_cache_name" in calls, "핸들러가 캐시 이름 함수를 안 쓴다"
         src = inspect.getsource(dashboard_server)
-        assert 'f"{safe}_{kind}_v{_RENDER_VER}.json"' in src, "캐시키 미배선"
         assert "_full_v5.json" not in src and "_v5.json" not in src
 
     def test_doc_text_memo_is_capped_by_bytes_not_count(self):

@@ -47,6 +47,24 @@ from bot.dart_backlog import legacy_notice as _legnote
 from bot.dart_backlog import norm_miss_ticker as _norm
 
 
+# 원문을 한 건도 못 읽었는데 원천이 후보 **전부**에 '없다(013·014)' 고 답하지는
+# 않았다 — 일시 장애일 수 있다(그 후보에 원문이 있었는지는 모른다). '원문미제공'
+# (원천의 답, 영구)과 처방이 정반대다(#82). 형제 `production_format_probe` 의
+# '못받음' 과 같은 갈래(#38, 실수 #429 델타 리뷰 L2).
+MISS_UNHEARD = "원문못받음"
+
+
+def _no_text_reason(reps) -> str:
+    """원문을 한 건도 못 읽었을 때의 사유 — 원천의 답 없이 실패한 후보가
+    하나라도 있으면 `MISS_UNHEARD`, 아니면 종전대로 `diagnose("")`(원문미제공)."""
+    from bot.dart_backlog import diagnose
+    from bot.dart_feed import no_document_code
+    if any(r.get("rcept_no") and not no_document_code(r["rcept_no"])
+           for r in reps or ()):
+        return MISS_UNHEARD
+    return diagnose("")
+
+
 def _load_rows():
     """원장 → (현행 어휘 행, 전체 레코드, 옛 어휘 건수).
 
@@ -207,7 +225,8 @@ def per_quarter(ticker: str) -> int:
                   f"[{got['form']}]  원문 {len(text):,}자")
         else:
             det = diagnose_detail(text)
-            print(f"  {label:8s} {y}/{rc}  ❌ {diagnose(text)}"
+            why = diagnose(text) if text else _no_text_reason(reps)
+            print(f"  {label:8s} {y}/{rc}  ❌ {why}"
                   + (f" · {det}" if det else "")
                   + f"  원문 {len(text):,}자  rcept={rep['rcept_no']}")
             # ⚠️ 보고서가 '원문 확인' 으로 **여기**를 가리킨다 — 2026-10-02 까지
@@ -359,7 +378,8 @@ def _one(dart, ticker: str, n: int = 5):
         # 목록을 못 받아 아무것도 못 읽었으면 그 사유가 답이다 — `diagnose("")`
         # 는 '원문미제공' 이라 일시 장애가 원천 부재로 찍힌다(리뷰 F6).
         why = (got["form"] if got else
-               f"목록조회실패:{lf}" if lf and not text else diagnose(text))
+               f"목록조회실패:{lf}" if lf and not text else
+               _no_text_reason(reps) if not text else diagnose(text))
         out.append((label, got["value"] if got else None, why))
     return out
 
@@ -469,10 +489,17 @@ def explain(ticker: str) -> int:
                 if text:
                     break
         if not text:
-            # 목록을 못 받은 것을 '원문 없음' 으로 적지 않는다(리뷰 F6 · #82).
-            print(f"\n── {label} — "
-                  + (f"목록 조회 실패({lf}) — 원문이 없는 게 아니라 답을 못 "
-                     f"들었다" if lf else "원문 없음"))
+            # 목록을 못 받은 것 · 원문을 답 없이 못 받은 것을 '원문 없음' 으로
+            # 적지 않는다(리뷰 F6 · 델타 리뷰 L2 · #82).
+            if lf:
+                msg = (f"목록 조회 실패({lf}) — 원문이 없는 게 아니라 답을 못 "
+                       f"들었다")
+            elif _no_text_reason(reps) == MISS_UNHEARD:
+                msg = ("원문 못 받음 — 원천의 답(013·014) 없이 실패한 후보가 "
+                       "있다. 일시 장애일 수 있다 — 다시 돌려 볼 것")
+            else:
+                msg = "원문 없음"
+            print(f"\n── {label} — " + msg)
             continue
         got = parse_backlog(text)
         print(f"\n── {label} — "

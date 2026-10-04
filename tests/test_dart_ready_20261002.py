@@ -210,9 +210,11 @@ class TestKeylessEntryPoints:
 _FACTORIES = frozenset({"get_dart", "DartClient"})
 _DART_MOD = "bot.dart_client"
 # 호출 결과를 바꾸지 않는 장식 — 그 밖의 장식이 붙은 함수는 무엇을 돌려줄지
-# 모른다(감싼 함수가 None 을 줄 수 있다, 리뷰 F2).
-_TRANSPARENT_DECOS = frozenset({"staticmethod", "classmethod", "lru_cache",
-                                "cache"})
+# 모른다(감싼 함수가 None 을 줄 수 있다, 리뷰 F2). 이름 → 그 이름이 와야 하는
+# 곳(델타 리뷰 L4 — 이름만 같은 사용자 정의 `cache`·다른 라이브러리의
+# `lru_cache`·다시 묶은 `staticmethod` 는 아니다).
+_TRANSPARENT_DECOS = {"staticmethod": "builtins", "classmethod": "builtins",
+                      "lru_cache": "functools", "cache": "functools"}
 # 운반 판정 상한 — 메모가 살아 있으면 레포 전수가 수만 회다(실측은 아래 레포
 # 회귀가 단언한다). 넘으면 멈추고 실패한다 — 메모가 깨진 판정이 계속 도는 대신
 # (리뷰 L3 · 메모 없던 옛 판은 같은 이름을 30번 다시 묶는 함수에서 30초 안에 안
@@ -1073,9 +1075,16 @@ def _scan(sources):
 
     def shadowed(s, name):
         """그 이름이 공장이 아닌 다른 값으로 묶였나 — 인자·지역 대입 · 모듈의
-        import 아닌 대입."""
+        import 아닌 대입. 공장 import 가 바인딩에 **하나라도** 있으면 가린 게
+        아니다(델타 리뷰 M1 — 부정 판정은 갈래 하나라도: `try: from
+        bot.dart_client import get_dart` / `except: def get_dart(): …` 는 import
+        가 성공하는 갈래에서 키 없는 클라이언트를 준다. 옛 판은 공장 모듈을 같이
+        읽은 실행에서만 그걸 잡았다)."""
         h = holder(s, name)
         if h is None:
+            return False
+        if any(isinstance(v, tuple) and v[0] == "import" and v[1] == _DART_MOD
+               and v[2] in _FACTORIES for _sc, _ln, v in ev_name(h, name)):
             return False
         if h.kind != "module":
             return h.is_local(name)
@@ -1325,13 +1334,54 @@ def _scan(sources):
         return·raise). 결과를 바꿀 수 있는 장식이 붙었으면 믿지 않는다."""
         if not isinstance(e, ast.Call):
             return False
+        if isinstance(e.func, ast.Name) and not sole_binding(s, e.func.id):
+            return False
         if real_factory(s, e.func):
             return True
         t, _ = target(s, e.func, lazy=False)
         return (t is not None and id(t) in factory_fns
-                and all(_deco_name(d) in _TRANSPARENT_DECOS
+                and all(transparent_deco(t.parent, d)
                         for d in t.node.decorator_list)
                 and node(("SR", id(t)), lambda: surely_returns(t)))
+
+    def sole_binding(s, name):
+        """else 판정이 그 이름을 한 대상으로 해석해도 되나(델타 리뷰 M1). 이름이
+        사는 스코프의 바인딩이 둘 이상이면 — `try: from bot.dart_client import
+        get_dart` / `except: def get_dart(): return None` 같은 폴백 · 뒤의
+        재정의 · lambda · `global` 로 다시 묶는 함수 — 런타임에 어느 쪽이
+        묶일지 모른다(흐름을 보지 않는다 — 앞의 정의를 import 가 덮는 경우도
+        모른다고 본다, 놓치는 쪽). 같은 import 를 여러 갈래에 둔 것은 한
+        바인딩이다."""
+        h = holder(s, name)
+        if h is None:
+            return True
+        vals = [v for _sc, _ln, v in ev_name(h, name)]
+        return len(vals) <= 1 or all(
+            isinstance(v, tuple) and v[0] == "import" and v == vals[0]
+            for v in vals)
+
+    def transparent_deco(s, d):
+        """결과를 바꾸지 않는 장식인가 — 이름이 아니라 **해석**으로(델타 리뷰
+        L4). `staticmethod`·`classmethod` 는 어디서도 다시 묶지 않은 내장일
+        때만 · `lru_cache`·`cache` 는 functools 에서 온 것일 때만(`from
+        functools import …` · `functools.…`). 장식은 def 를 둔 스코프에서
+        평가되므로 s 는 그 스코프다."""
+        f = d.func if isinstance(d, ast.Call) else d
+        if isinstance(f, ast.Name):
+            want = _TRANSPARENT_DECOS.get(f.id)
+            if want is None:
+                return False
+            h = holder(s, f.id)
+            vals = [v for _sc, _ln, v in ev_name(h, f.id)] if h else []
+            if want == "builtins":
+                return not vals
+            return bool(vals) and all(v == ("import", want, f.id) for v in vals)
+        if isinstance(f, ast.Attribute):
+            b = _key(f.value)
+            want = _TRANSPARENT_DECOS.get(f.attr)
+            return (want is not None and b is not None
+                    and module_path(s, b) == want)
+        return False
 
     def surely_returns(t):
         # 제너레이터는 여기 오지 않는다 — `returns_client` 가 공장에서 뺀다(여기
@@ -2520,6 +2570,39 @@ class TestScannerTrustAndCycles:
         # S50: 부를 때 o 는 인자다 — 뒤에서 `C()` 로 다시 묶은 것은 아니다
         "class C:\n    def use(self, dart):\n        if not dart:\n"
         "            return\ndef f(o):\n    o.use(get_dart())\n    o = C()\n",
+        # ── 델타 리뷰 M1(2026-10-04) — 공장 import 와 같은 이름의 다른 바인딩이
+        # 같은 스코프에 섞이면 런타임에 어느 쪽이 묶일지 모른다(흐름을 안 본다):
+        # try/except 폴백 · 뒤의 재정의 · lambda · 앞의 정의(import 가 이겨도
+        # 놓치는 쪽) · 함수 안의 폴백. else 판정은 '언제나' 를 믿지 않는다 ──
+        "try:\n    from bot.dart_client import get_dart\nexcept Exception:\n"
+        "    def get_dart():\n        return None\ndef f():\n    d = get_dart()\n"
+        + _IF_D,
+        "from bot.dart_client import get_dart\ndef get_dart():\n    return None\n"
+        "def f():\n    d = get_dart()\n" + _IF_D,
+        "from bot.dart_client import get_dart\nget_dart = lambda: None\n"
+        "def f():\n    d = get_dart()\n" + _IF_D,
+        "def get_dart():\n    return None\nfrom bot.dart_client import get_dart\n"
+        "def f():\n    d = get_dart()\n" + _IF_D,
+        "def f():\n    try:\n        from bot.dart_client import get_dart\n"
+        "    except Exception:\n        get_dart = lambda: None\n"
+        "    d = get_dart()\n" + _IF_D,
+        "from bot.dart_client import get_dart\ndef reset():\n    global get_dart\n"
+        "    get_dart = lambda: None\ndef f():\n    d = get_dart()\n" + _IF_D,
+        # ── 델타 리뷰 L4 — 장식도 이름이 아니라 해석으로: 사용자 정의 `cache` ·
+        # 다른 라이브러리의 `cache`/`lru_cache` · 다시 묶은 `staticmethod` 는
+        # 감싼 함수가 무엇을 돌려줄지 모른다 ──
+        "from mylib import cache\n@cache\ndef mk():\n    return get_dart()\n"
+        "def use():\n    d = mk()\n" + _IF_D,
+        "def cache(fn):\n    def w(*a):\n        return None\n    return w\n"
+        "@cache\ndef mk():\n    return get_dart()\ndef use():\n    d = mk()\n"
+        + _IF_D,
+        "from mylib import lru_cache\n@lru_cache(maxsize=None)\ndef mk():\n"
+        "    return get_dart()\ndef use():\n    d = mk()\n" + _IF_D,
+        "staticmethod = make_wrapper()\nclass K:\n    @staticmethod\n"
+        "    def mk():\n        return get_dart()\ndef use():\n    d = K.mk()\n"
+        + _IF_D,
+        "import mylib\n@mylib.cache\ndef mk():\n    return get_dart()\n"
+        "def use():\n    d = mk()\n" + _IF_D,
     ])
     def test_spares_what_the_promise_cannot_cover(self, src):
         assert not dead_guards(src), src
@@ -2607,9 +2690,54 @@ class TestScannerTrustAndCycles:
         ("def f(x=None):\n    d = get_dart()\n    if not (x and not d):\n"
          "        log('x 없음')\n    work(x)\ndef g():\n    f(get_dart())\n",
          (3, "not (x and (not d))")),
+        # ── 델타 리뷰 M1 의 반대 증거 — 부정 판정은 갈래 하나라도: import 가
+        # 성공하는 갈래에선 키 없는 클라이언트가 와서 `not d` 가 그 갈래의 '키
+        # 없음' 을 못 잡는다(고치는 법은 `dart_ready` — None 도 받는다). 공장
+        # 모듈을 안 읽은 실행도 같은 답이어야 한다(옛 판은 읽었을 때만 잡았다) ──
+        ("try:\n    from bot.dart_client import get_dart\nexcept Exception:\n"
+         "    def get_dart():\n        return None\ndef f():\n    d = get_dart()\n"
+         "    if not d:\n        log('키 없음')\n", (8, "not d")),
+        ("def f():\n    try:\n        from bot.dart_client import get_dart\n"
+         "    except Exception:\n        get_dart = lambda: None\n"
+         "    d = get_dart()\n    if not d:\n        log('키 없음')\n",
+         (7, "not d")),
+        # 같은 import 를 두 갈래에 둔 것은 한 바인딩이다(else 도 잡는다)
+        ("if X:\n    from bot.dart_client import get_dart\nelse:\n"
+         "    from bot.dart_client import get_dart\ndef f():\n    d = get_dart()\n"
+         + _IF_D, (7, "d → else")),
+        # L4 의 반대 증거 — functools 에서 온 `cache` 는 결과를 바꾸지 않는다
+        ("from functools import cache\n@cache\ndef mk():\n    return get_dart()\n"
+         "def use():\n    d = mk()\n" + _IF_D, (7, "d → else")),
     ])
     def test_fires_on_the_real_shapes(self, src, want):
         assert dead_guards(src) == [want], src
+
+    def test_mixed_binding_with_the_factory_module_read(self):
+        """델타 리뷰 M1 — 실제 레포 스캔처럼 `bot.dart_client` 를 같이 읽으면
+        이름이 그 import 로 해석된다. else 판정은 그 해석을 믿지 않고(폴백이 섞인
+        이름) · 부정 판정은 잡는다(갈래 하나라도). 공장이 아닌 도우미도 같다 —
+        폴백이 섞이면 else 는 믿지 않고, 섞이지 않으면 잡는다(반대 증거)."""
+        dc = ("_one = None\nclass DartClient:\n    def __init__(self, k=None):\n"
+              "        self.api_key = k\ndef get_dart():\n    global _one\n"
+              "    if _one is None:\n        _one = DartClient()\n    return _one\n")
+        fb = ("try:\n    from bot.dart_client import get_dart\n"
+              "except Exception:\n    def get_dart():\n        return None\n")
+        r = scan({"bot.dart_client": dc,
+                  "bot.user": fb + "def f():\n    d = get_dart()\n" + _IF_D})
+        assert r["hits"] == [], r
+        r = scan({"bot.dart_client": dc,
+                  "bot.user": fb + "def f():\n    d = get_dart()\n"
+                  "    if not d:\n        log('키 없음')\n"})
+        assert r["hits"] == [("bot.user", 8, "not d")], r
+        mk = "def mk():\n    return get_dart()\n"
+        mixed = ("try:\n    from pkg.helpers import mk\nexcept Exception:\n"
+                 "    def mk():\n        return None\ndef f():\n    d = mk()\n"
+                 + _IF_D)
+        r = scan({"pkg.helpers": mk, "pkg.u": mixed})
+        assert r["hits"] == [], r
+        r = scan({"pkg.helpers": mk, "pkg.u": "from pkg.helpers import mk\n"
+                  "def f():\n    d = mk()\n" + _IF_D})
+        assert r["hits"] == [("pkg.u", 4, "d → else")], r
 
     @pytest.mark.parametrize("srcs", [
         {"pkg.h": _H_ELSE, "pkg.r": "import pkg.h\ndef reset():\n"

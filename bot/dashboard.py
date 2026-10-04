@@ -4268,7 +4268,8 @@ _PER_SHARE_ITEMS = frozenset({
 })
 
 # ⚠️ **렌더러 버전.** `/api/quote?full=1` 의 디스크 캐시 키에 들어간다
-# (`{ticker}_full_v{N}.json`). 그 캐시는 TTL 4h 인데다 stale-while-revalidate
+# (`{ticker}_full_v{N}_k{0|1}.json` — `dashboard_server._quote_cache_name`, 끝은
+# DART 키 유무). 그 캐시는 TTL 4h 인데다 stale-while-revalidate
 # 라 **아무리 오래된 파일도 먼저 서빙**한다 — 렌더 로직을 고쳐도 옛 HTML 이
 # 계속 나오는 이유다(사용자 2026-08-17 '아직도 연간→분기 순서인 게 있다').
 # 표 순서·포맷·섹션 구성 등 **화면 산출물이 바뀌는 변경을 하면 반드시 올린다.**
@@ -4865,8 +4866,13 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             clear_keyless(si["kr"], "financials")
         elif _was_keyless:
             # 키로 다시 물었는데 빈손 — 그 사실을 기억하고(F3) '키 없음' 기록은
-            # 지운다(F7). 선행 PER·BPS 재료(아래)는 재무가 있을 때만 쓰이므로
-            # 받지 않는다(키 없이 만든 빈 스냅샷이 아니면 애초에 여기 안 온다).
+            # 지운다(F7). 아래 보강(선행 PER·배당 재료 `naver_val` · BPS 분모)은
+            # 받지 않는다 — 재무가 없는 스냅샷은 키 기록이 없을 때도 위에서 바로
+            # 돌아가 그 보강을 받지 않았으므로 같은 화면으로 둔다. `naver_val` 은
+            # 재무 없이도 선행 EPS·PER·배당수익률에 쓰이지만(델타 리뷰 L3 — 옛
+            # 주석은 '재무가 있을 때만 쓰인다' 고 적었다), 재무 없는 스냅샷에
+            # 그걸 붙이는 것은 이 갈래의 일이 아니다. 키 없이 만든 빈 스냅샷이
+            # 아니면 애초에 여기 안 온다.
             import time as _time
             _KR_FIN_KEYED_EMPTY[ticker] = _time.time()
             clear_keyless(si.setdefault("kr", {}), "financials")
@@ -4999,7 +5005,9 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                         kr["disclosures"] = disclosures
                     if not disclosures and not dart_ready(dart):
                         # 공시 탭이 빈칸의 사유를 말한다(#43) — **이 렌더가 방금**
-                        # 키 없이 물은 빈손이다(저장되지 않는다). 공시 칸에만
+                        # 키 없이 물은 빈손이다(스냅샷엔 안 쓴다 — 이 렌더 본문을
+                        # 굽는 `/api/quote` 캐시는 키 유무로 이름이 갈린다,
+                        # `dashboard_server._quote_cache_name`). 공시 칸에만
                         # 적는다 — 스냅샷 전체에 적으면 키로 받아 정말 빈 다른
                         # 칸까지 '키 없음' 이 된다(실수 #429 리뷰 F7).
                         mark_keyless(kr, "disclosures", "now")

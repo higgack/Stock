@@ -1317,6 +1317,22 @@ class TestKeylessRecollectMemo:
             comp = _pane(_panes(si, "456789.KQ"), "si-company")
             assert "DART_API_KEY" not in comp, comp
 
+    def test_stale_schema_with_financials_is_not_remembered(self, calls):
+        """델타 리뷰 생존 변형 1(`elif _was_keyless:` → `elif True:`) — 재무가
+        **있는** 스냅샷이 스키마만 낡아 다시 받았는데 빈손이면 그건 키 없이 만든
+        빈 스냅샷이 아니다. 기억하지 않고(다음 렌더가 다시 묻는다) 아래 보강
+        (선행 PER·BPS 재료)도 종전대로 받는다. 저장된 재무는 그대로다."""
+        import copy
+
+        import bot.dashboard as d
+        si = copy.deepcopy({"kr": {"financials": {"매출": 1.0e12},
+                                   "financials_ver": 0, "flow": {"x": 1}}})
+        d._ensure_detail_enrichment("456789.KQ", si)
+        assert calls["fin"] >= 1, "낡은 스키마인데 다시 묻지 않았다"
+        assert d._KR_FIN_KEYED_EMPTY == {}, "키 없이 만든 빈 스냅샷으로 기억했다"
+        assert calls["extra"] >= 1, "보강(선행 PER·BPS 재료)을 건너뛰었다"
+        assert si["kr"]["financials"] == {"매출": 1.0e12}
+
 
 # ── 리뷰 F4: 원천이 답한 013·014 는 다른 프로세스도 읽는다 ──────────────────
 class TestNoDocAcrossProcesses:
@@ -1468,6 +1484,47 @@ class TestNoDocAcrossProcesses:
         assert ent[2:] == ["014"], ent
         assert ent[0] - time.time() > 11 * 3600, "014 의 12시간 쿨다운이 아니다"
 
+    def test_this_process_answer_comes_first(self, df):
+        """델타 리뷰 생존 변형 2 — 이 프로세스가 방금 들은 답이 다른 프로세스가
+        전에 디스크에 적은 답보다 먼저다(독스트링의 '메모리 다음 디스크' — 순서를
+        뒤집어도 전부 통과했다). 원천의 답이 바뀌었으면 새 답을 읽는다."""
+        df._doc_fail_mark("R", code="014")
+        df._DOC_NO_FILE["R"] = "013"
+        assert df.no_document_code("R") == "013"
+
+    def test_feed_enrich_writes_013_with_its_own_cooldown(self, df,
+                                                          monkeypatch):
+        """델타 리뷰 생존 변형 3(`_nd = no_document_code(…) or "014"` →
+        `_nd = "014"`) — 피드가 들은 013 은 013 으로(2시간) 남아야 한다. 014 로
+        덮으면 정정본으로 대체됐을 수 있는 접수번호를 12시간 막는다."""
+        import json
+        import time
+        _013 = ("<result><status>013</status><message>조회된 데이타가 "
+                "없습니다</message></result>").encode("utf-8")
+
+        class _R:
+            content, text, status_code = _013, "", 200
+        monkeypatch.setattr(df.requests, "get", lambda *a, **k: _R())
+        monkeypatch.setattr(df, "_dart_api_key", lambda: _KEY)
+        monkeypatch.setattr(df, "load_all_archives", lambda days_back=5: {})
+        monkeypatch.setattr(df, "is_parse_target", lambda it: True)
+        monkeypatch.setattr(df, "_budget_today", lambda: 0)
+        monkeypatch.setattr(df, "_budget_add", lambda n=1: 0)
+        monkeypatch.setattr(df, "_fetch_viewer_text", lambda *a, **k: None)
+
+        def extract(report_nm, rcept_no, corp_code, api_key):
+            df._fetch_doc_text(rcept_no, api_key, raw_markup=True)
+            return None
+        monkeypatch.setattr(df, "_extract_detail", extract)
+        item = {"rcept_no": "C013", "report_nm": "x", "corp_code": "1",
+                "category": "기타"}
+        df.enrich_disclosures([item])
+        assert item["detail"] == [df.no_document_reason_line("013")], item
+        ent = json.loads(df._DOC_FAIL.read_text(encoding="utf-8"))["C013"]
+        assert ent[2:] == ["013"], ent
+        left = ent[0] - time.time()
+        assert 1.5 * 3600 < left < 2.5 * 3600, f"013 의 2시간 쿨다운이 아니다: {left}"
+
 
 # ── 리뷰 F6: 형제 진단도 '목록을 못 받음' 을 '원문 없음' 으로 적지 않는다 ────
 class TestSiblingDiagnosticsReadListFailure:
@@ -1557,3 +1614,153 @@ class TestSiblingDiagnosticsReadListFailure:
         line = next(ln for ln in out.splitlines() if ln.startswith("판정 분포:"))
         assert f"'{want}': 1" in line, line
         assert ("답을 못 들은 곳" in out) is (want == "못받음"), out
+
+    @pytest.mark.parametrize("answered", [(), ("C",)])
+    def test_unheard_document_is_not_reported_as_absent(self, wired, capsys,
+                                                         answered):
+        """델타 리뷰 L2 — 목록은 받았는데 원문이 원천의 답(013·014) 없이 안 왔다
+        (일시 장애일 수 있다 — 그 후보에 원문이 있었는지는 모른다). 세 출력
+        (분기별 · 스윕 · --explain)이 그걸 '원문미제공' 으로 적으면 후보 줄(✗못
+        받음)과 두 줄 아래 요약이 서로 다른 말을 한다(#82). 한 후보만 답이 없어도
+        같다 — 형제 production_format_probe 의 '못받음' 과 같은 갈래(#38)."""
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.scripts.backlog_misses as bm
+        wired["reps"] = dc.PeriodicReports([{"rcept_no": "C"},
+                                            {"rcept_no": "O"}])
+        for rn in answered:
+            df._DOC_NO_FILE[rn] = "014"
+        bm.per_quarter("005930.KS")
+        out = capsys.readouterr().out
+        assert "O  ✗못 받음(원천의 답 없음)" in out, out
+        summary = next(ln for ln in out.splitlines()
+                       if "26.2Q" in ln and "❌" in ln)
+        assert "원문못받음" in summary and "원문미제공" not in summary, summary
+        assert bm._one(dc.get_dart(), "005930")[0][2] == "원문못받음"
+        bm.explain("005930.KS")
+        assert "26.2Q — 원문 못 받음" in capsys.readouterr().out
+
+    def test_answered_document_stays_absent(self, wired, capsys):
+        """반대 증거 — 원천이 후보 **전부**에 014 로 답했으면 그대로 '원문미제공'."""
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.scripts.backlog_misses as bm
+        wired["reps"] = dc.PeriodicReports([{"rcept_no": "C"}])
+        df._DOC_NO_FILE["C"] = "014"
+        bm.per_quarter("005930.KS")
+        out = capsys.readouterr().out
+        summary = next(ln for ln in out.splitlines()
+                       if "26.2Q" in ln and "❌" in ln)
+        assert "원문미제공" in summary, summary
+        assert bm._one(dc.get_dart(), "005930")[0][2] == "원문미제공"
+        bm.explain("005930.KS")
+        assert "26.2Q — 원문 없음" in capsys.readouterr().out
+
+    def test_partial_list_with_a_read_document_is_judged_by_the_document(
+            self, wired, capsys, monkeypatch):
+        """델타 리뷰 생존 변형 4·6 — 목록 일부를 못 받았어도 읽은 원문이 있으면
+        사유는 그 원문의 판정이다(`if lf and not text` 의 `not text` · 스윕).
+        그리고 분기별 출력은 '후보가 전부가 아닐 수 있다' 를 먼저 말한다."""
+        import bot.dart_backlog as db
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.scripts.backlog_misses as bm
+        wired["reps"] = dc.PeriodicReports([{"rcept_no": "R1"}],
+                                           failed="목록 조회 실패(Timeout)")
+        text = "회사 개요와 사업 내용 — 이 원문에는 잔고 표가 없다." * 3
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda *a, **k: text)
+        assert bm._one(dc.get_dart(), "005930")[0][2] == db.diagnose(text)
+        assert db.diagnose(text) != "원문미제공"
+        bm.per_quarter("005930.KS")
+        out = capsys.readouterr().out
+        assert "⚠️ 목록 일부를 못 받았다(목록 조회 실패(Timeout))" in out, out
+
+    def test_production_probe_unheard_plus_read_markup(self, wired, capsys,
+                                                       monkeypatch):
+        """델타 리뷰 생존 변형 5(`if markup is None and unheard:` → `if
+        unheard:`) — 최신 분기 원문은 답 없이 실패했어도 옛 분기 원문을
+        읽었으면 판정은 그 원문의 것이다('못받음' 이 아니다). 이 프로브는 분기마다
+        **첫 후보만** 보고 분기를 거슬러 걷는다 — 픽스처도 그 걸음대로(#155)."""
+        import bot.dart_client as dc
+        import bot.dart_feed as df
+        import bot.scripts.production_format_probe as pf
+        monkeypatch.setattr(pf, "_latest_quarters", lambda d, t: [
+            {"year": 2026, "reprt_code": "11013", "label": "26.1Q",
+             "financials": {}},
+            {"year": 2026, "reprt_code": "11012", "label": "26.2Q",
+             "financials": {}}])
+        monkeypatch.setattr(dc.DartClient, "find_periodic_reports",
+                            lambda self, tk, y, rc: dc.PeriodicReports(
+                                [{"rcept_no": "R1" if rc == "11012" else "R2"}]))
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda rn, *a, **k: (
+            "<P>본문은 있지만 생산 절은 없다</P>" if rn == "R2" else None))
+        assert pf.main(["005930", "--skip-backlog"]) == 0
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if ln.startswith("판정 분포:"))
+        assert "'못받음'" not in line, line
+        assert "답을 못 들은 곳" not in out, out
+
+
+class TestQuoteCacheSplitsByKey:
+    """델타 리뷰 L1 — `/api/quote?full=1` 디스크 캐시(4시간, 그 뒤엔
+    stale-while-revalidate)가 키 없이 그린 본문의 '지금 키 없음' 문장을 키를
+    넣고 재시작한 뒤에도 서빙했다(수동 🔄 도 못 우회 — 신선 캐시 반환이 force
+    보다 먼저다). 캐시 이름에 키 유무를 넣어 키가 생긴 첫 조회가 새로 그린다."""
+
+    @pytest.fixture
+    def server(self, monkeypatch, tmp_path):
+        import bot.dart_client as dc
+        import bot.dashboard as d
+        import bot.dashboard_server as ds
+        monkeypatch.setattr(ds, "_ARCHIVE_ROOT", tmp_path / "archive")
+        state = {"cli": dc.DartClient(""), "renders": 0}
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: state["cli"])
+
+        def build(ticker, full=False, force_fresh=False):
+            state["renders"] += 1
+            return {"pane": "키 있음" if dc.dart_ready(dc.get_dart())
+                    else "DART_API_KEY 없음 — 공시 목록을 받지 못했습니다"}
+        monkeypatch.setattr(d, "build_live_quote", build)
+
+        def get(full=True):
+            h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+            h.path = "/api/quote?ticker=005930.KS" + ("&full=1" if full else "")
+            got = {}
+            h._reply_json = lambda status, body: got.update(body)
+            h._handle_quote_api()
+            return got.get("quote", {}).get("pane")
+        state["get"] = get
+        return state
+
+    def test_key_arriving_renders_fresh(self, server):
+        import bot.dart_client as dc
+        assert server["get"]().startswith("DART_API_KEY 없음")
+        server["cli"] = dc.DartClient(_KEY)
+        assert server["get"]() == "키 있음", "키가 생겼는데 키 없을 때의 본문을 서빙했다"
+        assert server["renders"] == 2
+
+    def test_cache_still_serves_within_the_same_key_state(self, server):
+        """반대 증거 — 캐시는 계속 캐시다(같은 키 상태면 다시 그리지 않는다)."""
+        import bot.dart_client as dc
+        server["get"]()
+        server["get"]()
+        assert server["renders"] == 1
+        server["cli"] = dc.DartClient(_KEY)
+        server["get"]()
+        server["cli"] = dc.DartClient("")
+        assert server["get"]().startswith("DART_API_KEY 없음")
+        assert server["renders"] == 2, "키 없는 본문의 캐시가 사라졌다"
+
+    def test_name_carries_render_version_and_key_state(self, monkeypatch):
+        """이름이 렌더러 버전(옛 회귀의 계약)과 키 유무를 둘 다 싣는다."""
+        import bot.dart_client as dc
+        import bot.dashboard as d
+        import bot.dashboard_server as ds
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: dc.DartClient(""))
+        n0 = ds._quote_cache_name("005930_KS", "full")
+        monkeypatch.setattr(d, "_RENDER_VER", 999)
+        n1 = ds._quote_cache_name("005930_KS", "full")
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: dc.DartClient(_KEY))
+        n2 = ds._quote_cache_name("005930_KS", "full")
+        assert len({n0, n1, n2}) == 3, (n0, n1, n2)
+        assert "v999" in n1 and n1.startswith("005930_KS_full_")
