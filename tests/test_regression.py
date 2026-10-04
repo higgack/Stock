@@ -56256,8 +56256,18 @@ class TestTradeWholeInboxSilence20260910:
     def test_whole_inbox_silence_is_reported_separately(self):
         from datetime import date
         from trade.dashboard import inbox_silence_notes
-        quiet = inbox_silence_notes({"inbox_newest": "2026-08-28T16:36"}, today=date(2026, 9, 10))
+        # 운영 inbox 의 `date` 는 텔레그램이 준 **UTC aware** 문자열이다(`trade/bot.py`
+        # 가 `post.date.isoformat()` 로 쓴다). 날은 KST 로 센다(#432 · 규칙 10a) —
+        # 06:36 UTC = 15:36 KST 라 같은 날이고 13일째다.
+        quiet = inbox_silence_notes({"inbox_newest": "2026-08-28T06:36:00+00:00"},
+                                    today=date(2026, 9, 10))
         assert len(quiet) == 1 and "13일째" in quiet[0] and "중계 리스너" in quiet[0]
+        # 16:36 UTC 는 KST 로 **다음 날** 01:36 이다. 옛 판은 앞 10자(= UTC 날)를 써서
+        # 이 값도 13일째·마지막 08-28 이라 했다 — 이 테스트가 그 옛 동작을 못박고 있어
+        # 전체 회귀에서만 빨간불이었다(#222 계약이 바뀌면 다시 쓴다).
+        late = inbox_silence_notes({"inbox_newest": "2026-08-28T16:36:00+00:00"},
+                                   today=date(2026, 9, 10))
+        assert len(late) == 1 and "12일째" in late[0] and "2026-08-29" in late[0], late
         # 정상 정적(하루 이틀)은 말하지 않는다 — 늘 뜨는 줄은 안 재는 것과 같다(#25·#260)
         assert inbox_silence_notes({"inbox_newest": "2026-09-09T10:00"}, today=date(2026, 9, 10)) == []
         assert inbox_silence_notes({}) == []                      # 재료 없으면 침묵(#54)

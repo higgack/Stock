@@ -80,9 +80,12 @@ def test_beon_forward_aborts_before_a_wait_that_would_outlive_the_unit(monkeypat
     반대 증거: 예산이 넉넉하면 기다렸다가 다시 보낸다."""
     import asyncio
     import os
-    os.environ.setdefault("TRADE_TELETHON_API_ID", "0")
-    os.environ.setdefault("TRADE_TELETHON_API_HASH", "stub")
-    os.environ.setdefault("TRADE_CHANNEL_CHAT_IDS", "-1000000000000")
+    # 모듈이 import 시점에 읽는 값 — 이미 있으면 그대로 두고, 없을 때만 이 테스트 동안 넣는다
+    # (`os.environ.setdefault` 는 세션 끝까지 남아 뒤 테스트로 샌다).
+    for k, v in (("TRADE_TELETHON_API_ID", "0"), ("TRADE_TELETHON_API_HASH", "stub"),
+                 ("TRADE_CHANNEL_CHAT_IDS", "-1000000000000")):
+        if k not in os.environ:
+            monkeypatch.setenv(k, v)
     from telethon.errors import FloodWaitError
     from trade.scripts import backfill_beon as bb
 
