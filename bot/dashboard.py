@@ -5022,27 +5022,15 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     if tkr.endswith((".KS", ".KQ")):
         kr = si.setdefault("kr", {})
         if not kr.get("flow"):
+            # 스냅샷(stock_snapshot._t_flow)과 **같은 함수** — 두 사본이 둘 다 없는
+            # 메서드(`_ready`)를 불러 KIS 칸이 한 번도 안 채워졌다(실수 #433).
             try:
-                from bot.kis_client import KisClient
-                kis = KisClient()
-                if kis._ready():
-                    flow_data: dict = {}
-                    inv = kis.get_investor_flow(ticker)
-                    if inv:
-                        flow_data["investor_flow"] = inv
-                    credit = kis.get_credit_short_balance(ticker)
-                    if credit:
-                        flow_data["credit"] = credit
-                    short = kis.get_short_sale(ticker)
-                    if short:
-                        flow_data["short_sale"] = short
-                    program = kis.get_program_trade(ticker)
-                    if program:
-                        flow_data["program"] = program
-                    if flow_data:
-                        kr["flow"] = flow_data
+                from bot.kis_client import collect_kis_flow
+                flow_data = collect_kis_flow(ticker)
+                if flow_data:
+                    kr["flow"] = flow_data
             except Exception as exc:
-                log.debug("_ensure_detail_enrichment: KR flow %s: %s", ticker, exc)
+                log.warning("_ensure_detail_enrichment: KR flow %s: %s", ticker, exc)
             try:
                 from bot.pykrx_client import (
                     get_kr_foreign_ownership_trend,
@@ -8258,39 +8246,61 @@ def _render_stock_info_html(rec: dict) -> str:
     flow_pane = ""
     kr_flow = kr.get("flow", {})
     if kr_flow:
-        inv = kr_flow.get("investor_flow", {})
-        # Investor flow table (today + 5d)
+        # KIS 칸은 판(schema)이 맞는 것만 그린다 — 옛 모양은 수량(주)을 만원으로 읽던
+        # 판이라 그리면 틀린 숫자다. 날짜는 원천이 준 영업일이다(실수 #433).
+        from bot.kis_client import _FLOW_SCHEMA as _KIS_SCHEMA
+
+        def _kis_ok(d):
+            return isinstance(d, dict) and d.get("schema") == _KIS_SCHEMA
+
+        def _signed_td(text, v):
+            color = "#26a69a" if v > 0 else "#e2574c" if v < 0 else ""
+            style = f' style="color:{color}"' if color else ""
+            return f'<td class="num"{style}>{text}</td>'
+
+        def _eok_td(v):                      # 원 → 억
+            if v is None:
+                return '<td class="num">—</td>'
+            return _signed_td(f"{'+' if v > 0 else ''}{v / 1e8:,.1f}억", v)
+
+        def _shr_td(v):
+            if v is None:
+                return '<td class="num">—</td>'
+            return _signed_td(f"{'+' if v > 0 else ''}{int(v):,}주", v)
+
+        inv = kr_flow.get("investor_flow") or {}
         inv_table = ""
-        if inv:
-            today = inv.get("today", {})
-            five_d = inv.get("5d", {})
-            def _flow_cell(v):
-                if v is None:
-                    return '<td class="num">—</td>'
-                val = int(v)
-                color = "#26a69a" if val > 0 else "#e2574c" if val < 0 else ""
-                sign = "+" if val > 0 else ""
-                style = f' style="color:{color}"' if color else ""
-                return f'<td class="num"{style}>{sign}{val:,}만</td>'
+        if _kis_ok(inv):
+            lat = inv.get("latest") or {}
+            win = inv.get("window") or {}
+            qty = lat.get("qty") or {}
+            won = lat.get("won") or {}
+            wwon = win.get("won") or {}
+            unit_ok = bool(inv.get("unit_won"))
+            ld = esc(str(lat.get("date") or "?"))
+            hdr = f'<th>구분</th><th class="num">{ld} 수량</th>'
+            if unit_ok:
+                hdr += (f'<th class="num">{ld} 금액</th>'
+                        f'<th class="num">{int(win.get("days") or 0)}거래일 누적<br>'
+                        f'{esc(str(win.get("from")))}~{esc(str(win.get("to")))}</th>')
+            body = ""
+            for label, k in (("외국인", "foreign"), ("기관", "institution"), ("개인", "individual")):
+                body += f"<tr><td>{label}</td>{_shr_td(qty.get(k))}"
+                if unit_ok:
+                    body += f"{_eok_td(won.get(k))}{_eok_td(wwon.get(k))}"
+                body += "</tr>\n"
+            notes = []
+            if not unit_ok:
+                notes.append("금액 단위를 확정하지 못해 금액·누적은 싣지 않았습니다 — "
+                             + esc(str(inv.get("unit_note") or "사유 미상")))
+            if inv.get("pending"):
+                notes.append(f"원천이 아직 채우지 않은 최근 {int(inv['pending'])}일은 뺐습니다"
+                             "(당일 투자자별 수급은 장 종료 후 제공) — 그래서 기준일이 전 거래일일 수 있습니다.")
+            note_html = "".join(f'<div class="si-note">{n}</div>' for n in notes)
             inv_table = f"""<div class="si-section">
-      <div class="si-section-title">투자자별 순매수</div>
-      <table class="si-table"><thead><tr><th>구분</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>
-        <tr><td>외국인</td>{_flow_cell(today.get("foreign"))}{_flow_cell(five_d.get("foreign"))}</tr>
-        <tr><td>기관</td>{_flow_cell(today.get("institution"))}{_flow_cell(five_d.get("institution"))}</tr>
-        <tr><td>개인</td>{_flow_cell(today.get("individual"))}{_flow_cell(five_d.get("individual"))}</tr>
-      </tbody></table>
-    </div>"""
-            # Institution breakdown
-            brk = inv.get("inst_breakdown", {})
-            if brk:
-                brk_rows = ""
-                for label, key in (("연기금", "pension"), ("투신", "trust"), ("은행", "bank"),
-                                   ("보험", "insurance"), ("사모", "private_eq"), ("기타법인", "etc_inst")):
-                    v = brk.get(key)
-                    brk_rows += f"<tr><td>{esc(label)}</td>{_flow_cell(v)}</tr>\n"
-                inv_table += f"""<div class="si-section">
-      <div class="si-section-title">기관 세부 (5일 누적)</div>
-      <table class="si-table"><thead><tr><th>기관</th><th class="num">순매수 (5일)</th></tr></thead><tbody>{brk_rows}</tbody></table>
+      <div class="si-section-title">투자자별 순매수 (KIS)</div>
+      <table class="si-table"><thead><tr>{hdr}</tr></thead><tbody>{body}</tbody></table>
+      {note_html}
     </div>"""
 
         # Detailed multi-period investor flow (pykrx detail)
@@ -8323,43 +8333,46 @@ def _render_stock_info_html(rec: dict) -> str:
             except Exception as exc:
                 log.info("detail: investor detail %s: %s", ticker, exc)
 
-        # Credit / Short / Program in a grid
-        credit = kr_flow.get("credit", {})
-        short_sale = kr_flow.get("short_sale", {})
-        program = kr_flow.get("program", {})
+        # 신용·공매도·프로그램 (KIS) — 칸마다 기준일이 다를 수 있어 기준일 열을 둔다.
+        credit = kr_flow.get("credit") or {}
+        short_sale = kr_flow.get("short_sale") or {}
+        program = kr_flow.get("program") or {}
         side_tables = ""
-        if credit or short_sale:
-            cs_rows = ""
+        cs_rows = ""
+        if _kis_ok(credit):
+            cd = esc(str(credit.get("asof") or "?"))
             if credit.get("credit_balance_pct") is not None:
-                cs_rows += f'<tr><td>신용잔고율</td><td class="num">{credit["credit_balance_pct"]:.2f}%</td></tr>\n'
+                cs_rows += f'<tr><td>신용잔고율</td><td class="num">{cd}</td><td class="num">{credit["credit_balance_pct"]:.2f}%</td></tr>\n'
             if credit.get("credit_balance_shares"):
-                cs_rows += f'<tr><td>신용잔고 (주)</td><td class="num">{int(credit["credit_balance_shares"]):,}</td></tr>\n'
-            if credit.get("loan_balance_shares"):
-                cs_rows += f'<tr><td>대차잔고 (주)</td><td class="num">{int(credit["loan_balance_shares"]):,}</td></tr>\n'
+                cs_rows += f'<tr><td>신용잔고 (주)</td><td class="num">{cd}</td><td class="num">{int(credit["credit_balance_shares"]):,}</td></tr>\n'
+            if credit.get("credit_short_shares"):
+                cs_rows += f'<tr><td>대주잔고 (신용 매도, 주)</td><td class="num">{cd}</td><td class="num">{int(credit["credit_short_shares"]):,}</td></tr>\n'
+        if _kis_ok(short_sale):
+            sd = esc(str(short_sale.get("asof") or "?"))
             if short_sale.get("short_ratio_pct") is not None:
-                cs_rows += f'<tr><td>공매도 비율</td><td class="num">{short_sale["short_ratio_pct"]:.2f}%</td></tr>\n'
+                cs_rows += f'<tr><td>공매도 비율 (거래량 대비)</td><td class="num">{sd}</td><td class="num">{short_sale["short_ratio_pct"]:.2f}%</td></tr>\n'
             if short_sale.get("short_qty"):
-                cs_rows += f'<tr><td>공매도 수량</td><td class="num">{int(short_sale["short_qty"]):,}</td></tr>\n'
-            if cs_rows:
-                side_tables += f"""<div class="si-section">
-      <div class="si-section-title">신용·공매도</div>
-      <table class="si-table"><thead><tr><th>항목</th><th class="num">값</th></tr></thead><tbody>{cs_rows}</tbody></table>
+                cs_rows += f'<tr><td>공매도 수량 (주)</td><td class="num">{sd}</td><td class="num">{int(short_sale["short_qty"]):,}</td></tr>\n'
+        if cs_rows:
+            side_tables += f"""<div class="si-section">
+      <div class="si-section-title">신용·공매도 (KIS)</div>
+      <table class="si-table"><thead><tr><th>항목</th><th class="num">기준일</th><th class="num">값</th></tr></thead><tbody>{cs_rows}</tbody></table>
     </div>"""
 
-        if program:
+        if _kis_ok(program) and program.get("unit_won"):
+            plat = program.get("latest") or {}
+            pwin = program.get("window") or {}
             pgm_rows = ""
-            for label, key in (("비차익 순매수", "nonarb_net"), ("차익 순매수", "arb_net")):
-                v = program.get(key)
-                if v is not None:
-                    val = int(v)
-                    color = "#26a69a" if val > 0 else "#e2574c" if val < 0 else ""
-                    sign = "+" if val > 0 else ""
-                    style = f' style="color:{color}"' if color else ""
-                    pgm_rows += f'<tr><td>{esc(label)}</td><td class="num"{style}>{sign}{val:,}만</td></tr>\n'
+            if plat.get("won") is not None:
+                pgm_rows += f'<tr><td>{esc(str(plat.get("date")))} 하루</td>{_eok_td(plat["won"])}</tr>\n'
+            if pwin.get("won") is not None:
+                pgm_rows += (f'<tr><td>{int(pwin.get("days") or 0)}거래일 누적 '
+                             f'({esc(str(pwin.get("from")))}~{esc(str(pwin.get("to")))})</td>{_eok_td(pwin["won"])}</tr>\n')
             if pgm_rows:
                 side_tables += f"""<div class="si-section">
-      <div class="si-section-title">프로그램 매매</div>
-      <table class="si-table"><thead><tr><th>구분</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
+      <div class="si-section-title">프로그램 순매수 (KIS · 전체 합계)</div>
+      <table class="si-table"><thead><tr><th>구간</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
+      <div class="si-note">이 조회는 차익·비차익을 나누지 않습니다 — 전체 합계입니다.</div>
     </div>"""
 
         # Multi-period trends — batch regen reads cache only (no network),
@@ -8428,7 +8441,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {side_tables}
   </div>
   {trend_html}
-  {_src_foot}출처: KIS · pykrx</div>
+  {_src_foot}출처: KIS(12시간 캐시 — 당일 값이 아직 없던 응답은 1시간 · 날짜는 원천이 준 영업일) · pykrx</div>
 </div>"""
 
     # CN/HK 스톡커넥트(Stock Connect) flow

@@ -1929,7 +1929,8 @@ VM 실측(2026-09-24): 운영 `.backfill-venv`(telethon 1.36.0 = 세션 DB v7)�
 | ⑨ 복사본 로그인 | 복사본(dry-run·진단)은 인증이 풀렸으면 로그인하지 않고 멈춘다 — 라이브는 로그인 흐름을 탄다(처음 인증하는 유일한 길) | `test_tg_session_format.py::test_a_session_copy_is_never_logged_into` |
 
 ⚠️ **못 보는 축**(#274): 핀이 **운영 venv 에 깔렸는지**는 안 잰다 — 2026-10-04(#432)
-부터는 핀이 바뀐 배포에서 자동 배포(`deploy/trade-auto-update.sh`)가 운영 venv 에 깔고
+부터는 trade 배포마다 자동 배포(`deploy/trade-auto-update.sh`)가 핀과 설치 마커를 대조해
+운영 venv 에 깔고(이 동작을 들여온 배포는 옛 스크립트가 끝까지 돌아 그다음 배포부터)
 (그 전엔 pip 를 돌리지 않았다), 설치가 실패했거나 손으로 다른 판을 깐 경우엔 가드가
 설치 명령과 함께 알린다. ⑤ 의 세 테스트만 실물 telethon 이고(없는 환경이면 skip) 나머지는 가짜
 모듈 위라 진짜 생성자·잠금은 안 잰다. 운영 venv 판별은 **경로 이름**(`/.backfill-venv/`)
@@ -2950,3 +2951,30 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 - pip 자동 설치는 **마커**를 믿는다 — 마커가 맞는데 손으로 venv 를 바꾼 경우(다른 판을 깐 경우)는 못 본다. 그때 운영 세션을 올리려는 비고정판은 #404 의 세션 형식 가드가 막지만, 설치판만 어긋나고 세션 형식이 그대로인 상태는 그 가드도 못 본다(리뷰 M2 실측).
 - `kst_day` 의 끝 `Z` 처리는 3.11 미만에서만 발화한다 — 이 샌드박스(3.11)에선 그 갈래를 재지 못했고 운영 인터프리터의 판도 재지 않았다.
 - ingest 순서는 **원 게시 시각**이 맞다는 전제 위에 있다 — 재게시 글(#411)은 원래 채널의 시각으로 정렬된다. 시각이 같은 서로 다른 글(같은 초)은 inbox 순서를 따른다.
+
+
+## #433 — KIS 수급 4종: 공식 샘플 필드 · 날짜 · 금액 단위 · 단일 수집 함수 · 시장 분류 코드 · 일일 실측 감사 (`tests/test_kis_flow_20261004.py` 40 · 2026-10-04)
+
+'KIS 를 켤지는 사용자 결정' 으로 보고하려다 재 보니 전제가 틀렸다 — 같은 네 메서드를 분석 파이프라인(`agent_utils`)이 이미 게이트 없이 부르고 있었고, 그 메서드들이 KIS 공식 샘플(github.com/koreainvestment/open-trading-api `examples_llm/domestic_stock/*/chk_*.py` COLUMN_MAPPING)과 **다른 필드 이름**을 읽고 있었다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 투자자(FHKST01010900)는 공식 이름으로 읽는다 — 개인 `prsn_*`(옛 `indv_*` 는 응답에 없다) · 기관 세부(`pnsn_*` 등)는 이 TR 에 **없어** 싣지 않는다. 행은 **날짜로** 정렬하고(원천 순서에 기대지 않는다), 매수·매도 거래량이 하나도 없는 행(장중 당일 — 공식 유의사항 '당일 데이터는 장 종료 후 제공')은 건너뛰고 그 수를 `pending` 에 센다. `latest` = 가장 최근 채워진 날 하루(수량 주·금액 원), `window` = 최근 5거래일 금액 합 — 한 날이라도 비면 합을 만들지 않는다(#99) | ✅ 자동 | `test_investor_reads_official_fields_by_date_and_skips_the_unfilled_head`(옛 이름에 **다른 값**의 미끼를 둔다 — 옛 이름으로 되돌리면 값이 바뀐다) · `test_window_refuses_a_partial_sum` · `test_missing_official_field_is_reported_once` |
+| 금액 단위는 **응답 자체의 항등식**으로 잰다(`_calibrate_unit` — 총 매수·매도 수량×종가 ≈ 대금×단위, 후보 ×1·×1천·×1만·×100만·×1억, 비가 0.5~2배 창 · 표본 3분의 2 합의). 못 재면 금액은 None 이고 사유를 화면·프롬프트가 적는다(지어내지 않는다) — 옛 판은 만원이라 가정했고 '당일' 칸은 **수량(주)** 을 만원으로 읽어 억원으로 실었다 | ✅ 자동 | `test_unit_calibration_finds_each_candidate`(후보 5종) · `test_unit_calibration_refuses_rather_than_guesses`(표본 부족·반반·경계 1.9/0.5 받음·2.5/0.4 거절·0/음수/None) · `test_unit_unknown_keeps_quantities_and_drops_amounts` |
+| 신용(FHPST04760000): 대주 잔고 = `whol_stln_rmnd_stcn`(옛 `stln_rmnd_qty` 는 없다) · 최신 `deal_date` · 결제일자는 공식 [필수]라 **오늘(KST) 먼저, 행이 없으면 빈 값** · 공매도(FHPST04830000): `output2` 의 최신 영업일 · 프로그램: **일별 TR(FHPPG04650201)** 의 전체 합계 순매수(옛 판은 체결 TR 에 공식 목록에 없는 `pgtr_*` 로 차익·비차익을 읽었다 — 이 TR 은 그 구분이 없다) | ✅ 자동 | `test_credit_reads_official_names_and_latest_deal_date` · `test_credit_tries_today_first_then_blank`(시계 고정) · `test_short_sale_reads_output2_latest` · `test_program_daily_reads_whole_sum_and_no_arbitrage_split` · `test_each_method_calls_the_official_tr` |
+| 시장 분류 코드는 코스닥도 **J**(공식 샘플은 `J:KRX, NX:NXT, UN:통합` 만 적는다 — 옛 판은 `Q`) | ✅ 자동 · 원천이 J 를 받는지는 감사 ⑤ | `test_market_code_is_J_for_kosdaq_too` |
+| 수급 캐시는 **판(schema)** 이 맞아야 쓴다(옛 모양 12시간 캐시가 새 소비자에게 가지 않게, #21b) · `pending` 이 있던 응답은 1시간만 믿는다(장 마감 뒤 채워진 당일 값을 밤까지 못 보지 않게) | ✅ 자동 | `test_flow_cache_ignores_old_shapes_and_pending_expires` |
+| 수급 탭(`dashboard`)과 스냅샷(`stock_snapshot`)은 **같은 함수** `collect_kis_flow` 를 쓴다 — 옛 두 사본이 둘 다 `KisClient` 에 없는 `_ready()` 를 불러 AttributeError 가 DEBUG 에 삼켜졌다(KIS 칸이 한 번도 안 채워짐). 키가 없으면 빈 dict(호출 0) · 한 조회의 실패가 나머지를 지우지 않는다(#315) | ✅ 자동(두 호출부 E2E) | `test_collect_is_empty_without_keys_and_asks_nothing` · `test_collect_isolates_one_failure` · `test_snapshot_enrich_fills_kis_flow`(`_enrich_kr` 를 그대로 태운다) · `test_detail_enrichment_fills_kis_flow` · `test_no_call_site_reaches_for_a_missing_ready_method` |
+| 화면은 판이 맞는 것만 그리고 날짜·단위를 적는다(`{날짜} 수량` · `{날짜} 금액` · `N거래일 누적 from~to` · 억) · 기관 세부·차익/비차익·'대차잔고' 칸은 없다(대주잔고로) · 금액 단위를 못 재면 그 사유 · 옛 모양은 그리지 않는다 | ✅ 자동 | `test_flow_pane_shows_dates_units_and_no_fabricated_sections`(옛 칸은 낱말이 아니라 **행 이름**으로 — 각주의 '차익·비차익을 나누지 않습니다' 가 낱말 단언을 만족시켰다, #75) · `test_flow_pane_skips_old_shapes` · `test_flow_pane_says_why_amounts_are_missing` |
+| 분석 프롬프트 블록(`format_kis_block`)은 줄마다 기준일 · RULE 10 경계를 **원 단위**(100억 = 1e10원)로 · 옛 모양은 싣지 않는다 · 프로그램은 '전체 합계 — 차익·비차익 구분 없음' · 가이드(`KIS_INTERP_GUIDE`)는 데이터가 받쳐 주지 못하는 주장을 하지 않는다(옛 '한도소진율 fetch 완료' · 연기금·투신·비차익 규칙 삭제) | ✅ 자동 | `test_prompt_block_dates_units_and_rule10_in_won` · `test_prompt_block_retail_support_pattern` · `test_prompt_block_without_unit_says_so` · `test_prompt_block_skips_old_shapes` · `test_prompt_block_program_credit_short` · `test_guide_makes_no_claims_the_data_cannot_back` |
+| 분석가 프롬프트의 RULE 10 보강은 **어느 블록이 실제로 찍는 수치만** 요구한다 — 줄마다 그 수치를 찍는 블록을 대응 표(`_RULE10_SOURCES`, **닫힌 세계**: 표에 없는 머리의 새 줄은 실패)로 못박고, 라벨은 공식 필드 픽스처를 파서·포매터에 통째로 태운 **실제 출력의 한 줄**에서 찾는다(KIS 블록 · 외국인 보유현황(SEIBro) 블록). '없음' 을 말하는 줄(기관 세부·차익/비차익)은 그 수치를 정말 어느 블록도 안 찍어야 참이다. 옛 연기금·투신·프로그램 비차익 세 줄은 어느 블록도 안 찍는 수치를 '명시 의무' 로 요구했다(옛 KIS 는 공식 응답에 없는 필드를 읽어 늘 None) — 같은 프롬프트의 새 가이드('수치가 없으면 언급하지 말 것')와도 어긋났다 · 같은 커밋에서 `agent_utils` 의 KIS 주석·스코프 문구(기관 주체별·한도소진율·대차·'당일')도 실제 제공 범위로 | ✅ 자동 | `test_rule10_kis_rules_cite_only_numbers_some_block_prints`(문단은 AST 상수에서 읽는다 — 인접 문자열 리터럴이 상수 하나로 합쳐진다 · 추출 0줄이면 실패) · `test_rule10_contract_fires`(표 밖 줄 · 블록이 라벨을 안 찍음 · 낱말이 다른 줄에 흩어짐 · 정상 줄 통과) |
+| 실제 응답 모양은 매일 운영에서 잰다 — `bot.scripts.kis_flow_audit`(daily): 4 TR 의 응답·기대 필드·금액 단위·최신 영업일 · 신용 결제일자 오늘/빈값 · 코스닥 J·Q. 수급 캐시를 읽지도 쓰지도 않는다 | ✅ 자동 | `test_audit_tr_verdict_branches` · `test_audit_market_code_verdict` · `test_audit_main_reports_missing_keys` · `test_audit_main_end_to_end`(캐시 무변경 · J 거절이면 rc 1) · `test_audit_is_registered_daily` |
+| 레포 클래스의 인스턴스에서 **그 클래스에 없는 메서드**를 부르는 자리 0개 — 레포 전수 AST(같은 함수의 `x = Cls()`·반환 주석이 레포 클래스인 공장 · 기반 클래스 포함 · `self.x` 속성 포함) | ✅ 자동 | `test_no_calls_to_methods_missing_on_repo_class_instances`(고치기 전 트리에서 정확히 두 곳 — `kis._ready()` — 을 잡음) · `test_missing_method_scanner_fires_and_spares`(발화 3 · 상속·속성 callable·`__getattr__`·루프 재바인딩·지역 import 는 면제) |
+
+뮤테이션(녹색 백업 + md5 복원 · 베이스라인 green 먼저 · 겨냥한 테스트 이름 확인): 32종 + RULE 10 대응 6종 전부 잡혔다(대응 6종의 첫 판에서 'SEIBro 한도소진율 값 줄 삭제' 가 살아남았다 — 95% 경고 줄 `⚠️ 한도소진율 95%+` 가 같은 낱말을 품어 대신 만족시켰다(#75). 대응 낱말을 값 줄의 `한도소진율:` 로 좁혔다) — 시장 코드 Q · 옛 개인 이름 · 날짜 오름차순 · 빈 행도 채운 것으로 · 단위 창 넓힘 · 합의 없이 채택 · 부분 합 · 캐시 판 대조 제거 · pending 1시간 제거 · 신용 빈값 먼저 · 옛 대주 이름 · 옛 프로그램 TR · 수집 격리 제거 · 키 확인 제거 · 스냅샷/대시보드 옛 호출 복귀 · 렌더 판 대조 제거 · RULE 10 만원 경계 · 프롬프트 판 대조 제거 · pending 줄 제거 · 가이드 거짓 주장 복귀 · 감사 필드 검사 제거 · J 거절을 ✅ · 감사 rc 항상 0 · 스캐너 재바인딩·기반·공장 제거 · 경고 반복 · 공매도 output · 렌더 pending 각주 제거 · 떠받침 패턴 제거 · 감사가 캐시에 씀.
+
+**이 검사들이 못 보는 축**(#274):
+- 픽스처의 **값은 합성**이다 — 실제 응답의 행 수·순서·금액 단위·당일 행 모양은 개발 샌드박스에서 KIS 에 닿지 못해 재지 않았다. 그래서 단위를 가정하지 않고 응답마다 재며, 실제 모양은 `kis_flow_audit` 가 운영에서 매일 잰다(첫 결산이 그 답이다).
+- 필드 이름의 근거는 공식 샘플의 COLUMN_MAPPING 이다 — 샘플과 실제 응답이 다르면 감사의 '기대한 필드가 없습니다' ❌ 가 그날 알린다.
+- 전수 가드는 **같은 함수 안에서 만든 인스턴스**만 본다 — 인자로 받은 인스턴스·속성/컨테이너에 담긴 인스턴스·`import 모듈` 뒤 `모듈.Cls()` 는 판정하지 않는다(오탐 없음을 골랐다).
+- RULE 10 대응 표는 **분석가 프롬프트의 RULE 10 보강 문단**만 본다 — 다른 분석가·PM 프롬프트의 문구와 `KIS_INTERP_GUIDE` 의 줄은 대응 표 밖이다(가이드는 위 금지 목록 테스트가 따로 본다). 그리고 '그 블록이 그 라벨을 찍는다' 까지 잰다 — LLM 이 그 규칙을 실제로 따르는지는 안 잰다.

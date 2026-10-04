@@ -1855,9 +1855,10 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["krx_alert"] = lambda: get_krx_alert().get_status(ticker)
         except Exception:
             pass
-        # Step 2B A1: KIS 7종 수급 데이터 (현재가 / 외인+기관+개인 flow /
-        # 기관 주체별 / 외인 한도소진율 / 신용+대차 / 프로그램 / 공매도).
-        # KIS_APP_KEY / KIS_APP_SECRET 미설정 시 graceful skip.
+        # Step 2B A1: KIS 수급 데이터 (현재가 / 외인+기관+개인 순매수 /
+        # 신용(융자)·대주 잔고 / 프로그램(전체 합계) / 공매도). 기관 주체별·외인
+        # 한도소진율은 KIS 가 주지 않는다(get_foreign_limit 는 늘 None — 한도소진율은
+        # 아래 SEIBro 블록, 실수 #433). KIS_APP_KEY / KIS_APP_SECRET 미설정 시 graceful skip.
         try:
             from bot.kis_client import get_kis
             _kis = get_kis()
@@ -5499,10 +5500,11 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 "seibro foreign injection failed for %s: %s", ticker, exc,
             )
 
-        # Step 2B A1: KIS 7종 수급 데이터 inject (시장 분석가 전용).
-        # pykrx flow (KRX 공개 데이터) 보다 상세 — 기관 주체별 / 공매도 /
-        # 프로그램 / 외인 한도소진율이 추가됨. 두 소스 동시 주입 OK:
-        # pykrx = 5일 누적 외인/기관/개인, KIS = 당일 + 5일 + 기관세분화.
+        # Step 2B A1: KIS 수급 데이터 inject (시장 분석가 전용).
+        # pykrx flow (KRX 공개 데이터) 에 더해 공매도 / 신용·대주 / 프로그램(전체
+        # 합계)이 붙는다. 두 소스 동시 주입 OK: pykrx = 5거래일 누적 외인/기관/개인,
+        # KIS = 원천이 채운 최근 거래일 하루 + 5거래일 누적(줄마다 기준일). 기관
+        # 세부·외인 한도소진율은 KIS 가 주지 않는다(실수 #433).
         try:
             from bot.market import detect_market
             if detect_market(ticker) == "KR" and _section_allowed(analyst_id, "kis_supply"):
@@ -5567,7 +5569,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         pass
                     if block:
                         base += (
-                            "\n\n=== KIS 단기 수급 데이터 (7종, verbatim —"
+                            "\n\n=== KIS 단기 수급 데이터 (verbatim —"
                             " 이 수치를 그대로 본문에 인용할 것) ===\n"
                             + block
                             + corp_action_warning
@@ -5575,8 +5577,8 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                             + "\n\n⛔ KIS API SCOPE — HARD GUARD"
                               " (현대오토에버 307950.KS 2026-05-23 surfaced):\n"
                               "KIS 는 단기 수급 데이터 (현재가 · 외인/기관/개인"
-                              " flow · 한도소진율 · 신용/대차 · 프로그램매매 ·"
-                              " 공매도) 만 제공. **PER · PBR · PSR · EV/EBITDA"
+                              " 순매수 · 신용(융자)·대주 잔고 · 프로그램 순매수(전체"
+                              " 합계) · 공매도) 만 제공. **PER · PBR · PSR · EV/EBITDA"
                               " · EPS · 시가총액 · 매출 · 순이익 · 영업이익 등"
                               " valuation/펀더멘털 지표는 KIS 가 제공하지 않음**.\n"
                               "❌ FORBIDDEN: 'KIS 데이터 기준 PER 94.8배' /"

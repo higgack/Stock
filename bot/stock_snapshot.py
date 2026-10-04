@@ -776,28 +776,17 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         return out
 
     def _t_flow() -> dict:
-        # KIS 4콜 + pykrx 2콜 — 둘 다 kr["flow"] 에 쓰므로 한 task 에서
+        # KIS 4종 + pykrx 2콜 — 둘 다 kr["flow"] 에 쓰므로 한 task 에서
         # 순차(KIS 먼저, pykrx 가 trends 를 update — 기존 의미 동일).
+        # KIS 블록은 종목 페이지(dashboard)와 **같은 함수**를 쓴다 — 복제돼 있던
+        # 두 사본이 둘 다 없는 메서드(`_ready`)를 불러 한 번도 안 돌았다(실수 #433).
         out: dict = {}
         flow_data: dict = {}
         try:
-            from bot.kis_client import KisClient
-            kis = KisClient()
-            if kis._ready():
-                inv = kis.get_investor_flow(ticker)
-                if inv:
-                    flow_data["investor_flow"] = inv
-                credit = kis.get_credit_short_balance(ticker)
-                if credit:
-                    flow_data["credit"] = credit
-                short = kis.get_short_sale(ticker)
-                if short:
-                    flow_data["short_sale"] = short
-                program = kis.get_program_trade(ticker)
-                if program:
-                    flow_data["program"] = program
+            from bot.kis_client import collect_kis_flow
+            flow_data.update(collect_kis_flow(ticker))
         except Exception as exc:
-            log.debug("stock_snapshot: KIS flow skipped: %s", exc)
+            log.warning("stock_snapshot: KIS flow 실패: %s", exc)
         try:
             from bot.pykrx_client import (
                 get_kr_foreign_ownership_trend,
