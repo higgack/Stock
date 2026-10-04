@@ -305,7 +305,7 @@ def research_plan_to_eson(plan: ResearchPlan, ticker: str) -> str:
     ESON is lossless and cuts ~50% tokens vs JSON for agent-to-agent pipes.
     Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
     """
-    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'plan{{recommendation,rationale,strategic_actions}}']
+    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'plan{recommendation,rationale,strategic_actions}']
     row = [
        plan.recommendation.value,
        plan.rationale,
@@ -320,7 +320,7 @@ def trader_proposal_to_eson(proposal: TraderProposal, ticker: str) -> str:
 
     Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
     """
-    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'proposal{{action,reasoning,entry_price,stop_loss,position_sizing,kill_trigger}}']
+    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'proposal{action,reasoning,entry_price,stop_loss,position_sizing,kill_trigger}']
     row = [
        proposal.action.value,
        proposal.reasoning,

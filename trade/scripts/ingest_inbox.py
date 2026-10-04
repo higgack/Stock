@@ -168,11 +168,23 @@ def _posted_at(primary: dict, counters: dict) -> str:
     ingest 는 매번 inbox 전체를 다시 돌므로 이 수는 이번 실행에 새로 온 글이 아니라
     **inbox 안에 그런 글이 몇 건인가**다(inbox 는 로테이션이 없어 한 번 생기면 계속
     보인다) — 신호는 값 자체가 아니라 **늘어나는 것**이다."""
-    origin = primary.get("forward_origin_date")
-    if origin:
-        return origin
+    if primary.get("forward_origin_date"):
+        return primary["forward_origin_date"]
     counters["posted_at_from_date"] = counters.get("posted_at_from_date", 0) + 1
     return primary.get("date") or ""
+
+
+_EARLIEST = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _unit_time(group: list[dict]) -> datetime:
+    """처리 순서의 키 — 그 단위가 저장할 원 게시 시각(`_posted_at` 과 같은 규칙: 원 게시
+    시각이 먼저, 없거나 비면 받은 시각). 못 읽으면 가장 이르게 둔다(어떤 날짜 있는 글에도
+    덮이게). 대표 글은 `_ingest_group` 과 같이 첫 캡션 글이다."""
+    from trade.link_new import parse_ts
+    captioned = [r for r in group if r.get("caption_present")]
+    primary = (captioned or group or [{}])[0]
+    return parse_ts(primary.get("forward_origin_date") or primary.get("date")) or _EARLIEST
 
 
 def _ingest_group(
@@ -361,7 +373,12 @@ def main() -> int:
         s.key: s.open_db(args.db.parent / s.db_file) for s in _srcs.SOURCES
     }
 
-    groups = _group_messages(rows)
+    # 단위를 **원 게시 시각 순**으로 돈다 — 형제 DB 는 (키, 월) 필드 보존 병합이라 나중에
+    # 쓴 쪽이 이기는데, inbox 순서(앨범 먼저 · 도착 순)로 돌면 늦게 회수된 옛 글이나
+    # '옛 단일 글 + 새 앨범' 에서 옛 글이 새 글의 posted_at·값을 덮었다(2026-09-30
+    # 독립 리뷰 재현). 매 실행 inbox 전체를 다시 돌므로 배포 다음 실행에 저절로 맞춰진다.
+    # 안정 정렬 — 같은 시각(같은 글의 재수신·재파싱)은 inbox 순서를 지킨다.
+    groups = sorted(_group_messages(rows), key=_unit_time)
     log.info("grouped into %d send units", len(groups))
 
     ignored_ids = _ignored.load()

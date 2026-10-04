@@ -843,3 +843,86 @@ def test_ingest_main_logs_the_fallback_count_even_when_zero(tmp_path, monkeypatc
     inbox.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
                      encoding="utf-8")
     assert "'posted_at_from_date': 1" in run()
+
+
+def test_kst_day_and_stamp_convert_offsets_and_keep_unreadable_values():
+    """`kst_day`/`kst_stamp` — 오프셋은 KST 로 옮기고, 오프셋 없는 값은 UTC 로 보고,
+    못 읽는 값은 옛 동작(앞 10/16자)을 그대로 돌려준다(표시가 사라지면 안 된다)."""
+    from trade.link_new import kst_day, kst_stamp
+    assert kst_day("2026-09-28T15:30:00+00:00") == "2026-09-29"
+    assert kst_day("2026-09-28T14:59:59+00:00") == "2026-09-28"
+    assert kst_day("2026-09-29T00:30:00+09:00") == "2026-09-29"
+    assert kst_day("2026-09-28T15:30:00") == "2026-09-29"          # naive = UTC
+    assert kst_day("2026-09-28") == "2026-09-28"                   # 날만 = 그 날
+    assert kst_day("") == "" and kst_day(None) == ""
+    assert kst_day("not-a-date-xyz") == "not-a-date"               # 옛 동작 유지
+    assert kst_stamp("2026-09-28T15:30:00+00:00") == "2026-09-29 00:30 KST"
+    assert kst_stamp("garbage-value-1234567") == "garbage-value-12"
+    assert kst_stamp(None) == ""
+
+
+# ── ingest 처리 순서 — 옛 글이 새 글의 posted_at·값을 덮지 않는다(2026-10-04) ──────────
+# ingest 는 5분마다 inbox **전체**를 다시 돌고, 형제 DB 는 (키, 월) 필드 보존 병합이라
+# 나중에 쓴 쪽이 이긴다. 옛 판은 단위를 '앨범 먼저 · 단일 글은 도착 순' 으로 돌아, 늦게
+# 회수된 옛 글이나 '옛 단일 글 + 새 앨범' 에서 옛 글이 새 글의 게시 시각과 값을 덮었다
+# (2026-09-30 독립 리뷰 재현 — 형제 링크 NEW 가 숨고 화면이 옛 값을 보였다).
+
+def _tw_inbox_row(mid, origin, value, *, gid=None, caption=True):
+    cap = _TW_CAP.replace("$9.1M", f"${value}M")
+    return {"caption_present": caption, "caption": cap if caption else None, "chat_id": -100,
+            "message_id": mid, "media_group_id": gid, "date": _RECEIVED,
+            "forward_origin_date": origin}
+
+
+def _ingest_main(tmp_path, monkeypatch, rows):
+    import json
+    import sqlite3
+    import sys
+    from trade.scripts import ingest_inbox as ii
+    inbox = tmp_path / "inbox.jsonl"
+    inbox.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                     encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["ingest_inbox", "--inbox", str(inbox),
+                                      "--db", str(tmp_path / "store.db"),
+                                      "--media-root", str(tmp_path / "media")])
+    assert ii.main() == 0
+    with sqlite3.connect(tmp_path / "tw.db") as c:
+        return c.execute("SELECT posted_at, export_value_musd FROM tw_exports").fetchall()
+
+
+_NEWER = "2026-09-28T00:00:00+00:00"
+
+
+def test_an_older_single_post_does_not_overwrite_a_newer_album(tmp_path, monkeypatch):
+    rows = [_tw_inbox_row(1, _ORIGIN, "9.1"),                       # 옛 단일 글
+            _tw_inbox_row(2, _NEWER, "9.9", gid="g1"),               # 새 앨범(정정)
+            _tw_inbox_row(3, _NEWER, "9.9", gid="g1", caption=False)]
+    assert _ingest_main(tmp_path, monkeypatch, rows) == [(_NEWER, 9.9)]
+
+
+def test_a_late_recovered_old_post_does_not_overwrite_the_newer_one(tmp_path, monkeypatch):
+    """40일 회수(#403)처럼 옛 글이 inbox 에 **나중에** 붙은 경우 — 도착 순으로 돌면 옛
+    글이 마지막에 써서 이긴다."""
+    rows = [_tw_inbox_row(10, _NEWER, "9.9"), _tw_inbox_row(5, _ORIGIN, "9.1")]
+    assert _ingest_main(tmp_path, monkeypatch, rows) == [(_NEWER, 9.9)]
+
+
+def test_a_newer_correction_still_wins(tmp_path, monkeypatch):
+    """반대 증거(#25) — 순서를 바꿔도 **더 새 글**은 이긴다(정정 글이 옛 값을 고친다)."""
+    rows = [_tw_inbox_row(1, _ORIGIN, "9.1"), _tw_inbox_row(2, _NEWER, "9.9")]
+    assert _ingest_main(tmp_path, monkeypatch, rows) == [(_NEWER, 9.9)]
+
+
+def test_unit_time_is_the_posted_at_the_unit_will_store():
+    """정렬 키는 그 단위가 **저장할** posted_at 과 같아야 한다 — `_ingest_group` 은 첫 캡션
+    글을 대표로 쓴다. ⚠️ 합성 앨범이다: 실제 앨범은 구성원이 같은 시각을 갖는다(그래서
+    통합 테스트로는 '첫 행' 과 '첫 캡션 행' 이 안 갈려 그 변형이 살아남았다, #91c). 계약은
+    '키 = 저장값' 이고, 원 게시 시각이 비면 받은 시각이다(`_posted_at` 과 같은 규칙)."""
+    from trade.scripts import ingest_inbox as ii
+    album = [{"caption_present": False, "forward_origin_date": "2026-07-01T00:00:00+00:00"},
+             {"caption_present": True, "forward_origin_date": _NEWER, "date": _RECEIVED}]
+    assert ii._unit_time(album) == datetime(2026, 9, 28, tzinfo=UTC)
+    assert ii._unit_time(album) == link_new.parse_ts(ii._posted_at(album[1], {}))
+    solo = [{"caption_present": True, "forward_origin_date": "", "date": _RECEIVED}]
+    assert ii._unit_time(solo) == datetime(2026, 9, 30, tzinfo=UTC)
+    assert ii._unit_time([{"caption_present": True}]) == ii._EARLIEST     # 못 읽으면 가장 이르게

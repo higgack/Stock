@@ -118,6 +118,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -179,6 +180,9 @@ PAUSE_INCREMENT_EVERY = int(os.environ.get("TRADE_PAUSE_INCREMENT_EVERY") or "50
 PAUSE_MAX_S = float(os.environ.get("TRADE_PAUSE_MAX_S") or "3.0")
 
 MAX_FLOOD_WAIT_S = int(os.environ.get("TRADE_MAX_FLOOD_WAIT_S") or "600")
+# 실행 예산의 기준 시각 — import 직후라 유닛 시작과 몇 초 차이다(예산 여유가 덮는다).
+# 예산 자체는 유닛의 `TRADE_SYNC_DEADLINE_S`(`tg_entities.flood_wait_overruns`).
+_RUN_T0 = time.monotonic()
 
 # 대만 관세청 월간 발행은 품목 ~15개 내외(사용자 제공 스크린샷 기준)라 BeOn 대비
 # 볼륨이 훨씬 작음 — 5000 cap 은 순수 안전장치(비정상 대량 스캔만 차단), 정상
@@ -521,6 +525,12 @@ async def _forward_unit(client, source, unit: list[Message], dest) -> bool:
                     f"{MAX_FLOOD_WAIT_S}s threshold",
                     kind="flood",
                 )
+            # 기다려서 유닛 타임아웃을 넘으면 systemd 가 알림 없이 죽인다 — 그 전에
+            # '긴 FloodWait' 중단으로 끝낸다(알림 · 재시도 미산정 · 다음 틱이 이어감).
+            from trade.tg_entities import flood_wait_overruns
+            over = flood_wait_overruns(e.seconds + 1, started=_RUN_T0)
+            if over:
+                raise BackfillAborted(over, kind="flood")
             delay = e.seconds + 1
         except Exception as e:
             # Permanent per-message failure (e.g. MessageIdInvalidError —

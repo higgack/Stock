@@ -50389,6 +50389,34 @@ def test_freeze_ust_today_really_moves_the_products_clock(monkeypatch):
     assert t.date is before, "테스트가 끝났는데 제품 시계가 묶인 채다"
 
 
+def test_treasury_why_header_prints_the_kst_date_not_the_host_date(monkeypatch,
+                                                                   capsys):
+    """`--why` 헤더의 '오늘(KST)' 는 **KST 로 계산한** 날이어야 한다(규칙 10a).
+
+    옛 판은 `date.today()`(서버 로컬)를 그 라벨 아래 찍어, UTC 서버에서는
+    KST 00~09시 동안 **어제**가 '오늘(KST)' 로 나왔다 — 그 줄로 신선도를 재는
+    사람이 하루를 잘못 읽는다. 호스트의 '오늘'은 UTC 날(09-30)로, 시계는
+    UTC 20:00 = KST 10-01 05:00 으로 묶어 두 값이 **갈리는** 순간을 만든다
+    (같으면 옛 판도 통과한다, #91c).
+    """
+    import datetime as _dt
+
+    t = _freeze_ust_today(monkeypatch, "2026-09-30")    # 호스트(UTC)의 '오늘'
+    instant = _dt.datetime(2026, 9, 30, 20, 0, tzinfo=_dt.timezone.utc)
+
+    class _FrozenNow(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(t, "datetime", _FrozenNow, raising=False)
+    import bot.market_timing as mt
+    monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-30", 0))
+    t._why([])
+    head = [ln for ln in capsys.readouterr().out.splitlines() if "오늘(KST)" in ln]
+    assert head and head[0].rstrip().endswith("오늘(KST) 2026-10-01"), head
+
+
 def test_treasury_why_probe_dispatches_and_reports_the_best(monkeypatch):
     """반복 확인은 제품에 심는다(§Automation-first·#252). 그리고 '최선'은
     미 휴장일을 반영해야 한다 — 노동절이 끼면 오늘이 최선이 아니다.
@@ -66801,6 +66829,24 @@ class TestKoreaCompanyFlowBoards20260916:
         return [t for t in trees
                 if not any(t != o and t.startswith(o + "/") for o in trees)]
 
+    @staticmethod
+    def _root_test_files(root) -> list:
+        """레포 **최상위**의 `test_*.py` — `_test_trees` 와 같은 범위(커밋될 파일)로.
+
+        트리 열거는 최상위 파일을 트리로 안 세는데(`*/**/` 의 옛 의미), 그 면제가
+        **이유 없이** 조용해 `test_eson_integration.py` 가 어느 게이트에도 안 실린 채
+        4개 전부 빨간불로 남아 있었다(2026-10-04 실측 — 그 안에 제품 결함 둘). 최상위
+        테스트 파일은 따로 세어 게이트 가드가 막게 한다(#24 예외는 이유와 함께)."""
+        import subprocess as _sp
+        from pathlib import PurePosixPath as _PP
+        out = _sp.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+                       "--exclude-standard"], capture_output=True, text=True,
+                      check=True).stdout.split("\0")
+        # 이름은 **파일명**으로 가르고 깊이는 따로 본다 — 전체 경로에 `startswith` 를
+        # 걸면 깊이 조건이 군더더기가 돼 그걸 지우는 변형이 살아남았다(실측).
+        return sorted(r for r in out if r and len(_PP(r).parts) == 1
+                      and _PP(r).name.startswith("test_") and r.endswith(".py"))
+
     def test_every_test_tree_is_inside_the_commit_gate(self):
         """게이트 밖 트리의 계약은 **없는 것과 같다**(#24·#54). 2026-09-16
         실측: `trade/tests` 1,227건이 게이트 밖이라 레지스트리 계약 4건이
@@ -66831,6 +66877,13 @@ class TestKoreaCompanyFlowBoards20260916:
         assert not stale, f"사라진 트리를 아직 면제하고 있다: {stale}"
         missing = [t for t in roots if t not in covered and t not in exempt]
         assert not missing, f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})"
+        # 최상위 테스트 파일은 어느 트리에도 안 속해 위 대조를 **빠져나간다** — 따로
+        # 막는다. 둘 곳은 게이트 트리 안(`tests/`)이다. 정말 최상위여야 하면 여기에
+        # **이유와 함께** 적는다(지금 0개).
+        root_exempt: dict = {}
+        stray = [f for f in self._root_test_files(root) if f not in root_exempt]
+        assert not stray, (f"레포 최상위의 테스트 파일은 어느 게이트에도 안 실린다: "
+                           f"{stray} — tests/ 로 옮길 것")
 
     def test_the_gate_scope_is_what_git_would_commit(self, tmp_path, monkeypatch):
         """트리 열거가 **무시된 경로는 빼고** 추적·새 파일은 센다 — 임시 저장소에서
@@ -66869,6 +66922,9 @@ class TestKoreaCompanyFlowBoards20260916:
         # tests_e2e — 이름이 `tests` 로 시작해도 그 아래가 아니다). 무시된 worktree 사본 ·
         # 가상환경 · 레포 최상위 파일 · `.py` 가 아닌 파일은 뺀다.
         assert roots == ["new", "pkg/tests/sub", "tests", "tests_e2e"], roots
+        # 최상위 파일은 트리가 아니지만 **따로 세진다** — 그래야 게이트 가드가 막는다
+        # (조용한 면제였던 것, 2026-10-04 · `test_plan.md` 같은 비-.py 는 아니다).
+        assert self._root_test_files(tmp_path) == ["test_top.py"]
         assert not outer.exists(), "임시 저장소의 git 이 바깥 인덱스를 고쳤다"
 
     def test_every_source_declares_its_caption_grammar(self):

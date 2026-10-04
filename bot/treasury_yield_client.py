@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 log = logging.getLogger("bot.treasury_yield")
 
@@ -385,7 +385,11 @@ def _why(sids: list[str]) -> int:
     import pathlib
     import sys
     print(f"# 미국채 신선도 진단 — 인터프리터 {sys.executable}")
-    print(f"#   cwd={pathlib.Path.cwd()}  오늘(KST) {date.today()}")
+    # 라벨이 KST 면 값도 KST 로 계산한다(규칙 10a) — `date.today()` 는 서버
+    # 로컬이라 UTC 호스트에선 KST 00~09시 동안 어제가 찍힌다. 조회 달 선택
+    # (`curve_for` 등)은 재무부 ET 월 XML 기준이라 별개다.
+    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+    print(f"#   cwd={pathlib.Path.cwd()}  오늘(KST) {today_kst}")
     try:
         from bot.env_keys import env_diag
         print("#   " + (env_diag("FRED_API_KEY") or "자격증명 FRED_API_KEY: 있음"))

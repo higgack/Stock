@@ -8,9 +8,10 @@
 
 기준 시각은 DB 의 ``posted_at`` 이다. ingest_inbox 가 텔레그램 **원 게시 시각**
 (``forward_origin_date``, 포워드가 아니면 봇이 받은 시각)을 싣는다. 같은 대시보드 알림
-카드의 NEW(``isAlertNew``)와 같은 축(posted_at)이지만 창과 날짜 계산은 다르다 — 카드는
-posted_at 문자열의 날짜 부분(앞 10자)을 브라우저의 KST 오늘과 비교해 7일, 이 링크는
-KST 달력일로 ``NEW_DAYS`` 일을 렌더 시각에 판정한다.
+카드의 NEW(``isAlertNew``)와 축(posted_at)·날짜(KST 달력일)는 같고 창과 판정 자리가
+다르다 — 카드는 서버가 ``kst_day`` 로 바꿔 실은 날을 브라우저의 KST 오늘과 비교해 7일,
+이 링크는 ``NEW_DAYS`` 일을 렌더 시각에 판정한다. (2026-10-04 까지 카드는 UTC 문자열의
+앞 10자를 써서 KST 00~09시 글이 하루 일찍 찍혔다.)
 
 - 같은 글을 다시 받거나(재포워드) 파서를 올려 다시 파싱해도 ``posted_at`` 은 그대로라
   NEW 가 켜지지 않는다 — ingest 가 원 게시 시각을 먼저 쓰기 때문이고, 그 순서는
@@ -18,6 +19,11 @@ KST 달력일로 ``NEW_DAYS`` 일을 렌더 시각에 판정한다.
   마다 지금 시각으로 바뀌어(재포워드·재파싱 포함) 기준이 될 수 없다.
 - 판정 시각은 렌더 시각이다. 수출입 대시보드는 5분마다 다시 그려지므로 NEW 가 붙고
   떨어지는 것도 그 주기를 따른다.
+- ingest 는 5분마다 inbox 전체를 다시 upsert 하고 한 행의 posted_at 은 그 행에 마지막으로
+  쓴 글의 값인데, 단위를 **원 게시 시각 순**으로 돈다(``ingest_inbox._unit_time``) — 같은
+  (키, 월)을 늦게 회수된 옛 글이나 '옛 단독 글 + 새 앨범' 의 옛 글이 덮지 않는다. 같은
+  시각끼리는 inbox 순서를 지킨다(안정 정렬). 2026-10-04 까지는 inbox 순서(앨범 먼저)라
+  그 행의 posted_at·값이 옛 것으로 돌아갔다.
 
 못 보는 축(재지 않았다):
 - 놓쳤던 글을 나중에 회수(백필)했을 때 그 글의 게시 시각이 창보다 오래됐으면, 페이지에
@@ -25,10 +31,6 @@ KST 달력일로 ``NEW_DAYS`` 일을 렌더 시각에 판정한다.
   바뀐 배포 뒤에는 40일을 한 번 훑는다(#403) — 새 소스를 붙인 날이 그렇다.
 - 나쁜양파가 다른 채널의 글을 재게시하면(#411) posted_at 은 재게시 시각이 아니라 **원래
   채널의 게시 시각**이다. 재게시가 며칠 늦으면 NEW 가 짧게 붙거나 안 붙는다.
-- ingest 는 5분마다 inbox 전체를 다시 upsert 하고(앨범을 먼저, 단독 글을 나중에 —
-  도착 순서가 아니다), 한 행의 posted_at 은 그 행에 마지막으로 쓴 글의 값이다. 같은
-  (키, 월)을 옛 글이 나중에 쓰면 — 회수로 늦게 들어왔거나, 옛 글이 단독이고 새 글이
-  앨범일 때 — 그 행의 posted_at 이 옛 값으로 돌아간다(이 기능 이전부터의 동작).
 """
 from __future__ import annotations
 
@@ -75,6 +77,29 @@ def parse_ts(value) -> datetime | None:
     except (ValueError, OverflowError):
         return None
     return dt
+
+
+def kst_day(value) -> str:
+    """저장된 원 게시 시각(ISO 8601) → **KST 달력일** ``YYYY-MM-DD``.
+
+    ``posted_at`` 은 텔레그램이 준 UTC 라 ``[:10]`` 으로 자르면 **UTC 날**이다 — KST
+    00~09시 글이 하루 일찍 찍혀 '오늘' 계수·7일 NEW·발표 대조에서 하루 늙는다(규칙
+    10a). 알림 카드·헤더 판정·매시간 health 가 이 한 함수로 날을 만든다(#38). 못
+    읽는 값은 옛 동작(앞 10자)을 그대로 돌려준다 — 판정 불가 값 때문에 표시가
+    사라지면 안 된다(#43)."""
+    dt = parse_ts(value)
+    if dt is None:
+        return str(value or "")[:10]
+    return dt.astimezone(KST).date().isoformat()
+
+
+def kst_stamp(value) -> str:
+    """원 게시 시각 → ``YYYY-MM-DD HH:MM KST`` (진단 출력용). ``[:16]`` 은 UTC 시각을
+    라벨 없이 보여 KST 로 읽혔다. 못 읽는 값은 앞 16자 그대로."""
+    dt = parse_ts(value)
+    if dt is None:
+        return str(value or "")[:16]
+    return dt.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
 
 
 def _latest(values, now: datetime | None, where: str) -> datetime | None:

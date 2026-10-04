@@ -272,9 +272,13 @@ _BROAD: dict[str, dict[str, str]] = {
     "trade-bot-beon-listener": {
         _TRADE_TOP: "리스너가 import 하는 trade 최상위 모듈을 이름으로 적지 않는다 — 새 모듈이 폐포에 들어와도 "
                     "규칙이 따라간다(재시작 사이 올라온 글은 주기 sync 가 회수한다 — trade-auto-update.sh 주석)",
+        r"^trade/scripts/requirements\.txt$": "Telethon 고정판(운영 venv) — 배포가 pip 로 새 판을 깔면 "
+                                              "리스너는 재시작해야 그 패키지를 읽는다(실수 #404 · 코드가 아니라 폐포 밖)",
     },
     "trade-bot-badonion-listener": {
         _TRADE_TOP: "BeOn 리스너와 같은 규칙이다(#411 — 재시작 사이 올라온 글은 주기 sync 가 회수한다)",
+        r"^trade/scripts/requirements\.txt$": "Telethon 고정판(운영 venv) — 배포가 pip 로 새 판을 깔면 "
+                                              "리스너는 재시작해야 그 패키지를 읽는다(실수 #404 · 코드가 아니라 폐포 밖)",
     },
     "trade-bot-dashboard": {
         r"^trade/scripts/[^/]+\.py$": "리포트·DART 매출 경로가 함수 안에서 부르는 스크립트(`customs_alert`·"
@@ -871,7 +875,8 @@ _SAMPLES = {
                 "trade/scripts/listen_badonion.py", "trade/scripts/__init__.py",
                 "trade/scripts/backfill_beon.py", "trade/data/hs_names.tsv",
                 "trade/tests/test_relay_origins.py", "bot/scripts/probe_progress.py",
-                "deploy/trade-bot-dashboard.service", "docs/tests.md"),
+                "deploy/trade-bot-dashboard.service", "docs/tests.md",
+                "trade/scripts/requirements.txt"),
 }
 _TRADE_SIBLINGS = {   # trade 형제 유닛 → 배포 알림이 부르는 이름
     "trade-bot-beon-listener": "BeOn 리스너 재시작",
@@ -1066,3 +1071,65 @@ def test_noah_deploy_change_runs_the_installer(tmp_path):
     assert f"denied {inst}" in log and "재설치 실패" in notes, (log, notes)
     r, _, log, notes, _ = d.run(["bot/dart_client.py"], deny=["/bin/systemctl restart stock-bot-dashboard"])
     assert f"ok {inst}" in log and "self-heal" in notes, (log, notes)
+
+
+# ── Telethon 고정판 자동 설치(실수 #404 후속, 2026-10-04) ─────────────────────────
+# 핀(`trade/scripts/requirements.txt`)은 git 으로 움직이지만 운영 venv 는 pip 를 돌려야 움직인다 —
+# 배포가 그 단계를 하지 않아 핀 변경이 사람 손을 기다렸다. 가짜 pip 은 호출을 사건 기록에 남긴다.
+_FAKE_PIP = """#!/bin/bash
+printf 'pip %s\\n' "$*" >> "$FAKE_STATE/events.log"
+if [ -f "$FAKE_STATE/pip_fail" ]; then echo "ERROR: No matching distribution for telethon<x>" >&2; exit 1; fi
+exit 0
+"""
+
+
+def _with_prod_venv(d: "_Deploy", *, fails: bool = False) -> None:
+    pip = d.repo / ".backfill-venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True, exist_ok=True)
+    pip.write_text(_FAKE_PIP, encoding="utf-8")
+    pip.chmod(0o755)
+    flag = d.state / "pip_fail"
+    if fails:
+        flag.write_text("1", encoding="utf-8")
+    elif flag.exists():
+        flag.unlink()
+
+
+def test_trade_pin_change_installs_into_the_prod_venv_before_the_listeners_restart(tmp_path):
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d)
+    r, restarted, log, notes, applied = d.run(["trade/scripts/requirements.txt"])
+    assert r.returncode == 0 and applied, r.stderr[-300:]
+    pips = [i for i, ln in enumerate(log) if ln.startswith("pip ")]
+    assert [log[i] for i in pips] == ["pip install -q -r trade/scripts/requirements.txt"], log
+    for unit in _TRADE_LISTENERS:            # 새 패키지를 읽게 리스너를 **설치 뒤에** 재시작한다
+        assert unit in restarted, (unit, log)
+        assert pips[0] < log.index(f"ok /bin/systemctl restart {unit}"), log
+    assert "Telethon 고정판 설치" in notes and "실패" not in notes, notes
+
+
+def test_trade_pin_install_failure_keeps_the_deploy_and_says_what_to_run(tmp_path):
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d, fails=True)
+    r, restarted, log, notes, applied = d.run(["trade/scripts/requirements.txt"])
+    assert r.returncode == 0 and applied and "trade-bot" in restarted, (r.stderr[-300:], log)
+    assert "Telethon 고정판 설치 실패" in notes, notes
+    assert "&lt;x&gt;" in notes and "<x>" not in notes, notes        # 원문은 이스케이프해 싣는다(#7)
+    assert ".backfill-venv/bin/pip install -r trade/scripts/requirements.txt" in notes, notes
+
+
+def test_trade_pin_change_without_a_prod_venv_says_so(tmp_path):
+    d = _Deploy(tmp_path, _TRADE_SH)
+    r, _, log, notes, applied = d.run(["trade/scripts/requirements.txt"])
+    assert r.returncode == 0 and applied, r.stderr[-300:]
+    assert not any(ln.startswith("pip ") for ln in log), log
+    assert "운영 venv(.backfill-venv)가 없어" in notes, notes
+
+
+def test_trade_unrelated_change_does_not_run_pip(tmp_path):
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d)
+    r, _, log, notes, _ = d.run(["trade/tg_entities.py"])
+    assert r.returncode == 0, r.stderr[-300:]
+    assert not any(ln.startswith("pip ") for ln in log), log
+    assert "고정판" not in notes, notes

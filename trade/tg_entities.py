@@ -39,9 +39,11 @@ telethon 을 module-level 로 import 하지 않는다 — 판정은 예외 이�
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 log = logging.getLogger("trade.tg_entities")
@@ -51,6 +53,45 @@ log = logging.getLogger("trade.tg_entities")
 _REQUIREMENTS = Path(__file__).resolve().parent / "scripts" / "requirements.txt"
 # 운영 유닛(deploy/trade-bot-*.service ExecStart)이 쓰는 venv — 회귀가 대조한다.
 PROD_VENV = ".backfill-venv"
+
+
+# 동기화 유닛의 **실행 예산**. 동기화(`trade-bot-{badonion,beon}-sync.service`)는
+# `Type=oneshot` + `TimeoutStartSec=600` 이라 그 안에 못 끝나면 systemd 가 **알림 없이**
+# 죽인다. 그런데 스크립트는 FloodWait 을 `TRADE_MAX_FLOOD_WAIT_S`(기본 600초)까지
+# 기다리게 짜여 있어, 앞서 포워드에 쓴 시간 + 대기가 600초를 넘으면 중단 알림도 회수
+# 기록도 없이 저널에만 남았다(#12). 유닛이 이 변수로 예산을 넘기고(값은
+# `TimeoutStartSec` 보다 작게 — 회귀가 두 값을 대조한다), 대기가 예산을 넘을 때는 기다리지
+# 않고 '긴 FloodWait' 중단으로 끝낸다 — 알림과 재시도 미산정 경로를 그대로 쓴다. 변수가
+# 없으면 예산이 없다(사람이 여는 넓은 백필은 제한하지 않는다).
+SYNC_DEADLINE_ENV = "TRADE_SYNC_DEADLINE_S"
+SYNC_DEADLINE_MARGIN_S = 30      # 대기 뒤 알림·기록에 남겨 둘 몫
+
+
+def sync_deadline_s() -> float | None:
+    """유닛이 넘긴 실행 예산(초). 없거나 못 읽거나 0 이하면 None(= 예산 없음)."""
+    try:
+        v = float((os.environ.get(SYNC_DEADLINE_ENV) or "").strip())
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def flood_wait_overruns(wait_s: float, *, started: float, now: float | None = None,
+                        deadline_s: float | None = None) -> str | None:
+    """FloodWait 을 기다리면 실행 예산을 넘는가 → 넘으면 중단 사유 문장, 아니면 None.
+
+    ``started``·``now`` 는 ``time.monotonic()`` 값(시계는 인자로 — 순수 판정).
+    예산은 인자가 없으면 ``SYNC_DEADLINE_ENV`` 에서 읽는다."""
+    budget = deadline_s if deadline_s is not None else sync_deadline_s()
+    if not budget:
+        return None
+    left = budget - ((time.monotonic() if now is None else now) - started)
+    if wait_s + SYNC_DEADLINE_MARGIN_S <= left:
+        return None
+    # 짧게 — 회수 판정 줄이 중단 사유를 잘라 싣는다(무엇이 다음에 일어나는지는 그
+    # 판정·알림이 말한다).
+    return (f"FloodWait {int(wait_s)}s 대기가 실행 예산을 넘는다(남은 {max(0, int(left))}s/"
+            f"예산 {int(budget)}s, {SYNC_DEADLINE_ENV}) — systemd 무알림 종료 전에 끝냄")
 
 
 class SessionFormatError(RuntimeError):

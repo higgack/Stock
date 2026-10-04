@@ -851,3 +851,153 @@ class TestEvalMissBacklogFilter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAlertPostedDateIsKst(unittest.TestCase):
+    """알림 카드의 날짜(`posted_at`)는 **KST 달력일**이어야 한다(규칙 10a).
+
+    저장된 `posted_at` 은 텔레그램이 준 UTC ISO 라 `[:10]` 으로 자르면 **UTC 날**이다
+    — KST 00~09시에 올라온 글이 하루 일찍 찍혀, `quickStats` 의 '오늘' 계수에서 빠지고
+    카드·품목·회사 NEW(7일 창)가 하루 일찍 꺼진다. 픽스처는 UTC 15:30 = KST 다음날
+    00:30 으로 두 날이 **갈리는** 순간이다(같은 날이면 옛 판도 통과한다, #91c).
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "store.db"
+        conn = open_db(self.db_path)
+        cap = ("라면 (전국_중국)\n관련종목 : 삼양식품 / 농심\n\n"
+               "2026년 9월 1일 ~ 20일 잠정치 수출데이터 입니다.")
+        upsert_alert(conn, alert_to_row(
+            parse_caption(cap), source_chat_id=-1003715527602, source_message_id=900,
+            media_group_id=None, ingested_at="2026-09-28T15:31:00+00:00",
+            posted_at="2026-09-28T15:30:00+00:00", raw_text=cap, media_paths=[]))
+        conn.close()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_payload_date_is_the_kst_calendar_day(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        self.assertEqual([p["posted_at"] for p in payload], ["2026-09-29"])
+
+
+def test_header_facts_count_and_match_by_kst_day(tmp_path, monkeypatch):
+    """헤더 판정의 날짜도 KST — 발표 대조(`missing_publications`)·월별 계수·최신 게시일.
+
+    UTC 08-31 16:00 = KST 09-01 01:00 이라 **날도 달도** KST 로는 넘어간다. 옛 판은
+    `[:10]`/`[:7]` 로 잘라 8월 글로 세고, 판정에 넘기는 '최신 게시일'도 하루 늙었다.
+    """
+    from datetime import date
+    import bot.daily_kr_flow as dkf
+    import trade.dashboard as td
+    import trade.header_health as hh
+    import trade.store as ts
+    db = tmp_path / "store.db"
+    ts.open_db(db).close()
+    alerts = [{"id": 1, "status": "preliminary", "period_start": "2026-08-01",
+               "period_end": "2026-08-31", "period_kind": "monthly",
+               "posted_at": "2026-08-31T16:00:00+00:00"}]
+    monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: alerts)
+    monkeypatch.setattr(ts, "list_all_alerts", lambda c: alerts)
+    monkeypatch.setattr(dkf, "systemd_facts",
+                        lambda timer=None, service="": {"ok": False, "err": "stub"})
+    seen: dict = {}
+    real_missing, real_verdict = hh.missing_publications, hh.verdict
+
+    def _missing(exp, posted, **kw):
+        seen["posted"] = posted
+        return real_missing(exp, posted, **kw)
+
+    def _verdict(facts, today):
+        seen["facts"] = facts
+        return real_verdict(facts, today)
+
+    monkeypatch.setattr(hh, "missing_publications", _missing)
+    monkeypatch.setattr(hh, "verdict", _verdict)
+    f = td.header_facts(db, tmp_path, today=date(2026, 9, 2))
+    assert seen["posted"] == {"monthly_preliminary": {"2026-09-01"}}
+    assert f["month_counts"] == [("2026-09", 1)]
+    assert seen["facts"]["db_newest"] == "2026-09-01"
+
+
+def test_health_cycle_gap_matches_publications_by_kst_day(tmp_path, monkeypatch):
+    """매시간 health 의 발표 누락 대조도 KST 날짜로 — UTC 날로 자르면 KST 새벽 글이
+    ±2일 창 밖으로 밀려 **받은 발표를 '미수신'** 으로 알린다.
+
+    09-11 잠정(1~10일)이 KST 09-09 01:00(= UTC 09-08 16:00)에 올라온 경우: KST 로는
+    2일 차이(창 안), UTC 날로는 3일 차이(창 밖)다.
+    """
+    from datetime import datetime, timedelta, timezone
+    import trade.scripts.health_check as hc
+    db = tmp_path / "store.db"
+    db.write_bytes(b"")
+    rows = [{"posted_at": "2026-09-08T16:00:00+00:00", "period_kind": "decadal_10"}]
+    monkeypatch.setattr(hc, "STORE_PATH", db)
+    monkeypatch.setattr(hc, "open_db", lambda p: type("C", (), {"close": lambda s: None})())
+    monkeypatch.setattr(hc, "list_all_alerts", lambda c: rows)
+    monkeypatch.setattr(hc, "CYCLE_GAP_DAYS", 2)
+    monkeypatch.setattr(hc, "_kst_today", lambda: datetime(2026, 9, 13, 12, 0,
+                                                           tzinfo=timezone(timedelta(hours=9))))
+    monkeypatch.setattr(hc, "_expected_recent_publications",
+                        lambda today: [("2026-09-11", "decadal_10")])
+    sent: list = []
+    monkeypatch.setattr(hc, "_notify", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(hc, "_alert_once_per_window", lambda *a, **k: True)
+    hc.check_cycle_gap()
+    assert sent == [], sent
+
+
+def test_inbox_newest_and_why_lines_use_kst(tmp_path, monkeypatch, capsys):
+    """판정에 넘기는 inbox 최신일 · 침묵 관찰 줄 · `--why` 의 시각 표시도 KST.
+
+    inbox `date`(중계 시각)도 텔레그램 UTC 다. `[:10]` 이면 침묵 일수가 하루 늘고,
+    `[:16]` 표시는 UTC 시각을 라벨 없이 찍어 KST 로 읽혔다.
+    """
+    import json as _json
+    from datetime import date
+    import bot.daily_kr_flow as dkf
+    import trade.dashboard as td
+    import trade.header_health as hh
+    import trade.store as ts
+    db = tmp_path / "store.db"
+    ts.open_db(db).close()
+    alerts = [{"id": 7, "status": "preliminary", "period_start": "2026-08-01",
+               "period_end": "2026-08-31", "period_kind": "monthly",
+               "posted_at": "2026-08-31T16:00:00+00:00"}]
+    monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: alerts)
+    monkeypatch.setattr(ts, "list_all_alerts", lambda c: alerts)
+    monkeypatch.setattr(dkf, "systemd_facts",
+                        lambda timer=None, service="": {"ok": False, "err": "stub"})
+    kr = ("2차전지 원형·각형 등 Cap Assembly, 모듈 (전국)\n관련종목: 월별 수출 데이터\n\n"
+          "2026년 7월 1일 ~ 20일 잠정치 수출데이터 입니다.")
+    (tmp_path / "inbox.jsonl").write_text(_json.dumps(
+        {"date": "2026-09-01T16:00:00+00:00", "caption": kr, "message_id": 5},
+        ensure_ascii=False) + "\n", encoding="utf-8")
+    seen: dict = {}
+    real_verdict = hh.verdict
+    monkeypatch.setattr(hh, "verdict",
+                        lambda facts, today: (seen.setdefault("f", facts),
+                                              real_verdict(facts, today))[1])
+    td.header_facts(db, tmp_path, today=date(2026, 9, 2))
+    assert seen["f"]["inbox_newest"] == "2026-09-02", seen["f"]
+
+    # 침묵 관찰 줄: KST 날(08-30) 기준 3일째 — UTC 날(08-29)이면 4일째로 늘었다.
+    notes = td.inbox_silence_notes({"inbox_newest": "2026-08-29T16:00:00+00:00"},
+                                   today=date(2026, 9, 2))
+    assert notes and "3일째" in notes[0] and "마지막 2026-08-30" in notes[0], notes
+
+    td._why_header(db, tmp_path, today=date(2026, 9, 2))
+    out = capsys.readouterr().out
+    assert "게시 2026-09-01 01:00 KST" in out, out
+    assert "DB 최신 게시: 2026-09-01 01:00 KST" in out, out
+    # 두 줄(전 소스 · 관세청 캡션)이 같은 레코드를 가리키므로 **줄을 잘라** 본다 —
+    # 페이지 전체로 재면 한 줄을 되돌려도 형제 줄이 대신 만족시킨다(#75, 실측).
+    lines = out.splitlines()
+    inbox_ln = [ln for ln in lines if "inbox.jsonl: " in ln]
+    kr_ln = [ln for ln in lines if "그중 관세청 캡션: " in ln]
+    assert inbox_ln and "최신 2026-09-02 01:00 KST" in inbox_ln[0], inbox_ln
+    assert kr_ln and "최신 2026-09-02 01:00 KST" in kr_ln[0], kr_ln

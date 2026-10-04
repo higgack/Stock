@@ -243,7 +243,7 @@
 | nav 순서가 새 소스를 **형제 옆**에 놓는다(레지스트리 파생) | ✅ 자동 | `…::test_registry_places_the_new_source_next_to_its_sibling` |
 | 모든 소스가 **캡션 문법**을 밝힌다 — 안 밝히면 형제 계약 밖(#370·#24·#54) | ✅ 자동 | `…::test_every_source_declares_its_caption_grammar` |
 | 상관 4지표 계약의 **대상 집합이 조용히 줄지 않는다**(하한 리터럴, #66) | ✅ 자동 | `…::test_the_corr_contract_scope_cannot_silently_shrink` |
-| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) — 트리는 **커밋될 파일**(git 추적 + add 전 새 파일, 무시 목록 밖)에서 센다: 디스크 전체를 훑던 옛 판은 무시된 서브에이전트 worktree(`.claude/worktrees/…`, 레포 사본)를 게이트 밖 트리로 세 리뷰가 도는 동안 거짓 빨간불이었다(#412) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` · `…::test_the_gate_scope_is_what_git_would_commit`(임시 저장소 — 무시·가상환경·최상위 파일은 빼고 추적·add 전 새 트리는 센다 · 하위 트리는 상위가 덮는다 — 단 **'/' 경계로만**(형제 접두 `tests_e2e` 는 `tests` 에 안 접힌다) · `.py` 가 아닌 `test_*` 는 트리가 아니다 · 임시 저장소의 git 은 바깥 `GIT_*` 환경을 물려받지 않는다(훅·`rebase --exec` 가 넘긴 인덱스를 고치지 않는다 — 흉내 낸 바깥 인덱스가 안 생기는지 잰다) · 뮤테이션 9종 전부 잡힘) |
+| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) — 트리는 **커밋될 파일**(git 추적 + add 전 새 파일, 무시 목록 밖)에서 센다: 디스크 전체를 훑던 옛 판은 무시된 서브에이전트 worktree(`.claude/worktrees/…`, 레포 사본)를 게이트 밖 트리로 세 리뷰가 도는 동안 거짓 빨간불이었다(#412) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` · `…::test_the_gate_scope_is_what_git_would_commit`(임시 저장소 — 무시·가상환경은 빼고 추적·add 전 새 트리는 센다 · **레포 최상위의 `test_*.py` 는 트리가 아니라 따로 세어 게이트 가드가 막는다** — 옛 판은 조용히 면제해 `test_eson_integration.py` 가 게이트 밖에서 4개 전부 빨간불이었다(2026-10-04 · `tests/` 로 옮기며 제품 결함 둘 — 직렬화 머리줄 이중 중괄호 · 따옴표 셀 디코드 — 을 고침, 회귀 `tests/test_eson_integration.py`) · 이름은 파일명으로 가르고 깊이는 따로 본다(전체 경로 `startswith` 면 깊이 조건을 지우는 변형이 살아남았다) · 하위 트리는 상위가 덮는다 — 단 **'/' 경계로만**(형제 접두 `tests_e2e` 는 `tests` 에 안 접힌다) · `.py` 가 아닌 `test_*` 는 트리가 아니다 · 임시 저장소의 git 은 바깥 `GIT_*` 환경을 물려받지 않는다(훅·`rebase --exec` 가 넘긴 인덱스를 고치지 않는다 — 흉내 낸 바깥 인덱스가 안 생기는지 잰다) · 뮤테이션 9종 전부 잡힘) |
 
 ### 거래량 상위 보드 + KRX/NXT 세션 창 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrVolumeAndSessions20260916`
@@ -1928,9 +1928,10 @@ VM 실측(2026-09-24): 운영 `.backfill-venv`(telethon 1.36.0 = 세션 DB v7)�
 | ⑧ 동기화 | 생성자가 던져도 알림 `try` 안(시작 실패 알림 + rc 1, 기록 없음) · dry-run 은 알리지 않는다 · 가드는 **생성 전에** 돈다 · 라이브 경로만 live 로 잰다(형제 진단도, BeOn 동기화·dedup 진단은 운영 세션을 live 로 — E03·Q02) · 처방 예외는 처방을 한 번만 싣고 트레이스백 없이 저널에 한 줄(L4·L5) · BeOn 동기화도 같은 규약 · 동기화 E2E 픽스처는 인터프리터를 **운영 venv 경로**로 둔다 — 가짜 세션 파일은 형식을 못 재므로, 비운영이면 A 가 그 파일을 막는다(픽스처는 운영이 실제로 도는 모양대로, #155) | `test_backfill_badonion_sync.py::test_a_session_this_telethon_cannot_open_pages_instead_of_dying_silently · `::test_a_dry_run_that_cannot_open_the_session_logs_but_does_not_page` · `::test_the_format_guard_runs_before_the_client_is_built` · `::test_only_the_live_session_is_guarded_as_live` · `::test_the_sibling_diagnose_tool_guards_the_live_path_as_live` · `::test_a_prescribed_startup_failure_says_the_prescription_once` · `::test_a_prescribed_startup_failure_logs_no_traceback` · `test_tg_session_format.py::test_the_beon_backfill_pages_on_a_session_it_cannot_open` · `::test_the_beon_backfill_logs_a_prescribed_failure_without_a_traceback` · `::test_the_beon_backfill_measures_its_session_as_live` · `::test_the_dedup_diagnostic_measures_the_live_session_as_live` |
 | ⑨ 복사본 로그인 | 복사본(dry-run·진단)은 인증이 풀렸으면 로그인하지 않고 멈춘다 — 라이브는 로그인 흐름을 탄다(처음 인증하는 유일한 길) | `test_tg_session_format.py::test_a_session_copy_is_never_logged_into` |
 
-⚠️ **못 보는 축**(#274): 핀이 **운영 venv 에 깔렸는지**는 안 잰다 — 자동 배포
-(`deploy/trade-auto-update.sh`)는 pip 를 돌리지 않는다. 그 사이엔 가드가 설치 명령과
-함께 알린다. ⑤ 의 세 테스트만 실물 telethon 이고(없는 환경이면 skip) 나머지는 가짜
+⚠️ **못 보는 축**(#274): 핀이 **운영 venv 에 깔렸는지**는 안 잰다 — 2026-10-04(#432)
+부터는 핀이 바뀐 배포에서 자동 배포(`deploy/trade-auto-update.sh`)가 운영 venv 에 깔고
+(그 전엔 pip 를 돌리지 않았다), 설치가 실패했거나 손으로 다른 판을 깐 경우엔 가드가
+설치 명령과 함께 알린다. ⑤ 의 세 테스트만 실물 telethon 이고(없는 환경이면 skip) 나머지는 가짜
 모듈 위라 진짜 생성자·잠금은 안 잰다. 운영 venv 판별은 **경로 이름**(`/.backfill-venv/`)
 이다 — 같은 이름의 다른 디렉터리에서 돌리면 운영으로 본다(그 이름은 운영 유닛만
 쓴다는 가정 · ⑥ 이 유닛 ExecStart 와 대조한다). 파이썬이 아닌 자식이나 다른 라이브러리의 상태 파일은 이 가드 밖이다.
@@ -2514,9 +2515,10 @@ bot 최상위 123/192 — 첫 판은 'bot 전부' 라 적었다 · 리뷰 실측
 사용자 "수출입에 여기 대시보드쪽에 업데이트가 되는것이 있으면 5일간 New 라는 표시가 있어서 체크해야한다는걸 내가
 알아볼수 있게해줘" — 수출입 대시보드 상단 형제 링크 줄(고정 3개 + 나쁜양파 레지스트리 17개)에 NEW 를 붙인다.
 기준은 **원천의 원 게시 시각**(`posted_at` — ingest_inbox 가 `forward_origin_date` 를 싣는다)이고, 창은 KST 달력일로
-게시일 포함 5일(`trade.link_new.NEW_DAYS`)이다. 같은 대시보드 알림 카드의 NEW(`isAlertNew`)와 **같은 축**(posted_at)이지만
-창과 날짜 계산은 다르다(카드는 posted_at 문자열의 앞 10자를 브라우저의 KST 오늘과 비교해 7일). `updated_at` 은 매 upsert
-(재포워드·재파싱 포함)마다 지금 시각으로 바뀌어 기준이 될 수 없다.
+게시일 포함 5일(`trade.link_new.NEW_DAYS`)이다. 같은 대시보드 알림 카드의 NEW(`isAlertNew`)와 **같은 축**(posted_at)·같은
+날짜(KST 달력일)이지만 창과 판정 자리는 다르다(카드는 서버가 `kst_day` 로 바꿔 실은 날을 브라우저의 KST 오늘과 비교해 7일 —
+2026-10-04 까지는 posted_at 문자열의 앞 10자, 즉 **UTC 날**이라 KST 00~09시 글이 하루 일찍 찍혔다, 아래 '수출입 날짜 KST' 절).
+`updated_at` 은 매 upsert(재포워드·재파싱 포함)마다 지금 시각으로 바뀌어 기준이 될 수 없다.
 
 | 계약 | 강제 | 테스트 |
 |---|---|---|
@@ -2557,10 +2559,10 @@ connect 에선 안 던져 한 번도 안 탔고(#291), naive now 변형은 샌�
   생겨도 조용하다.
 - (b) **재게시 글** — 나쁜양파가 다른 채널의 글을 재게시하면(#411) posted_at 은 재게시 시각이 아니라 원래 채널의 게시
   시각이다. 재게시가 며칠 늦으면 NEW 가 짧게 붙거나 안 붙는다(그 지연은 재지 않았다). 화면 가이드에 적었다.
-- (c) **ingest 처리 순서** — ingest 는 5분마다 inbox 전체를 다시 upsert 하고(앨범을 먼저, 단독 글을 나중에 — 도착 순서가
-  아니다) 한 행의 posted_at 은 마지막으로 쓴 글의 값이다. 같은 (키, 월)을 옛 글이 나중에 쓰면 — 회수로 늦게 들어왔거나,
-  옛 글이 단독이고 새 글이 앨범일 때 — 그 행의 posted_at 이 옛 값으로 돌아간다(delta 리뷰가 두 번째 경로를 실측 · 이 기능
-  이전부터의 동작이라 별도 과제로 제안했다).
+- (c) ~~ingest 처리 순서~~ — **2026-10-04 해결**(아래 '수출입 날짜 KST · ingest 순서' 절). 옛 판은 inbox 를 앨범 먼저 ·
+  단독 글 나중(도착 순서가 아니다)으로 돌아, 같은 (키, 월)을 옛 글이 나중에 쓰면 — 회수로 늦게 들어왔거나, 옛 글이 단독이고
+  새 글이 앨범일 때 — 그 행의 posted_at·값이 옛 것으로 돌아갔다(delta 리뷰가 두 번째 경로를 실측). 지금은 단위를 **원 게시
+  시각 순**으로 돈다(안정 정렬 — 같은 시각끼리는 inbox 순서).
 - (d) **레퍼런스북**은 판정하지 않는다 — 원천이 '게시'하는 데이터가 아니라 연계표·큐레이션 참조표라 게시 시각이 없다.
   미매칭 후보 큐(`kg_candidates.csv`)는 첫 등록 **날짜**(`추출일` — `write_candidates_csv` 가 서버 로컬
   `datetime.now()` 로 적는다, 시각·시간대 없음)를 남기지만 쓰지 않았다: 블로그·DART 자동발굴 후보와 한 큐라 출처
@@ -2924,3 +2926,24 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 - 오탐 쪽(엄격): 대상을 못 찾은 메서드 이름(`x.get_dart()`)은 부정 판정에서 이름으로 공장으로 본다 · 같은 스코프에서 다시 묶은 이름은 첫 묶음을 기억해 잡는다 — 걸리면 그 판정을 `dart_ready` 로 바꾸면 된다.
 - 순환 판정의 방어 둘(D22·D24)은 답을 바꾸는 입력을 못 찾았다 — 발화 경로가 있는지 증명하지 않았다.
 - 제품 쪽: `dart_gap_audit` ① 은 **이미 구워진 기록**만 본다(못 물어본 결과를 24시간으로 굽고 화면엔 `stale_note` 도 안 단, 두 결함이 겹친 경우는 안 보인다) · ② 는 한 종목·한 시점이고 그 종목에 원래 없는 칸은 판정 불가 · 비-KR 은 DART 를 안 써서 안 잰다 · 배포 전 코드가 쓴 쿨다운 기록(코드 칸 없음)은 만료(30분)까지 014 를 답으로 못 읽는다(한 번 지나면 사라진다) · 시세 캐시 이름은 **키 유무**만 가른다 — 원천 장애 같은 일시 상태에 기대는 문장은 그 이름이 모른다(그건 SWR 갱신이 다시 그린다).
+
+## #432 — 남은 결함 여섯: 수출입 날짜 KST · ingest 순서 · 루트 테스트 게이트 · 동기화 실행 예산 · pip 자동 설치 · 미국채 헤더 (`trade/tests/test_link_new.py` +5 · `trade/tests/test_dashboard.py` +4 · `trade/tests/test_sync_deadline.py` 4 · `trade/tests/test_backfill_badonion_sync.py` +1 · `tests/test_restart_closure_20260928.py` +4 · `tests/test_eson_integration.py` 5(루트에서 옮겨 다시 씀) · `tests/test_regression.py` +1 · 게이트 가드 2건 확장 · 2026-10-04)
+
+사용자 "할수 있는건 모두 다 끝내줘" — 앞선 라운드들이 '못 보는 축' 이나 별도 과제로 남긴 것 중 코드로 닫을 수 있는 여섯을 닫았다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 미국채 `--why` 헤더의 '오늘(KST)' 는 **KST 로 계산한** 날 — 옛 판은 `date.today()`(서버 로컬)를 그 라벨 아래 찍어 UTC 서버의 KST 00~09시엔 어제가 나왔다(규칙 10a). 호스트의 오늘(UTC 09-30)과 시계(UTC 20:00 = KST 10-01 05:00)가 **갈리는** 순간으로 잰다(같으면 옛 판도 통과, #91c) | ✅ 자동 | `test_treasury_why_header_prints_the_kst_date_not_the_host_date` |
+| 수출입 날짜를 **KST 달력일**로 — `link_new.kst_day`·`kst_stamp` 한 곳(#38)에서: 알림 카드 payload `posted_at`(7일 NEW·🆕 신규 칩이 이 날을 브라우저의 KST 오늘과 비교) · 헤더의 월별 계수·발표 대조·판정 칸 · `inbox_silence_notes` · `--why` 시각 넷(라벨 `KST`) · 매시간 health 의 사이클 공백 대조. `posted_at` 은 UTC ISO 라 `[:10]` 은 **UTC 날**이었다 — KST 00~09시 글이 하루 일찍 찍혀 health 가 정상 발표를 '미수신' 으로 알렸다(픽스처로 재현). 못 읽는 값은 옛 동작(앞 10·16자) 그대로(#43) | ✅ 자동 | `test_kst_day_and_stamp_convert_offsets_and_keep_unreadable_values` · `TestAlertPostedDateIsKst::test_payload_date_is_the_kst_calendar_day` · `test_header_facts_count_and_match_by_kst_day` · `test_health_cycle_gap_matches_publications_by_kst_day` · `test_inbox_newest_and_why_lines_use_kst`(`--why` 줄을 **하나씩 잘라** 단언 — 통째로 재면 형제 줄이 대신 만족시켰다, #75) |
+| ingest 가 단위를 **원 게시 시각 순**으로 돈다(`_unit_time` — 저장할 `posted_at` 과 같은 규칙: 원 게시 시각이 먼저, 없거나 비면 받은 시각 · 대표 글은 첫 캡션 글 · 못 읽으면 가장 이르게). 형제 DB 는 (키, 월) 필드 보존 병합이라 나중에 쓴 쪽이 이기는데, 옛 판은 inbox 순서(앨범 먼저)로 돌아 '옛 단독 글 + 새 앨범' · 늦게 회수된 옛 글이 새 글의 `posted_at`·값을 덮었다(2026-09-30 delta 리뷰 실측 · 위 NEW 절 (c)). 안정 정렬 — 같은 시각(재수신·재파싱)은 inbox 순서. 더 새 정정본은 여전히 이긴다 · 매 실행 inbox 전체를 다시 돌므로 배포 다음 실행에 저절로 맞춰진다 | ✅ 자동(E2E, `main`) | `test_an_older_single_post_does_not_overwrite_a_newer_album` · `test_a_late_recovered_old_post_does_not_overwrite_the_newer_one` · `test_a_newer_correction_still_wins` · `test_unit_time_is_the_posted_at_the_unit_will_store`(합성 앨범 — 앨범은 원래 한 시각을 공유해 '첫 행' 과 '첫 캡션 행' 을 실물로는 못 가른다고 테스트에 적었다) |
+| 레포 **최상위**의 `test_*.py` 는 어느 게이트에도 안 실린다 — 따로 세어 막는다(예외 0개 · 이유와 함께만). `test_eson_integration.py` 가 그렇게 게이트 밖에서 4개 전부 빨간불이었고 그 안에 제품 결함 둘이 숨어 있었다: 직렬화 머리줄의 **이중 중괄호**(`'plan{{…}}'` — f-string 이 아닌데 이스케이프를 써서 `{{` 가 그대로 나갔다) · `decode_cell` 이 셀의 **첫 글자**가 아니라 셀 전체를 비교해 따옴표·괄호로 시작하는 셀을 못 풀었다. 테스트 쪽 결함(따옴표 가정 · 티커 오타 · `sys.path` 조작)도 고쳐 `tests/` 로 옮겼다 | ✅ 자동 | `tests/test_eson_integration.py` 5건 · `TestKoreaCompanyFlowBoards20260916::test_every_test_tree_is_inside_the_commit_gate`(최상위 파일 0개) · `…::test_the_gate_scope_is_what_git_would_commit`(임시 저장소의 `test_top.py` 는 세고 `test_plan.md` 는 안 센다) |
+| 동기화(나쁜양파·BeOn)는 FloodWait 대기가 **실행 예산**을 넘으면 기다리지 않고 중단 알림으로 끝낸다 — 유닛이 `TRADE_SYNC_DEADLINE_S=540` 을 넘기고(값 < `TimeoutStartSec=600`, 여유 30초는 알림·기록 몫), 변수가 없으면 예산 없음(사람이 여는 넓은 백필은 제한하지 않는다). 옛 판은 `TRADE_MAX_FLOOD_WAIT_S`(600초)까지 기다리다 oneshot 타임아웃에 **알림 없이** 죽었다(#12). 나쁜양파는 '긴 FloodWait' 갈래(`kind="flood"`)로 끝나 재시도 셈에 안 들어간다 | ✅ 자동 | `test_no_budget_means_no_abort` · `test_budget_boundary_includes_the_margin` · `test_every_flood_waiting_sync_unit_carries_a_budget_below_its_timeout`(대상 유닛은 `flood_wait_overruns(` 를 부르는 스크립트에서 **파생**, #24) · `test_beon_forward_aborts_before_a_wait_that_would_outlive_the_unit`(실물 `FloodWaitError`) · `test_a_flood_wait_that_would_outlive_the_unit_aborts_with_a_note`(rc 1 · 101초 sleep 없음 · 사유에 '실행 예산' · `retry.count == 0` · 반대 증거: 예산이 넉넉하면 한 번 기다리고 rc 0) |
+| trade 자동 배포가 핀(`trade/scripts/requirements.txt`)이 바뀐 배포에서 trade-bot·리스너 재시작 **전에** 운영 venv 에 `pip install -r` 한다(#404 의 "핀은 깔려야 효력이 있다" 를 사람 손에서 뺐다 — Automation-first) · 실패해도 배포는 계속하고 알림이 오류 꼬리(HTML 이스케이프)·손으로 돌릴 명령을 적는다 · venv 가 없으면 그렇게 적는다 · 무관한 변경은 pip 를 안 부른다 · 리스너 조건 둘에 그 파일이 들어가 새 패키지를 다시 읽는다(재시작 폐포 하네스의 `_BROAD` 에 사유와 함께) · `timeout 600`(이 유닛은 oneshot 이라 시작 타임아웃이 없어 매달린 pip 가 다음 배포를 막는다) | ✅ 자동(가짜 pip·sudo 로 스크립트 실행) | `test_trade_pin_change_installs_into_the_prod_venv_before_the_listeners_restart` · `test_trade_pin_install_failure_keeps_the_deploy_and_says_what_to_run` · `test_trade_pin_change_without_a_prod_venv_says_so` · `test_trade_unrelated_change_does_not_run_pip` |
+
+뮤테이션(녹색 백업 + md5 복원 · 겨냥한 테스트 이름 확인): 40종 전부 잡혔다 — 날짜 KST·미국채 13종(첫 실행에서 M9 `--why` inbox 시각 줄이 살아남았다: 단언이 출력 전체를 봐 **형제 줄**이 대신 만족시켰다 → 줄마다 잘라 단언) · 루트 게이트·ESON 6종(MC2 가 살아남았다: 전체 경로에 `startswith("test_")` 를 걸어 깊이 조건이 군더더기가 됐다 → 파일명으로 가르고 깊이는 따로) · 실행 예산 8종 · pip 자동 설치 8종 · ingest 순서 5종(MF4 가 살아남았다: 픽스처의 앨범이 한 시각을 공유해 '첫 행' 과 '첫 캡션 행' 이 같았다 → 대표 글 계약을 합성 앨범으로 따로 잰다, #91c).
+
+**이 검사들이 못 보는 축**(#274):
+- 실행 예산은 **FloodWait 대기**만 본다 — 대기 없이 포워드 자체가 600초를 넘기는 실행(후보가 아주 많은 넓은 회수)은 여전히 systemd 타임아웃이 먼저다(그때도 알림은 없다). 정상 실행이 그 상한에 얼마나 가까운지는 재지 않았다.
+- 예산의 기준 시각은 스크립트 **import 시점**(`_RUN_T0`)이다 — 유닛 시작부터 import 까지의 몇 초는 여유 30초가 덮는다고 보고 따로 재지 않는다.
+- pip 자동 설치는 **핀 파일이 바뀐 배포**에서만 돈다 — 핀은 그대로인데 venv 가 망가진 경우(손으로 다른 판을 깐 경우)는 못 본다. 그건 #404 의 세션 형식 가드가 열 때 막고 깔 판을 알린다.
+- ingest 순서는 **원 게시 시각**이 맞다는 전제 위에 있다 — 재게시 글(#411)은 원래 채널의 시각으로 정렬된다. 시각이 같은 서로 다른 글(같은 초)은 inbox 순서를 따른다.

@@ -120,7 +120,9 @@ def decode_cell(cell: str) -> Any:
         return True
     if cell == 'false':
         return False
-    if cell in ('"', '[', '{'):
+    # 첫 글자로 가른다 — 셀 전체를 한 글자와 비교하면 따옴표 붙은 값이 따옴표째
+    # 돌아와 무손실 계약이 깨진다(2026-10-04, 게이트 밖 테스트가 가리던 결함).
+    if cell[:1] in ('"', '[', '{'):
         try:
             return json.loads(cell)
         except json.JSONDecodeError:

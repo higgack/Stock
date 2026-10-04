@@ -8164,7 +8164,8 @@ disconnect 가 던지면 `run()` 이 예외로 끝나 그 알림이 통째로 �
     ⚠️ 판을 '어느 venv 인가' 의 대용으로 쓰면 다른 venv 가 마침 같은 판일 때
     뚫린다 — 대용이 아니라 그 자체(인터프리터 경로)로 가를 것. 명령은 **그
     유닛의 ExecStart 인터프리터**로 건넬 것(#316·#371). 생성도 알림 `try` 안에 둘
-    것(#12). 핀은 깔려야 효력이 있다 — 자동 배포는 pip 를 안 돈다.
+    것(#12). 핀은 깔려야 효력이 있다 — 당시 자동 배포는 pip 를 안 돌았고, 2026-10-04
+    #432 부터는 핀이 바뀐 배포가 운영 venv 에 깐다.
 
 사용자가 VM 에서 #403 의 첫 실물 대조 명령(`cd ~/stock-trade && .backfill-venv/bin/python
 trade/scripts/backfill_badonion.py --dry-run --since 2026-08-20 --find 텔레칩스`)을

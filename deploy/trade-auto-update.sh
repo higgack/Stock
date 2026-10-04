@@ -136,6 +136,34 @@ if [ -n "$UNIT_FILES_CHANGED" ]; then
     fi
 fi
 
+# Telethon 고정판 설치 — 핀(`trade/scripts/requirements.txt`)이 바뀐 배포에서만. 핀은 git 으로
+# 움직이지만 운영 venv(`.backfill-venv`, Telethon 유닛 4개의 인터프리터)는 pip 를 돌려야
+# 움직인다 — 그 틈에서 비고정판이 운영 세션을 올렸다(실수 #404). 사람이 pip 를 돌려야 효력이 나는
+# fix 는 잘못된 fix 다(Automation-first). 실패해도 배포는 계속한다(`set -e` 밖 if) — 실패는 알림이
+# 처방과 함께 말한다. 성공·실패와 무관하게 리스너는 아래 리스너 조건(requirements.txt 포함)이
+# 재시작해 지금 venv 의 패키지를 다시 읽는다 — 동기화는 타이머라 다음 틱이 읽는다. `timeout`:
+# 이 유닛은 Type=oneshot 이라 시작 타임아웃이 없어, pip 가 매달리면 다음 배포가 영영 못 돈다.
+PIP_NOTE=""
+REQ_CHANGED=$(echo "$CHANGED_FILES" | grep -xE 'trade/scripts/requirements\.txt' || true)
+if [ -n "$REQ_CHANGED" ]; then
+    PIP_MANUAL="cd $REPO &amp;&amp; .backfill-venv/bin/pip install -r trade/scripts/requirements.txt"
+    if [ ! -x "$REPO/.backfill-venv/bin/pip" ]; then
+        echo "trade-bot-update: .backfill-venv 없음 — Telethon 고정판 설치 생략"
+        PIP_NOTE=$'\n'"<i>⚠️ 운영 venv(.backfill-venv)가 없어 Telethon 고정판을 못 깔았다 — trade/README.md 의 venv 생성 후: <code>${PIP_MANUAL}</code></i>"
+    elif PIP_OUT=$(timeout 600 "$REPO/.backfill-venv/bin/pip" install -q -r trade/scripts/requirements.txt 2>&1); then
+        echo "trade-bot-update: .backfill-venv 에 requirements.txt 설치 완료"
+        PIP_NOTE=$'\n'"<i>+ 운영 venv 에 Telethon 고정판 설치(requirements.txt)</i>"
+    else
+        # 꼬리만 싣는다 — `${v: -N}` 은 v 가 N 자보다 짧으면 **빈 문자열**이라 짧은 오류가 통째로
+        # 사라진다. 길이를 먼저 본다(문자 단위라 한글이 반쪽 나지 않는다).
+        PIP_TAIL="$PIP_OUT"
+        [ "${#PIP_TAIL}" -gt 200 ] && PIP_TAIL="${PIP_TAIL: -200}"
+        echo "trade-bot-update: .backfill-venv pip install 실패: ${PIP_TAIL}"
+        PIP_TAIL=$(printf '%s' "$PIP_TAIL" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+        PIP_NOTE=$'\n'"<i>⚠️ Telethon 고정판 설치 실패: <code>${PIP_TAIL}</code> — 손으로: <code>${PIP_MANUAL}</code></i>"
+    fi
+fi
+
 if ! sudo /bin/systemctl restart trade-bot; then
     notify "❌ <b>배포 실패</b>: systemctl restart (${REMOTE_SHORT})"
     exit 1
@@ -155,7 +183,7 @@ fi
 # 경우 새 코드는 다음 기동 때 로드된다). 옛 판은 멈춰 둔 리스너를 배포마다 다시 켰고, 이 PR 이 더한
 # 생존 확인이 그때마다 "active 아님" 경보를 붙였을 것이다. 대시보드는 이 가드를 두지 않는다 —
 # 세션 인증 단계가 없는 서버라 멈춰 있으면 띄우는 게 맞다(NOAH `install.sh` 도 무조건 재시작한다).
-BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
+BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$|^trade/scripts/requirements\.txt$' || true)
 LISTENER_NOTE=""
 # 재시작한 상시 유닛 — 아래 `sleep 3` 뒤 trade-bot 과 함께 살아 있는지 본다(실수 #423 독립
 # 리뷰 M1 의 형제: 새 코드가 기동에서 죽으면 systemd 가 조용히 다시 띄우고 있을 뿐이다).
@@ -184,7 +212,7 @@ fi
 # (`tests/test_restart_closure_20260928.py` — 상시 유닛 전부 공용, #423). ⚠️ `trade/*.py` 는
 # 폐포보다 넓다(대시보드 모듈도 걸린다) — 리스너가 재시작하는 사이 올라온 글은 주기 sync 가
 # 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
-BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
+BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$|^trade/scripts/requirements\.txt$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
     if ! systemctl is-active --quiet trade-bot-badonion-listener 2>/dev/null; then
         echo "trade-bot-update: trade-bot-badonion-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
@@ -240,7 +268,7 @@ if systemctl is-active --quiet trade-bot; then
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
-    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}${LISTENER_NOTE}${DEAD_NOTE}"
+    msg="${msg}${INSTALL_NOTE}${PIP_NOTE}${DASH_NOTE}${LISTENER_NOTE}${DEAD_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else

@@ -170,10 +170,12 @@ def check_cycle_gap() -> None:
     finally:
         conn.close()
 
-    posted_dates = {(r.get("posted_at") or "")[:10] for r in rows}
+    # KST 날 — `[:10]` 은 UTC 날이라 KST 새벽 글이 ±창 밖으로 밀려 받은 발표를
+    # '미수신' 으로 알렸다(규칙 10a). 대시보드 헤더와 같은 함수(#38).
+    from trade.link_new import kst_day
     period_kinds_by_posted: dict[str, set[str]] = {}
     for r in rows:
-        d = (r.get("posted_at") or "")[:10]
+        d = kst_day(r.get("posted_at"))
         period_kinds_by_posted.setdefault(d, set()).add(r.get("period_kind") or "")
 
     missing: list[tuple[str, str]] = []

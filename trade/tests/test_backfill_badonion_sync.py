@@ -1701,3 +1701,41 @@ def test_an_unvouchable_forward_is_named_and_forwarded_as_before(
     line = next(ln for ln in caplog.text.splitlines() if "to-forward unit" in ln)
     assert "보증 못 하는 포워드 1건(봇이 버린다)" in line, line
     assert "보증할 수 없다" in caplog.text
+
+
+def test_a_flood_wait_that_would_outlive_the_unit_aborts_with_a_note(
+        backfill, monkeypatch):
+    """유닛 예산(`TRADE_SYNC_DEADLINE_S`) 안에 못 끝날 FloodWait 은 기다리지 않는다 —
+    systemd 가 알림 없이 죽이기 전에 '긴 FloodWait' 중단(알림 · 재시도 미산정)으로
+    끝낸다. 대기(100s)는 `TRADE_MAX_FLOOD_WAIT_S`(600) 보다 짧아 옛 판은 그냥 잤다."""
+    from trade import tg_entities as tg
+    _seed()
+    slept: list = []
+
+    async def _sleep(s):
+        slept.append(s)
+
+    async def _flood_once(self, dest, ids_, from_peer=None):
+        if not self.forwarded and not getattr(self, "_flooded", False):
+            self._flooded = True
+            err = sys.modules["telethon.errors"].FloodWaitError()
+            err.seconds = 100
+            raise err
+        self.forwarded.append(list(ids_))
+
+    monkeypatch.setattr(backfill.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(_Client, "forward_messages", _flood_once)
+    monkeypatch.setenv(tg.SYNC_DEADLINE_ENV, "540")
+    monkeypatch.setattr(backfill, "_RUN_T0", backfill.time.monotonic() - 500)
+    assert _run(backfill, monkeypatch) == 1
+    assert 101 not in slept, slept
+    assert "실행 예산" in backfill._test_notes[-1], backfill._test_notes
+    # 재시도 셈에 안 들어간다(긴 FloodWait 과 같은 갈래 — 표식은 남기되 0회) — 다음 틱이
+    # 회수를 이어 간다.
+    assert _state(backfill)["retry"]["count"] == 0, _state(backfill)
+
+    # 반대 증거: 예산이 넉넉하면 기다렸다 다시 보낸다(같은 대기, 다른 경과).
+    monkeypatch.setattr(backfill, "_RUN_T0", backfill.time.monotonic())
+    slept.clear()
+    assert _run(backfill, monkeypatch) == 0
+    assert slept.count(101) == 1, slept

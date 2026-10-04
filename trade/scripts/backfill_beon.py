@@ -58,6 +58,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -117,6 +118,9 @@ PAUSE_MAX_S = float(os.environ.get("TRADE_PAUSE_MAX_S") or "3.0")
 # Exit gracefully past this threshold; rerun next day picks up where
 # we left off (idempotent).
 MAX_FLOOD_WAIT_S = int(os.environ.get("TRADE_MAX_FLOOD_WAIT_S") or "600")
+# 실행 예산의 기준 시각 — 예산은 유닛의 `TRADE_SYNC_DEADLINE_S`(나쁜양파 동기화와 같은
+# 규약 · `tg_entities.flood_wait_overruns`).
+_RUN_T0 = time.monotonic()
 
 # --- Candidate cap (anti-flood) --------------------------------------
 # Listener handles realtime forwarding; this script is the safety net
@@ -391,6 +395,12 @@ async def _forward_unit(client, source, unit: list[Message], dest) -> bool:
                     f"Telegram FloodWait {e.seconds}s exceeds "
                     f"{MAX_FLOOD_WAIT_S}s threshold"
                 )
+            # 기다려서 유닛 타임아웃을 넘으면 systemd 가 알림 없이 죽인다 — 그 전에
+            # 중단 알림으로 끝낸다(다음 동기화가 이어서 한다).
+            from trade.tg_entities import flood_wait_overruns
+            over = flood_wait_overruns(e.seconds + 1, started=_RUN_T0)
+            if over:
+                raise BackfillAborted(over)
             delay = e.seconds + 1
         except Exception as e:
             # Permanent per-message failure (e.g. MessageIdInvalidError —
