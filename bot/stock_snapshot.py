@@ -646,6 +646,57 @@ def _apply_share_count(ticker: str, snap: dict) -> None:
         log.warning("stock_snapshot %s: 주식수 검산 실패: %s", ticker, exc)
 
 
+# DART 회사 정보(company.json) 중 스냅샷 `kr` 에 옮기는 칸 — (원천 키, 스냅샷 키).
+_KR_COMPANY_FIELDS = (
+    ("jurir_no", "corp_reg_no"),    # 법인등록번호
+    ("bizr_no", "biz_reg_no"),      # 사업자등록번호
+    ("ceo_nm", "ceo"),              # 대표자
+    ("corp_name", "corp_name"),      # 법인명
+    ("corp_name_eng", "corp_name_eng"),
+    ("induty_code", "ksic_code"),    # 한국표준산업분류
+    ("est_dt", "established"),       # 설립일
+    ("acc_mt", "fiscal_month"),      # 결산월
+    ("adres", "address"),            # 주소
+)
+
+
+def collect_kr_company(stock_code: str) -> dict:
+    """DART 법인 정보(대표자·설립일·주소·결산월·산업분류 …) → {"kr": {...}}.
+
+    ⚠️ 원래 `_enrich_kr` 안의 중첩 함수였다 — 키 없이 만든 스냅샷의 이 칸을 키가
+    생긴 뒤 **다시 받으려면** 밖에서도 불러야 한다(`dashboard._ensure_detail_
+    enrichment`, 실수 #18·#430 — 옛 판은 재무·공시만 다시 받아 법인 칸은 재수집
+    전까지 '수집 당시 키 없음' 이 남았다). 키 없이 빈손이면 그 칸에 적는다
+    (`_note_dart_keyless`)."""
+    out: dict = {}
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    ci = dart.get_company_info(stock_code) if dart else None
+    _note_dart_keyless(out, dart, ci, "company")
+    if ci and ci.get("status") == "000":
+        kr = out.setdefault("kr", {})
+        for src_key, dst_key in _KR_COMPANY_FIELDS:
+            v = ci.get(src_key)
+            if v and str(v).strip():
+                kr[dst_key] = str(v).strip()
+    return out
+
+
+def collect_kr_insiders(stock_code: str) -> dict:
+    """DART 임원·주요주주 지분 → {"kr": {"insider_holdings": [...]}} (상위 15).
+
+    `collect_kr_company` 와 같은 이유로 밖에서도 부른다(실수 #430)."""
+    out: dict = {}
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    if dart:
+        holders = dart.get_insider_holdings(stock_code)
+        _note_dart_keyless(out, dart, holders, "insiders")
+        if holders:
+            out.setdefault("kr", {})["insider_holdings"] = holders[:15]
+    return out
+
+
 def _enrich_kr(ticker: str, snap: dict) -> None:
     """Add KR-specific data from DART + FSC to an existing snapshot dict.
 
@@ -664,28 +715,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
     stock_code = ticker.split(".")[0]
 
     def _t_dart_company() -> dict:
-        out: dict = {}
-        from bot.dart_client import get_dart
-        dart = get_dart()
-        ci = dart.get_company_info(stock_code) if dart else None
-        _note_dart_keyless(out, dart, ci, "company")
-        if ci and ci.get("status") == "000":
-            kr = out.setdefault("kr", {})
-            for src_key, dst_key in (
-                ("jurir_no", "corp_reg_no"),    # 법인등록번호
-                ("bizr_no", "biz_reg_no"),      # 사업자등록번호
-                ("ceo_nm", "ceo"),              # 대표자
-                ("corp_name", "corp_name"),      # 법인명
-                ("corp_name_eng", "corp_name_eng"),
-                ("induty_code", "ksic_code"),    # 한국표준산업분류
-                ("est_dt", "established"),       # 설립일
-                ("acc_mt", "fiscal_month"),      # 결산월
-                ("adres", "address"),            # 주소
-            ):
-                v = ci.get(src_key)
-                if v and str(v).strip() and str(v).strip() != "":
-                    kr[dst_key] = str(v).strip()
-        return out
+        return collect_kr_company(stock_code)
 
     def _t_fsc_item() -> dict:
         # corp_reg_no 는 DART 가 우선 — 병합이 setdefault 라 DART(앞 순서)
@@ -705,15 +735,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         return out
 
     def _t_dart_insider() -> dict:
-        out: dict = {}
-        from bot.dart_client import get_dart
-        dart = get_dart()
-        if dart:
-            holders = dart.get_insider_holdings(stock_code)
-            _note_dart_keyless(out, dart, holders, "insiders")
-            if holders:
-                out.setdefault("kr", {})["insider_holdings"] = holders[:15]
-        return out
+        return collect_kr_insiders(stock_code)
 
     def _t_dart_disclosures() -> dict:
         out: dict = {}
@@ -1546,12 +1568,16 @@ def _note_dart_keyless(out: dict, dart, got, section: str) -> None:
         mark_keyless(out.setdefault("kr", {}), section)
 
 
-def collect_kr_financials(ticker: str) -> dict:
+def collect_kr_financials(ticker: str, *, why: list | None = None) -> dict:
     """DART 재무(연간·시계열·분기) 수집 → {"kr": {...}}.
 
     ⚠️ 원래 스냅샷 빌더 안의 중첩 함수였다. **아카이브에 구워진 값을
     다시 받으려면** 밖에서도 부를 수 있어야 한다(실수 #18) — 이미
     분석한 종목은 재분석 전까지 옛 계정·옛 비율을 그대로 보여준다.
+
+    `why` 리스트를 넘기면 현년 재무(`kr.financials`)가 비었을 때 그 사유를
+    덧붙인다(`dart_client.get_normalized_financials(why=)` — 원천이 '없다' 고
+    답했나 · 답을 못 들었나, 실수 #430). 호출부가 다시 물을 간격을 그걸로 정한다.
     """
     # 현년 + 3개년 시계열 — 같은 DART 재무 API 라 한 task 에서 순차.
     out: dict = {}
@@ -1562,8 +1588,13 @@ def collect_kr_financials(ticker: str) -> dict:
         # 화면이 K-IFRS 칸에 사유를 말하고, 키가 생기면 다시 받는다(#43·#18 —
         # `dashboard._e_kr_financials` 가 이 표식을 본다).
         mark_keyless(out.setdefault("kr", {}), "financials")
+        if why is not None:
+            why.append("키 없음")
         return out
-    fin = dart.get_normalized_financials(ticker)
+    # 사유를 바라는 호출부만 `why=` 를 넘긴다 — 옛 모양(인자 없는 호출)은 그대로
+    # 두어, 그 모양만 아는 대역·래퍼가 깨지지 않는다.
+    fin = (dart.get_normalized_financials(ticker, why=why) if why is not None
+           else dart.get_normalized_financials(ticker))
     if fin and fin.get("financials"):
         compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
         for k in _KR_FIN_RELAY_KEYS:

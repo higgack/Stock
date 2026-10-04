@@ -682,6 +682,9 @@ def _rcept_nos(dart, ticker: str, year: int, reprt_code: str) -> list[str]:
 _PARSERS = {"products": parse_products, "production": parse_production}
 
 
+# 표 캐시 파일 이름의 접두 — 키(`_tables_cache_key`)와 정리(`purge_dead_tables`)가
+# 같이 쓴다(#38).
+_TABLES_PREFIX = "dart_tables_"
 # 파싱 결과 디스크 캐시(#21b — 결과에 파서 지문을 찍고 읽을 때 대조).
 _TABLES_TTL = 24 * 3600
 # 권위 없는 결과는 **짧게만** 믿는다 — 길이는 `dart_client.PROVISIONAL_TTL_SEC`
@@ -726,7 +729,21 @@ def _tables_cache_key(ticker: str, quarters: list, keys: tuple) -> str:
     q = (quarters[-1] or {}) if quarters else {}
     label = str(q.get("label") or "") + str(q.get("reprt_code") or "")
     safe = re.sub(r"[^A-Za-z0-9_.]", "_", f"{ticker}_{label}")
-    return f"dart_tables_{_parse_sig()}_{safe}_{'-'.join(sorted(keys))}.json"
+    return f"{_TABLES_PREFIX}{_parse_sig()}_{safe}_{'-'.join(sorted(keys))}.json"
+
+
+def purge_dead_tables(*, now: float | None = None,
+                      cache_dir=None) -> tuple[int, int, int]:
+    """다시 읽힐 길이 없는 표 캐시 파일을 지운다(실수 #430 의 형제).
+
+    이름에 파서 지문(`_parse_sig`)이 실려 이 모듈을 고칠 때마다 옛 이름은
+    아무도 안 연다 — 지우는 코드가 없어 종목마다 쌓였다. 읽는 쪽
+    (`_tables_cached`)은 mtime 이 `_TABLES_TTL` 안인 파일만 읽으므로 **나이로만**
+    가른다: 지문이 옛것이어도 수명 안이면 남긴다(배포 직후 아직 옛 코드인
+    프로세스가 쓰고 읽는 중일 수 있다). 수명이 지나면 지문과 무관하게 죽었다."""
+    from bot.finviz_client import purge_expired
+    return purge_expired(_TABLES_PREFIX, _TABLES_TTL, now=now,
+                         cache_dir=cache_dir)
 
 
 def _tables_cached(key: str):

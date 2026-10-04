@@ -716,5 +716,88 @@ class KeylessProductsReasonTests20261004(unittest.TestCase):
             self.assertEqual(dr.dart_key(""), "")
 
 
+
+class NameResolveReasonTests20261004(unittest.TestCase):
+    """이름으로 회사를 못 풀었을 때 — 그 이유가 회사 목록 부재(키 없음 · 목록 조회
+    실패)면 화면이 그렇게 말한다(실수 #430). `bot/scripts/dart_gap_audit` 의 키
+    없는 격리 자식이 찾았다: 캐시 없는 키 부재에서 `find_by_name` 이 빈 목록을
+    주자 '미확보(비상장·해외·미발견)' — 회사가 없다는 말 — 이 떴다(#82)."""
+
+    def _gather(self, *, key, map_ready, query="어떤회사"):
+        from unittest import mock
+
+        class _Dart:
+            api_key = key
+            stock_code_to_name = lambda self, c: None
+            find_by_name = lambda self, q: []
+            corp_map_ready = lambda self: map_ready
+
+        with mock.patch("bot.dart_client.get_dart", return_value=_Dart()), \
+                mock.patch.object(C, "_load_alerts", return_value=[]), \
+                mock.patch("trade.dart_revenue.load_inventory", return_value={}), \
+                mock.patch("trade.dart_revenue.fetch_company_products",
+                           return_value=None), \
+                mock.patch("trade.customs.session"), \
+                mock.patch("trade.industry.load_mti_stored", return_value={}), \
+                mock.patch("trade.industry.load_mti_imports", return_value={}), \
+                mock.patch("trade.mti_companies.load_channel_pairs",
+                           return_value=[]):
+            return C.gather(query)
+
+    def test_keyless_without_company_list(self):
+        data = self._gather(key="", map_ready=False)
+        self.assertEqual(data["mode"], "company")
+        self.assertIsNone(data["code"])
+        want = ("DART_API_KEY 없음 — 이름으로 회사를 찾을 DART 회사 목록을 "
+                "받지 못했습니다")
+        self.assertEqual(data["products_why"], want)
+        self.assertIn("📦 제품 구성 — " + want, C.render_free(data))
+        self.assertNotIn("미확보(비상장·해외·미발견)", C.render_free(data))
+
+    def test_keyed_but_company_list_failed(self):
+        data = self._gather(key="k-" + "1234567890", map_ready=False)
+        self.assertIn("DART 회사 목록을 받지 못해", data["products_why"])
+        self.assertNotIn("DART_API_KEY", data["products_why"])
+
+    def test_list_present_and_no_hit_keeps_the_old_reason(self):
+        """반대 증거 — 목록이 있는데 못 찾았으면 정말 상장사 목록에 없는 것이다."""
+        for key in ("", "k-" + "1234567890"):
+            data = self._gather(key=key, map_ready=True)
+            self.assertEqual(data["products_why"], "", key)
+            self.assertIn("DART 매출표 미확보(비상장·해외·미발견)",
+                          C.render_free(data))
+
+    def test_six_digit_code_never_blames_the_company_list(self):
+        """코드로 물으면 이름 풀이를 안 한다 — 목록 부재가 사유일 수 없다."""
+        data = self._gather(key="k-" + "1234567890", map_ready=False,
+                            query="000009")
+        self.assertEqual(data["code"], "000009")
+        self.assertNotIn("회사 목록", data["products_why"])
+
+
+class TelegramProductsReasonTests20261004(unittest.TestCase):
+    """같은 사실을 싣는 다른 화면(#38) — 텔레그램 보고서는 사유를 버리고 늘
+    '미확보' 라고 적었다(실수 #430)."""
+
+    def test_reason_reaches_telegram(self):
+        data = {"mode": "company", "name": "어떤회사", "code": "000009",
+                "products": [], "exposure": [],
+                "products_why": "DART_API_KEY 없음 — DART 매출표를 받지 못했습니다"}
+        txt = C.render_telegram(data)
+        self.assertIn("📦 제품 구성 — DART_API_KEY 없음 — DART 매출표를 받지 못했습니다",
+                      txt)
+        self.assertNotIn("DART 매출표 미확보", txt)
+
+    def test_reason_is_escaped(self):
+        data = {"mode": "company", "name": "어떤회사", "code": "",
+                "products": [], "exposure": [], "products_why": "a<b>&c"}
+        self.assertIn("a&lt;b&gt;&amp;c", C.render_telegram(data))
+
+    def test_no_reason_keeps_the_old_line(self):
+        data = {"mode": "company", "name": "어떤회사", "code": "",
+                "products": [], "exposure": [], "products_why": ""}
+        self.assertIn("📦 제품 구성 — DART 매출표 미확보", C.render_telegram(data))
+
+
 if __name__ == "__main__":
     unittest.main()

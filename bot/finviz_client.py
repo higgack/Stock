@@ -139,6 +139,32 @@ def _cache_write(name: str, obj) -> None:
         pass
 
 
+def purge_expired(prefix: str, ttl: float, *, now: float | None = None,
+                  cache_dir: Path | None = None) -> tuple[int, int, int]:
+    """`prefix*.json` 중 mtime 이 `ttl` 을 넘긴 파일을 지운다 → (지움, 남김, 실패).
+
+    ⚠️ 이 디렉터리는 수십 개 모듈이 같이 쓴다 — 무엇이 죽은 파일인지는 **이름을
+    짓는 쪽만** 안다(어떤 캐시는 지난 파일을 이력으로 읽는다). 그래서 이 함수는
+    기계만 갖고, 접두와 수명은 그 이름을 짓고 읽는 모듈이 넘긴다(`dart_production.
+    purge_dead_tables` 등, 실수 #430). 읽는 쪽이 `_cached(name, ttl)` 로 **그
+    수명 안만** 읽는 접두에만 쓸 것."""
+    now = time.time() if now is None else now
+    d = _CACHE_DIR if cache_dir is None else cache_dir
+    removed = kept = failed = 0
+    if not d.is_dir():
+        return (0, 0, 0)
+    for f in d.glob(f"{prefix}*.json"):
+        try:
+            if now - f.stat().st_mtime < ttl:
+                kept += 1
+                continue
+            f.unlink()
+            removed += 1
+        except OSError:
+            failed += 1
+    return (removed, kept, failed)
+
+
 def _now_label() -> str:
     from datetime import datetime, timedelta, timezone
     return datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")

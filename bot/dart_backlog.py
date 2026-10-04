@@ -2050,9 +2050,21 @@ def _parse_sig() -> str:
     return _BL_SIG
 
 
+_BL_PREFIX = "dart_backlog_"
+
+
 def _bl_key(ticker: str, year: int, reprt_code: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.]", "_", f"{ticker}_{year}_{reprt_code}")
-    return f"dart_backlog_{_parse_sig()}_{safe}.json"
+    return f"{_BL_PREFIX}{_parse_sig()}_{safe}.json"
+
+
+def purge_dead_backlog(*, now: float | None = None,
+                       cache_dir=None) -> tuple[int, int, int]:
+    """다시 읽힐 길이 없는 수주잔고 캐시 파일을 지운다(실수 #430 의 형제 — 표
+    캐시 `dart_production.purge_dead_tables` 와 같은 규약, #38). 읽는 쪽
+    (`_bl_cached`)이 mtime `_BL_TTL` 안만 읽으므로 나이로만 가른다."""
+    from bot.finviz_client import purge_expired
+    return purge_expired(_BL_PREFIX, _BL_TTL, now=now, cache_dir=cache_dir)
 
 
 def _bl_cached(key: str):

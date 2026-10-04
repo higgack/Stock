@@ -704,6 +704,22 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None,
         if not dart_key(api_key):
             from bot.dart_client import keyless_reason
             products_why = keyless_reason("DART 매출표를")
+    elif not code and not is_code and q and not hits:
+        # 이름을 못 풀었다 — 회사 목록(corpCode)이 없어서면 회사가 없다는 말
+        # ('미확보 — 미발견')은 거짓이다(실수 #430: 키 없는 격리 자식이 찾았다).
+        # 목록이 있는데 못 찾았으면 정말 상장사 목록에 없는 것이라 옛 문구가 맞다.
+        try:
+            _map_ok = dart.corp_map_ready()
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("company_report corp map %s: %s", q, exc)
+            _map_ok = True                  # 모르면 탓하지 않는다(#165)
+        if not _map_ok:
+            from bot.dart_client import dart_ready, keyless_reason
+            products_why = (
+                keyless_reason("이름으로 회사를 찾을 DART 회사 목록을")
+                if not dart_ready(dart) else
+                "DART 회사 목록을 받지 못해 이름으로 회사를 찾지 못했습니다 — "
+                "잠시 뒤 다시 조회하세요")
     # 회사별 탭과 동일 소스(store.db BeOn 알림) — 회사 모드에서만 필요(품목 모드는
     # 위에서 이미 반환). 풍부한 회사→품목 매핑(사용자 2026-06-18).
     exposure = _company_exposure(name, by_mti, pairs, by_imp, _load_alerts())
@@ -1003,7 +1019,10 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
             sh = f" ({p['share_pct']}%)" if p.get("share_pct") is not None else ""
             lines.append(f"• {e(str(p.get('name','')))}{sh}")
     else:
-        lines.append("📦 제품 구성 — DART 매출표 미확보")
+        # 사유가 있으면 그것을(웹 보고서 `render_free` 와 같은 칸 — #38 · 실수 #430).
+        lines.append("📦 제품 구성 — "
+                     + (e(data.get("products_why")) if data.get("products_why")
+                        else "DART 매출표 미확보"))
     lines.append("")
     exposure = data.get("exposure") or []
     if exposure:

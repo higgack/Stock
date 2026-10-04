@@ -109,6 +109,9 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache"
 # anyone upgrading just re-downloads the corp_code.xml on first call.
 _CORPCODE_CACHE = _CACHE_DIR / "dart_corpcode_v2.json"
 _CORPCODE_TTL_DAYS = 30
+# 회사 목록 다운로드가 실패했을 때 다시 묻기까지(초) — 장애 중 요청마다 두드리지
+# 않고(#303), 그렇다고 재시작 전까지 영영 안 묻지도 않는다(#161).
+_CORPCODE_RETRY_SEC = 10 * 60
 _HTTP_TIMEOUT = 10  # seconds — keep tight so a slow DART doesn't stall analysis
 _HOT_CACHE_TTL_HOURS = 12  # disclosures / insider holdings change at most daily
 
@@ -923,6 +926,18 @@ def _dart_key_from_env_file() -> str:
 # 구우면 원천이 영구히 0건인 회사가 탭마다 다시 걷는다(#303 실패는 짧게만).
 PROVISIONAL_TTL_SEC = 30 * 60
 
+# `get_normalized_financials(why=…)` 의 사유 중 **원천이 답한** 것 — 그 보고서에
+# 재무가 없다(013 조회된 데이터 없음) · 보고서는 왔는데 아는 계정이 하나도 없다.
+# 다시 물어도 다음 보고서가 나올 때까지 같은 답이다. 그 밖(키·회사 목록·수신
+# 실패·한도 020·점검 800 …)은 곧 다시 물으면 답이 바뀔 수 있다(실수 #430).
+FIN_EMPTY_ANSWERED = ("status=013", "계정 없음")
+
+
+def fin_empty_answered(why) -> bool:
+    """빈 재무의 사유가 **모두** 원천의 답인가 — 하나라도 실패면 아니다. 사유가
+    없으면(사유를 싣지 않는 대역 · 빈손이 아닌 결과) 아니다 — 모르면 짧게 믿는다."""
+    return bool(why) and all(w in FIN_EMPTY_ANSWERED for w in why)
+
 
 class PeriodicReports(list):
     """정기보고서 후보 목록 + **못 물어본 사유**(`failed`).
@@ -981,6 +996,10 @@ class DartClient:
         # stock_code_to_name() call from _name_map; not persisted to
         # disk because it's cheap to rebuild from the v2 cache.
         self._stock_to_name: dict[str, str] | None = None
+        # 회사 목록을 새로 못 받아(다운로드 실패) 임시로 든 상태 — `_corp_map_retry_at`
+        # 이 지나면 다시 묻는다(`_load_corp_code_map`).
+        self._corp_map_provisional = False
+        self._corp_map_retry_at = 0.0
 
     # ── corp_code mapping ───────────────────────────────────────────────
     def _load_corp_code_map(self) -> dict[str, str]:
@@ -989,28 +1008,55 @@ class DartClient:
         so we don't re-download on every analysis. The cache also carries
         the reverse name→entries map so `find_by_name()` doesn't have to
         re-parse the XML."""
-        if self._corp_code_map is not None and self._name_map is not None:
+        if (self._corp_code_map is not None and self._name_map is not None
+                and not (self._corp_map_provisional
+                         and time.time() >= self._corp_map_retry_at)):
             return self._corp_code_map
 
         # Disk cache check (v2 format: dict with 'stock_to_corp' and
-        # 'name_to_entries' keys).
+        # 'name_to_entries' keys). 만료된 캐시도 **버리지 않고** 쥐고 있는다 —
+        # 새로 받지 못하면(키 없음 · 다운로드 실패) 빈 목록보다 낫다(회사 목록은
+        # 천천히 바뀐다, #384 · 실수 #430).
+        stale = None
         if _CORPCODE_CACHE.exists():
             try:
                 age_days = (time.time() - _CORPCODE_CACHE.stat().st_mtime) / 86400
+                data = json.loads(_CORPCODE_CACHE.read_text())
                 if age_days < _CORPCODE_TTL_DAYS:
-                    data = json.loads(_CORPCODE_CACHE.read_text())
                     self._corp_code_map = data.get("stock_to_corp", {})
                     self._name_map = data.get("name_to_entries", {})
+                    self._stock_to_name = None
+                    self._corp_map_provisional = False
                     return self._corp_code_map
+                stale = (data, age_days)
             except Exception as exc:
                 log.warning("dart: corp_code cache read failed: %s", exc)
 
+        def _settle(why: str, *, retry: bool) -> dict[str, str]:
+            """새로 못 받았다 — 만료 캐시가 있으면 그것, 없으면 빈 목록.
+
+            `retry=True`(다운로드 실패)면 `_CORPCODE_RETRY_SEC` 뒤 다시 묻는다.
+            옛 판은 빈 목록을 **프로세스 수명 내내** 기억했다 — 싱글턴이라 일시
+            실패 한 번이 재시작 전까지 이름→코드 조회를 전부 죽였다(#161 · 실수
+            #430). 키가 없으면 다시 물어도 같으므로 재시도하지 않는다(키는
+            클라이언트를 만들 때 읽는다)."""
+            data = stale[0] if stale else {}
+            if stale:
+                log.warning("dart: %s — 만료된 회사 목록(%.0f일 전)을 쓴다",
+                            why, stale[1])
+            else:
+                log.warning("dart: %s — corp_code map unavailable", why)
+            self._corp_code_map = data.get("stock_to_corp", {})
+            self._name_map = data.get("name_to_entries", {})
+            self._stock_to_name = None
+            self._corp_map_provisional = retry
+            if retry:
+                self._corp_map_retry_at = time.time() + _CORPCODE_RETRY_SEC
+            return self._corp_code_map
+
         # Fetch fresh.
         if not self.api_key:
-            log.warning("dart: DART_API_KEY missing — corp_code map unavailable")
-            self._corp_code_map = {}
-            self._name_map = {}
-            return self._corp_code_map
+            return _settle("DART_API_KEY missing", retry=False)
 
         try:
             resp = requests.get(
@@ -1023,10 +1069,7 @@ class DartClient:
                 xml_bytes = zf.read("CORPCODE.xml")
             root = ET.fromstring(xml_bytes)
         except Exception as exc:
-            log.warning("dart: corp_code download failed: %s", exc)
-            self._corp_code_map = {}
-            self._name_map = {}
-            return self._corp_code_map
+            return _settle(f"corp_code download failed: {exc}", retry=True)
 
         stock_to_corp: dict[str, str] = {}
         name_to_entries: dict[str, list[dict]] = {}
@@ -1062,7 +1105,20 @@ class DartClient:
 
         self._corp_code_map = stock_to_corp
         self._name_map = name_to_entries
+        # 역방향 표(`stock_code_to_name`)는 처음 부를 때 한 번 만든다 — 목록을
+        # 갈아 끼우면 같이 버린다(만료 목록으로 만든 표가 남으면 새 상장사를 못 찾는다).
+        self._stock_to_name = None
+        self._corp_map_provisional = False
         return stock_to_corp
+
+    def corp_map_ready(self) -> bool:
+        """이름·코드 조회에 쓸 회사 목록이 있나(만료된 목록 포함).
+
+        빈 조회 결과가 '그런 회사가 없다' 인지 '목록이 없어 못 찾았다' 인지
+        호출부가 가를 때 쓴다(#82 — trade 회사 보고서가 둘을 '미확보' 하나로
+        적었다, 실수 #430)."""
+        self._load_corp_code_map()
+        return bool(self._name_map)
 
     def find_by_name(self, query: str) -> list[dict]:
         """Resolve a Korean / English company name to listed-entity entries.
@@ -1857,6 +1913,8 @@ class DartClient:
         year: Optional[int] = None,
         fs_div: str = "CFS",
         reprt_code: str = "11011",
+        *,
+        why: Optional[list] = None,
     ) -> Optional[dict]:
         """yfinance 의 KR 종목 재무 corruption (단위 mismatch / financial
         Currency=USD glitch / TTM vs FY divergence) 발생 시 DART 의
@@ -1892,19 +1950,32 @@ class DartClient:
             fs_div: 'CFS' = 연결재무제표 (default), 'OFS' = 별도재무제표.
             reprt_code: '11011'=사업보고서(연간, default, 하위호환) '11012'=
                 반기보고서 '11013'=1분기보고서 '11014'=3분기보고서.
+            why: 리스트를 넘기면 None 을 돌려줄 때 **그 사유**를 덧붙인다 —
+                원천이 '없다' 고 답한 것(`FIN_EMPTY_ANSWERED`)과 우리가 답을 못
+                들은 것(타임아웃·한도·키·회사 목록)을 호출부가 가른다(#82 ·
+                #160 같은 응답에 싣는다 — 두 번째 호출로 묻지 않는다). 처방이
+                다르다: 앞엣것은 다음 보고서까지 같은 답이고, 뒤엣것은 곧 다시
+                물으면 답이 바뀔 수 있다(실수 #430).
         """
+        def _why(reason: str) -> None:
+            if why is not None:
+                why.append(reason)
         if not self.api_key:
+            _why("키 없음")
             return None
         code = (ticker or "").upper().split(".")[0]
         if not (code.isdigit() and len(code) == 6):
+            _why("티커 형식")
             return None
         try:
             corp_map = self._load_corp_code_map()
         except Exception as exc:
             log.warning("get_normalized_financials: corp_code map load failed: %s", exc)
+            _why(f"회사 목록 실패: {type(exc).__name__}")
             return None
         corp_code = corp_map.get(code)
         if not corp_code:
+            _why("회사 코드 없음")
             return None
 
         target_year = year or (date.today().year - 1)
@@ -1959,6 +2030,7 @@ class DartClient:
                 "get_normalized_financials: fetch failed for %s (%d, %s, %s): %s",
                 code, target_year, reprt_code, fs_div, exc,
             )
+            _why(f"수신 실패: {type(exc).__name__}")
             return None
 
         if payload.get("status") != "000":
@@ -1967,11 +2039,13 @@ class DartClient:
                 "get_normalized_financials: DART status=%s for %s (%d, %s) — skipping",
                 payload.get("status"), code, target_year, reprt_code,
             )
+            _why(f"status={payload.get('status')}")
             return None
 
         items = payload.get("list") or []
         financials = _extract_dart_financials(items)
         if not financials:
+            _why("계정 없음")
             return None
         # FCF — 산식은 `bot.fcf` 한 곳(#38).
         # ⚠️ **사업보고서(11011)에만** 붙인다. 분기/반기보고서의 현금흐름은
@@ -2067,6 +2141,13 @@ def dart_ready(dart) -> bool:
     return dart is not None and bool(getattr(dart, "api_key", None))
 
 
+# `keyless_reason` 문장 틀의 조각 — 감사가 화면에서 이 문장을 찾을 때 같은 조각을
+# 쓴다(`keyless_sentences`, #38).
+_KEYLESS_HEAD = "DART_API_KEY 없음"
+_KEYLESS_SEP = " — "
+_KEYLESS_TAIL = " 받지 못했습니다"
+
+
 def keyless_reason(what: str, *, at_collection: bool = False) -> str:
     """키가 없어 DART 를 못 물었을 때 **빈칸 자리에** 적는 문구(단일 출처, #38).
 
@@ -2076,8 +2157,8 @@ def keyless_reason(what: str, *, at_collection: bool = False) -> str:
     `at_collection=True` 는 값을 **모을 때** 키가 없었던 경우(스냅샷에 기록된
     사실) — 나중에 키를 넣고 그 화면을 다시 봐도 문장이 거짓이 되지 않게
     '수집 당시' 라고 적는다(#165)."""
-    head = "수집 당시 DART_API_KEY 없음" if at_collection else "DART_API_KEY 없음"
-    return f"{head} — {what} 받지 못했습니다"
+    head = ("수집 당시 " + _KEYLESS_HEAD) if at_collection else _KEYLESS_HEAD
+    return f"{head}{_KEYLESS_SEP}{what}{_KEYLESS_TAIL}"
 
 
 # 키 없이 물어 빈손이었던 DART **칸**의 기록 — 칸마다 따로 적는다(실수 #429 리뷰
@@ -2093,6 +2174,16 @@ def keyless_reason(what: str, *, at_collection: bool = False) -> str:
 # 조용히 사라진다(첫 작업의 dict 만 남거나 통째로 덮인다).
 KEYLESS_SECTIONS = ("company", "insiders", "disclosures", "financials")
 _KEYLESS_WHEN = ("collection", "now")
+# 칸마다 빈칸 자리의 사유 문장에 들어가는 **대상** — 화면(`dashboard`)이 이걸로
+# 문장을 만들고, 감사(`scripts/dart_gap_audit`)가 이걸로 화면을 잰다(#38 — 두 벌로
+# 적으면 한쪽만 고쳐져 감사가 눈이 먼다, 실수 #430). 주주 칸은 다른 표(최대주주·
+# 계열회사)와 한 문장으로 묶여 뒤에 ' 표를' 이 붙는다(`dashboard` 주주 칸).
+KEYLESS_WHAT = {
+    "company": "대표자·설립일·주소·결산월·산업분류를",
+    "insiders": "임원·주요주주 지분",
+    "disclosures": "공시 목록을",
+    "financials": "DART 재무제표를",
+}
 
 
 def _keyless_field(section: str) -> str:
@@ -2119,9 +2210,34 @@ def keyless_when(kr, section: str) -> str | None:
     return when if when in _KEYLESS_WHEN else None
 
 
-def keyless_note(kr, section: str, what: str) -> str:
-    """그 칸에 '키 없음' 기록이 있으면 빈칸 자리의 사유 문장, 없으면 `""`."""
+def keyless_note(kr, section: str, what: str | None = None) -> str:
+    """그 칸에 '키 없음' 기록이 있으면 빈칸 자리의 사유 문장, 없으면 `""`.
+    대상은 기본으로 `KEYLESS_WHAT[section]` — 감사가 같은 표로 화면을 잰다."""
     when = keyless_when(kr, section)
     if when is None:
         return ""
-    return keyless_reason(what, at_collection=(when == "collection"))
+    return keyless_reason(what or KEYLESS_WHAT[section],
+                          at_collection=(when == "collection"))
+
+
+def keyless_sentence_spans(text: str) -> list[tuple[int, str]]:
+    """`text`(화면 HTML 포함)에 실린 키 없음 사유 문장들 → [(시작 위치, 대상)].
+
+    문장 틀은 `keyless_reason` 한 곳이고 여기서 그 틀의 조각을 그대로 쓴다(#38).
+    `html.escape` 는 이 틀의 글자(`—`·`·`)를 바꾸지 않는다. 문장 안에 태그가 끼면
+    한 문장이 아니므로 받지 않는다."""
+    import re
+    pat = (re.escape(_KEYLESS_HEAD) + re.escape(_KEYLESS_SEP)
+           + r"([^<]*?)" + re.escape(_KEYLESS_TAIL))
+    return [(m.start(), m.group(1)) for m in re.finditer(pat, text or "")]
+
+
+def keyless_sentences(text: str) -> list[str]:
+    """`text` 에 실린 키 없음 사유 문장들의 **대상** 부분(`keyless_sentence_spans`)."""
+    return [what for _pos, what in keyless_sentence_spans(text)]
+
+
+def keyless_sentence_in(text: str, section: str) -> bool:
+    """`text` 에 그 칸(`KEYLESS_SECTIONS`)의 키 없음 사유 문장이 실렸나."""
+    what = KEYLESS_WHAT[section]
+    return any(what in got for got in keyless_sentences(text))
