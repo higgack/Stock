@@ -4657,6 +4657,12 @@ _KR_FIN_KEYED_EMPTY_TTL = 6 * 3600
 _KR_REASK_SECTIONS = {"company": "collect_kr_company",
                       "insiders": "collect_kr_insiders"}
 _KR_REASK_EMPTY: dict[tuple[str, str], float] = {}
+# 키로 다시 받아 **값이 온** (종목, 칸) → (그 시각, 받은 값). 저장본은 렌더마다
+# 디스크에서 새로 읽혀 '키 없음' 기록을 그대로 들고 오므로, 기억하지 않으면 렌더마다
+# 같은 수집을 되풀이한다 — 임원 지분은 디스크 캐시가 없어 매번 동기 HTTP(10초 상한)
+# 였다(실수 #430 독립 리뷰). 지분·법인 정보는 하루에 많아야 한 번 바뀌므로
+# `_KR_FIN_KEYED_EMPTY_TTL`(6시간) 동안 그 값을 다시 싣는다.
+_KR_REASK_GOT: dict[tuple[str, str], tuple[float, dict]] = {}
 
 
 def _reask_keyless_sections(ticker: str, kr: dict) -> None:
@@ -4675,6 +4681,11 @@ def _reask_keyless_sections(ticker: str, kr: dict) -> None:
     import bot.stock_snapshot as _ss
     code = (ticker or "").split(".")[0]
     for sec in todo:
+        hit = _KR_REASK_GOT.get((ticker, sec))
+        if hit is not None and _time.time() - hit[0] < _KR_FIN_KEYED_EMPTY_TTL:
+            kr.update(hit[1])             # 키로 이미 받았다 — 다시 묻지 않는다
+            clear_keyless(kr, sec)
+            continue
         at = _KR_REASK_EMPTY.get((ticker, sec))
         if at is not None and _time.time() - at < PROVISIONAL_TTL_SEC:
             clear_keyless(kr, sec)        # 키로 이미 물어 빈손이었다
@@ -4689,6 +4700,7 @@ def _reask_keyless_sections(ticker: str, kr: dict) -> None:
             # 먼저 병합한다(`stock_snapshot._enrich_kr`). 키를 방금 확인했으므로
             # 수집기가 '키 없음' 기록을 싣는 일은 없다(실려도 아래에서 지운다).
             kr.update(got)
+            _KR_REASK_GOT[(ticker, sec)] = (_time.time(), dict(got))
         else:
             _KR_REASK_EMPTY[(ticker, sec)] = _time.time()
             log.info("_ensure_detail_enrichment: %s 키 없이 만든 스냅샷의 %s 칸을 "

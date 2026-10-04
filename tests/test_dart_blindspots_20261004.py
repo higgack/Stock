@@ -1146,6 +1146,7 @@ class TestKeylessScope:
         monkeypatch.setattr(d, "_BATCH_REGEN", False)
         monkeypatch.setattr(d, "_KR_FIN_KEYED_EMPTY", {})
         monkeypatch.setattr(d, "_KR_REASK_EMPTY", {})
+        monkeypatch.setattr(d, "_KR_REASK_GOT", {})
         monkeypatch.setattr(ss, "collect_kr_financials", lambda t, **k: {})
         si = {"currency": "KRW", "kr": _all_keyless()}
         d._ensure_detail_enrichment("018260.KS", si)

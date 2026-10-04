@@ -76,6 +76,22 @@ class TestFinancialsWhy:
         assert client.get_normalized_financials("000001.KS", why=why) is None
         assert why == ["회사 코드 없음"]
 
+    def test_empty_list_is_a_list_failure(self, client, monkeypatch):
+        """독립 리뷰 #5 — 로더는 다운로드 실패에 던지지 않고 빈 목록을 준다. 옛 판은
+        그걸 '회사 코드 없음'(그런 회사가 없다)으로 적었다."""
+        monkeypatch.setattr(client, "_load_corp_code_map", lambda: {})
+        why: list = []
+        assert client.get_normalized_financials("005930.KS", why=why) is None
+        assert why == ["회사 목록 실패: 빈 목록"]
+
+    def test_stale_list_miss_is_a_list_failure(self, client, monkeypatch):
+        monkeypatch.setattr(client, "_load_corp_code_map",
+                            lambda: {"000660": "00164779"})
+        client._corp_map_provisional = True
+        why: list = []
+        assert client.get_normalized_financials("005930.KS", why=why) is None
+        assert why == ["회사 목록 실패: 만료 목록에 없음"]
+
     def test_network_failure(self, client, monkeypatch):
         import requests
         _http(monkeypatch, exc=requests.ConnectionError("x"))
@@ -189,6 +205,7 @@ def reask(monkeypatch):
     cli = dc.DartClient(_KEY)
     monkeypatch.setattr(dc, "get_dart", lambda *a, **k: cli)
     monkeypatch.setattr(d, "_KR_REASK_EMPTY", {})
+    monkeypatch.setattr(d, "_KR_REASK_GOT", {})
     monkeypatch.setattr(d, "_KR_FIN_KEYED_EMPTY", {})
     got = {"ci": 0, "ins": 0, "ci_value": dict(_CI),
            "ins_value": list(_HOLDERS)}
@@ -319,6 +336,29 @@ class TestReaskCompanyInsiders:
             assert dc.keyless_when(si["kr"], "company") == "collection"
         assert tries == ["005930", "005930"]
         assert d._KR_REASK_EMPTY == {}
+
+    def test_keyed_success_is_remembered_not_reasked(self, reask):
+        """독립 리뷰 #6 — 받은 값은 메모리 사본에만 실리고 저장본은 '키 없음' 기록을
+        그대로 들고 와, 렌더마다 수집을 되풀이했다(임원 지분은 디스크 캐시가 없어
+        매번 동기 HTTP). 받은 값을 6시간 기억하고 다시 싣는다."""
+        import bot.dart_client as dc
+        for _ in range(3):
+            si = _enrich(_stored("company", "insiders"))
+            assert si["kr"]["insider_holdings"] == _HOLDERS
+            assert si["kr"]["ceo"] == "홍길동"
+            assert dc.keyless_when(si["kr"], "insiders") is None
+        assert (reask["ci"], reask["ins"]) == (1, 1), "렌더마다 다시 받았다"
+
+    def test_success_memo_expires(self, reask):
+        import time
+
+        import bot.dashboard as d
+        _enrich(_stored("insiders"))
+        k = ("005930.KS", "insiders")
+        t, got = d._KR_REASK_GOT[k]
+        d._KR_REASK_GOT[k] = (time.time() - d._KR_FIN_KEYED_EMPTY_TTL - 1, got)
+        _enrich(_stored("insiders"))
+        assert reask["ins"] == 2, "기억이 지났는데 다시 받지 않았다"
 
     def test_dart_wins_over_fsc_corp_reg_no(self, reask):
         """DART 가 우선이다 — 스냅샷 수집의 병합 순서와 같다."""

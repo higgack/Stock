@@ -2878,7 +2878,7 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 - `.get` 의 기본값은 따라가지 않는다 — 없는 칸은 '실리지 않음' 으로만 센다(`CTX.get('d', get_dart())` 의 기본값이 클라이언트여도).
 - 제품 쪽(② ①): 배포 전 코드가 쓴 쿨다운 기록(코드 칸 없음)은 만료(30분)까지 014 를 답으로 못 읽는다 · 키 있는 빈손 메모는 6시간이라 그 사이 일시 실패였어도 다시 묻지 않는다(재시작하면 풀린다) · 법인·임원 칸은 키가 생겨도 보강이 다시 받지 않는다(재수집 전까지 '수집 당시' 가 남는다 — 재무·공시만 보강이 다시 묻는다) · 시세 본문 캐시는 DART 키 유무만 가른다 — 다른 환경 상태(다른 원천 키 · 원천 장애)에 기대는 문장은 그 이름이 모른다.
 
-## #430 — #429 의 '못 보는 축' 전부 + ①② 운영 실측 + 이름에 버전을 싣는 캐시 정리 (`tests/test_dart_gap_20261004.py` 46건 · `tests/test_dart_reask_20261004.py` 28건 · `tests/test_cache_purge_20261004.py` 36건 · `tests/test_dart_blindspots_20261004.py` 110건(+6) · `tests/test_dart_ready_20261002.py` 610건(+247) · `trade/tests/test_company_report.py` +7 · 2026-10-04)
+## #430 — #429 의 '못 보는 축' 전부 + ①② 운영 실측 + 이름에 버전을 싣는 캐시 정리 (`tests/test_dart_gap_20261004.py` 52건 · `tests/test_dart_reask_20261004.py` 32건 · `tests/test_cache_purge_20261004.py` 36건 · `tests/test_dart_blindspots_20261004.py` 110건(+6) · `tests/test_dart_ready_20261002.py` 614건(+251) · `trade/tests/test_company_report.py` +7 · 2026-10-04)
 
 사용자 2026-10-04 "계속 남은거 있다고 하지말고 할수 있는건 모두 다 끝내줘".
 
@@ -2890,14 +2890,15 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 | ② 키 없는 격리 자식 — HOME·cwd 임시 · 환경은 **허용 목록**(API 키는 이름이 무엇이든 안 넘어간다, #24) · `PYTHONPATH` 는 부모 것을 잇는다(#401) · 실제 진입점(스냅샷 · 종목 페이지 · 라이브 오버레이 · 분기실적 · 성장 카드 · 차트 마커 · 피드 · trade 보고서)을 태워 네 칸의 기록과 사유 문장을 잰다 · 라이브가 사유를 지우지 않나 · 대조군(키 있는 운영 렌더엔 그 문장이 없다 · 최근 키 없이 그린 기록) | ✅ 자동 | `TestJudgeChild` 9 · `TestJudgeControl` 3 · `TestControlPickers` 3 · `TestChildIsolation` 3 · `TestChildRunOffline`(실제로 자식을 띄워 오프라인으로 태운다) · `TestChildWiring` 2 · `TestMain` 3 |
 | 사유 문장 판정은 화면이 쓰는 문장 틀·대상 표(`keyless_sentence_spans`·`KEYLESS_WHAT`) 하나로 — 태그가 끼면 한 문장이 아니다 · `html.escape` 는 틀의 글자를 안 바꾼다 | ✅ 자동 | `TestKeylessSentenceMatcher` 6건 |
 | 감사가 처음 찾은 결함 둘 — 회사 목록 로더가 다운로드 실패를 프로세스 수명 내내 빈 목록으로 기억(재현 먼저) → 10분 뒤 다시 묻고(`_CORPCODE_RETRY_SEC`) 만료 캐시가 있으면 그것을 쓴다(키 없음 · 실패 둘 다) · 키가 없으면 재시도하지 않는다 · 목록을 갈아 끼우면 역방향 표를 버린다 · `corp_map_ready()` | ✅ 자동 | `TestCorpMapLoader` 7건 |
+| 배포 전 독립 리뷰 반영 — 회사 목록 다시 받기는 프로세스 전역 락 안에서만, 락을 잡은 뒤 다시 확인(앞 스레드가 받았으면 원천을 안 부른다 · 순서는 이벤트로) · 다운로드는 락 안에서 · 키 없는 프로세스도 재시도 창마다 디스크를 다시 읽는다(원천은 안 부른다) · 실패 재시도가 만료 캐시로 역방향 표를 다시 만든다 · dict 가 아닌 만료 캐시는 던지지 않는다 · 감사 자식이 프록시·인증서 변수를 받는다(이름에 KEY·TOKEN·SECRET·PASS 가 든 것은 목록에 없다) | ✅ 자동 | `TestCorpMapLoader::test_reload_rechecks_under_the_lock` · `::test_download_happens_under_the_lock` · `::test_keyless_rereads_disk_after_window` · `::test_failed_retry_rebuilds_reverse_map_from_stale_cache` · `::test_non_dict_expired_cache_does_not_crash` · `TestChildIsolation::test_proxy_and_ca_pass_through` |
 | trade 회사 보고서 — 이름을 못 풀었을 때 '미확보(비상장·해외·미발견)' 대신 사유(키 없음 · 회사 목록 조회 실패) · 목록이 있는데 못 찾으면 옛 문구 · 6자리 코드는 목록을 탓하지 않는다 · 목록 상태를 못 물으면 탓하지 않는다(#165) · 사유는 텔레그램까지 escape 되어 간다 | ✅ 자동 | `TestCompanyListProbeFailure` · `trade/tests/test_company_report.py` +7 |
 
 ### ② #429 가 남긴 제품 쪽 넷
 
 | 계약 | 강제 | 테스트 |
 |---|---|---|
-| 빈 재무의 **사유**를 같은 호출에 싣는다(`get_normalized_financials(why=)` — 키 없음 · 티커 형식 · 회사 목록 실패 · 회사 코드 없음 · 수신 실패 · `status=…` · 계정 없음) · 사유를 바라지 않는 옛 호출 모양은 그대로(대역·래퍼가 안 깨진다) · 키 있는 빈손 메모는 **모든** 사유가 원천의 답(`FIN_EMPTY_ANSWERED`)일 때만 6시간, 하나라도 실패·사유 모름이면 30분 | ✅ 자동 | `TestFinancialsWhy` 12 · `TestCollectFinancialsWhy` 3 · `test_memo_length_follows_the_reason` · `test_mixed_reasons_are_not_trusted_long` |
-| 키가 생기면 법인 정보·임원 지분 칸도 다시 받는다(`collect_kr_company`·`collect_kr_insiders` 를 밖으로 뺐다 — 스냅샷 경로도 같은 함수) · 받으면 값을 싣고 기록을 지운다 · 키로 물었는데 빈손이면 30분 기억하고 기록은 지운다(키는 더는 사유가 아니다) · 키가 여전히 없으면 묻지 않는다 · 예외는 기억하지 않는다 | ✅ 자동 | `TestReaskCompanyInsiders` 9 · `TestCollectorsKeepTheSnapshotPath` 4 |
+| 빈 재무의 **사유**를 같은 호출에 싣는다(`get_normalized_financials(why=)` — 키 없음 · 티커 형식 · 회사 목록 실패 · 회사 코드 없음 · 수신 실패 · `status=…` · 계정 없음) · 사유를 바라지 않는 옛 호출 모양은 그대로(대역·래퍼가 안 깨진다) · 키 있는 빈손 메모는 **모든** 사유가 원천의 답(`FIN_EMPTY_ANSWERED`)일 때만 6시간, 하나라도 실패·사유 모름이면 30분 · 목록이 비었거나 만료 목록에 없으면 '회사 코드 없음' 이 아니라 목록 실패(로더는 던지지 않는다 — 독립 리뷰) | ✅ 자동 | `TestFinancialsWhy` 14 · `TestCollectFinancialsWhy` 3 · `test_memo_length_follows_the_reason` · `test_mixed_reasons_are_not_trusted_long` |
+| 키가 생기면 법인 정보·임원 지분 칸도 다시 받는다(`collect_kr_company`·`collect_kr_insiders` 를 밖으로 뺐다 — 스냅샷 경로도 같은 함수) · 받으면 값을 싣고 기록을 지운다 · 키로 물었는데 빈손이면 30분 기억하고 기록은 지운다(키는 더는 사유가 아니다) · 키가 여전히 없으면 묻지 않는다 · 예외는 기억하지 않는다 · 받은 값은 6시간 기억해 다시 싣는다(저장본은 기록을 그대로 들고 와 렌더마다 수집을 되풀이했다 — 독립 리뷰) | ✅ 자동 | `TestReaskCompanyInsiders` 11 · `TestCollectorsKeepTheSnapshotPath` 4 |
 | 무거운 시세 본문 캐시 이름이 본문이 기대는 **환경 축 넷**(DART · KRX 로그인 · DATA_GO_KR · Finnhub)을 싣는다 — 판정은 렌더와 같은 술어 · 판정이 던지면 `x`(어느 본문과도 섞지 않는다, 경고) · 정리 루틴은 그 표에서 꼬리 문법을 파생 | ✅ 자동 | `TestQuoteEnvAxes` 12건 |
 | 이름에 버전을 싣는 캐시의 옛 파일 정리 — 서버 시작 때(`_startup_cache_purge`) 핸들러가 그 파일을 아직 서빙할 수 있나 하나로: 시세 FULL(지금 이름)은 stale 서빙이라 남김 · LIGHT 와 차트는 수명 안만 · 그 밖의 이름(옛 버전·옛 규약)은 지움 · '지금 이름' 은 이름을 짓는 함수의 조각에서 파생(#337) · 공용 캐시 디렉터리의 DART 표·수주잔고는 이름을 짓는 모듈이 그 수명으로만 가른다(`purge_expired` 는 기계만) · 한 캐시의 실패가 다른 캐시를 막지 않고 기동도 막지 않는다 · 지우지 못한 파일은 경고 | ✅ 자동 | `TestQuotePurge` 7 · `TestChartPurge` · `TestPurgeBoundaries` 5 · `TestHandlerAndPurgeAgree` 5(핸들러와 정리를 **같은 나이**로 태워 같은 답) · `TestOwnerPurges` 4 · `TestPurgeExpired` 2 |
 
@@ -2905,7 +2906,7 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 
 | 축 | 강제 | 테스트 |
 |---|---|---|
-| A 쓰기 — 다른 모듈의 쓰기(`import m; m.CTX['d'] = None` · `m.o.d = None`) · `update`·`setdefault`·`pop`·`del`·`clear`·`__setitem__` · 식별자가 아닌 문자열 칸 · 음수·변수 칸 · `globals()`·`vars()`·`__dict__`·`sys.modules`·`importlib` 로 얻은 객체를 통한 쓰기 | ✅ 자동 | `TestScannerWrites` 63건 |
+| A 쓰기 — 다른 모듈의 쓰기(`import m; m.CTX['d'] = None` · `m.o.d = None`) · `update`·`setdefault`·`pop`·`del`·`clear`·`__setitem__` · 식별자가 아닌 문자열 칸 · 음수·변수 칸 · `globals()`·`vars()`·`__dict__`·`sys.modules`·`importlib` 를 **그 자리에서** 부른 식을 통한 쓰기(`globals()['G'] = None` 등 — 그 객체를 변수·인자에 담아 쓰는 형태는 아래 '못 보는 축') | ✅ 자동 | `TestScannerWrites` 63건 |
 | B 호출 — `atexit.register`·`weakref.finalize`·`ExitStack.callback`·`sched` · 위치로 넘긴 `Thread` target · 변수로 넘긴 `args=` · `*args` 슬라이스(`[1:]`·`[::2]`)·풀기 · lambda 공장 · property 게터 · `await` · 대상 모르는 메서드 해석 | ✅ 자동 | `TestScannerCalls` 62건 |
 | C 흐름·클래스 — 같은 블록에서 그 줄에 닿는 정의 · 모듈 맨 위 마지막 바인딩 · 투명 장식의 별칭 · C3 MRO(다이아몬드) · 남의 클래스가 자기 메서드에서 쓰는 같은 이름 속성 | ✅ 자동 | `TestScannerFlowAndClasses` 73건 |
 | D else 판정 — `A or B`(한 항이라도)·`A and B`(모든 항) · 판정 밖 `d or 기본값` 의 꼬리 · 지역 컨테이너 칸·지역 인스턴스 속성(새어 나가지 않을 때만) · `.get(k, 기본값)`(부정·else 둘 다 — 기본값이 클라이언트면 없는 칸도 실린다) · 닫힌 세계 인자(함수 안에서 정의해 곧바로 부르는 데에만 쓴 함수 · 장식·재바인딩·별표 없음) · 펼친 dict 는 마지막 펼침 **뒤** 의 칸만 확정 · 같은 열쇠는 마지막이 이긴다 | ✅ 자동 | `TestScannerElseAndCycles` 47건 |
@@ -2916,8 +2917,9 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 **이 검사가 못 보는 축 — #430 뒤에 남은 것**(#274) — 정적으로 가를 수 없는 경계다:
 - 보관소에 클라이언트가 아닌 바인딩이 하나라도 있으면(`_D = None` 지연 초기화) 살아 있는 검사로 본다 — **의도**다(`get_dart` 자신이 그 모양이고, 값을 담기 전에 읽히는 순서는 실행이 정한다).
 - 반복문에서 몇 번째 바퀴인지로 막은 판정(`if i > 0 and not d`) — 값이 아니라 실행 횟수에 달렸다.
-- 실행 중에 정해지는 이름(`getattr(o, name)` 의 변수 이름 · 변수로 고른 모듈) — 모른다로 본다.
-- 칸 **뒤** 에 펼침이 오는 dict(`{'d': X, **a}`) — 덮였을지 모른다.
+- 실행 중에 정해지는 이름(`getattr(o, name)` 의 변수 이름 · 변수로 고른 모듈) — 읽기는 모른다로 본다(쓰기는 위 오탐 쪽 — 그 쓰기를 못 본다).
+- 칸 **뒤** 에 펼침·상수가 아닌 열쇠가 오는 dict(`{'d': X, **a}` · `{'d': X, k: None}`) — 덮였을지 모른다(독립 리뷰가 상수 아닌 열쇠의 오탐을 잡아 같은 갈래로 묶었다).
+- 오탐 쪽(엄격 — 걸리면 게이트가 빨개진다): 이름공간 객체를 **변수·인자에 담아** 쓰는 쓰기(`g = globals(); g['G'] = None` · `reset(globals())` · `ns = sys.modules[__name__].__dict__` · `mod = importlib.import_module(…); mod.G = None` · 모듈을 인자로 넘겨 쓰기 · `exec('G = None', globals())`)는 쓰기로 안 본다(독립 리뷰 실측) · 세터의 **인자**로 들어오는 None(`def setd(p): global G; G = p` 를 `setd(None)`·`setd(get_dart())` 로 부름)은 부정 판정에서 인자 규칙('갈래 하나라도')을 따라 잡는다 — 직접 `G = None` 은 살아 있는 검사로 보는데 인자로 오면 갈린다. 걸리면 그 판정을 `dart_ready` 로 바꾸면 된다.
 - 인자의 else 는 닫힌 세계에서만 — 열린 함수는 부르는 곳을 다 모른다.
 - 오탐 쪽(엄격): 대상을 못 찾은 메서드 이름(`x.get_dart()`)은 부정 판정에서 이름으로 공장으로 본다 · 같은 스코프에서 다시 묶은 이름은 첫 묶음을 기억해 잡는다 — 걸리면 그 판정을 `dart_ready` 로 바꾸면 된다.
 - 순환 판정의 방어 둘(D22·D24)은 답을 바꾸는 입력을 못 찾았다 — 발화 경로가 있는지 증명하지 않았다.

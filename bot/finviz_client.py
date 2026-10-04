@@ -147,7 +147,12 @@ def purge_expired(prefix: str, ttl: float, *, now: float | None = None,
     짓는 쪽만** 안다(어떤 캐시는 지난 파일을 이력으로 읽는다). 그래서 이 함수는
     기계만 갖고, 접두와 수명은 그 이름을 짓고 읽는 모듈이 넘긴다(`dart_production.
     purge_dead_tables` 등, 실수 #430). 읽는 쪽이 `_cached(name, ttl)` 로 **그
-    수명 안만** 읽는 접두에만 쓸 것."""
+    수명 안만** 읽는 접두에만 쓸 것.
+
+    ⚠️ 다른 프로세스(봇)가 이 디렉터리에 계속 쓴다 — 나이를 잰 뒤 지우기 전에 그
+    파일이 새로 쓰이면 새 파일을 지울 수 있다(stat → unlink 사이). 결과는 캐시
+    미스 한 번뿐이라 받아들인다(독립 리뷰 — 대시보드 캐시와 달리 '쓰는 중인 파일과
+    겹치지 않는다' 가 여기선 참이 아니다)."""
     now = time.time() if now is None else now
     d = _CACHE_DIR if cache_dir is None else cache_dir
     removed = kept = failed = 0

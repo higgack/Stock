@@ -46,11 +46,14 @@ else 판정 · 보관소 순환)을 메운 뒤 남은 것은 **정적으로 가�
 있는 검사로 본다 — 의도다(`get_dart` 자신이 그 모양이고, 값을 담기 전에 읽히는
 순서는 실행이 정한다) · 반복문에서 몇 번째 바퀴인지로 막은 판정(`if i > 0 and not
 d`) — 값이 아니라 실행 횟수에 달렸다 · 실행 중에 정해지는 이름(`getattr(o, name)`
-의 변수 이름 · 변수로 고른 모듈) — 모른다로 본다 · 칸 **뒤** 에 펼침이 오는 dict
-(`{'d': X, **a}`) — 덮였을지 모른다(펼침 앞의 칸은 확정, 같은 열쇠는 마지막이
-이긴다) · 인자의 else 는 닫힌 세계(함수 안에서 정의해 그 이름을 곧바로 부르는
+의 변수 이름 · 변수로 고른 모듈) — 읽기는 모른다로 본다 · 칸 **뒤** 에 펼침·상수가
+아닌 열쇠가 오는 dict(`{'d': X, **a}` · `{'d': X, k: None}`) — 덮였을지 모른다(그
+앞의 칸은 확정, 같은 열쇠는 마지막이 이긴다) · 인자의 else 는 닫힌 세계(함수 안에서 정의해 그 이름을 곧바로 부르는
 데에만 쓴 함수)에서만 — 열린 함수는 부르는 곳을 다 모른다 · 대상을 못 찾은 메서드
-이름(`x.get_dart()`)은 이름으로 본다(엄격 쪽). 순환은 E-게이트 최대 고정점으로
+이름(`x.get_dart()`)은 이름으로 본다(엄격 쪽) · 이름공간 객체를 변수·인자에 담아
+쓰는 쓰기(`g = globals(); g['G'] = None` · `exec`)는 쓰기로 안 본다(엄격 쪽 — 그
+자리에서 부른 `globals()[…]` 만 본다) · 세터 인자로 들어오는 None(`def setd(p):
+global G; G = p`)은 인자 규칙('갈래 하나라도')을 따라 잡는다(엄격 쪽). 순환은 E-게이트 최대 고정점으로
 잰다(바닥 — 공장 호출 — 에 닿아야 참, 무작위 보관소 그래프에서 기대값과 정확히
 일치). 판정 사슬 상한 400 은 넘으면 '아니다' 로 접지 않고 실패한다(레포 실측 깊이
 5). 오탐 쪽: 같은 스코프에서 다시 묶은 이름(`d = get_dart(); d = None; if d is
@@ -651,10 +654,11 @@ def _entry(v, kind, name):
         # 그 앞의 칸은 덮였을지 모르고 그 칸이 거기서 올지도 모른다(모른다).
         # 펼침 **뒤** 에 적은 칸은 무엇이 펼쳐지든 그 값이다(실수 #430 — 옛
         # 판은 펼침이 하나라도 있으면 전부 모른다로 봤다)
+        # 상수가 아닌 열쇠(`{k: None}` · f-문자열)도 같다 — 그 칸일 수 있다(독립 리뷰)
         for kk, vv in zip(reversed(v.keys), reversed(v.values)):
-            if kk is None:
+            c = None if kk is None else _const_index(kk)
+            if c is None:
                 return None
-            c = _const_index(kk)
             if c == name and type(c) is type(name):
                 return ("있음", vv)
         return ("없음", None)
@@ -2828,8 +2832,11 @@ def _scan(sources):
                 continue
             v = literal_of(s, k.value, line)
             if isinstance(v, ast.Dict):
-                # 마지막 펼침 뒤의 칸만 — 그 앞은 덮였을지 모른다(`_entry`)
-                cut = max((j + 1 for j, kk in enumerate(v.keys) if kk is None),
+                # 마지막 펼침(·상수 아닌 열쇠) 뒤의 칸만 — 그 앞은 덮였을지
+                # 모른다(`_entry`)
+                cut = max((j + 1 for j, kk in enumerate(v.keys)
+                           if not (isinstance(kk, ast.Constant)
+                                   and isinstance(kk.value, str))),
                           default=0)
                 last = {kk.value: vv for kk, vv in zip(v.keys[cut:],
                                                        v.values[cut:])
@@ -3643,6 +3650,11 @@ class TestNoDeadDartGuard:
         "    if not ctx['dart']:\n        return\n",
         "def f():\n    ctx = {'dart': get_dart(), 'dart': None}\n"
         "    if not ctx['dart']:\n        return\n",
+        # 상수가 아닌 열쇠가 뒤에 오면 그 칸일 수 있다(독립 리뷰)
+        "def f(k):\n    ctx = {'dart': get_dart(), k: None}\n"
+        "    if not ctx['dart']:\n        return\n",
+        "def f(k):\n    ctx = {'dart': get_dart(), f'{k}': None}\n"
+        "    if not ctx.get('dart'):\n        return\n",
         "def f():\n    ctx = {'dart': get_dart()}\n    if not ctx['other']:\n"
         "        return\n",
         "def f():\n    xs = [get_dart()]\n    if not xs[1]:\n        return\n",
@@ -5141,6 +5153,11 @@ class TestScannerElseAndCycles:
         _C_D + "class E:\n    def __init__(self):\n        self.d = None\n"
         "def outer():\n    def use(o):\n        if o.d:\n            work()\n" + _ELSE2
         + "    use(E())\n",
+        # 상수가 아닌 열쇠가 뒤에 오면 그 칸일 수 있다(else · `**` 넘기기)
+        "def r(k):\n    E2 = {'d': get_dart(), k: None}\n    if E2['d']:\n"
+        "        work()\n" + _ELSE,
+        "def outer(k):\n    def use(d=None):\n        if not d:\n            return\n"
+        "    use(**{'d': get_dart(), k: None})\n",
         # 펼침이 넘긴 칸 뒤에 오면 덮였을지 모른다
         "def outer(a):\n    def use(d=None):\n        if not d:\n            return\n"
         "    use(**{'d': get_dart(), **a})\n",

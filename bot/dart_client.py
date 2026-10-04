@@ -112,6 +112,8 @@ _CORPCODE_TTL_DAYS = 30
 # 회사 목록 다운로드가 실패했을 때 다시 묻기까지(초) — 장애 중 요청마다 두드리지
 # 않고(#303), 그렇다고 재시작 전까지 영영 안 묻지도 않는다(#161).
 _CORPCODE_RETRY_SEC = 10 * 60
+# 회사 목록 다시 받기를 한 스레드로 묶는 락(프로세스 전역 — 클라이언트는 싱글턴이다).
+_CORP_MAP_LOCK = threading.Lock()
 _HTTP_TIMEOUT = 10  # seconds — keep tight so a slow DART doesn't stall analysis
 _HOT_CACHE_TTL_HOURS = 12  # disclosures / insider holdings change at most daily
 
@@ -1002,16 +1004,31 @@ class DartClient:
         self._corp_map_retry_at = 0.0
 
     # ── corp_code mapping ───────────────────────────────────────────────
+    def _corp_map_fresh(self) -> bool:
+        return (self._corp_code_map is not None and self._name_map is not None
+                and not (self._corp_map_provisional
+                         and time.time() >= self._corp_map_retry_at))
+
     def _load_corp_code_map(self) -> dict[str, str]:
         """Stock code (6-digit) → corp_code (8-digit). DART exposes the
         mapping as a single zipped XML; we cache it locally for 30 days
         so we don't re-download on every analysis. The cache also carries
         the reverse name→entries map so `find_by_name()` doesn't have to
-        re-parse the XML."""
-        if (self._corp_code_map is not None and self._name_map is not None
-                and not (self._corp_map_provisional
-                         and time.time() >= self._corp_map_retry_at)):
+        re-parse the XML.
+
+        다시 받기는 **한 스레드만** 한다(`_CORP_MAP_LOCK`) — 재시도 시각이 지나면
+        렌더 스레드·수집 풀이 동시에 받으러 가고, 늦게 실패한 쪽이 먼저 성공한
+        쪽의 새 목록을 자기가 들고 들어온 만료 캐시(또는 빈 목록)로 덮었다(실수
+        #430 독립 리뷰). 락 안에서 다시 확인해 앞 스레드의 결과를 쓴다."""
+        if self._corp_map_fresh():
             return self._corp_code_map
+        with _CORP_MAP_LOCK:
+            if self._corp_map_fresh():
+                return self._corp_code_map
+            return self._reload_corp_code_map()
+
+    def _reload_corp_code_map(self) -> dict[str, str]:
+        """`_load_corp_code_map` 의 본문 — 락 안에서만 부른다."""
 
         # Disk cache check (v2 format: dict with 'stock_to_corp' and
         # 'name_to_entries' keys). 만료된 캐시도 **버리지 않고** 쥐고 있는다 —
@@ -1022,6 +1039,8 @@ class DartClient:
             try:
                 age_days = (time.time() - _CORPCODE_CACHE.stat().st_mtime) / 86400
                 data = json.loads(_CORPCODE_CACHE.read_text())
+                if not isinstance(data, dict):
+                    raise ValueError(f"dict 가 아니다({type(data).__name__})")
                 if age_days < _CORPCODE_TTL_DAYS:
                     self._corp_code_map = data.get("stock_to_corp", {})
                     self._name_map = data.get("name_to_entries", {})
@@ -1035,11 +1054,12 @@ class DartClient:
         def _settle(why: str, *, retry: bool) -> dict[str, str]:
             """새로 못 받았다 — 만료 캐시가 있으면 그것, 없으면 빈 목록.
 
-            `retry=True`(다운로드 실패)면 `_CORPCODE_RETRY_SEC` 뒤 다시 묻는다.
-            옛 판은 빈 목록을 **프로세스 수명 내내** 기억했다 — 싱글턴이라 일시
-            실패 한 번이 재시작 전까지 이름→코드 조회를 전부 죽였다(#161 · 실수
-            #430). 키가 없으면 다시 물어도 같으므로 재시도하지 않는다(키는
-            클라이언트를 만들 때 읽는다)."""
+            `_CORPCODE_RETRY_SEC` 뒤 다시 묻는다. 옛 판은 빈 목록을 **프로세스
+            수명 내내** 기억했다 — 싱글턴이라 일시 실패 한 번이 재시작 전까지
+            이름→코드 조회를 전부 죽였다(#161 · 실수 #430). 키가 없을 때도 다시
+            묻는다 — 다운로드는 못 하지만 키 있는 다른 프로세스가 디스크 캐시를
+            새로 쓰면 그걸 읽는다(독립 리뷰: 옛 판은 만료 캐시를 영영 쥐었다).
+            `retry=False` 는 이제 쓰지 않지만 인자는 남긴다."""
             data = stale[0] if stale else {}
             if stale:
                 log.warning("dart: %s — 만료된 회사 목록(%.0f일 전)을 쓴다",
@@ -1056,7 +1076,7 @@ class DartClient:
 
         # Fetch fresh.
         if not self.api_key:
-            return _settle("DART_API_KEY missing", retry=False)
+            return _settle("DART_API_KEY missing", retry=True)
 
         try:
             resp = requests.get(
@@ -1975,7 +1995,15 @@ class DartClient:
             return None
         corp_code = corp_map.get(code)
         if not corp_code:
-            _why("회사 코드 없음")
+            # 로더는 다운로드 실패에 던지지 않고 빈 목록(또는 만료 목록)을 준다 —
+            # 목록이 비었으면 '그 회사가 없다' 가 아니라 '목록을 못 받았다' 다(#82 ·
+            # 실수 #430 독립 리뷰: 옛 판은 실제 목록 실패를 '회사 코드 없음' 으로 적었다).
+            if not corp_map:
+                _why("회사 목록 실패: 빈 목록")
+            elif getattr(self, "_corp_map_provisional", False):
+                _why("회사 목록 실패: 만료 목록에 없음")   # 새로 못 받은 목록이다
+            else:
+                _why("회사 코드 없음")
             return None
 
         target_year = year or (date.today().year - 1)

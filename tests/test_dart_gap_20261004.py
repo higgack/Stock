@@ -166,6 +166,101 @@ class TestCorpMapLoader:
         assert cl.stock_code_to_name("005930") == "삼성전자"
 
 
+    def test_reload_rechecks_under_the_lock(self, corp, monkeypatch):
+        """독립 리뷰 #1 — 재시도 창이 지나면 여러 스레드가 함께 받으러 가고, 늦게
+        실패한 쪽이 먼저 성공한 쪽의 새 목록을 만료 캐시(또는 빈 목록)로 덮었다.
+        다시 받기는 락 안에서만 하고, 락을 잡은 뒤 다시 확인한다 — 앞 스레드가
+        이미 받았으면 원천을 안 부른다. 순서는 시간이 아니라 이벤트로 맞춘다(#128)."""
+        import threading
+        dc = corp["dc"]
+        cl = dc.DartClient(_KEY)
+        corp["fail"] = True
+        cl.find_by_name("삼성전자")                   # 실패 — 재시도 대기 상태
+        corp["fail"] = False
+        now = time.time()
+        monkeypatch.setattr(dc.time, "time",
+                            lambda: now + dc._CORPCODE_RETRY_SEC + 1)
+        calls0 = corp["calls"]
+        orig = dc.DartClient._corp_map_fresh
+        checked = threading.Event()
+
+        def spy(self):
+            r = orig(self)
+            checked.set()                            # 빠른 경로를 지났다(낡음)
+            return r
+        monkeypatch.setattr(dc.DartClient, "_corp_map_fresh", spy)
+        winner = {"stock_to_corp": {"000660": "00164779"}}
+        with dc._CORP_MAP_LOCK:
+            t = threading.Thread(target=cl._load_corp_code_map)
+            t.start()
+            assert checked.wait(5)
+            # 앞 스레드가 이긴 상태 — 새 목록을 들고 재시도 대기가 풀렸다
+            cl._corp_code_map = winner["stock_to_corp"]
+            cl._name_map = {"sk하이닉스": []}
+            cl._corp_map_provisional = False
+        t.join(5)
+        assert not t.is_alive()
+        assert corp["calls"] == calls0, "앞 스레드가 받은 뒤에 또 받으러 갔다"
+        assert cl._corp_code_map == winner["stock_to_corp"], "이긴 목록을 덮었다"
+
+    def test_download_happens_under_the_lock(self, corp):
+        dc = corp["dc"]
+        seen = []
+        orig = dc.requests.get
+
+        def get(url, **k):
+            seen.append(dc._CORP_MAP_LOCK.locked())
+            return orig(url, **k)
+        import unittest.mock as um
+        with um.patch.object(dc.requests, "get", get):
+            dc.DartClient(_KEY).find_by_name("삼성전자")
+        assert seen == [True], seen
+
+    def test_keyless_rereads_disk_after_window(self, corp, monkeypatch):
+        """독립 리뷰 #7 — 키 없는 프로세스는 만료 캐시를 영영 쥐었다. 키 있는
+        프로세스가 디스크를 새로 쓰면 재시도 창 뒤에 그걸 읽는다(원천은 안 부른다)."""
+        dc = corp["dc"]
+        _write_cache(corp["cache"], dc._CORPCODE_TTL_DAYS + 5,
+                     [("00164779", "SK하이닉스", "000660")])
+        cl = dc.DartClient("")
+        assert cl.stock_code_to_name("005930") is None
+        _write_cache(corp["cache"], 1, [("00126380", "삼성전자", "005930")])
+        now = time.time()
+        monkeypatch.setattr(dc.time, "time",
+                            lambda: now + dc._CORPCODE_RETRY_SEC + 1)
+        assert cl.stock_code_to_name("005930") == "삼성전자"
+        assert corp["calls"] == 0, "키 없이 원천을 불렀다"
+
+    def test_failed_retry_rebuilds_reverse_map_from_stale_cache(
+            self, corp, monkeypatch):
+        """독립 리뷰 #8(생존 M03) — 실패 재시도가 다른 만료 목록으로 갈아 끼우면
+        역방향(코드→이름) 표도 새로 만들어야 한다. 빈 목록일 때는 표를 아예 안
+        만드므로, 앞 목록으로 **만들어진** 표가 있어야 차이가 난다."""
+        dc = corp["dc"]
+        _write_cache(corp["cache"], dc._CORPCODE_TTL_DAYS + 5,
+                     [("00164779", "SK하이닉스", "000660")])
+        corp["fail"] = True
+        cl = dc.DartClient(_KEY)
+        assert cl.stock_code_to_name("000660") == "SK하이닉스"   # 표가 만들어졌다
+        # 다른 프로세스가 (역시 만료된) 다른 목록을 남겼다 — 재시도도 실패
+        _write_cache(corp["cache"], dc._CORPCODE_TTL_DAYS + 5,
+                     [("00126380", "삼성전자", "005930")])
+        now = time.time()
+        monkeypatch.setattr(dc.time, "time",
+                            lambda: now + dc._CORPCODE_RETRY_SEC + 1)
+        assert cl.stock_code_to_name("005930") == "삼성전자", "옛 역방향 표가 남았다"
+
+    def test_non_dict_expired_cache_does_not_crash(self, corp):
+        """독립 리뷰 #11 — JSON 이지만 dict 가 아닌 만료 캐시가 로더 밖으로 던졌다."""
+        dc = corp["dc"]
+        corp["cache"].write_text("[1, 2]", encoding="utf-8")
+        t = time.time() - (dc._CORPCODE_TTL_DAYS + 5) * 86400
+        os.utime(corp["cache"], (t, t))
+        corp["fail"] = True
+        cl = dc.DartClient(_KEY)
+        assert cl.find_by_name("삼성전자") == []
+        assert cl.corp_map_ready() is False
+
 class TestKeylessSentenceMatcher:
     """감사가 화면에서 키 없음 문장을 찾는 판정 — 문장 틀(`keyless_reason`)과 대상
     표(`KEYLESS_WHAT`)를 그대로 쓴다(#38). 화면이 쓰는 것과 감사가 재는 것이
@@ -500,6 +595,22 @@ class TestChildIsolation:
         assert env == {"PATH": "/bin", "LANG": "C.UTF-8", "HOME": str(tmp_path),
                        "PYTHONPATH": "/repo" + os.pathsep + "/guard",
                        "PYTHONDONTWRITEBYTECODE": "1", ga._CHILD_ENV: "1"}
+
+    def test_proxy_and_ca_pass_through(self, tmp_path):
+        """독립 리뷰 #10 — 프록시·인증서를 안 넘기면 프록시 호스트에서 자식이 영원히
+        '원천 응답 없음' 이었다(격리를 원천 탓으로). 키 이름은 여전히 안 넘어간다."""
+        from bot.scripts import dart_gap_audit as ga
+        parent = {"HTTPS_PROXY": "http://proxy:3128", "no_proxy": "localhost",
+                  "REQUESTS_CA_BUNDLE": "/etc/ca.crt", "SSL_CERT_FILE": "/etc/ca.crt",
+                  "PROXY_API_KEY": "k" * 20}
+        env = ga.child_env(parent, str(tmp_path), "/repo")
+        assert env["HTTPS_PROXY"] == "http://proxy:3128"
+        assert env["no_proxy"] == "localhost"
+        assert env["REQUESTS_CA_BUNDLE"] == env["SSL_CERT_FILE"] == "/etc/ca.crt"
+        assert "PROXY_API_KEY" not in env
+        assert not [k for k in ga._CHILD_ENV_KEEP
+                    if "KEY" in k.upper() or "TOKEN" in k.upper()
+                    or "SECRET" in k.upper() or "PASS" in k.upper()]
 
     def test_child_mode_refuses_without_the_marker(self, monkeypatch, capsys):
         from bot.scripts import dart_gap_audit as ga

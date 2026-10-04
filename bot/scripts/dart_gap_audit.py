@@ -55,8 +55,14 @@ _CHILD_ENV = "NOAH_DART_GAP_CHILD"
 _CHILD_TIMEOUT = 300
 _DEFAULT_TICKER = "005930.KS"
 # 자식에게 넘기는 환경 — **허용 목록**(#24). API 키는 이름이 무엇이든 안 넘어간다.
+# 프록시·인증서 경로도 넘긴다 — 빼면 프록시·사설 CA 를 쓰는 호스트에서 자식이 아무것도
+# 못 받아 '시세 원천 응답 없음' 으로 원천을 탓한다(격리 탓인데, 실수 #430 독립 리뷰).
+# 값은 주소·파일 경로라 키가 아니다(이름에 KEY·TOKEN 이 든 것은 여전히 안 넘어간다).
 _CHILD_ENV_KEEP = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR",
-                   "SYSTEMROOT", "PYTHONIOENCODING")
+                   "SYSTEMROOT", "PYTHONIOENCODING",
+                   "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+                   "https_proxy", "http_proxy", "no_proxy",
+                   "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE")
 # 수명 경계 ±초는 판정하지 않는다 — 재는 사이에도 시간이 흐른다.
 _EDGE_SEC = 5.0
 # 운영 대시보드가 키 없이 그린 기록(DART 축 0)을 '최근' 으로 볼 창(초).

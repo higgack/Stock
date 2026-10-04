@@ -890,7 +890,9 @@ def _owner_purges() -> tuple:
     공용 캐시 디렉터리(`finviz_client._CACHE_DIR`)는 수십 개 모듈이 같이 쓰고
     어떤 파일은 이력으로 읽힌다 — 죽은 파일을 판정할 수 있는 것은 그 이름을 짓고
     읽는 모듈뿐이다(#38). DART 표·수주잔고는 이름에 파서 지문을 싣는 #430 의
-    형제다."""
+    형제다. ⚠️ 이 디렉터리는 봇 프로세스도 쓴다 — 위 두 캐시와 달리 '쓰는 중인
+    파일과 겹치지 않는다' 가 보장되지 않는다(경합의 대가는 캐시 미스 한 번,
+    `finviz_client.purge_expired`)."""
     def _tables():
         from bot.dart_production import purge_dead_tables
         return purge_dead_tables
