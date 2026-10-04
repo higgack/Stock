@@ -117,6 +117,26 @@ def sessions_behind(market: str, have: str, expected: str) -> Optional[int]:
         return None
 
 
+def sessions_between(market: str, start: str, end: str) -> Optional[list]:
+    """``[start, end]`` 안의 거래일(YYYY-MM-DD 오름차순). 못 재면 None — 빈 리스트와
+    다르다(빈 리스트 = 그 구간에 거래일이 정말 없음). 원천 일별 행이 그 구간의 거래일을
+    빠짐없이 주었는지 대조하는 데 쓴다(KIS 수급 'N거래일 누적' — 실수 #433, 원천이 거래
+    0 인 날을 빼고 주면 5개 행이 5거래일이 아니다). graceful — 라이브러리/시장 미지원·예외."""
+    cal = _calendar(market)
+    if cal is None or not start or not end:
+        return None
+    try:
+        import pandas as pd
+        if pd.Timestamp(start) > pd.Timestamp(end):
+            return []
+        sessions = cal.sessions_in_range(start, end)
+        return [s.strftime("%Y-%m-%d") for s in sessions]
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_calendar.sessions_between(%s,%s,%s) failed: %s",
+                  market, start, end, exc)
+        return None
+
+
 def add_trading_days(market: str, date_str: str, n: int) -> Optional[str]:
     """`date_str`(YYYY-MM-DD, 거래일 가정)의 세션 기준 **거래일 n일 뒤** 날짜.
 

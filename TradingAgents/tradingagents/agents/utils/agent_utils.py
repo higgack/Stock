@@ -678,11 +678,14 @@ def _fetch_peer_multiples(ticker: str) -> str:
             except Exception:
                 pass
             # KIS PER/PBR as secondary KR peer source (Naver 가 비어있는
-            # 일부 mid-cap 케이스)
+            # 일부 mid-cap 케이스). ⚠️ 2026-10-04 까지 KisClient 에 **없는**
+            # get_price 를 불러 AttributeError 가 아래 except 에 조용히 먹혔다 —
+            # 이 폴백은 한 번도 안 돌았다(실수 #433). 현재가 조회는 get_current_price
+            # (12시간 캐시 — 프롬프트 KIS 블록과 같은 캐시라 호출이 늘지 않는다).
             if not (kr_per or kr_pbr):
                 try:
                     from bot.kis_client import get_kis
-                    kis_peer = get_kis().get_price(ticker)
+                    kis_peer = get_kis().get_current_price(ticker)
                     if kis_peer:
                         if not kr_per and kis_peer.get("per") and kis_peer["per"] > 0:
                             kr_per = kis_peer["per"]
@@ -3241,9 +3244,13 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         # PER 47.6, PBR 6.07 — the KIS data sat in the prefetched dict
         # but was scope-guarded out of canonical / fundamentals reach.
         # Rule applies to all KR analyses going forward.
+        # ⚠️ 2026-10-04 까지 KisClient 에 **없는** get_price 를 불러 이 폴백은 한 번도
+        # 안 돌았다 — 아래 except 가 AttributeError 를 경고 한 줄로 삼켰다(실수 #433).
+        # get_current_price 가 정확히 이 블록이 읽는 키(market_cap·per·pbr·eps·bps·
+        # shares·high_52w·low_52w)를 준다.
         try:
             from bot.kis_client import get_kis
-            kis_price = get_kis().get_price(ticker)
+            kis_price = get_kis().get_current_price(ticker)
             if kis_price:
                 if not (isinstance(info.get("marketCap"), (int, float))
                         and info.get("marketCap")):

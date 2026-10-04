@@ -5021,16 +5021,21 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     # ⑦ KR flow data (수급 tab — KIS + pykrx)
     if tkr.endswith((".KS", ".KQ")):
         kr = si.setdefault("kr", {})
-        if not kr.get("flow"):
-            # 스냅샷(stock_snapshot._t_flow)과 **같은 함수** — 두 사본이 둘 다 없는
-            # 메서드(`_ready`)를 불러 KIS 칸이 한 번도 안 채워졌다(실수 #433).
-            try:
-                from bot.kis_client import collect_kis_flow
+        flow0 = kr.get("flow") or {}
+        # KIS 칸은 '지금 판(schema)의 KIS 값이 하나라도 있나' 로 판정한다 — '수급 칸이
+        # 있으면 건너뜀' 이면 pykrx 추세만 든 저장 스냅샷(옛 아카이브)이 KIS 칸을 영영
+        # 못 얻는다(#18 · 2026-10-04 리뷰 L2). 스냅샷(stock_snapshot._t_flow)과 **같은
+        # 함수** — 두 사본이 둘 다 없는 메서드(`_ready`)를 불러 KIS 칸이 한 번도 안
+        # 채워졌다(실수 #433).
+        try:
+            from bot.kis_client import collect_kis_flow, kis_flow_present
+            if not kis_flow_present(flow0):
                 flow_data = collect_kis_flow(ticker)
                 if flow_data:
-                    kr["flow"] = flow_data
-            except Exception as exc:
-                log.warning("_ensure_detail_enrichment: KR flow %s: %s", ticker, exc)
+                    kr.setdefault("flow", {}).update(flow_data)
+        except Exception as exc:
+            log.warning("_ensure_detail_enrichment: KR flow %s: %s", ticker, exc)
+        if not flow0:                       # pykrx 추세는 옛 동작 그대로 — 수급 칸이 없을 때만
             try:
                 from bot.pykrx_client import (
                     get_kr_foreign_ownership_trend,
@@ -8247,26 +8252,29 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_flow = kr.get("flow", {})
     if kr_flow:
         # KIS 칸은 판(schema)이 맞는 것만 그린다 — 옛 모양은 수량(주)을 만원으로 읽던
-        # 판이라 그리면 틀린 숫자다. 날짜는 원천이 준 영업일이다(실수 #433).
-        from bot.kis_client import _FLOW_SCHEMA as _KIS_SCHEMA
+        # 판이라 그리면 틀린 숫자다. 날짜는 원천이 준 영업일이다(실수 #433). 억 환산과
+        # 부호(색)는 프롬프트와 **같은 함수**(``fmt_eok``·``eok_sign``)가 정한다(#38).
+        from bot.kis_client import _FLOW_SCHEMA as _KIS_SCHEMA, fmt_eok, eok_sign
 
         def _kis_ok(d):
             return isinstance(d, dict) and d.get("schema") == _KIS_SCHEMA
 
-        def _signed_td(text, v):
-            color = "#26a69a" if v > 0 else "#e2574c" if v < 0 else ""
+        def _signed_td(text, sign):
+            color = "#26a69a" if sign > 0 else "#e2574c" if sign < 0 else ""
             style = f' style="color:{color}"' if color else ""
             return f'<td class="num"{style}>{text}</td>'
 
-        def _eok_td(v):                      # 원 → 억
-            if v is None:
+        def _eok_td(v):                      # 원 → 억(소수 2자리 — 프롬프트와 같은 값)
+            t = fmt_eok(v)
+            if t is None:
                 return '<td class="num">—</td>'
-            return _signed_td(f"{'+' if v > 0 else ''}{v / 1e8:,.1f}억", v)
+            return _signed_td(f"{t}억", eok_sign(v))
 
         def _shr_td(v):
             if v is None:
                 return '<td class="num">—</td>'
-            return _signed_td(f"{'+' if v > 0 else ''}{int(v):,}주", v)
+            v = int(v)
+            return _signed_td(f"{'+' if v > 0 else ''}{v:,}주", (v > 0) - (v < 0))
 
         inv = kr_flow.get("investor_flow") or {}
         inv_table = ""
@@ -8276,32 +8284,44 @@ def _render_stock_info_html(rec: dict) -> str:
             qty = lat.get("qty") or {}
             won = lat.get("won") or {}
             wwon = win.get("won") or {}
-            unit_ok = bool(inv.get("unit_won"))
             ld = esc(str(lat.get("date") or "?"))
-            hdr = f'<th>구분</th><th class="num">{ld} 수량</th>'
-            if unit_ok:
-                hdr += (f'<th class="num">{ld} 금액</th>'
-                        f'<th class="num">{int(win.get("days") or 0)}거래일 누적<br>'
-                        f'{esc(str(win.get("from")))}~{esc(str(win.get("to")))}</th>')
+            wl = esc(str(win.get("label") or f"{int(win.get('days') or 0)}거래일"))
+            hdr = (f'<th>구분</th><th class="num">{ld} 수량</th>'
+                   f'<th class="num">{ld} 금액</th>'
+                   f'<th class="num">{wl} 누적<br>'
+                   f'{esc(str(win.get("from")))}~{esc(str(win.get("to")))}</th>')
             body = ""
             for label, k in (("외국인", "foreign"), ("기관", "institution"), ("개인", "individual")):
-                body += f"<tr><td>{label}</td>{_shr_td(qty.get(k))}"
-                if unit_ok:
-                    body += f"{_eok_td(won.get(k))}{_eok_td(wwon.get(k))}"
-                body += "</tr>\n"
+                body += (f"<tr><td>{label}</td>{_shr_td(qty.get(k))}"
+                         f"{_eok_td(won.get(k))}{_eok_td(wwon.get(k))}</tr>\n")
             notes = []
-            if not unit_ok:
-                notes.append("금액 단위를 확정하지 못해 금액·누적은 싣지 않았습니다 — "
+            if not lat.get("unit_ok"):
+                notes.append("금액 단위를 확정하지 못해 그날 금액은 싣지 않았습니다 — "
                              + esc(str(inv.get("unit_note") or "사유 미상")))
+            if win.get("note"):
+                notes.append(f"{wl} 누적 중 합을 만들지 않은 칸이 있습니다 — "
+                             + esc(str(win["note"])))
             if inv.get("pending"):
-                notes.append(f"원천이 아직 채우지 않은 최근 {int(inv['pending'])}일은 뺐습니다"
-                             "(당일 투자자별 수급은 장 종료 후 제공) — 그래서 기준일이 전 거래일일 수 있습니다.")
+                notes.append("잠정이라 뺀 행: " + esc(str(inv.get("pending_note") or inv["pending"]))
+                             + " — 그래서 기준일이 전 거래일일 수 있습니다.")
+            if inv.get("blank"):
+                notes.append(f"원천이 값을 비워 둔 최근 {int(inv['blank'])}일은 뺐습니다.")
             note_html = "".join(f'<div class="si-note">{n}</div>' for n in notes)
             inv_table = f"""<div class="si-section">
       <div class="si-section-title">투자자별 순매수 (KIS)</div>
       <table class="si-table"><thead><tr>{hdr}</tr></thead><tbody>{body}</tbody></table>
       {note_html}
     </div>"""
+        # KIS 칸이 빈 이유 — 섹션이 통째로 사라지면 '기능이 없다' 로 읽힌다(#43 · 리뷰 L3).
+        # 사유는 수집할 때 적힌 것이다(저장 스냅샷이면 그때의 사유).
+        _kis_why = kr_flow.get("kis_why") or {}
+        _why_names = (("investor_flow", "투자자별 순매수"), ("credit", "신용·대주"),
+                      ("short_sale", "공매도"), ("program", "프로그램"))
+        _why_lines = [f"{nm}: {esc(str(_kis_why[k]))}" for k, nm in _why_names
+                      if _kis_why.get(k) and not _kis_ok(kr_flow.get(k))]
+        kis_why_html = (
+            '<div class="si-note">KIS 칸이 비어 있는 이유(수집 시점) — '
+            + " · ".join(_why_lines) + "</div>") if _why_lines else ""
 
         # Detailed multi-period investor flow (pykrx detail)
         # Skip live pykrx fetch during batch regen (startup/midnight) to avoid blocking polling
@@ -8359,20 +8379,34 @@ def _render_stock_info_html(rec: dict) -> str:
       <table class="si-table"><thead><tr><th>항목</th><th class="num">기준일</th><th class="num">값</th></tr></thead><tbody>{cs_rows}</tbody></table>
     </div>"""
 
-        if _kis_ok(program) and program.get("unit_won"):
+        if _kis_ok(program):
             plat = program.get("latest") or {}
             pwin = program.get("window") or {}
+            pwl = esc(str(pwin.get("label") or f"{int(pwin.get('days') or 0)}거래일"))
             pgm_rows = ""
+            pgm_notes = ["이 조회는 차익·비차익을 나누지 않습니다 — 전체 합계입니다."]
+            pd_ = esc(str(plat.get("date")))
             if plat.get("won") is not None:
-                pgm_rows += f'<tr><td>{esc(str(plat.get("date")))} 하루</td>{_eok_td(plat["won"])}</tr>\n'
+                pgm_rows += f'<tr><td>{pd_} 하루</td>{_eok_td(plat["won"])}</tr>\n'
+            elif plat.get("qty") is not None:
+                # 단위를 못 재도 수량은 싣는다 — 통째로 빼면 왜 없는지 모른다(리뷰 L3)
+                pgm_rows += f'<tr><td>{pd_} 하루 (수량)</td>{_shr_td(plat["qty"])}</tr>\n'
+                pgm_notes.append("금액 단위를 확정하지 못해 금액은 싣지 않았습니다 — "
+                                 + esc(str(program.get("unit_note") or "사유 미상")))
             if pwin.get("won") is not None:
-                pgm_rows += (f'<tr><td>{int(pwin.get("days") or 0)}거래일 누적 '
+                pgm_rows += (f'<tr><td>{pwl} 누적 '
                              f'({esc(str(pwin.get("from")))}~{esc(str(pwin.get("to")))})</td>{_eok_td(pwin["won"])}</tr>\n')
+            elif pwin.get("note"):
+                pgm_notes.append(f"{pwl} 누적은 싣지 않았습니다 — " + esc(str(pwin["note"])))
+            if program.get("pending"):
+                pgm_notes.append("잠정이라 뺀 행: "
+                                 + esc(str(program.get("pending_note") or program["pending"])))
             if pgm_rows:
+                pgm_note_html = "".join(f'<div class="si-note">{n}</div>' for n in pgm_notes)
                 side_tables += f"""<div class="si-section">
       <div class="si-section-title">프로그램 순매수 (KIS · 전체 합계)</div>
       <table class="si-table"><thead><tr><th>구간</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
-      <div class="si-note">이 조회는 차익·비차익을 나누지 않습니다 — 전체 합계입니다.</div>
+      {pgm_note_html}
     </div>"""
 
         # Multi-period trends — batch regen reads cache only (no network),
@@ -8436,6 +8470,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
         flow_pane = f"""<div class="si-pane" id="si-flow">
   {inv_table}
+  {kis_why_html}
   {inv_detail_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
     {side_tables}
