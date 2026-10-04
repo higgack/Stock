@@ -11,6 +11,9 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 ExecStart=/home/higgack/stock-trade/.backfill-venv/bin/python trade/scripts/backfill_beon.py
 StandardOutput=journal
 StandardError=journal
+# FloodWait 대기가 이 타임아웃을 넘으면 systemd 가 알림 없이 죽인다 — 스크립트에
+# 실행 예산을 넘겨 그 전에 알림과 함께 끝내게 한다(값 < TimeoutStartSec, 회귀가 대조).
+Environment=TRADE_SYNC_DEADLINE_S=540
 TimeoutStartSec=600
 
 [Install]

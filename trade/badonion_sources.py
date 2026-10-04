@@ -629,7 +629,7 @@ def sync_plan(state_path: Path, *, since=None, lookback_days=None, to=None,
 #    실패가 남으면 더 재시도하지 않고 기록한다(수렴 지점, #171 — 무한히 40일을
 #    훑으며 6시간마다 알리지 않게). 자동 회수는 연속 실패로 끊지 않고 끝까지
 #    시도하므로(5차 리뷰) 실패가 남은 실행은 늘 '끝낸 실행' 으로 센다. 포워드
-#    **도중 중단된** 실행은 긴 FloodWait 만 빼고 센다(`recovery_attempt_counts`).
+#    **도중 중단된** 실행은 긴 FloodWait·실행 예산 소진만 빼고 센다(`recovery_attempt_counts`).
 #    프로세스가 죽은 실행은 판정에 못 와 셈도 표식도 남기지 않는다. 횟수는
 #    유닛별이 아니라 실행별이라 '영구 실패' 로 단정하지 않는다(#165, 2차 리뷰).
 RECOVERY_MAX_ATTEMPTS = 3
@@ -674,6 +674,11 @@ def recovery_attempt_counts(*, aborted: str, abort_kind: str) -> tuple[bool, str
       재실행하는 것만으로 캡션 하나 시도하지 않고 회수를 포기한다(4차 리뷰 R2).
       '풀린다' 는 재지 않은 가정이다 — 제한이 매 틱 이어지면 6시간마다 중단
       알림이 온다(조용하지는 않다).
+    - 실행 예산 소진으로 중단된 실행(`abort_kind == "budget"`)도 세지 않는다 —
+      남은 유닛은 다음 동기화가 잇는다(#432 리뷰 M1). 자동 회수는 100유닛 상한
+      이라 페이스(유닛당 최대 3초)만으로는 예산을 못 넘고, 넘었다면 기다림
+      (FloodWait·telethon 자체 대기)이나 네트워크 지연이 먹은 것이다 — 그 원인을
+      이 판정은 모른다(사유가 FloodWait 이라고 하지 않는다).
     - 그 밖의 중단(사람이 연 창의 연속 실패)은 센다. 4차 반영분은 '포워드를
       진전시킨 중단' 도 세지 않았는데, 포워드된 사본이 inbox 에 안 닿으면(출처
       불명 포워드 · 트레이드 봇 장애) 같은 유닛을 매 틱 다시 보내며 영영 안
@@ -682,6 +687,9 @@ def recovery_attempt_counts(*, aborted: str, abort_kind: str) -> tuple[bool, str
         return True, ""
     if abort_kind == "flood":
         return False, ("텔레그램 요청 제한(FloodWait) 중단 — 기다리면 풀리므로 "
+                       "재시도 횟수에 세지 않는다")
+    if abort_kind == "budget":
+        return False, ("실행 예산 소진 중단 — 남은 유닛은 다음 동기화가 이어 가므로 "
                        "재시도 횟수에 세지 않는다")
     return True, ""
 
@@ -697,9 +705,9 @@ def finish_recovery(state_path: Path, fp: str, *, failed_units: int,
     `RECOVERY_MAX_ATTEMPTS` 회째 실행에도 실패나 중단이 남으면 더 재시도하지 않고
     기록한다(수렴, #171).
 
-    ⚠️ 중단은 **긴 FloodWait 만 빼고** 센다(3차 리뷰 → 4·5차 리뷰,
-    `recovery_attempt_counts`). 자동 회수는 연속 실패로 끊지 않으므로 중단은
-    FloodWait 이거나 사람이 연 창의 연속 실패다. 세지 않는 중단도 **표식은
+    ⚠️ 중단은 **긴 FloodWait·실행 예산 소진만 빼고** 센다(3차 리뷰 → 4·5차 리뷰
+    · #432 리뷰 M1, `recovery_attempt_counts`). 자동 회수는 연속 실패로 끊지 않으므로
+    중단은 그 둘이거나 사람이 연 창의 연속 실패다. 세지 않는 중단도 **표식은
     남긴다**(횟수는 그대로) — 지문이 이미 기록된 뒤의 명시 회수도 다음 자동
     동기화가 이어 받게. 시작 실패·후보/회수 상한 중단은 아무것도 포워드하지
     않아 호출부가 부르지 않는다. 프로세스가 죽은 실행(타임아웃 kill)은 여기

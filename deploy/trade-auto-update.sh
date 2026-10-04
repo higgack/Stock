@@ -136,8 +136,75 @@ if [ -n "$UNIT_FILES_CHANGED" ]; then
     fi
 fi
 
+# Telethon 고정판 설치 — 운영 venv(`.backfill-venv`, Telethon 유닛 4개의 인터프리터)가 핀
+# (`trade/scripts/requirements.txt`)과 어긋나 있으면 맞춘다. 핀은 git 으로 움직이지만 venv 는 pip 를
+# 돌려야 움직인다 — 그 틈에서 비고정판이 운영 세션을 올렸다(실수 #404). 사람이 pip 를 돌려야 효력이
+# 나는 fix 는 잘못된 fix 다(Automation-first).
+# ⚠️ 판정은 **상태**로 한다(독립 리뷰 #432 M2): 마지막으로 **성공한** 설치의 핀 해시를 venv 안 마커에
+# 남기고 매 배포 대조한다. 옛 판은 "이번 diff 에 핀 파일이 있나" 로 갈라, 한 번 실패하면 핀을 안
+# 건드리는 다음 배포들이 pip 를 다시 부르지 않아 일시 실패 하나가 조용하고 영구적인 불일치가 됐다
+# (세션 형식 가드는 그 상태 — 설치판 ≠ 핀, 세션 형식 = 설치판 — 를 못 본다). 실패하면 마커를 안 써
+# 다음 배포가 다시 시도한다. 실패해도 배포는 계속한다(`set -e` 밖 if) — 실패는 알림이 처방과 함께
+# 말한다(배포 완료·실패 알림 모두에 실린다). 리스너는 핀 파일 변경(아래 리스너 조건)으로 재시작해
+# 새 패키지를 읽고, 핀은 그대로인데 venv 를 맞춘 배포(첫 실행·재시도)는 그 변경 목록에 핀 파일을
+# 더해 같은 조건을 탄다 — 동기화는 타이머라 다음 틱이 읽는다.
+# pip 는 **최소 환경**으로 부른다(L9): 이 스크립트는 알림을 위해 `.env` 를 export 했는데, 소스 배포판을
+# 빌드하게 되면 제3자 빌드 코드가 그 토큰을 본다. 출력은 ASCII 만 싣는다(L8 — C 로캘의 `${#v}`·
+# `${v: -N}` 은 바이트 단위라 다중 바이트 글자를 반쪽 낸다). `timeout`: 이 유닛은 Type=oneshot 이라 시작
+# 타임아웃이 없어, pip 가 매달리면 다음 배포가 영영 못 돈다(값은 `TRADE_PIP_TIMEOUT_S`, 기본 600초).
+PIP_NOTE=""
+REQ_FILE="trade/scripts/requirements.txt"
+VENV_PIP="$REPO/.backfill-venv/bin/pip"
+PIP_MARK="$REPO/.backfill-venv/.trade-requirements.sha256"
+PIP_TIMEOUT="${TRADE_PIP_TIMEOUT_S:-600}"
+PIP_MANUAL="cd $REPO &amp;&amp; .backfill-venv/bin/pip install -r $REQ_FILE"
+REQ_CHANGED=$(echo "$CHANGED_FILES" | grep -xE 'trade/scripts/requirements\.txt' || true)
+REQ_SHA=$(sha256sum "$REQ_FILE" 2>/dev/null | cut -d' ' -f1 || true)
+if [ ! -x "$VENV_PIP" ]; then
+    # venv 가 없는 호스트에서 배포마다 같은 경고가 오지 않게 — 핀이 바뀐 배포에서만 말한다.
+    if [ -n "$REQ_CHANGED" ]; then
+        echo "trade-bot-update: .backfill-venv 없음 — Telethon 고정판 설치 생략"
+        PIP_NOTE=$'\n'"<i>⚠️ 운영 venv(.backfill-venv)가 없어 Telethon 고정판을 못 깔았다 — trade/README.md 의 venv 생성 후: <code>${PIP_MANUAL}</code></i>"
+    fi
+elif [ -n "$REQ_SHA" ] && [ "$(cat "$PIP_MARK" 2>/dev/null || true)" != "$REQ_SHA" ]; then
+    PIP_ENV=()
+    for v in HOME PATH http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY \
+             $(env | sed -n 's/^\(PIP_[A-Za-z0-9_]*\)=.*/\1/p'); do
+        if [ -n "${!v:-}" ]; then PIP_ENV+=("$v=${!v}"); fi
+    done
+    PIP_RC=0
+    PIP_OUT=$(env -i "${PIP_ENV[@]}" LC_ALL=C timeout "$PIP_TIMEOUT" "$VENV_PIP" install -q -r "$REQ_FILE" 2>&1) || PIP_RC=$?
+    if [ "$PIP_RC" -eq 0 ]; then
+        echo "trade-bot-update: .backfill-venv 에 requirements.txt 설치 완료"
+        if printf '%s\n' "$REQ_SHA" > "$PIP_MARK" 2>/dev/null; then
+            PIP_NOTE=$'\n'"<i>+ 운영 venv 에 Telethon 고정판 설치(requirements.txt)</i>"
+        else
+            PIP_NOTE=$'\n'"<i>+ 운영 venv 에 Telethon 고정판 설치(requirements.txt) — ⚠️ 마커를 못 써 다음 배포가 다시 깐다: ${PIP_MARK}</i>"
+        fi
+        if [ -z "$REQ_CHANGED" ]; then
+            CHANGED_FILES="${CHANGED_FILES}"$'\n'"${REQ_FILE}"
+        fi
+    else
+        # ASCII 만(탭·줄바꿈·인쇄 가능한 글자) — 꼬리 200자. `${v: -N}` 은 v 가 N 자보다 짧으면 **빈
+        # 문자열**이라 짧은 오류가 통째로 사라진다 — 길이를 먼저 본다.
+        PIP_TAIL=$(printf '%s' "$PIP_OUT" | tr -cd '\11\12\15\40-\176')
+        [ "${#PIP_TAIL}" -gt 200 ] && PIP_TAIL="${PIP_TAIL: -200}"
+        if [ "$PIP_RC" -eq 124 ]; then
+            PIP_WHY="${PIP_TIMEOUT}초 안에 안 끝나 멈췄다(timeout)"
+        else
+            PIP_WHY="종료 코드 ${PIP_RC}"
+        fi
+        echo "trade-bot-update: .backfill-venv pip install 실패(${PIP_WHY}): ${PIP_TAIL}"
+        PIP_TAIL=$(printf '%s' "$PIP_TAIL" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+        [ -z "$PIP_TAIL" ] && PIP_TAIL="출력 없음"
+        PIP_NOTE=$'\n'"<i>⚠️ Telethon 고정판 설치 실패(${PIP_WHY}): <code>${PIP_TAIL}</code> — 다음 배포가 다시 시도한다 · 손으로: <code>${PIP_MANUAL}</code></i>"
+    fi
+fi
+
 if ! sudo /bin/systemctl restart trade-bot; then
-    notify "❌ <b>배포 실패</b>: systemctl restart (${REMOTE_SHORT})"
+    # 앞서 한 일(유닛 설치·고정판 설치)의 결과도 같이 싣는다 — 이 알림만 오면 그 사실이 빠진다(독립
+    # 리뷰 #432 M2).
+    notify "❌ <b>배포 실패</b>: systemctl restart (${REMOTE_SHORT})${INSTALL_NOTE}${PIP_NOTE}"
     exit 1
 fi
 
@@ -155,7 +222,7 @@ fi
 # 경우 새 코드는 다음 기동 때 로드된다). 옛 판은 멈춰 둔 리스너를 배포마다 다시 켰고, 이 PR 이 더한
 # 생존 확인이 그때마다 "active 아님" 경보를 붙였을 것이다. 대시보드는 이 가드를 두지 않는다 —
 # 세션 인증 단계가 없는 서버라 멈춰 있으면 띄우는 게 맞다(NOAH `install.sh` 도 무조건 재시작한다).
-BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
+BEON_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$|^trade/scripts/requirements\.txt$' || true)
 LISTENER_NOTE=""
 # 재시작한 상시 유닛 — 아래 `sleep 3` 뒤 trade-bot 과 함께 살아 있는지 본다(실수 #423 독립
 # 리뷰 M1 의 형제: 새 코드가 기동에서 죽으면 systemd 가 조용히 다시 띄우고 있을 뿐이다).
@@ -184,7 +251,7 @@ fi
 # (`tests/test_restart_closure_20260928.py` — 상시 유닛 전부 공용, #423). ⚠️ `trade/*.py` 는
 # 폐포보다 넓다(대시보드 모듈도 걸린다) — 리스너가 재시작하는 사이 올라온 글은 주기 sync 가
 # 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
-BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$' || true)
+BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$|^trade/scripts/requirements\.txt$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
     if ! systemctl is-active --quiet trade-bot-badonion-listener 2>/dev/null; then
         echo "trade-bot-update: trade-bot-badonion-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"
@@ -240,10 +307,10 @@ if systemctl is-active --quiet trade-bot; then
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
-    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}${LISTENER_NOTE}${DEAD_NOTE}"
+    msg="${msg}${INSTALL_NOTE}${PIP_NOTE}${DASH_NOTE}${LISTENER_NOTE}${DEAD_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else
-    notify "❌ <b>배포 실패</b>: trade-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})${DEAD_NOTE}"
+    notify "❌ <b>배포 실패</b>: trade-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})${INSTALL_NOTE}${PIP_NOTE}${DEAD_NOTE}"
     exit 1
 fi

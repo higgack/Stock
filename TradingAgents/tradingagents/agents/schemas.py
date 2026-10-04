@@ -18,9 +18,8 @@ so that:
 
 from __future__ import annotations
 
-import json
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -276,58 +275,36 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _eson_encode_cell(val: Any) -> str:
-    """Encode a single cell value as bare string or JSON (ESON format)."""
-    if val is None:
-       return 'null'
-    if isinstance(val, bool):
-       return 'true' if val else 'false'
-    if isinstance(val, (int, float)):
-       return str(val)
-    if isinstance(val, str):
-       if not val or val[0] in ('"', '[', '{') or val[0].isspace() or val[-1].isspace():
-           return json.dumps(val)
-       if '\t' in val or '\r' in val or '\n' in val:
-           return json.dumps(val)
-       if val in ('null', 'true', 'false'):
-           return json.dumps(val)
-       try:
-           float(val)
-           return json.dumps(val)
-       except ValueError:
-           return val
-    return json.dumps(val, separators=(',', ':'))
-
-
 def research_plan_to_eson(plan: ResearchPlan, ticker: str) -> str:
     """Convert ResearchPlan to ESON for Research Manager → Trader handoff.
 
     ESON is lossless and cuts ~50% tokens vs JSON for agent-to-agent pipes.
     Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+
+    레포의 코덱(`bot.eson.encode_document`)으로 만든다 — 옛 판은 셀 규칙을 복제하고 머리줄에
+    레코드 수(`[N]`)를 빠뜨려, 레포의 디코더(`decode_document`)가 레코드를 통째로 놓치고
+    `=` 가 든 문장을 스칼라로 읽었다(독립 리뷰 #432 L3 — 왕복이 안 되면 무손실이 아니다).
     """
-    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'plan{{recommendation,rationale,strategic_actions}}']
-    row = [
-       plan.recommendation.value,
-       plan.rationale,
-       plan.strategic_actions,
-    ]
-    lines.append('\t'.join(_eson_encode_cell(v) for v in row))
-    return '\n'.join(lines) + '\n'
+    from bot.eson import encode_document
+    return encode_document({"ticker": ticker}, {"plan": [{
+        "recommendation": plan.recommendation.value,
+        "rationale": plan.rationale,
+        "strategic_actions": plan.strategic_actions,
+    }]}, number=False)
 
 
 def trader_proposal_to_eson(proposal: TraderProposal, ticker: str) -> str:
     """Convert TraderProposal to ESON for Trader → Portfolio Manager handoff.
 
     Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    레포의 코덱으로 만든다(위 `research_plan_to_eson` 과 같은 이유).
     """
-    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'proposal{{action,reasoning,entry_price,stop_loss,position_sizing,kill_trigger}}']
-    row = [
-       proposal.action.value,
-       proposal.reasoning,
-       proposal.entry_price,
-       proposal.stop_loss,
-       proposal.position_sizing,
-       proposal.kill_trigger,
-    ]
-    lines.append('\t'.join(_eson_encode_cell(v) for v in row))
-    return '\n'.join(lines) + '\n'
+    from bot.eson import encode_document
+    return encode_document({"ticker": ticker}, {"proposal": [{
+        "action": proposal.action.value,
+        "reasoning": proposal.reasoning,
+        "entry_price": proposal.entry_price,
+        "stop_loss": proposal.stop_loss,
+        "position_sizing": proposal.position_sizing,
+        "kill_trigger": proposal.kill_trigger,
+    }]}, number=False)

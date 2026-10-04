@@ -65,8 +65,8 @@ Default window (실수 #403): 3일. 단 관련성 필터(= 레지스트리 파�
 실패나 중단이 남으면 기록하고 멈춘다 — 그때 실패한·시도 못 한 원본 msg id 와
 사람이 돌릴 명령을 경고·알림으로 말한다. 자동 회수는 연속 실패로 끊지 않고
 끝까지 시도하며(5차 리뷰 — 끊으면 실패 덩어리 뒤의 유닛이 한 번도 시도되지 않은
-채 포기됐다), 도중 중단은 긴 FloodWait 만 빼고 센다(기다리면 풀린다 — 표식만
-남긴다, 4차 리뷰 M2). 아무것도 포워드하지 않은 시작 실패·상한 중단은 이 판정에
+채 포기됐다), 도중 중단은 긴 FloodWait·실행 예산 소진만 빼고 센다(기다리면 풀리거나
+다음 동기화가 잇는다 — 표식만 남긴다, 4차 리뷰 M2 · #432 리뷰 M1). 아무것도 포워드하지 않은 시작 실패·상한 중단은 이 판정에
 오지 않고, 프로세스가 죽은 실행도 못 와 셈도 표식도 남기지 않는다 — 포워드된
 유닛은 inbox 로 들어가 다음 틱 후보에서 빠진다. 중단·완료 알림은 이 판정을 붙여
 한 번 간다. 자동 회수는
@@ -118,6 +118,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -179,6 +180,9 @@ PAUSE_INCREMENT_EVERY = int(os.environ.get("TRADE_PAUSE_INCREMENT_EVERY") or "50
 PAUSE_MAX_S = float(os.environ.get("TRADE_PAUSE_MAX_S") or "3.0")
 
 MAX_FLOOD_WAIT_S = int(os.environ.get("TRADE_MAX_FLOOD_WAIT_S") or "600")
+# 실행 예산의 기준 시각 — import 직후라 유닛 시작과 몇 초 차이다(예산 여유가 덮는다).
+# 예산 자체는 유닛의 `TRADE_SYNC_DEADLINE_S`(`tg_entities.flood_wait_overruns`).
+_RUN_T0 = time.monotonic()
 
 # 대만 관세청 월간 발행은 품목 ~15개 내외(사용자 제공 스크린샷 기준)라 BeOn 대비
 # 볼륨이 훨씬 작음 — 5000 cap 은 순수 안전장치(비정상 대량 스캔만 차단), 정상
@@ -207,11 +211,17 @@ class BackfillAborted(Exception):
 
     `kind` 는 회수 재시도 판정이 읽는다(4차 리뷰 M2 — `badonion_sources.
     recovery_attempt_counts`): "flood" = 긴 FloodWait(기다리면 풀린다 — 횟수에
-    세지 않는다) · "failures" = 연속 포워드 실패."""
+    세지 않는다) · "budget" = 실행 예산 소진(남은 유닛은 다음 동기화가 잇는다 —
+    세지 않는다, #432 리뷰 M1) · "failures" = 연속 포워드 실패."""
 
     def __init__(self, msg: str, *, kind: str = "failures"):
         super().__init__(msg)
         self.kind = kind
+
+
+class _ScanBudgetSpent(Exception):
+    """훑기(`iter_messages`) 도중 실행 예산이 바닥났다 — 포워드 루프의 "budget" 과
+    같은 갈래로 끝낸다(남은 글은 다음 동기화가 다시 훑는다, #432 리뷰 M1 후속)."""
 
 
 def _dry_run_session(tmpdir: str) -> str:
@@ -521,6 +531,12 @@ async def _forward_unit(client, source, unit: list[Message], dest) -> bool:
                     f"{MAX_FLOOD_WAIT_S}s threshold",
                     kind="flood",
                 )
+            # 기다려서 유닛 타임아웃을 넘으면 systemd 가 알림 없이 죽인다 — 그 전에
+            # '긴 FloodWait' 중단으로 끝낸다(알림 · 재시도 미산정 · 다음 틱이 이어감).
+            from trade.tg_entities import flood_wait_overruns
+            over = flood_wait_overruns(e.seconds + 1, started=_RUN_T0)
+            if over:
+                raise BackfillAborted(over, kind="flood")
             delay = e.seconds + 1
         except Exception as e:
             # Permanent per-message failure (e.g. MessageIdInvalidError —
@@ -627,41 +643,79 @@ async def run(
         iterated = 0
         existing_msgs: list[Message] = []
         ignored_msgs: list[Message] = []
-        async for msg in client.iter_messages(
-            source, offset_date=since, reverse=True
-        ):
-            if until is not None and msg.date > until:
-                break
-            iterated += 1
-            key, origin = _msg_key_with_origin(msg, source_chat_id)
-            is_fallback = (origin == _ORIGIN_FALLBACK)
-            if is_fallback:
-                fwd_fallback_count += 1
-                log.warning(
-                    "fwd fallback msg=%d — fwd_from present but "
-                    "channel_post/from_id missing; keying on "
-                    "(source, msg.id) — potential re-forward on next tick",
-                    msg.id,
-                )
-            if key in existing:
-                skipped_existing += 1
-                if show_irrelevant or find:
-                    existing_msgs.append(msg)
-                continue
-            caption = msg.text or ""
-            if (
-                _ignored.matches_prefix(caption)
-                or _ignored.matches_contains(caption)
+        # 훑기도 실행 예산 안에서 돈다 — 포워드 루프와 같은 두 겹(#432 리뷰 M1 후속):
+        # 글마다 남은 예산을 보고(바닥나면 중단 알림), telethon 이 혼자 자는 짧은
+        # FloodWait 의 상한도 남은 예산에 맞춘다. 첫 페이지 요청은 첫 글보다 먼저
+        # 나가므로 상한은 들어가기 전에도 한 번 맞춘다. 예산이 없으면(사람이 연 넓은
+        # 백필) 둘 다 아무것도 안 한다.
+        from trade.tg_entities import cap_flood_sleep, run_budget_spent
+        cap_flood_sleep(client, started=_RUN_T0)
+        try:
+            async for msg in client.iter_messages(
+                source, offset_date=since, reverse=True
             ):
-                skipped_ignored += 1
-                log.info(
-                    "skip ignored msg=%d caption=%r",
-                    msg.id, caption[:60],
-                )
-                if find:
-                    ignored_msgs.append(msg)
-                continue
-            candidates.append(msg)
+                spent = run_budget_spent(started=_RUN_T0)
+                if spent:
+                    raise _ScanBudgetSpent("훑기 중 " + spent)
+                cap_flood_sleep(client, started=_RUN_T0)
+                if until is not None and msg.date > until:
+                    break
+                iterated += 1
+                key, origin = _msg_key_with_origin(msg, source_chat_id)
+                is_fallback = (origin == _ORIGIN_FALLBACK)
+                if is_fallback:
+                    fwd_fallback_count += 1
+                    log.warning(
+                        "fwd fallback msg=%d — fwd_from present but "
+                        "channel_post/from_id missing; keying on "
+                        "(source, msg.id) — potential re-forward on next tick",
+                        msg.id,
+                    )
+                if key in existing:
+                    skipped_existing += 1
+                    if show_irrelevant or find:
+                        existing_msgs.append(msg)
+                    continue
+                caption = msg.text or ""
+                if (
+                    _ignored.matches_prefix(caption)
+                    or _ignored.matches_contains(caption)
+                ):
+                    skipped_ignored += 1
+                    log.info(
+                        "skip ignored msg=%d caption=%r",
+                        msg.id, caption[:60],
+                    )
+                    if find:
+                        ignored_msgs.append(msg)
+                    continue
+                candidates.append(msg)
+        except (FloodWaitError, _ScanBudgetSpent) as exc:
+            # telethon 임계(기본 60초)를 넘는 FloodWait 은 훑기에서도 예외로 온다 —
+            # 옛 판은 아무도 안 잡아 트레이스백으로 죽었다(알림·회수 판정 없음, #12 ·
+            # #432 리뷰 M1). 포워드의 긴 FloodWait 과 같은 갈래로 끝낸다. 예산 소진은
+            # FloodWait 이 아니다 — 처방(기다림)이 다르니 제목·갈래를 가른다(#82).
+            if isinstance(exc, _ScanBudgetSpent):
+                why, kind = str(exc), "budget"
+                _title = "⏸ <b>나쁜양파 동기화 — 실행 예산 소진</b>"
+            else:
+                why = (f"훑기 중 텔레그램 요청 제한(FloodWait {getattr(exc, 'seconds', '?')}s) — "
+                       "기다리면 풀린다 · 다음 동기화가 다시 훑는다")
+                kind, _title = "flood", "⏸ <b>나쁜양파 동기화 — 훑기 중단</b>"
+            log.error("aborted during scan: %s", why)
+            if dry_run:
+                # 사람이 돌린 진단 — 폰 알림은 타이머 장애로 읽힌다(시작 실패와 같은 규약).
+                return 1
+            if stats is not None:
+                stats.update(forwarded=0, skipped_units=0, aborted=why,
+                             abort_kind=kind, **_unfinished([], []))
+            _note = (f"{_title}\n"
+                     f"사유: {html.escape(why)}")
+            if defer:
+                stats["note"] = _note
+            else:
+                _notify(_note)
+            return 1
 
         until_label = (until or datetime.now(timezone.utc)).date().isoformat()
         log.info(
@@ -703,14 +757,14 @@ async def run(
                 # 기록하지 않으므로 이 알림은 다시 온다 — '한 번이면 멈춘다' 고
                 # 적으면 거짓이다(2차 리뷰). 이 상한 중단 자체는 재시도 횟수에
                 # 세지 않는다 — 사람에게 묻는 장치라, 세면 3틱 뒤 사람 대신
-                # 기록해 버린다. 도중 중단은 긴 FloodWait 만 빼고 센다(4·5차 리뷰).
+                # 기록해 버린다. 도중 중단은 긴 FloodWait·예산 소진만 빼고 센다(4·5차 리뷰).
                 _note += (
                     f"\n자동 회수({_srcs.RECOVERY_LOOKBACK_DAYS}일) 중이다 — "
                     f"<code>--lookback-days {_srcs.RECOVERY_LOOKBACK_DAYS} "
                     f"--max-candidates {len(candidates)+100}</code> 로 돌리면 "
                     f"성공 뒤 기록돼 이 알림이 멈춘다(포워드가 일부 실패하거나 "
-                    f"도중에 중단되면 기록하지 않아 다시 온다 — 긴 FloodWait "
-                    f"중단을 뺀 그런 실행이 {_srcs.RECOVERY_MAX_ATTEMPTS}회째가 "
+                    f"도중에 중단되면 기록하지 않아 다시 온다 — 긴 FloodWait·"
+                    f"실행 예산 중단을 뺀 그런 실행이 {_srcs.RECOVERY_MAX_ATTEMPTS}회째가 "
                     f"되면 기록된다)."
                 )
             _notify(_note)
@@ -845,6 +899,14 @@ async def run(
         i = 0
         try:
             for i, unit in enumerate(units, 1):
+                # 예산은 매 유닛 앞에서 다시 본다 — FloodWait 이 났을 때만 보면 대기를
+                # 허용한 뒤의 유닛이나 대기 없이 긴 일괄이 예산을 그대로 넘고 systemd 가
+                # 알림 없이 죽인다(#432 리뷰 M1a). telethon 이 혼자 자는 짧은 FloodWait
+                # 도 남은 예산 안으로 줄인다(M1b — `cap_flood_sleep`).
+                spent = run_budget_spent(started=_RUN_T0)
+                if spent:
+                    raise BackfillAborted(spent, kind="budget")
+                cap_flood_sleep(client, started=_RUN_T0)
                 if i == 1 or i % DISK_CHECK_EVERY_UNITS == 0:
                     await _maybe_pause_for_disk(forwarded_msgs, total_msgs)
 
@@ -893,19 +955,23 @@ async def run(
                 await asyncio.sleep(_current_pause(forwarded_msgs))
         except BackfillAborted as exc:
             log.error("aborted: %s", exc)
-            # 중단도 회수 시도다 — 호출부가 **세는지** 정한다(긴 FloodWait 만
-            # 안 센다, 4·5차 리뷰). 자동 회수는 연속 실패로 끊지 않으므로 여기
-            # 오는 자동 회수는 FloodWait 뿐이다. FloodWait 은 그 유닛(i번째)을
-            # 시도하다 끊겼고, 연속 실패는 i번째가 실패로 이미 세어졌다 — 남은
-            # 유닛의 시작이 다르다.
-            left = units[i - 1:] if exc.kind == "flood" else units[i:]
+            # 중단도 회수 시도다 — 호출부가 **세는지** 정한다(긴 FloodWait·예산
+            # 소진은 안 센다, 4·5차 리뷰 · #432 리뷰 M1). 자동 회수는 연속 실패로
+            # 끊지 않으므로 여기 오는 자동 회수는 그 둘뿐이다. 둘 다 i번째 유닛을
+            # 시도하기 전이거나 시도하다 끊겼고, 연속 실패는 i번째가 실패로 이미
+            # 세어졌다 — 남은 유닛의 시작이 다르다.
+            left = units[i - 1:] if exc.kind in ("flood", "budget") else units[i:]
             if stats is not None:
                 stats.update(forwarded=forwarded_msgs,
                              skipped_units=skipped_units, aborted=str(exc),
                              abort_kind=exc.kind,
                              **_unfinished(failed_units, left))
+            # 예산 소진은 장애가 아니다 — 남은 유닛은 다음 동기화가 잇는다(제목이
+            # ❌ 면 고칠 것이 있는 것처럼 읽힌다, #260).
+            _title = ("⏸ <b>나쁜양파 동기화 — 실행 예산 소진</b>" if exc.kind == "budget"
+                      else "❌ <b>나쁜양파 백필 중단</b>")
             _note = (
-                f"❌ <b>나쁜양파 백필 중단</b>\n"
+                f"{_title}\n"
                 f"사유: {html.escape(str(exc))}\n"
                 f"진행: {forwarded_msgs}/{total_msgs} msgs"
             )
@@ -1121,7 +1187,7 @@ def main() -> None:
     # 되고(#264·#283), 실패한 회수를 기록하면 다 된 줄 알고 다시 안 훑는다.
     # 포워드가 일부 실패했으면 기록하지 않고 재시도한다 — 일시 장애도 같은
     # 경로로 오기 때문이다(상한은 레지스트리가 정한다, 독립 리뷰 M1).
-    # 포워드 도중 **중단된** 회수는 긴 FloodWait 만 빼고 센다(4·5차 리뷰 —
+    # 포워드 도중 **중단된** 회수는 긴 FloodWait·예산 소진만 빼고 센다(4·5차 리뷰 —
     # FloodWait 을 세면 제한 창 하나에 세 번 재실행해 캡션 하나 시도하지 않고
     # 포기한다). 자동 회수는 연속 실패로 끊지 않는다(run() 주석). 시작 실패(rc
     # 1, stats 비어 있음)는 아무것도 시도하지 않았으니 부르지 않는다. 도중에 죽은

@@ -544,6 +544,7 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     materially for little browser-side gain.
     """
     from trade import price_provider
+    from trade.link_new import kst_day as _kst_day, kst_stamp as _kst_stamp
     return {
         "id": a["id"],
         "dir": a["direction"],
@@ -568,8 +569,11 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
         "composite_parts": a.get("composite_parts") or [],
         "title_kind": a.get("title_kind") or "",
         "commentary": a.get("commentary") or "",
-        "posted_at": (a.get("posted_at") or "")[:10],
-        "ingested_at": (a.get("ingested_at") or "")[:19],
+        # KST 달력일 — `[:10]` 은 UTC 날이라 KST 새벽 글이 하루 늙었다(규칙 10a).
+        "posted_at": _kst_day(a.get("posted_at")),
+        # 받은 시각도 KST 로(라벨을 값에 싣는다) — 옛 판은 UTC 원문을 오프셋 없이 잘라, 같은
+        # 행의 KST `posted_at` 옆에서 '수집이 게시보다 하루 앞' 처럼 읽혔다(독립 리뷰 #432 L2).
+        "ingested_at": _kst_stamp(a.get("ingested_at")),
         "period_start": a.get("period_start") or "",
         "period_end": a.get("period_end") or "",
         "period_kind": a.get("period_kind") or "",
@@ -2840,6 +2844,7 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     from collections import Counter
     from datetime import datetime, timedelta
     from trade import header_health as hh
+    from trade import link_new as _ln
     from trade.store import latest_per_dedup_key, list_all_alerts, open_db
 
     today = today or datetime.now(_KST).date()
@@ -2868,7 +2873,8 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
                      key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
     f["db_newest"] = max((str(a.get("posted_at") or "") for a in allrows), default="")
     f["n_all"], f["n_latest"] = len(allrows), len(latest)
-    cnt = Counter(str(a.get("posted_at") or "")[:7] for a in allrows)
+    # 달·날은 KST 로 — `[:7]`·`[:10]` 은 UTC 라 KST 새벽 글이 전날·전달로 갔다(10a).
+    cnt = Counter(_ln.kst_day(a.get("posted_at"))[:7] for a in allrows)
     f["month_counts"] = [(ym, cnt[ym]) for ym in sorted(cnt)[-4:]]
 
     # ⚠️ inbox.jsonl 은 **전 소스 공용**이다(관세청 BeOn + 나쁜양파 15종). 반면
@@ -2956,7 +2962,7 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
         st = a.get("status") or ""
         kind = ("monthly_final" if st == "final" and k == "monthly"
                 else "monthly_preliminary" if k == "monthly" else k)
-        posted.setdefault(kind, set()).add(str(a.get("posted_at") or "")[:10])
+        posted.setdefault(kind, set()).add(_ln.kst_day(a.get("posted_at")))
     f["expected"] = exp
     f["missing"] = hh.missing_publications(exp, posted)
 
@@ -3008,8 +3014,8 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
         f["verdict_population"] = "관세청 캡션 · 미적재는 시각 기준(id 대조 불가)"
     else:
         f["verdict_population"] = "전 소스(파서 미가용 — 폴백)"
-    f["verdict"] = hh.verdict({"db_newest": f["db_newest"][:10],
-                               "inbox_newest": (kr_newest if use_kr else inbox_newest)[:10],
+    f["verdict"] = hh.verdict({"db_newest": _ln.kst_day(f["db_newest"]),
+                               "inbox_newest": _ln.kst_day(kr_newest if use_kr else inbox_newest),
                                "inbox_lines_after_db": (kr_pending if use_ids
                                                         else kr_after if use_kr else after_db),
                                "eval_miss_recent": em_recent,
@@ -3032,7 +3038,8 @@ _INBOX_SILENT_DAYS = 3
 def inbox_silence_notes(f: dict, today=None) -> list[str]:
     """inbox 전체 침묵에 대한 관찰 줄(없으면 빈 리스트). 순수 함수(#41)."""
     from datetime import date, datetime
-    newest = str(f.get("inbox_newest") or "")[:10]
+    from trade.link_new import kst_day
+    newest = kst_day(f.get("inbox_newest"))     # KST 날 — 오늘(KST)과 같은 시계(10a)
     if not newest:
         return []
     today = today or datetime.now(_KST).date()
@@ -3052,6 +3059,7 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
     사실은 `header_facts`(감사와 공유)가 모으고 여기선 찍기만 한다."""
     import sys
     from trade import customs_provisional as cp
+    from trade.link_new import kst_stamp   # 시각은 KST 라벨로(규칙 10a)
 
     P = lambda *a: print(*a, flush=True)                       # noqa: E731
     P("🌐 trade.dashboard --why v2 · 헤더 '현재 잠정/확정' 갈래 판정 · 읽기 전용")
@@ -3066,21 +3074,21 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
     for lbl, a in (("잠정", f["prelim"]), ("확정", f["final"])):
         if a:
             P(f"   {lbl}: 기간 {a.get('period_start')}~{a.get('period_end')} ({a.get('period_kind')}) · "
-              f"게시 {str(a.get('posted_at') or '')[:16]} · id {a.get('id')}")
+              f"게시 {kst_stamp(a.get('posted_at'))} · id {a.get('id')}")
         else:
             P(f"   {lbl}: 없음")
-    P(f"   DB 최신 게시: {f['db_newest'][:16] or '없음'} · 전체 {f['n_all']}건 · 최신만 {f['n_latest']}건")
+    P(f"   DB 최신 게시: {kst_stamp(f['db_newest']) or '없음'} · 전체 {f['n_all']}건 · 최신만 {f['n_latest']}건")
     P("")
-    P("③ 월별 알림 수(게시일 기준, 최근 4개월)")
+    P("③ 월별 알림 수(게시일 KST 기준, 최근 4개월)")
     for ym, n in f["month_counts"]:
         P(f"   {ym}: {n}건")
     P("")
     P("④ inbox.jsonl(리스너 → 인제스트 사이)")
     if f["inbox_exists"]:
-        P(f"   {f['inbox']}: {f['n_lines']}줄 · 최신 {f['inbox_newest'][:16] or '없음'} · "
+        P(f"   {f['inbox']}: {f['n_lines']}줄 · 최신 {kst_stamp(f['inbox_newest']) or '없음'} · "
           f"DB 최신 이후 {f['after_db']}줄  ← 전 소스(관세청+나쁜양파 15종 공용)")
         if f["parse_ok"]:
-            P(f"   그중 관세청 캡션: 최신 {f['kr_newest'][:16] or '없음'} · "
+            P(f"   그중 관세청 캡션: 최신 {kst_stamp(f['kr_newest']) or '없음'} · "
               f"DB 최신 이후 {f['kr_after']}줄(시각 기준)  ← store.db 후보는 이것뿐"
               + ("  (파싱 상한 초과 — 일부만 셈)" if f["parse_capped"] else ""))
             if f["ids_ok"]:
