@@ -154,8 +154,9 @@ def per_quarter(ticker: str) -> int:
     """한 종목의 최근 5분기를 실제 조회해 분기별 결과를 찍는다."""
     from bot.dart_backlog import (backlog_excerpt, backlog_total_excerpt,
                                   diagnose, diagnose_detail, parse_backlog)
-    from bot.dart_client import get_dart
-    from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
+    from bot.dart_client import get_dart, list_failure
+    from bot.dart_feed import (_DOC_TEXT_MAX_FULL, _fetch_doc_text,
+                               no_document_code)
     from bot.dart_quarterly import get_quarterly_series
     dart = get_dart()
     if not dart_ready(dart):
@@ -170,17 +171,30 @@ def per_quarter(ticker: str) -> int:
     for q in qs:
         y, rc, label = q["year"], q["reprt_code"], q.get("label", "?")
         reps = dart.find_periodic_reports(ticker, y, rc)
+        # ⚠️ 목록을 **못 받은** 것과 원천이 '없다' 고 답한 것은 다른 갈래다
+        # (실수 #429 리뷰 F6) — 앞엣것을 '원문 자체가 없다' 로 적으면 일시 장애가
+        # 영구 부재로 읽힌다(#82).
+        lf = list_failure(reps)
         if not reps:
-            print(f"  {label:8s} {y}/{rc}  ❌ 정기보고서 미확인 "
-                  f"— 이 분기는 원문 자체가 없다")
+            if lf:
+                print(f"  {label:8s} {y}/{rc}  ❓ 목록 조회 실패({lf}) "
+                      f"— 원천에 없다는 답이 아니다. 다시 돌려 볼 것")
+            else:
+                print(f"  {label:8s} {y}/{rc}  ❌ 정기보고서 미확인 "
+                      f"— 원천이 이 분기 보고서가 없다고 답했다")
             continue
+        if lf:
+            print(f"      ⚠️ 목록 일부를 못 받았다({lf}) — 아래 후보가 전부가 "
+                  f"아닐 수 있다")
         # 후보를 전부 보여준다 — 어떤 접수건이 뽑혔고 왜 문서가 없는지가
         # 여기서 갈린다(정정·첨부 계열은 자체 문서가 없다).
         text, used = "", None
         for rep in reps:
             text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
                                    max_bytes=_DOC_TEXT_MAX_FULL) or ""
-            mark = "✔" if text else "✗문서없음"
+            _nd = None if text else no_document_code(rep["rcept_no"])
+            mark = ("✔" if text else f"✗원천 미제공({_nd})" if _nd
+                    else "✗못 받음(원천의 답 없음)")
             print(f"      후보 {rep['rcept_no']} {rep.get('rcept_dt','')} "
                   f"{mark}  {rep.get('report_nm','')}")
             if text:
@@ -326,6 +340,7 @@ _JUMP = 0.60
 def _one(dart, ticker: str, n: int = 5):
     """→ (분기 리스트[(label, 값|None, 사유)], ) — 조용히 수집."""
     from bot.dart_backlog import diagnose, parse_backlog
+    from bot.dart_client import list_failure
     from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
     from bot.dart_quarterly import get_quarterly_series
     qs = get_quarterly_series(dart, ticker, n=n) or []
@@ -333,14 +348,19 @@ def _one(dart, ticker: str, n: int = 5):
     for q in qs:
         y, rc, label = q["year"], q["reprt_code"], q.get("label", "?")
         text = ""
-        for rep in dart.find_periodic_reports(ticker, y, rc):
+        reps = dart.find_periodic_reports(ticker, y, rc)
+        for rep in reps:
             text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
                                    max_bytes=_DOC_TEXT_MAX_FULL) or ""
             if text:
                 break
         got = parse_backlog(text)
-        out.append((label, got["value"] if got else None,
-                    got["form"] if got else diagnose(text)))
+        lf = list_failure(reps)
+        # 목록을 못 받아 아무것도 못 읽었으면 그 사유가 답이다 — `diagnose("")`
+        # 는 '원문미제공' 이라 일시 장애가 원천 부재로 찍힌다(리뷰 F6).
+        why = (got["form"] if got else
+               f"목록조회실패:{lf}" if lf and not text else diagnose(text))
+        out.append((label, got["value"] if got else None, why))
     return out
 
 
@@ -434,10 +454,13 @@ def explain(ticker: str) -> int:
     if not qs:
         print("  ❌ 분기 시리즈 없음")
         return 1
+    from bot.dart_client import list_failure
     for q in qs:
         year, rc = q["year"], q["reprt_code"]
         label = q.get("label", "?")
-        reps = dart.find_periodic_reports(code, year, rc) or []
+        _reps = dart.find_periodic_reports(code, year, rc)
+        lf = list_failure(_reps)
+        reps = _reps or []
         text = ""
         for rep in reps:
             if rep.get("rcept_no"):
@@ -446,7 +469,10 @@ def explain(ticker: str) -> int:
                 if text:
                     break
         if not text:
-            print(f"\n── {label} — 원문 없음")
+            # 목록을 못 받은 것을 '원문 없음' 으로 적지 않는다(리뷰 F6 · #82).
+            print(f"\n── {label} — "
+                  + (f"목록 조회 실패({lf}) — 원문이 없는 게 아니라 답을 못 "
+                     f"들었다" if lf else "원문 없음"))
             continue
         got = parse_backlog(text)
         print(f"\n── {label} — "

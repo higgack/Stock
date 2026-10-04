@@ -2078,3 +2078,47 @@ def keyless_reason(what: str, *, at_collection: bool = False) -> str:
     '수집 당시' 라고 적는다(#165)."""
     head = "수집 당시 DART_API_KEY 없음" if at_collection else "DART_API_KEY 없음"
     return f"{head} — {what} 받지 못했습니다"
+
+
+# 키 없이 물어 빈손이었던 DART **칸**의 기록 — 칸마다 따로 적는다(실수 #429 리뷰
+# F7). 스냅샷 전체에 표식 하나를 두면, 렌더가 공시 탭 하나를 키 없이 물은 사실이
+# 키로 받아 **정말 빈** K-IFRS 칸까지 '수집 당시 키 없음' 으로 만든다(#34·#165).
+# 값은 그 사실이 언제의 것인지다 — `"collection"` 은 스냅샷을 모을 때(저장본에
+# 남는다), `"now"` 는 이 렌더가 방금 물은 것(저장되지 않는다).
+# ⚠️ 칸마다 **평평한 키**(`kr.dart_keyless_<칸>`)로 둔다. 중첩 dict 로 두면 스냅샷
+# 수집이 작업 결과를 `setdefault` 로, 재무 재수집이 `update` 로 합칠 때 한쪽 칸이
+# 조용히 사라진다(첫 작업의 dict 만 남거나 통째로 덮인다).
+KEYLESS_SECTIONS = ("company", "insiders", "disclosures", "financials")
+_KEYLESS_WHEN = ("collection", "now")
+
+
+def _keyless_field(section: str) -> str:
+    if section not in KEYLESS_SECTIONS:
+        raise ValueError(f"알 수 없는 DART 칸: {section!r}")
+    return "dart_keyless_" + section
+
+
+def mark_keyless(kr: dict, section: str, when: str = "collection") -> None:
+    """그 칸을 키 없이 물어 빈손이었다고 적는다."""
+    if when not in _KEYLESS_WHEN:
+        raise ValueError(f"알 수 없는 시점: {when!r}")
+    kr[_keyless_field(section)] = when
+
+
+def clear_keyless(kr: dict, section: str) -> None:
+    """그 칸을 **키로** 다시 물었다 — 옛 '키 없음' 기록은 더는 그 칸의 사유가 아니다."""
+    kr.pop(_keyless_field(section), None)
+
+
+def keyless_when(kr, section: str) -> str | None:
+    """그 칸의 기록 시점(`"collection"`/`"now"`) 또는 None."""
+    when = (kr or {}).get(_keyless_field(section))
+    return when if when in _KEYLESS_WHEN else None
+
+
+def keyless_note(kr, section: str, what: str) -> str:
+    """그 칸에 '키 없음' 기록이 있으면 빈칸 자리의 사유 문장, 없으면 `""`."""
+    when = keyless_when(kr, section)
+    if when is None:
+        return ""
+    return keyless_reason(what, at_collection=(when == "collection"))

@@ -196,17 +196,23 @@ class TestKeylessEntryPoints:
 
     def test_collect_kr_financials(self, keyless):
         """⚠️ 2026-10-04 다시 씀(#222): 옛 판은 빈 dict 를 못박았다. 이제 키 없이
-        멈춘 사실을 스냅샷에 적는다(`kr.dart_keyless` — 화면이 K-IFRS 칸에
-        사유를 말하고, 키가 생기면 다시 받는다, `tests/test_dart_blindspots_
-        20261004.py`). 남는 보장은 그대로다: 키 없이 DART 메서드를 부르지 않는다."""
+        멈춘 사실을 스냅샷의 **재무 칸**에 적는다(`kr.dart_keyless_financials` —
+        화면이 K-IFRS 칸에 사유를 말하고, 키가 생기면 다시 받는다, `tests/test_
+        dart_blindspots_20261004.py`). 남는 보장은 그대로다: 키 없이 DART
+        메서드를 부르지 않는다."""
         import bot.stock_snapshot as ss
         assert ss.collect_kr_financials("005930.KS") == {
-            "kr": {"dart_keyless": True}}
+            "kr": {"dart_keyless_financials": "collection"}}
         assert keyless == []
 
 
 # ── 3. 전수 회귀 ───────────────────────────────────────────────────────
 _FACTORIES = frozenset({"get_dart", "DartClient"})
+_DART_MOD = "bot.dart_client"
+# 호출 결과를 바꾸지 않는 장식 — 그 밖의 장식이 붙은 함수는 무엇을 돌려줄지
+# 모른다(감싼 함수가 None 을 줄 수 있다, 리뷰 F2).
+_TRANSPARENT_DECOS = frozenset({"staticmethod", "classmethod", "lru_cache",
+                                "cache"})
 # 운반 판정 상한 — 메모가 살아 있으면 레포 전수가 수만 회다(실측은 아래 레포
 # 회귀가 단언한다). 넘으면 멈추고 실패한다 — 메모가 깨진 판정이 계속 도는 대신
 # (리뷰 L3 · 메모 없던 옛 판은 같은 이름을 30번 다시 묶는 함수에서 30초 안에 안
@@ -273,9 +279,15 @@ def _const_index(e):
 def _key(e):
     """판정·대입 대상의 열쇠 — 이름(`d`) · 속성 사슬(`self.d`) · 상수 칸
     (`ctx['dart']` · `args[0]`). `getattr(o, "d")` 는 `o.d`, `m.get("dart")` 는
-    `m['dart']` 로 본다(#428 못 보는 축 — getattr·dict·리스트). 기본값을 준
+    `m['dart']?` 로 본다(#428 못 보는 축 — getattr·dict·리스트). 기본값을 준
     `getattr(o, "d", None)` 은 '아직 없을 수 있다'(지연 초기화)는 뜻이라 열쇠가
-    아니다 — 그 판정은 살아 있다."""
+    아니다 — 그 판정은 살아 있다. `.get` 도 같은 뜻이다 — 없는 칸은 KeyError 가
+    아니라 기본값이 온다. 그래서 칸 열쇠와 가르는 꼬리표(`?`)를 단다: 리터럴에
+    그 칸이 없는 바인딩(`CTX = {}`)을 칸 열쇠는 '이 칸을 안 채운다' 로 건너뛰지만
+    `.get` 열쇠는 '기본값이 온다 — 실리지 않음' 으로 센다(옛 판은 둘을 같은
+    열쇠로 봐서 지연 초기화 `if CTX.get('d') is None: init()` 을 죽은 검사로
+    잡았다, 2026-10-04 F2 테스트 중 발견). 기본값이 무엇이든 그 값은 따라가지
+    않는다(못 보는 축 — 없는 칸은 '실리지 않음' 으로만 센다)."""
     if isinstance(e, ast.NamedExpr):
         e = e.target                     # `(d := get_dart()) is None`
     if isinstance(e, ast.Name):
@@ -296,17 +308,19 @@ def _key(e):
             return f"{b}.{e.args[1].value}" if b else None
         if (isinstance(f, ast.Attribute) and f.attr == "get"
                 and 1 <= len(e.args) <= 2
-                and _const_index(e.args[0]) is not None
-                and (len(e.args) == 1 or isinstance(e.args[1], ast.Constant))):
+                and _const_index(e.args[0]) is not None):
             b = _key(f.value)
-            return f"{b}[{_const_index(e.args[0])!r}]" if b else None
+            return f"{b}[{_const_index(e.args[0])!r}]?" if b else None
     return None
 
 
 def _split(k):
     """열쇠의 마지막 접근자 — `a.b` → ("a", "attr", "b") · `a['x']` →
-    ("a", "item", "x") · 이름 하나면 None. 칸 열쇠는 식별자·정수뿐이라 점·괄호가
-    섞이지 않는다."""
+    ("a", "item", "x") · `a.get('x')` → ("a", "get", "x") · 이름 하나면 None.
+    칸 열쇠는 식별자·정수뿐이라 점·괄호가 섞이지 않는다."""
+    if k.endswith("?"):
+        b, _kind, n = _split(k[:-1])
+        return b, "get", n
     if k.endswith("]"):
         i = k.rindex("[")
         return k[:i], "item", ast.literal_eval(k[i + 1:-1])
@@ -314,6 +328,11 @@ def _split(k):
         b, a = k.rsplit(".", 1)
         return b, "attr", a
     return None
+
+
+def _store_key(k):
+    """그 칸에 **쓰는** 열쇠 — `.get` 으로 읽어도 쓰기는 `a['x'] = …` 다."""
+    return k[:-1] if k and k.endswith("?") else k
 
 
 def _root(k):
@@ -339,7 +358,8 @@ def _unwrap_bool(e):
 def _demorgan(e):
     """`not` 아래의 식 — 불 연산이면 각 항이 부정된다(`not (d and x)` =
     `not d or not x`). 부정의 부정(`not (… and not d)`)은 긍정이라 뺀다 — 그
-    안쪽 `not d` 노드는 따로 훑는다."""
+    안쪽 `not d` 노드도 판정에서 빠진다(`_odd_negated`, 리뷰 F2). 긍정 비교를
+    부정하면 부정 판정이다(`not (d is not None)` = `d is None`)."""
     if isinstance(e, ast.BoolOp):
         out = []
         for v in e.values:
@@ -347,7 +367,44 @@ def _demorgan(e):
             if not (isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.Not)):
                 out.extend(_demorgan(v))
         return out
+    if isinstance(e, ast.Compare):
+        sub = _pos_operand(e)
+        if sub is not None:
+            return [sub]
     return [e]
+
+
+def _odd_negated(nodes):
+    """부정 아래 **홀수 번** 놓인 판정 노드(`not`·비교)의 id — 부정의 부정은
+    긍정이다(`not not d` · `not (x and not d)` · `not d is None`, 리뷰 F2).
+    불 연산 사슬(`not`·`and`/`or`·`bool()`)만 따라간다 — 그 밖(호출 인자 등)에
+    들어가면 새 사슬이다. 사슬의 뿌리에서 패리티를 센다(안쪽 `not` 에서 다시
+    세면 `not not not d` 의 맨 안쪽을 두 번 뒤집는다)."""
+    def kids(e):
+        e = _unwrap_bool(e)
+        if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
+            return [e.operand]
+        if isinstance(e, ast.BoolOp):
+            return list(e.values)
+        return []
+    inner = {id(_unwrap_bool(c)) for x in nodes for c in kids(x)}
+    odd: set = set()
+
+    def walk(e, par):
+        e = _unwrap_bool(e)
+        if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
+            if par:
+                odd.add(id(e))
+            walk(e.operand, not par)
+        elif isinstance(e, ast.BoolOp):
+            for v in e.values:
+                walk(v, par)
+        elif isinstance(e, ast.Compare) and par:
+            odd.add(id(e))
+    for x in nodes:
+        if kids(x) and id(x) not in inner:
+            walk(x, False)
+    return odd
 
 
 def _neg_operands(x):
@@ -362,10 +419,12 @@ def _neg_operands(x):
         out = []
         for i, o in enumerate(x.ops):
             for a, b in ((sides[i], sides[i + 1]), (sides[i + 1], sides[i])):
+                # `E is not True` 는 E 가 `bool(…)` 일 때만 참거짓 판정이다 — 객체를
+                # True 와 견주면 늘 참이라 '키 없음' 을 가르는 판정이 아니다(F2).
                 neg = ((isinstance(o, (ast.Is, ast.Eq))
                         and _is_const(b, None, False))
                        or (isinstance(o, (ast.IsNot, ast.NotEq))
-                           and _is_const(b, True)))
+                           and _is_const(b, True) and _unwrap_bool(a) is not a))
                 if neg and not _is_const(a, None, False, True):
                     out.append(_unwrap_bool(a))
         return out
@@ -380,7 +439,11 @@ def _neg_key(x):
 
 def _pos_operand(t):
     """긍정 판정의 대상 — `if E:` · `if bool(E):` · `E is not None` ·
-    `E != None` · `E is True`. 아니면 None."""
+    `E != None` · `bool(E) is True`. 아니면 None.
+
+    ⚠️ 날것의 `E is True`·`E == True` 는 아니다 — 클라이언트 객체는 True 가
+    아니라 그 판정이 **늘 거짓**이고, else 가 오히려 유일하게 사는 갈래다(리뷰
+    F2 — 옛 판은 그 else 를 죽은 갈래로 잡았다)."""
     t = _unwrap_bool(t)
     if isinstance(t, ast.Compare):
         if len(t.ops) != 1:
@@ -389,7 +452,8 @@ def _pos_operand(t):
         for a, b in (sides, sides[::-1]):
             if ((isinstance(o, (ast.IsNot, ast.NotEq))
                  and _is_const(b, None, False))
-                    or (isinstance(o, (ast.Is, ast.Eq)) and _is_const(b, True))):
+                    or (isinstance(o, (ast.Is, ast.Eq)) and _is_const(b, True)
+                        and _unwrap_bool(a) is not a)):
                 return _unwrap_bool(a)
         return None
     if isinstance(t, (ast.Name, ast.Attribute, ast.Subscript, ast.NamedExpr,
@@ -428,6 +492,11 @@ def _trivial_branch(stmts):
     return True
 
 
+def _is_generator(sc):
+    """그 스코프가 제너레이터 함수인가(자기 본문의 `yield`)."""
+    return any(isinstance(x, (ast.Yield, ast.YieldFrom)) for x in sc.nodes)
+
+
 def _cands(v):
     """값의 후보 — `a if k else b` · `a or b` 는 갈래마다 본다(1차 규칙)."""
     if isinstance(v, ast.IfExp):
@@ -439,7 +508,10 @@ def _cands(v):
 
 def _entry(v, kind, name):
     """리터럴 컨테이너 v 의 그 칸 — ("있음", 값식) · ("없음", None). 리터럴이
-    아니면 None(무엇이 담겼는지 모른다)."""
+    아니면 None(무엇이 담겼는지 모른다). `.get`("get")은 칸과 같은 리터럴을
+    본다 — 없는 칸의 뜻(기본값이 온다)은 부르는 쪽이 가른다."""
+    if kind == "get":
+        kind = "item"
     if kind == "item" and isinstance(v, ast.Dict):
         if any(k is None for k in v.keys):          # {**다른것} — 덮였을지 모른다
             return None
@@ -479,7 +551,8 @@ def _arg_entry(s, base, kind, name):
         return None
     if base == s.vararg and kind == "item" and isinstance(name, int):
         return ("*", base, name)
-    if base == s.kwarg and kind == "item" and isinstance(name, str):
+    if (base == s.kwarg and kind in ("item", "get")
+            and isinstance(name, str)):
         return ("**", base, name)
     return None
 
@@ -531,6 +604,18 @@ class _Scope:
                   and x.value is not None):
                 self._add(_key(x.target), x.lineno, x.value)
                 direct.add(id(x.target))
+        # `setattr(o, 'd', v)` 는 `o.d = v` 다(리뷰 F2) — 이름이 상수가 아니면
+        # 어느 속성인지 모른다(이 스코프는 아무 속성이나 쓸 수 있다).
+        self.dyn_setattr = False
+        for x in self.nodes:
+            if (isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
+                    and x.func.id == "setattr" and len(x.args) == 3):
+                nm, b = x.args[1], _key(x.args[0])
+                if (isinstance(nm, ast.Constant) and isinstance(nm.value, str)
+                        and nm.value.isidentifier() and b):
+                    self._add(f"{b}.{nm.value}", x.lineno, x.args[2])
+                else:
+                    self.dyn_setattr = True
         for x in self.nodes:
             if (isinstance(x, (ast.Name, ast.Attribute, ast.Subscript))
                     and isinstance(x.ctx, ast.Store) and id(x) not in direct):
@@ -560,8 +645,9 @@ class _Scope:
                                 filled.setdefault(_key(t), []).append(
                                     (y.lineno, y.value))
                 for z in (ast.walk(x.test) if filled else ()):
-                    if _neg_key(z) in filled:
-                        self.resolves[id(z)] = filled[_neg_key(z)]
+                    nk = _store_key(_neg_key(z))
+                    if nk in filled:
+                        self.resolves[id(z)] = filled[nk]
 
     def _add(self, k, line, v):
         if k:
@@ -652,6 +738,8 @@ def _scan(sources):
             mods[name] = m = _Mod(name, ast.parse(sources[name]))
             scopes.extend(m.scopes)
             memo.clear()
+            prov.clear()
+            prov_list.clear()
             # 이름 해석·상속은 읽은 모듈에 기대므로 같이 비운다
             sym_cache.clear()
             mro_cache.clear()
@@ -669,17 +757,32 @@ def _scan(sources):
     factory_fns: dict = {}         # id(def) → 이름(클라이언트를 돌려주는 def)
 
     # ── 판정 노드(메모 · 순환 감지) ────────────────────────────────────
+    # 순환 안에서 잠정으로 '아니다' 가 된 판정 → [값, 그 판정이 기대는 가장 낮은
+    # 진행 중 자리]. 순환의 뿌리가 끝날 때 한꺼번에 확정하거나 버린다 — 옛 판은
+    # 뿌리만 메모하고 순환의 나머지를 닿을 때마다 다시 재서, 서로를 가리키는
+    # 전역 N개에 판정이 지수로 늘었다(리뷰 F5 실측: N=18 이 35,363회 · N=22 가
+    # 예산 초과).
+    prov: dict = {}
+    prov_list: list = []
+
     def node(ck, fn):
         """판정 하나 — 메모하고, 순환은 진행 중인 판정을 '아니다' 로 보고 끊는다
         (최소 고정점 — 끝까지 따라가 증명된 것만 참). 옛 판은 깊이 6에서 끊어
         이름을 일곱 번 옮겨 담은 사슬을 놓쳤다(#428 못 보는 축). 참은 그
-        가정('아니다')에 기대지 않으므로 바로 메모한다. 거짓은 자기보다 먼저
-        시작한 진행 중 판정을 건드렸으면 메모하지 않는다 — 그 판정이 참으로
-        끝나면 이 답도 바뀐다(자기 자신만 건드린 순환은 확정이다)."""
+        가정('아니다')에 기대지 않으므로 바로 메모한다 — 다만 그 판정이 진행
+        중이던 동안 생긴 잠정 '아니다' 는 그 판정을 '아니다' 로 가정했으니
+        버린다(다시 닿으면 새로 잰다). 거짓은 자기보다 먼저 시작한 진행 중
+        판정을 건드렸으면 잠정으로 두고, 순환의 뿌리(자기보다 먼저 시작한 것을
+        건드리지 않은 판정)가 '아니다' 로 끝나면 그 아래 잠정을 전부 확정한다 —
+        남은 잠정은 모두 '아니다' 끼리만 기대므로 그 배정이 고정점이고, 최소
+        고정점도 그렇다(리뷰 F5)."""
         if ck in memo:
             return memo[ck]
         if ck in stack:
             low[0] = min(low[0], stack[ck])
+            return False
+        if ck in prov:
+            low[0] = min(low[0], prov[ck][1])
             return False
         evals[0] += 1
         if evals[0] > _EVAL_BUDGET:
@@ -692,15 +795,32 @@ def _scan(sources):
         stack[ck] = idx
         peak[0] = max(peak[0], idx + 1)
         saved, low[0] = low[0], idx
+        start = len(prov_list)
         try:
             v = fn()
         finally:
             del stack[ck]
         mine = low[0]
         low[0] = min(saved, mine) if stack else _STACK_LIMIT
-        if v or mine >= idx:
-            memo[ck] = v
-        return v
+        mine_entries = prov_list[start:]
+        if v:
+            memo[ck] = True
+            for e in mine_entries:          # 이 판정을 '아니다' 로 가정한 잠정
+                prov.pop(e, None)
+            del prov_list[start:]
+            return True
+        if mine < idx:                      # 더 먼저 시작한 판정에 기댄다 — 잠정
+            for e in mine_entries:          # 이 판정에 기대던 것은 이제 그 아래에
+                if prov[e][1] >= idx:
+                    prov[e][1] = mine
+            prov[ck] = [False, mine]
+            prov_list.append(ck)
+            return False
+        for e in mine_entries:              # 순환의 뿌리가 '아니다' — 전부 확정
+            memo[e] = prov.pop(e)[0]
+        del prov_list[start:]
+        memo[ck] = False
+        return False
 
     # ── 이름 해석 ────────────────────────────────────────────────────
     hs_cache: dict = {}
@@ -931,13 +1051,50 @@ def _scan(sources):
             return c, c.classm
         return c, False
 
+    def real_factory(s, func):
+        """부른 것이 `bot.dart_client` 의 공장인가 — 이름만 같은 사용자 함수·
+        메서드·인자는 아니다(리뷰 F2). import 없이 맨 이름으로 부르면 공장으로
+        본다(픽스처 관례 — 운영 코드는 import 가 있어 그 경로로 가린다)."""
+        if isinstance(func, ast.Name):
+            if func.id not in s.mod.factories:
+                return False
+            sym = symbol(s, func)
+            if sym is not None:
+                return (sym[0] == "qual" and sym[1] == _DART_MOD
+                        and sym[2] in _FACTORIES)
+            h = holder(s, func.id)
+            return (h is not None and h.kind == "module"
+                    and func.id in _FACTORIES and func.id not in h.assigns)
+        if isinstance(func, ast.Attribute):
+            b = _key(func.value)
+            return (func.attr in _FACTORIES and b is not None
+                    and module_path(s, b) == _DART_MOD)
+        return False
+
+    def shadowed(s, name):
+        """그 이름이 공장이 아닌 다른 값으로 묶였나 — 인자·지역 대입 · 모듈의
+        import 아닌 대입."""
+        h = holder(s, name)
+        if h is None:
+            return False
+        if h.kind != "module":
+            return h.is_local(name)
+        return any(not (isinstance(v, tuple) and v[0] == "import")
+                   for _ln, v in h.assigns.get(name, ()))
+
     def is_factory_call(s, e):
+        """부정 판정 쪽(갈래 하나라도) — 공장이거나 클라이언트를 돌려줄 수 있는
+        함수. 대상을 찾으면 그 대상으로 가른다(이름이 같은 사용자 함수는 그
+        함수가 클라이언트를 주는가로) · 인자·지역 값으로 가린 이름은 아니다 ·
+        대상을 모르는 이름(`x.get_dart()`)은 이름으로 본다(못 보는 축)."""
         if not isinstance(e, ast.Call):
             return False
-        if _call_name(e) in s.mod.factories:
-            return True
         t, _ = target(s, e.func, lazy=False)
-        return t is not None and id(t) in factory_fns
+        if t is not None:
+            return id(t) in factory_fns or real_factory(s, e.func)
+        if isinstance(e.func, ast.Name) and shadowed(s, e.func.id):
+            return False
+        return _call_name(e) in s.mod.factories
 
     # ── 증거(함수 경계를 넘는 보관소의 모든 바인딩) ─────────────────────
     def ev_name(home, k):
@@ -966,8 +1123,10 @@ def _scan(sources):
 
     def member_ev(base_ev, kind, name, stores, seen):
         """담는 쪽(base)의 바인딩 + 그 칸에 직접 쓴 것 → 그 칸의 증거. 담는
-        쪽이 리터럴이면 그 칸(없으면 그 바인딩은 이 칸을 안 채운다) · `C(...)`
-        인스턴스면 C 의 속성 · 모르는 값이면 None(무엇이 담겼는지 모른다)."""
+        쪽이 리터럴이면 그 칸(없으면 그 바인딩은 이 칸을 안 채운다 — 읽으면
+        KeyError 다. `.get` 으로 읽으면 기본값이 오므로 '실리지 않음' 으로 센다)
+        · `C(...)` 인스턴스면 C 의 속성 · 모르는 값이면 None(무엇이 담겼는지
+        모른다)."""
         ev = list(stores)
         for sc, ln, v in base_ev:
             if isinstance(v, tuple) and v[0] == "import":
@@ -991,6 +1150,8 @@ def _scan(sources):
                 if e is not None:
                     if e[0] == "있음":
                         ev.append((sc, ln, e[1]))
+                    elif kind == "get":         # 없는 칸 — 기본값이 온다
+                        ev.append((sc, ln, None))
                     continue
                 cls = instance_of(sc, c) if kind == "attr" else None
                 if cls is None:
@@ -1070,7 +1231,7 @@ def _scan(sources):
     def _is_carrier(s, k, line):
         # 같은 스코프 줄 순서(1차 규칙) — 그 스코프가 직접 대입한 것
         if any(ln <= line and bearing(s, v, ln)
-               for ln, v in s.assigns.get(k, ())):
+               for ln, v in s.assigns.get(_store_key(k), ())):
             return True
         acc = _split(k)
         if acc is None:
@@ -1155,25 +1316,45 @@ def _scan(sources):
             for c in _cands(v))
 
     def surely_call(s, e):
-        """부르면 **언제나** 클라이언트가 오나. 사용자 함수는 `returns_client`
-        (갈래 하나라도 — 부정 판정 쪽의 엄격)로 공장이 되므로 `get_dart() if k
-        else None` 을 돌려주는 함수도 공장이다 — else 판정은 그 함수의 **모든**
-        return 이 언제나 클라이언트이고 끝으로 흘러 None 이 되지 않을 때만
-        믿는다(마지막 문장이 return·raise)."""
+        """부르면 **언제나** 클라이언트가 오나. 공장은 `bot.dart_client` 의 것만
+        (`real_factory` — 이름만 같은 사용자 함수·메서드·인자는 그 대상으로
+        가른다, 리뷰 F2). 사용자 함수는 `returns_client`(갈래 하나라도 — 부정
+        판정 쪽의 엄격)로 공장이 되므로 `get_dart() if k else None` 을 돌려주는
+        함수도 공장이다 — else 판정은 그 함수의 **모든** return 이 언제나
+        클라이언트이고 끝으로 흘러 None 이 되지 않을 때만 믿는다(마지막 문장이
+        return·raise). 결과를 바꿀 수 있는 장식이 붙었으면 믿지 않는다."""
         if not isinstance(e, ast.Call):
             return False
-        if _call_name(e) in s.mod.factories:
+        if real_factory(s, e.func):
             return True
         t, _ = target(s, e.func, lazy=False)
         return (t is not None and id(t) in factory_fns
+                and all(_deco_name(d) in _TRANSPARENT_DECOS
+                        for d in t.node.decorator_list)
                 and node(("SR", id(t)), lambda: surely_returns(t)))
 
     def surely_returns(t):
-        if not t.node.body or not isinstance(t.node.body[-1],
-                                             (ast.Return, ast.Raise)):
+        # 제너레이터는 여기 오지 않는다 — `returns_client` 가 공장에서 뺀다(여기
+        # 두었던 같은 검사는 도달할 수 없었다, #291)
+        if not isinstance(t.node.body[-1], (ast.Return, ast.Raise)):
             return False
         return all(surely_bearing(t, x.value, x.lineno) for x in t.nodes
                    if isinstance(x, ast.Return))
+
+    def attr_written_elsewhere(name, own):
+        """`<무엇>.name = …` 을 증거 밖에서 쓰는 스코프가 있나 — 있으면 '언제나'
+        를 믿지 않는다(리뷰 F2: 클래스 밖 `c.d = None` · `setattr(self, 'd',
+        None)` · 이름을 모르는 `setattr`). `own(sc, base)` 는 그 저장이 이미 증거에
+        들었나(가족 메서드의 self 등) · 다른 객체라고 확실한가."""
+        for sc in scopes:
+            if sc.dyn_setattr:
+                return True
+            for k in sc.assigns:
+                acc = _split(k)
+                if (acc is not None and acc[1] == "attr" and acc[2] == name
+                        and not own(sc, acc[0])):
+                    return True
+        return False
 
     def surely(s, k, line):
         return node(("S", id(s), k, line), lambda: _surely(s, k, line))
@@ -1187,27 +1368,46 @@ def _scan(sources):
             home = holder(s, k)
             if home is None:
                 return False
-            if home is s:
-                if (k in s.params or k in s.kwonly
-                        or k in (s.vararg, s.kwarg)):
-                    return False
-                return all_bear([(s, ln, v) for ln, v in s.assigns.get(k, ())],
-                                surely_bearing)
-            return node(("SH", id(home), k), lambda: all_bear(
-                ev_name(home, k), surely_bearing))
+            if home is s and (k in s.params or k in s.kwonly
+                              or k in (s.vararg, s.kwarg)):
+                return False
+            # 그 이름을 쓰는 **모든** 스코프 — nonlocal·global 로 바꾸는 안쪽
+            # 함수까지(리뷰 F2: `reset()` 이 `nonlocal d; d = None` 하면 else 가
+            # 산다). 지역이어도 같다(`ev_name` 은 그 쓰는 쪽을 함께 준다).
+            return node(("SH", id(home), k), lambda: (
+                not (home.kind == "module" and module_written(home, k))
+                and all_bear(ev_name(home, k), surely_bearing)))
         base, kind, name = acc
         if kind == "attr":
             meth = method_of(s, base)
             if meth is not None:
                 cls = meth.parent
-                return node(("SA", id(cls), name), lambda: all_bear(
-                    ev_attr(cls, name), surely_bearing))
+                return node(("SA", id(cls), name), lambda: (
+                    not attr_written_elsewhere(
+                        name, lambda sc, b: family_self(cls, sc, b))
+                    and all_bear(ev_attr(cls, name), surely_bearing)))
             mp = module_path(s, base)
             if mp and mp in mods:
                 top = mods[mp].top
-                return node(("SH", id(top), name), lambda: all_bear(
-                    ev_name(top, name), surely_bearing))
+                return node(("SH", id(top), name), lambda: (
+                    not module_written(top, name)
+                    and all_bear(ev_name(top, name), surely_bearing)))
         return False                        # 칸·객체 속성의 else 는 보지 않는다
+
+    def family_self(cls, sc, base):
+        """그 저장이 이미 `ev_attr` 증거에 든 것(가족 메서드의 self·cls) ·
+        가족 밖 클래스의 인스턴스라고 확실한 것."""
+        fam = family(cls)
+        if (sc.kind == "def" and sc.params and not sc.static
+                and sc.parent in fam and base == sc.params[0]):
+            return True
+        k = instance_class(sc, base, 10 ** 9)
+        return k is not None and k not in fam
+
+    def module_written(top, name):
+        """다른 스코프가 `모듈.name = …` 으로 그 전역을 바꾸나(리뷰 F2)."""
+        return attr_written_elsewhere(
+            name, lambda sc, b: module_path(sc, b) != top.mod.name)
 
     # ── 고정점 ───────────────────────────────────────────────────────
     def calls(x):
@@ -1301,7 +1501,9 @@ def _scan(sources):
     def returns_client(s):
         """스스로 받은 클라이언트를 돌려주나 — 인자를 그대로 돌려주는 것은
         아니다(`pick(None)` 이 운반자가 되면 안 된다 · `*args`·`**kwargs` 의
-        칸도 같다)."""
+        칸도 같다). 제너레이터는 부르면 제너레이터가 온다(클라이언트가 아니다)."""
+        if _is_generator(s):
+            return False
         own = set(s.params) | set(s.kwonly)
         bundles = {s.vararg, s.kwarg} - {None}
         for x in s.nodes:
@@ -1358,7 +1560,12 @@ def _scan(sources):
         그런 클래스."""
         out = set(factory_fns.values())
         for m in list(mods.values()):
-            for k in set(m.top.assigns) | set(m.writers):
+            # 정렬해서 훑는다 — 집합 순회는 해시 시드마다 달라 판정 순서(어느
+            # 순환에 먼저 닿나)가 프로세스마다 갈렸다. 맞는 판정은 순서와
+            # 무관하지만, 순서에 기대는 메모 버그는 그러면 실행마다 나타났다
+            # 사라진다(2026-10-04 F5 뮤테이션이 실측 — 같은 그래프가 한
+            # 프로세스에선 틀리고 다른 프로세스에선 맞았다)
+            for k in sorted(set(m.top.assigns) | set(m.writers)):
                 acc = _split(k)
                 if acc is None:
                     slots = {e for _ln, v in m.top.assigns.get(k, ())
@@ -1366,7 +1573,7 @@ def _scan(sources):
                                        else ()) for e in _slots(c)}
                     if holder_carrier(m.top, k) or any(
                             holder_member(m.top, k, kd, nm)
-                            for kd, nm in slots):
+                            for kd, nm in sorted(slots, key=repr)):
                         out.add(k)
                 elif _split(acc[0]) is None and holder_member(
                         m.top, acc[0], acc[1], acc[2]):
@@ -1401,6 +1608,7 @@ def _scan(sources):
     for s in scopes:
         for evs in s.assigns.values():
             bindings += sum(1 for ln, v in evs if bearing(s, v, ln))
+        odd = _odd_negated(s.nodes)
         for x in s.nodes:
             if (isinstance(x, ast.Name) and isinstance(x.ctx, ast.Load)
                     and holder(s, x.id) not in (s, None)
@@ -1408,7 +1616,9 @@ def _scan(sources):
                 cross_reads += 1
             # 부정 판정 — 받지 않고 바로 부정하는 철자(`not get_dart()` ·
             # `mk() is None`)는 이름을 거치지 않으니 열쇠가 없다(리뷰 M1).
-            for op in _neg_operands(x):
+            # 부정 아래 홀수 번 놓인 판정은 긍정이다(`not not d` · `not d is
+            # None` — 바깥 판정이 드모르간으로 가른다, 리뷰 F2).
+            for op in (() if id(x) in odd else _neg_operands(x)):
                 k = _key(op)
                 if (isinstance(op, ast.Call) and is_factory_call(s, op)) or (
                         k and is_carrier(s, k, x.lineno) and not any(
@@ -2139,6 +2349,391 @@ class TestNoDeadDartGuard:
             scan({"m": "def f():\n    v0 = get_dart()\n"
                   + "".join(f"    v{i} = v{i - 1}\n" for i in range(1, 7))
                   + "    if not v6:\n        return\n"})
+
+
+_IF_D = "    if d:\n        work(d)\n    else:\n        log('키 없음')\n"
+_IF_SELF_D = ("        if self.d:\n            work()\n        else:\n"
+              "            log('키 없음')\n")
+_C_SELF_D = ("class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+             "    def f(self):\n" + _IF_SELF_D)
+_H_ELSE = ("D = get_dart()\ndef f():\n    if D:\n        work()\n    else:\n"
+           "        log('키 없음')\n")
+
+
+def _random_carrier_graph(rng):
+    """전역 N개(2~9)가 서로·자기 자신·공장·None 을 옮겨 담는 무작위 그래프 →
+    (전역 수, 바인딩 모형, 소스). 바인딩 하나는 후보 1~3개(둘이면 `A if c else
+    B` 또는 `A or B`, 셋이면 `A or B or C` — `_cands` 가 펴는 모양 그대로)고,
+    모듈 맨 위의 `G = None`·`G = get_dart()` 도 바인딩이다. 판정 자리는
+    전역마다 하나(`if not G:`). 전역마다 바인딩 1~4개."""
+    n = rng.randint(2, 9)
+    binds = {i: [] for i in range(n)}
+    head, fns = [], []
+
+    def ex(c):
+        return ("get_dart()" if c == "F" else "None" if c is None
+                else f"G{c}")
+    for i in range(n):
+        r = rng.random()
+        if r < 0.15:
+            binds[i].append([None])
+            head.append(f"G{i} = None\n")
+        elif r < 0.22:
+            binds[i].append(["F"])
+            head.append(f"G{i} = get_dart()\n")
+        for b in range(rng.randint(1, 4)):
+            cands = []
+            for _ in range(rng.randint(1, 3)):
+                x = rng.random()
+                cands.append("F" if x < 0.15 else None if x < 0.25
+                             else rng.randrange(n))
+            binds[i].append(cands)
+            if len(cands) == 2 and rng.random() < 0.5:
+                rhs = f"{ex(cands[0])} if c else {ex(cands[1])}"
+            else:
+                rhs = " or ".join(ex(c) for c in cands)
+            fns.append(f"def w{i}_{b}(c):\n    global G{i}\n    G{i} = {rhs}\n")
+    fns += [f"def r{i}():\n    if not G{i}:\n        return\n" for i in range(n)]
+    rng.shuffle(fns)            # 판정 순서를 바꾼다(순환에 처음 닿는 자리)
+    return n, binds, ("from bot.dart_client import get_dart\n" + "".join(head)
+                      + "".join(fns))
+
+
+def _least_fixpoint(binds):
+    """보관소 규칙의 최소 고정점 — 전역은 바인딩이 **모두** 실어야, 바인딩은
+    후보 **하나라도** 실으면 싣는다. 바닥(전부 '아니다')에서 단조롭게 올린다."""
+    val = {i: False for i in binds}
+    changed = True
+    while changed:
+        changed = False
+        for i, bs in binds.items():
+            v = bool(bs) and all(any(c == "F" or (isinstance(c, int) and val[c])
+                                     for c in b) for b in bs)
+            if v and not val[i]:
+                val[i] = changed = True
+    return val
+
+
+class TestScannerTrustAndCycles:
+    """독립 리뷰 F2·F5(2026-10-04) — else 판정의 '언제나' 약속 · 부정의 부정 ·
+    순환 메모.
+
+    F2: else 판정은 값이 **언제나** 클라이언트일 때만 그 갈래를 죽은 것으로
+    본다. 옛 판은 그 약속을 이름으로 대신했다 — `get_dart` 라는 이름이면 사용자
+    함수·메서드·인자도 공장이었고, 지역 이름은 자기 스코프의 대입만 봐서
+    `nonlocal`/`global` 로 다시 쓰는 안쪽 함수를 놓쳤고, 클래스 밖 `c.d = None`·
+    `setattr`·결과를 바꾸는 장식·`is True` 를 몰랐다. 부정 쪽은 `not not d`·
+    `not d is None`·`not (x and not d)` 의 안쪽 `not d` 를 부정 판정으로 잡았다
+    (리뷰 실측 · 레포 0건이라 잠복). 갈래마다 반대 증거(#25)를 같이 둔다 — 고친
+    판정이 진짜 공장·진짜 부정까지 놓치면 그건 고친 게 아니라 끈 것이다.
+
+    F5: 순환의 뿌리만 메모하던 옛 판은 서로를 가리키는 전역 N개에 판정이 지수로
+    늘었다(N=18 이 35,363회 · N=22 가 예산 초과). 잠정 '아니다' 를 순환의
+    뿌리에서 한꺼번에 확정하게 바꿨고, 그 답이 최소 고정점과 같은지 무작위
+    그래프로 잰다(순서에 기대는 메모 버그는 한 픽스처로는 안 보인다)."""
+
+    @pytest.mark.parametrize("src", [
+        # ── 이름만 같은 공장 — 부른 것이 bot.dart_client 의 공장이 아니다 ──
+        "import os\ndef get_dart():\n"
+        "    return DartClient() if os.environ.get('K') else None\n"
+        "def use():\n    d = get_dart()\n" + _IF_D,
+        "class Svc:\n    def __init__(self):\n        self._d = None\n"
+        "    def get_dart(self):\n        return self._d\n"
+        "    def run(self):\n        d = self.get_dart()\n        if d:\n"
+        "            work(d)\n        else:\n            log('키 없음')\n",
+        "def f(get_dart):\n    d = get_dart()\n" + _IF_D,
+        "def f(get_dart):\n    d = get_dart()\n    if not d:\n        return\n",
+        "def f(fac):\n    get_dart = fac\n    d = get_dart()\n    if not d:\n"
+        "        return\n",
+        "get_dart = make_getter()\ndef f():\n    d = get_dart()\n" + _IF_D,
+        # 부정 판정도 모듈에서 다른 값으로 묶은 이름은 공장이 아니다(F2-07)
+        "get_dart = make_getter()\ndef f():\n    d = get_dart()\n    if not d:\n"
+        "        return\n",
+        "def get_dart():\n    return {}\ndef f():\n    d = get_dart()\n"
+        "    if not d:\n        return\n",
+        "from otherlib import get_dart\ndef f():\n    d = get_dart()\n" + _IF_D,
+        "def f(cfg):\n    d = cfg.get_dart()\n" + _IF_D,
+        # ── 다시 쓰는 쪽 — nonlocal(몇 겹이든) · global · 클래스 밖 · setattr ──
+        "def f():\n    d = get_dart()\n    def reset():\n        nonlocal d\n"
+        "        d = None\n    reset()\n" + _IF_D,
+        "def f():\n    d = get_dart()\n    def g():\n        def h():\n"
+        "            nonlocal d\n            d = None\n        h()\n    g()\n"
+        + _IF_D,
+        "D = get_dart()\ndef reset():\n    global D\n    D = None\nreset()\n"
+        "if D:\n    D.x()\nelse:\n    warn()\n",
+        _C_SELF_D + "def g():\n    c = C()\n    c.d = None\n    c.f()\n",
+        _C_SELF_D + "def g(o):\n    o.d = None\n",          # o 가 C 일 수 있다
+        "class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+        "    def drop(self):\n        setattr(self, 'd', None)\n"
+        "    def f(self):\n" + _IF_SELF_D,
+        _C_SELF_D + "def g(o, name):\n    setattr(o, name, None)\n",
+        # ── 결과를 바꿀 수 있는 장식 · 제너레이터(부르면 제너레이터가 온다) ──
+        "def maybe_none(fn):\n    def w(*a):\n        return None\n    return w\n"
+        "@maybe_none\ndef mk():\n    return get_dart()\n"
+        "def use():\n    d = mk()\n" + _IF_D,
+        "def mk():\n    yield get_dart()\ndef use():\n    d = mk()\n"
+        "    if not d:\n        return\n",
+        "def mk():\n    yield None\n    return get_dart()\ndef use():\n"
+        "    if mk():\n        work()\n    else:\n        log('키 없음')\n",
+        # ── `is True`·`== True` — 객체는 True 가 아니라 else 가 사는 갈래다 ──
+        "def f():\n    d = get_dart()\n    if d is True:\n        d.x()\n"
+        "    else:\n        log('사는 갈래')\n",
+        "def f():\n    d = get_dart()\n    if d == True:\n        d.x()\n"
+        "    else:\n        log('사는 갈래')\n",
+        "def f():\n    d = get_dart()\n    x = d.x() if d is True else why()\n",
+        "def f():\n    d = get_dart()\n    if d is not True:\n"
+        "        log('늘 돈다')\n",
+        # ── 부정의 부정은 긍정 ──
+        "def f():\n    d = get_dart()\n    if not not d:\n        d.x()\n",
+        "def f():\n    d = get_dart()\n    if not (not d):\n        d.x()\n",
+        "def f():\n    d = get_dart()\n    if not d is None:\n        d.x()\n",
+        "def f(x):\n    d = get_dart()\n    if not (x and not d):\n        d.x()\n",
+        "def f(x):\n    d = get_dart()\n    if not (not d or x):\n        d.x()\n",
+        "def f(x):\n    d = get_dart()\n    if not (d is None or x):\n"
+        "        d.x()\n",
+        "def f(x):\n    d = get_dart()\n    if not (x or not d):\n        d.x()\n",
+        "def f():\n    d = get_dart()\n    if not bool(not d):\n        d.x()\n",
+        # ── `.get` 은 없는 칸에 기본값이 온다 — 빈 리터럴은 '아직 없음'(지연
+        # 초기화)이다. 칸 열쇠(`CTX['d']`)는 그 바인딩을 건너뛰지만(읽으면
+        # KeyError) `.get` 은 '실리지 않음' 으로 센다 ──
+        "CTX = {}\ndef init():\n    CTX['d'] = get_dart()\ndef f():\n"
+        "    if CTX.get('d') is None:\n        init()\n",
+        "CTX = dict()\ndef init():\n    CTX['d'] = get_dart()\ndef f():\n"
+        "    if CTX.get('d', None) is None:\n        init()\n",
+        "class C:\n    def __init__(self):\n        self.cache = {}\n"
+        "    def connect(self):\n        self.cache['dart'] = get_dart()\n"
+        "    def ensure(self):\n        if self.cache.get('dart') is None:\n"
+        "            self.connect()\n",
+        # 기본값 채우기는 `.get` 으로 물어도 같다(채우는 대입은 칸 열쇠로 쓴다)
+        "def f():\n    ctx = {'d': get_dart()}\n    if ctx.get('d') is None:\n"
+        "        ctx['d'] = get_dart()\n",
+        # ── 리뷰가 남긴 생존 뮤테이션의 반대 증거 ──
+        # S8: 부정의 부정 항은 기본값 채우기 판정의 대상에서도 빠진다 — 채우는
+        # 이름 하나만 남아야 그 판정이 채우기로 읽힌다
+        "def f(x=None):\n    d = get_dart()\n    if not (x and not d):\n"
+        "        x = get_dart()\n    work(x)\ndef g():\n    f(get_dart())\n",
+        # S39: 함수 자리 앞에 별표가 있으면 어느 인자가 함수인지 모른다
+        _USE + "def f(loop, xs):\n    loop.run_in_executor(*xs, use, get_dart())\n",
+        # S49: 지역 컨테이너는 판정 **앞** 바인딩만(뒤에서 다시 묶은 것은 아니다)
+        "def f():\n    ctx = {'d': None}\n    if not ctx['d']:\n        return\n"
+        "    ctx = {'d': get_dart()}\n",
+        # S50: 부를 때 o 는 인자다 — 뒤에서 `C()` 로 다시 묶은 것은 아니다
+        "class C:\n    def use(self, dart):\n        if not dart:\n"
+        "            return\ndef f(o):\n    o.use(get_dart())\n    o = C()\n",
+    ])
+    def test_spares_what_the_promise_cannot_cover(self, src):
+        assert not dead_guards(src), src
+
+    @pytest.mark.parametrize("src, want", [
+        # ── 진짜 공장 — import · 모듈 별칭 · 모듈 경로 · 이름 별칭 · DartClient ·
+        # 공장을 감싼 메서드 · 정적 메서드 · lru_cache(이름·호출 모양) ──
+        ("from bot.dart_client import get_dart\ndef f():\n    d = get_dart()\n"
+         + _IF_D, (4, "d → else")),
+        ("import bot.dart_client as dc\ndef f():\n    d = dc.get_dart()\n"
+         + _IF_D, (4, "d → else")),
+        ("import bot.dart_client\ndef f():\n"
+         "    d = bot.dart_client.get_dart()\n" + _IF_D, (4, "d → else")),
+        ("from bot.dart_client import get_dart as gd\ndef f():\n    d = gd()\n"
+         + _IF_D, (4, "d → else")),
+        ("from bot.dart_client import DartClient\ndef f():\n    d = DartClient()\n"
+         + _IF_D, (4, "d → else")),
+        ("from bot.dart_client import get_dart\nclass Svc:\n"
+         "    def get_dart(self):\n        return get_dart()\n"
+         "    def run(self):\n        d = self.get_dart()\n        if d:\n"
+         "            work(d)\n        else:\n            log('키 없음')\n",
+         (7, "d → else")),
+        ("class K:\n    @staticmethod\n    def mk():\n        return get_dart()\n"
+         "def use():\n    d = K.mk()\n" + _IF_D, (7, "d → else")),
+        ("from functools import lru_cache\n@lru_cache\ndef mk():\n"
+         "    return get_dart()\ndef use():\n    d = mk()\n" + _IF_D,
+         (7, "d → else")),
+        ("import functools\n@functools.lru_cache(maxsize=None)\ndef mk():\n"
+         "    return get_dart()\ndef use():\n    d = mk()\n" + _IF_D,
+         (7, "d → else")),
+        # ── 같은 이름의 다른 변수·다른 속성·다른 객체는 막지 않는다 ──
+        ("def f():\n    d = get_dart()\n    def show():\n        print(d)\n"
+         "    show()\n" + _IF_D, (6, "d → else")),
+        ("def f():\n    d = get_dart()\n    def other():\n        d = None\n"
+         "        return d\n" + _IF_D, (6, "d → else")),
+        ("def f():\n    d = get_dart()\n" + _IF_D + "def k():\n    d = None\n"
+         "    def h():\n        nonlocal d\n        d = 1\n", (3, "d → else")),
+        ("class C:\n    def __init__(self):\n        self.d = get_dart()\n"
+         "    def drop(self):\n        self.x = None\n    def f(self):\n"
+         + _IF_SELF_D, (7, "self.d → else")),
+        (_C_SELF_D + "class Other:\n    pass\ndef g():\n    o = Other()\n"
+         "    o.d = None\n", (5, "self.d → else")),
+        ("class C:\n    def __init__(self):\n"
+         "        setattr(self, 'd', get_dart())\n    def f(self):\n"
+         "        if not self.d:\n            return\n", (5, "not self.d")),
+        # ── 홀수 번 부정 · 긍정 비교의 부정 · bool() 로 감싼 True 비교 ──
+        ("def f():\n    d = get_dart()\n    if not not not d:\n        return\n",
+         (3, "not d")),
+        ("def f():\n    d = get_dart()\n    if not (d is not None):\n"
+         "        return\n", (3, "not d is not None")),
+        ("def f(x):\n    d = get_dart()\n    if not (x and d is not None):\n"
+         "        return\n", (3, "not (x and d is not None)")),
+        ("def f(x):\n    d = get_dart()\n    if not (x or not not d):\n"
+         "        return\n", (3, "not d")),
+        ("def f():\n    d = get_dart()\n    if bool(d) is True:\n        d.x()\n"
+         "    else:\n        log('키 없음')\n", (3, "bool(d) is True → else")),
+        ("def f():\n    d = get_dart()\n    if bool(d) == True:\n        d.x()\n"
+         "    else:\n        log('키 없음')\n", (3, "bool(d) == True → else")),
+        # 대입식으로 받는 긍정 판정의 else(리뷰 S43)
+        ("def f():\n    if (d := get_dart()):\n        d.x()\n    else:\n"
+         "        log('키 없음')\n", (2, "(d := get_dart()) → else")),
+        # ── `.get` 의 반대 증거 — 칸이 있는 리터럴 · 먼저 쓴 칸 · self 칸 ·
+        # 기본값이 상수가 아니어도(옛 판은 그 `.get` 을 열쇠로 안 봤다) ──
+        ("CTX = {'d': get_dart()}\ndef f():\n    if CTX.get('d') is None:\n"
+         "        return\n", (3, "CTX.get('d') is None")),
+        ("def f():\n    ctx = {}\n    ctx['d'] = get_dart()\n"
+         "    if ctx.get('d') is None:\n        return\n",
+         (4, "ctx.get('d') is None")),
+        ("class C:\n    def __init__(self):\n"
+         "        self.cache = {'dart': get_dart()}\n    def f(self):\n"
+         "        if self.cache.get('dart') is None:\n            return\n",
+         (5, "self.cache.get('dart') is None")),
+        ("def f():\n    ctx = {'d': get_dart()}\n"
+         "    if ctx.get('d', make()) is None:\n        return\n",
+         (3, "ctx.get('d', make()) is None")),
+        # 칸 열쇠는 빈 리터럴을 건너뛴다(읽으면 KeyError — 채워진 뒤에만 닿는다)
+        ("CTX = {}\ndef init():\n    CTX['d'] = get_dart()\ndef f():\n"
+         "    if not CTX['d']:\n        init()\n", (5, "not CTX['d']")),
+        # S14: 같은 이름의 지역 컨테이너에 쓴 것은 모듈 전역의 증거가 아니다
+        ("CTX = {'d': get_dart()}\ndef g():\n    CTX = {}\n    CTX['d'] = None\n"
+         "def f():\n    if not CTX['d']:\n        return\n", (6, "not CTX['d']")),
+        # S39·S8 의 대조(별표·채우기가 없으면 잡는다)
+        (_USE + "def f(loop):\n    loop.run_in_executor(None, use, get_dart())\n",
+         (2, "not dart")),
+        ("def f(x=None):\n    d = get_dart()\n    if not (x and not d):\n"
+         "        log('x 없음')\n    work(x)\ndef g():\n    f(get_dart())\n",
+         (3, "not (x and (not d))")),
+    ])
+    def test_fires_on_the_real_shapes(self, src, want):
+        assert dead_guards(src) == [want], src
+
+    @pytest.mark.parametrize("srcs", [
+        {"pkg.h": _H_ELSE, "pkg.r": "import pkg.h\ndef reset():\n"
+         "    pkg.h.D = None\n"},
+        {"pkg.h": _H_ELSE, "pkg.r": "from pkg import h\ndef reset():\n"
+         "    h.D = None\n"},
+    ])
+    def test_spares_module_global_written_from_another_module(self, srcs):
+        """다른 모듈이 `모듈.D = None` 으로 그 전역을 바꾼다 — 그 모듈도 읽는다
+        (읽지 않으면 else 를 잡아 이 단언이 깨진다)."""
+        r = scan(srcs)
+        assert r["hits"] == [] and r["built"] == ["pkg.h", "pkg.r"], r
+
+    def test_spares_module_attribute_read_from_a_third_module(self):
+        """셋째 모듈이 `pkg.h.D` 로 읽는 else — 속성 경로 갈래도 다른 모듈의
+        `pkg.h.D = None` 을 본다(F2-13: 그 갈래만 외부 쓰기를 안 보는 변형이
+        살아남았다 — 같은 모듈 안에서 읽는 픽스처만 있었다)."""
+        u = ("import pkg.h\ndef f():\n    if pkg.h.D:\n        work()\n"
+             "    else:\n        log('키 없음')\n")
+        r = scan({"pkg.h": "D = get_dart()\n",
+                  "pkg.r": "import pkg.h\ndef reset():\n    pkg.h.D = None\n",
+                  "pkg.u": u})
+        assert r["hits"] == [] and r["built"] == ["pkg.h", "pkg.r", "pkg.u"], r
+        r = scan({"pkg.h": "D = get_dart()\n",
+                  "pkg.r": "import pkg.other\ndef reset():\n"
+                  "    pkg.other.D = None\n", "pkg.u": u})
+        assert r["hits"] == [("pkg.u", 3, "pkg.h.D → else")], r
+
+    def test_fires_when_another_module_writes_an_unrelated_module(self):
+        r = scan({"pkg.h": _H_ELSE, "pkg.r": "import pkg.other\n"
+                  "def reset():\n    pkg.other.D = None\n"})
+        assert r["hits"] == [("pkg.h", 3, "D → else")], r
+        assert r["built"] == ["pkg.h", "pkg.r"], r   # 읽고도 막지 않는다
+
+    def test_cycles_reach_the_least_fixpoint(self):
+        """무작위 그래프 300개 — 판정이 최소 고정점(끝까지 따라가 증명된 것만
+        참)과 같아야 한다. 잠정 '아니다' 를 메모하거나(옛 판의 깊이 메모 병) ·
+        뿌리가 참으로 끝났는데 그 아래 잠정을 남기거나 · 기대는 자리를 위로
+        안 올리면 순서에 따라 답이 갈린다(한 픽스처로는 안 보인다). 시드를
+        고정했고 판정 순서도 해시 시드와 무관하게 정렬했다(`exported()`) —
+        실패가 재현된다. ⚠️ 드문 모양(자리 물려주기 · 잠정 조회의 자리 낮추기)은
+        300개로는 안 걸려 아래에 줄인 반례를 따로 둔다."""
+        import random
+        rng = random.Random(20261004)
+        hit_total, checks, bad = 0, 0, []
+        for t in range(300):
+            n, binds, src = _random_carrier_graph(rng)
+            want = _least_fixpoint(binds)
+            lines = src.splitlines()
+            at = {i: lines.index(f"    if not G{i}:") + 1 for i in range(n)}
+            r = scan({"m": src})
+            got = {ln for _m, ln, _e in r["hits"]}
+            exp = {at[i] for i in range(n) if want[i]}
+            hit_total += len(exp)
+            checks += n
+            if got != exp:
+                bad.append((t, sorted(exp ^ got), src))
+        assert not bad, bad[:2]
+        # 참·거짓이 둘 다 충분히 나와야 판정을 잰다(한쪽뿐이면 상수로도 통과)
+        assert hit_total >= 100 and checks - hit_total >= 100, (hit_total,
+                                                                checks)
+
+    def test_memo_reset_also_resets_cycle_provisionals(self):
+        """고정점이 운반 인자를 새로 찾아 메모를 비우면 순환의 잠정 거짓도
+        **같이** 사라져야 한다(F5-04 — 뿌리에서 확정하지 않고 잠정으로 남기는
+        변형은 그 잠정이 메모 비우기를 살아남아, 다음 바퀴에 낡은 '아니다' 를
+        돌려줬다). `ra()` 가 먼저 A 를 물어 A↔B 순환이 '아니다' 로 끝나고, 그
+        뒤 `go()` 가 wb 의 p 에 클라이언트를 실어 B 가 참이 된다 — 스코프는
+        뒤에서부터 훑으므로 ra 가 go 보다 뒤에 정의돼야 그 순서가 된다."""
+        assert dead_guards(
+            "def wa(c):\n    global A\n    A = B if c else None\n"
+            "def wb(p, c):\n    global B\n    B = A if c else p\n"
+            "def go():\n    wb(get_dart(), 1)\n"
+            "def ra():\n    return A\n"
+            "def use():\n    if not A:\n        return\n") == [(12, "not A")]
+
+    def test_provisional_lookup_lowers_the_root(self):
+        """잠정 '아니다' 에 닿은 판정은 그 잠정이 기대는 자리까지 내려간다 —
+        안 내려가면 스스로를 순환의 뿌리로 알고 거짓을 메모해, 위의 판정이
+        참으로 끝난 뒤에도 그 거짓이 남는다(F5-08 — 무작위 탐색이 찾은 반례를
+        줄인 것. `exported()` 를 정렬해 판정 순서가 해시 시드와 무관해진 뒤에야
+        재현됐다)."""
+        src = ("from bot.dart_client import get_dart\nG3 = get_dart()\n"
+               "def w0_2(c):\n    global G0\n    G0 = G2 or G3\n"
+               "def w4_1(c):\n    global G4\n    G4 = G1\n"
+               "def w2_0(c):\n    global G2\n    G2 = G4\n"
+               "def w1_0(c):\n    global G1\n    G1 = G0\n"
+               "def r4():\n    if not G4:\n        return\n"
+               "def w4_0(c):\n    global G4\n    G4 = G1 or get_dart()\n")
+        assert dead_guards(src) == [(16, "not G4")]
+
+    def test_lowered_dependency_survives_its_owner(self):
+        """잠정으로 끝난 판정이 기대던 자리를 그 아래 잠정들에게 물려준다 — 안
+        물려주면 그 잠정에 나중에 닿은 판정이 이미 비운 자리를 기대는 것으로
+        보고 뿌리가 돼 거짓을 메모한다(F5-05 — 무작위 탐색 6만 그래프 중
+        하나꼴로 나타나 줄인 반례. 9개 전역 그래프가 필요했다)."""
+        src = ("from bot.dart_client import get_dart\nG3 = get_dart()\n"
+               "def r8():\n    if not G8:\n        return\n"
+               "def w8_0(c):\n    global G8\n    G8 = G4\n"
+               "def w4_0(c):\n    global G4\n    G4 = G7\n"
+               "def w7_1(c):\n    global G7\n    G7 = G4 or G0\n"
+               "def w8_1(c):\n    global G8\n    G8 = G6 or G5\n"
+               "def w6_0(c):\n    global G6\n    G6 = G7\n"
+               "def w0_0(c):\n    global G0\n    G0 = G8 or G3\n"
+               "def w5_1(c):\n    global G5\n    G5 = G3\n")
+        assert dead_guards(src) == [(4, "not G8")]
+
+    @pytest.mark.parametrize("n", [10, 22, 40])
+    def test_cycle_evals_stay_linear(self, n):
+        """리뷰 F5 의 모양 — 전역 N개가 각자 뒤의 둘 중 하나를 받고, 끝이 머리로
+        돌아온다. 옛 판: N=18 이 35,363회 · N=22 예산 초과. 이 판은 N 에
+        비례한다(실측 5N+5)."""
+        lines = ["from bot.dart_client import get_dart"]
+        for i in range(n):
+            a, b = (i + 1) % n, (i + 2) % n
+            lines.append(f"def w{i}(c):\n    global G{i}\n"
+                         f"    G{i} = G{a} if c else G{b}")
+        lines.append("def z():\n    global G0\n    G0 = get_dart()")
+        lines.append("def r():\n    if not G3:\n        return")
+        r = scan({"m": "\n".join(lines) + "\n"})
+        # G0 만 공장을 받고 나머지는 서로를 받는다 — 바인딩이 모두 실어야 하는
+        # 보관소 규칙에서 G3 은 증명되지 않는다
+        assert r["hits"] == [], r["hits"]
+        assert n <= r["evals"] <= 10 * n, (n, r["evals"])
 
 
 class TestDetailDiagnoseDartName:

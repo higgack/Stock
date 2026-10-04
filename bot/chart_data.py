@@ -377,6 +377,10 @@ def _series_payload(
                 ]
                 # 마커가 하나도 없는데 그 이유가 **키 부재**면 차트 안내 자리가
                 # 그 사실을 말한다(#43) — '공시가 없던 기간' 으로 읽히지 않게.
+                # 저장본(for_storage = archive 에 영구 저장)은 '수집 당시' 로 적는다
+                # — 키를 넣은 뒤 그 아카이브를 봐도 문장이 거짓이 되지 않게(#165).
+                # 화면에 닿는 경로는 JS 의 `applyDiscHint` 가 맡는다(lite 첫 응답엔
+                # 이 키가 없어 나머지 응답이 실어 온다 — 실수 #429 독립 리뷰 F1).
                 if not payload["events"]:
                     from bot.market import detect_market
                     if detect_market(ticker) == "KR":
@@ -384,7 +388,8 @@ def _series_payload(
                                                      keyless_reason)
                         if not dart_ready(get_dart()):
                             payload["events_note"] = keyless_reason(
-                                "공시 마커(DART 공시 목록)를")
+                                "공시 마커(DART 공시 목록)를",
+                                at_collection=for_storage)
         except Exception:
             pass
     _mark("ind.events", _ind_t.time() - _ind_t0)

@@ -618,32 +618,52 @@ def _parser_sig() -> str:
     return _PARSER_SIG
 
 
-def _doc_fail_recent(rcept_no: str) -> bool:
-    """값 = 만료 시각(expiry) 또는 [만료시각, 파서지문]. 과거 포맷(실패 시각
-    저장)은 과거값이라 즉시 만료로 해석돼 자연 마이그레이션.
+def _doc_fail_entry(rcept_no: str) -> tuple[bool, str | None]:
+    """디스크 쿨다운 항목 → (살아 있나, 원천이 답한 '원문 미제공' 코드 또는 None).
+
+    값 = 만료 시각(expiry) 또는 [만료시각, 파서지문(, 원천 코드)]. 과거 포맷
+    (실패 시각 저장)은 과거값이라 즉시 만료로 해석돼 자연 마이그레이션.
 
     지문이 실려 있고 **지금 파서와 다르면** 만료로 본다 — 배포로 파서가
-    바뀌었으면 그 실패는 옛 코드의 결과라 다시 물어야 한다.
+    바뀌었으면 그 실패는 옛 코드의 결과라 다시 물어야 한다. 코드는 **살아
+    있는 항목**에서만 읽는다: 만료됐으면 다음 조회가 원천에 다시 묻는다.
     """
     v = _doc_fail_load().get(rcept_no)
-    sig = None
+    sig = code = None
     if isinstance(v, (list, tuple)):
-        v, sig = (list(v) + [None, None])[:2]
+        v, sig, code = (list(v) + [None, None, None])[:3]
     if sig is not None and str(sig) != _parser_sig():
-        return False
+        return False, None
     try:
-        return bool(v) and time.time() < float(v)
+        live = bool(v) and time.time() < float(v)
     except (TypeError, ValueError):
-        return False
+        return False, None
+    code = str(code) if live and code is not None else None
+    return live, (code if code in _NO_DOC_CODES else None)
 
 
-def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
+def _doc_fail_recent(rcept_no: str) -> bool:
+    """쿨다운이 살아 있나(`_doc_fail_entry` 의 앞 칸)."""
+    return _doc_fail_entry(rcept_no)[0]
+
+
+def _doc_fail_mark(rcept_no: str, hours: float = 0.5, *,
+                   code: str | None = None) -> None:
     """실패 negative-cache — 만료 시각 저장. 기본 30분(다운로드/네트워크/
     한도 초과 = transient, 빠른 재시도). 파싱 필드 부족 같은 형식 문제는
-    호출부가 12h 로 길게. 성공 건은 detail 저장 → 재호출 0."""
+    호출부가 12h 로 길게. 성공 건은 detail 저장 → 재호출 0.
+
+    `code` = 원천이 **답한** '원문 미제공'(013·014). 디스크에 같이 적어 **다른
+    프로세스**(배포 재시작 뒤의 대시보드 등)도 그 답을 읽는다 — 메모리(`_DOC_NO_
+    FILE`)에만 두면 그 프로세스엔 쿨다운의 None 만 보여 '답을 못 들었다' 로
+    세고, 멀쩡한 표에 '다른 접수본을 받지 못해…' 각주가 붙었다(실수 #429 리뷰
+    F4)."""
     try:
         d = _doc_fail_load()
-        d[rcept_no] = [time.time() + hours * 3600, _parser_sig()]
+        ent = [time.time() + hours * 3600, _parser_sig()]
+        if code in _NO_DOC_CODES:
+            ent.append(str(code))
+        d[rcept_no] = ent
         if len(d) > 1500:
             def _exp(kv):
                 x = kv[1]
@@ -765,13 +785,28 @@ def _doc_status(blob: bytes) -> tuple:
     return (m.group(1), (g.group(1).strip() if g else ""))
 
 
+def no_document_code(rcept_no: str) -> str | None:
+    """원천이 이 공시의 원문에 대해 **답한** '원문 미제공' 코드(013·014) 또는 None.
+
+    이 프로세스가 들은 답(`_DOC_NO_FILE`)이 먼저고, 없으면 **다른 프로세스가
+    들은 답**을 디스크 쿨다운 항목에서 읽는다(살아 있는 항목만 — 실수 #429 리뷰
+    F4). 쿨다운이 살아 있으면 `_fetch_doc_text` 는 원천에 묻지 않고 None 을
+    주므로, 그 None 이 '답을 못 들었다' 인지 '없다고 답했다' 인지는 여기서만
+    갈린다."""
+    rn = str(rcept_no or "")
+    if not rn:
+        return None
+    return _DOC_NO_FILE.get(rn) or _doc_fail_entry(rn)[1]
+
+
 def source_has_no_document(rcept_no: str) -> bool:
-    """이 공시의 원문을 **원천이 제공하지 않는가**(status 014).
+    """이 공시의 원문을 **원천이 제공하지 않는가**(status 013·014 를 답했다).
 
     '네트워크 실패'와 다른 갈래다 — 전자는 시간이 답이고 이것은 영구적이라
-    파서 갭으로 세면 '개선 여지' 숫자가 통째로 틀린다(#93·#111).
+    파서 갭으로 세면 '개선 여지' 숫자가 통째로 틀린다(#93·#111). 다른
+    프로세스가 들은 답도 읽는다(`no_document_code`).
     """
-    return str(rcept_no or "") in _DOC_NO_FILE
+    return no_document_code(rcept_no) is not None
 
 
 _NO_DOC_PREFIX = "원문: 원천 미제공"
@@ -804,9 +839,10 @@ def no_document_detail(rcept_no: str) -> str | None:
     사유를 같이 기록할 것(#43·#131). 그리고 이 자리는 파서 갭이 아니므로
     ⚠️미파싱으로 세면 고칠 수 없는 ❌ 가 진짜 ❌ 를 가린다(#260).
     """
-    if not source_has_no_document(rcept_no):
+    code = no_document_code(rcept_no)
+    if code is None:
         return None
-    return no_document_reason_line(_DOC_NO_FILE.get(str(rcept_no)) or "014")
+    return no_document_reason_line(code)
 
 
 def _viewer_params(html: str) -> dict | None:
@@ -938,7 +974,10 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
                         _DOC_NO_FILE.pop(str(rcept_no), None)
                         _DOC_TEXT_MEM[ck] = vt
                         return vt
-                _doc_fail_mark(rcept_no)
+                # 원천이 답한 미제공 코드는 쿨다운 항목에 같이 적는다 — 다른
+                # 프로세스가 이 None 을 '답을 못 들었다' 로 세지 않게(리뷰 F4).
+                _doc_fail_mark(rcept_no, code=_code if _code in _NO_DOC_CODES
+                               else None)
                 return None
             _blob_put(rcept_no, blob)
         zf = zipfile.ZipFile(io.BytesIO(blob))
@@ -4920,8 +4959,9 @@ def enrich_disclosures(items: list[dict], max_per_cycle: int | None = None) -> l
                     # 아니므로 **따로 센다** — 어느 쪽에 넣어도 로그가 거짓말
                     # 한다(독립 리뷰 2026-08-30).
                     item["detail"] = [no_document_detail(rcept_no)]
-                    _doc_fail_mark(rcept_no, hours=no_document_cooldown_h(
-                        _DOC_NO_FILE.get(str(rcept_no)) or "014"))
+                    _nd = no_document_code(rcept_no) or "014"
+                    _doc_fail_mark(rcept_no, hours=no_document_cooldown_h(_nd),
+                                   code=_nd)
                     nodoc += 1
                 elif rcept_no:
                     # 구조화 API 미매칭/원문 필드 부재 — 2h 재시도 억제

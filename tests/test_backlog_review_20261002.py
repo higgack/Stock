@@ -104,10 +104,15 @@ def _docs(monkeypatch, texts, calls=None):
 
     # `source_has_no_document` — 원천이 '파일 없음' 이라 **답했나**(2026-10-04
     # 부터 수주잔고가 묻는다: 못 받은 원문이 있었으면 짧게만 굽는다). 이 가짜는
-    # 원천 답을 흉내 내지 않으므로 늘 '아니오'.
+    # 원천 답을 흉내 내지 않으므로 늘 '아니오'. `no_document_code` 도 같은 답의
+    # 코드 칸이다(그 코드 또는 None — 실수 #429 리뷰 F6 부터 `backlog_misses
+    # --ticker` 가 후보마다 '원천 미제공(014)' / '못 받음' 을 가르려고 묻는다).
+    # 진짜 모듈에 있는 이름을 가짜가 빠뜨리면 import 에서 죽는다(#155 — 가짜는
+    # 원천이 실제로 내는 모양대로).
     monkeypatch.setitem(sys.modules, "bot.dart_feed", types.SimpleNamespace(
         _DOC_TEXT_MAX_FULL=2, _fetch_doc_text=_fetch,
-        source_has_no_document=lambda rn: False))
+        source_has_no_document=lambda rn: False,
+        no_document_code=lambda rn: None))
 
 
 # ── 391710 — 이미 고쳐진 관측이 보고서에 남는다 ─────────────────────────
