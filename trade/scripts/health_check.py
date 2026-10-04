@@ -170,8 +170,10 @@ def check_cycle_gap() -> None:
     finally:
         conn.close()
 
-    # KST 날 — `[:10]` 은 UTC 날이라 KST 새벽 글이 ±창 밖으로 밀려 받은 발표를
-    # '미수신' 으로 알렸다(규칙 10a). 대시보드 헤더와 같은 함수(#38).
+    # KST 날(규칙 10a) — `[:10]` 은 UTC 날이라 같은 KST 날의 글도 00~09시와 그 뒤가 ±창
+    # 판정을 다르게 받았다. 바로잡자 실물에서 움직인 경계는 늦은 쪽이다(발표 +3일 KST
+    # 새벽 글이 이제 창 밖 — 옛 판은 UTC +2일로 셌다, 독립 리뷰 #432 L5 실측). 대시보드
+    # 헤더와 같은 함수(#38).
     from trade.link_new import kst_day
     period_kinds_by_posted: dict[str, set[str]] = {}
     for r in rows:

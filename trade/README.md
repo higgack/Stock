@@ -197,9 +197,12 @@ python -m venv .backfill-venv
 #    ⚠️ telethon 은 그 파일에 **고정**돼 있다(실수 #404). 트레이드 텔레그램
 #    스크립트는 이 venv 로만 돌릴 것 — 다른 venv 의 더 새 telethon 이 세션 파일을
 #    한 번 열면 새 형식으로 올라가 이 venv 가 못 연다(가드가 막고 알린다).
-#    고정판을 올리면 자동 배포(deploy/trade-auto-update.sh)가 이 venv 에 다시
-#    깐다(2026-10-04 부터 — 실패하면 배포 알림이 손으로 돌릴 명령을 적는다).
-#    손으로 까는 것은 이 venv 를 처음 만들 때뿐이다.
+#    자동 배포(deploy/trade-auto-update.sh)가 trade 관련 배포마다 이 venv 의
+#    마커(.backfill-venv/.trade-requirements.sha256 = 마지막으로 **성공한** 설치의
+#    핀 해시)를 지금 핀과 대조해, 다르면 다시 깐다(2026-10-04 부터). 실패하면
+#    마커를 안 써 다음 trade 관련 배포가 다시 시도하고, 배포 알림이 손으로 돌릴
+#    명령을 적는다 — 그 사이엔 venv 가 핀과 어긋나 있다(세션 형식 가드는 설치판과
+#    세션 형식이 같으면 막지 않는다). venv 자체는 처음 한 번 손으로 만든다.
 
 # 3. Dry-run first to see how many messages are in range
 .backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01 --dry-run

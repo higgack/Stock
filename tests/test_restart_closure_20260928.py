@@ -60,8 +60,10 @@ trade 쪽 조건부 재시작은 `TRADE_RELEVANT` 게이트를 통과해야 닿�
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -807,7 +809,7 @@ class _Deploy:
         self._git(self.author, "push", "-q", "origin", "base")
 
     def run(self, changed=(), *, exe=(), inactive=(), dies=(), fail=(), deny=(), bot_start=None,
-            install_out=""):
+            install_out="", extra_env=None):
         """`changed` 를 바꾼 커밋 하나를 push 하고 스크립트를 한 번 돌린다 → (결과, 재시작된
         유닛, 사건 기록(sudo · sleep · is-active 순서대로), 알림 본문, 반영됐나). `deny` 는 운영 경로로
         적은 권한 줄을 뺀다 · `fail` 은 스크립트가 실제로 보내는 명령(임시 저장소 경로 그대로)을
@@ -832,6 +834,7 @@ class _Deploy:
         env["LANG"] = "ko_KR.UTF-8"     # 운영 VM 로캘을 가정하지 않는다 — 번역되는 sudo 를 흉내 낸다(L⑤)
         if bot_start:
             env["FAKE_BOT_START"] = bot_start
+        env.update(extra_env or {})
         r = subprocess.run(["bash", str(self.script)], cwd=self.repo, env=env,
                            capture_output=True, text=True, timeout=120)
         log = (self.state / "events.log").read_text(encoding="utf-8").splitlines()
@@ -1076,36 +1079,57 @@ def test_noah_deploy_change_runs_the_installer(tmp_path):
 # ── Telethon 고정판 자동 설치(실수 #404 후속, 2026-10-04) ─────────────────────────
 # 핀(`trade/scripts/requirements.txt`)은 git 으로 움직이지만 운영 venv 는 pip 를 돌려야 움직인다 —
 # 배포가 그 단계를 하지 않아 핀 변경이 사람 손을 기다렸다. 가짜 pip 은 호출을 사건 기록에 남긴다.
+# 스크립트는 pip 를 **최소 환경**(`env -i`)으로 부른다(독립 리뷰 #432 L9) — 가짜 pip 은 `FAKE_STATE`
+# 를 못 보므로 상태 디렉터리를 만들 때 박아 넣는다. 받은 환경 변수 **이름**을 남겨 최소 환경을 잰다.
+# 자는 쪽은 `command -p sleep`(진짜 sleep) — 하네스 PATH 의 가짜 `sleep` 은 기록만 하고 바로 끝난다.
 _FAKE_PIP = """#!/bin/bash
-printf 'pip %s\\n' "$*" >> "$FAKE_STATE/events.log"
-if [ -f "$FAKE_STATE/pip_fail" ]; then echo "ERROR: No matching distribution for telethon<x>" >&2; exit 1; fi
+state={state}
+printf 'pip %s\\n' "$*" >> "$state/events.log"
+env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p' | sort > "$state/pip_env.txt"
+if [ -f "$state/pip_sleep" ]; then command -p sleep "$(cat "$state/pip_sleep")"; fi
+if [ -f "$state/pip_fail" ]; then printf '%s\\n' "$(cat "$state/pip_fail")" >&2; exit 1; fi
 exit 0
 """
+_PIP_ERR = "ERROR: No matching distribution for telethon<x>"
 
 
-def _with_prod_venv(d: "_Deploy", *, fails: bool = False) -> None:
+def _with_prod_venv(d: "_Deploy", *, fails: bool | str = False, sleeps: int = 0) -> None:
     pip = d.repo / ".backfill-venv" / "bin" / "pip"
     pip.parent.mkdir(parents=True, exist_ok=True)
-    pip.write_text(_FAKE_PIP, encoding="utf-8")
+    pip.write_text(_FAKE_PIP.format(state=shlex.quote(str(d.state))), encoding="utf-8")
     pip.chmod(0o755)
-    flag = d.state / "pip_fail"
-    if fails:
-        flag.write_text("1", encoding="utf-8")
-    elif flag.exists():
-        flag.unlink()
+    for name, val in (("pip_fail", _PIP_ERR if fails is True else (fails or "")),
+                      ("pip_sleep", str(sleeps) if sleeps else "")):
+        f = d.state / name
+        if val:
+            f.write_text(val, encoding="utf-8")
+        elif f.exists():
+            f.unlink()
+
+
+def _pip_mark(d: "_Deploy") -> Path:
+    return d.repo / ".backfill-venv" / ".trade-requirements.sha256"
+
+
+def _req_sha(d: "_Deploy") -> str:
+    return hashlib.sha256((d.repo / "trade/scripts/requirements.txt").read_bytes()).hexdigest()
 
 
 def test_trade_pin_change_installs_into_the_prod_venv_before_the_listeners_restart(tmp_path):
+    """핀이 바뀐 배포 — trade-bot·리스너 재시작 **전에** 깔고(독립 리뷰 E2: 문서가 그렇게 적는다),
+    성공했으니 핀 해시를 마커에 남긴다."""
     d = _Deploy(tmp_path, _TRADE_SH)
     _with_prod_venv(d)
     r, restarted, log, notes, applied = d.run(["trade/scripts/requirements.txt"])
     assert r.returncode == 0 and applied, r.stderr[-300:]
     pips = [i for i, ln in enumerate(log) if ln.startswith("pip ")]
     assert [log[i] for i in pips] == ["pip install -q -r trade/scripts/requirements.txt"], log
+    assert pips[0] < log.index("ok /bin/systemctl restart trade-bot"), log
     for unit in _TRADE_LISTENERS:            # 새 패키지를 읽게 리스너를 **설치 뒤에** 재시작한다
         assert unit in restarted, (unit, log)
         assert pips[0] < log.index(f"ok /bin/systemctl restart {unit}"), log
     assert "Telethon 고정판 설치" in notes and "실패" not in notes, notes
+    assert _pip_mark(d).read_text(encoding="utf-8").strip() == _req_sha(d)
 
 
 def test_trade_pin_install_failure_keeps_the_deploy_and_says_what_to_run(tmp_path):
@@ -1113,9 +1137,34 @@ def test_trade_pin_install_failure_keeps_the_deploy_and_says_what_to_run(tmp_pat
     _with_prod_venv(d, fails=True)
     r, restarted, log, notes, applied = d.run(["trade/scripts/requirements.txt"])
     assert r.returncode == 0 and applied and "trade-bot" in restarted, (r.stderr[-300:], log)
-    assert "Telethon 고정판 설치 실패" in notes, notes
+    assert "Telethon 고정판 설치 실패(종료 코드 1)" in notes, notes
     assert "&lt;x&gt;" in notes and "<x>" not in notes, notes        # 원문은 이스케이프해 싣는다(#7)
     assert ".backfill-venv/bin/pip install -r trade/scripts/requirements.txt" in notes, notes
+    assert "다음 배포가 다시 시도한다" in notes, notes
+    assert not _pip_mark(d).exists(), "실패했는데 마커를 썼다 — 다음 배포가 다시 시도하지 않는다"
+
+
+def test_trade_failed_install_is_retried_by_the_next_deploy_until_it_succeeds(tmp_path):
+    """독립 리뷰 M2 재현 — 옛 판은 '이번 diff 에 핀 파일이 있나' 로 갈라, 한 번 실패하면 핀을 안
+    건드리는 다음 배포들이 pip 를 부르지 않았다(일시 실패 하나가 조용하고 영구적인 불일치). 상태
+    (마커 ≠ 핀 해시)로 가르면 다음 배포가 다시 깔고, 성공하면 그 뒤로는 안 부른다. 핀은 그대로인데
+    venv 를 맞춘 배포도 리스너가 새 패키지를 읽게 재시작한다(리스너 조건이 보는 변경 목록에 핀
+    파일을 더한다 — 이 변경(`trade/data/…`)만으로는 리스너가 재시작되지 않는다)."""
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d, fails=True)
+    d.run(["trade/scripts/requirements.txt"])
+    assert not _pip_mark(d).exists()
+    _with_prod_venv(d)
+    r, restarted, log, notes, applied = d.run(["trade/data/hs_names.tsv"])
+    assert r.returncode == 0 and applied, r.stderr[-300:]
+    assert "pip install -q -r trade/scripts/requirements.txt" in log, log
+    assert _pip_mark(d).read_text(encoding="utf-8").strip() == _req_sha(d)
+    assert set(_TRADE_LISTENERS) <= restarted, (restarted, log)
+    assert "Telethon 고정판 설치" in notes and "실패" not in notes, notes
+    r, restarted, log, notes, _ = d.run(["trade/data/hs_names.tsv"])
+    assert not any(ln.startswith("pip ") for ln in log), log      # 마커가 맞으면 안 부른다
+    assert not set(_TRADE_LISTENERS) & restarted, (restarted, log)
+    assert "고정판" not in notes, notes
 
 
 def test_trade_pin_change_without_a_prod_venv_says_so(tmp_path):
@@ -1124,12 +1173,67 @@ def test_trade_pin_change_without_a_prod_venv_says_so(tmp_path):
     assert r.returncode == 0 and applied, r.stderr[-300:]
     assert not any(ln.startswith("pip ") for ln in log), log
     assert "운영 venv(.backfill-venv)가 없어" in notes, notes
+    # venv 가 없는 호스트에서 배포마다 같은 경고가 오지 않는다 — 핀이 바뀐 배포에서만(반대 증거).
+    # 이름이 비슷한 파일(`.bak`)은 핀이 아니다(독립 리뷰 E10 — 줄 전체 대조).
+    for other in ("trade/tg_entities.py", "trade/scripts/requirements.txt.bak"):
+        r, _, log, notes, _ = d.run([other])
+        assert "운영 venv(.backfill-venv)가 없어" not in notes, (other, notes)
 
 
-def test_trade_unrelated_change_does_not_run_pip(tmp_path):
+def test_trade_unrelated_change_does_not_run_pip_when_the_venv_matches(tmp_path):
+    """마커가 지금 핀과 같으면(직전 설치가 성공했으면) 무관한 변경은 pip 를 부르지 않는다."""
     d = _Deploy(tmp_path, _TRADE_SH)
     _with_prod_venv(d)
+    d.run(["trade/scripts/requirements.txt"])
     r, _, log, notes, _ = d.run(["trade/tg_entities.py"])
     assert r.returncode == 0, r.stderr[-300:]
     assert not any(ln.startswith("pip ") for ln in log), log
     assert "고정판" not in notes, notes
+
+
+def test_trade_pin_install_runs_with_a_minimal_environment(tmp_path):
+    """독립 리뷰 L9 — 스크립트는 알림을 위해 `.env` 를 export 한다. pip 는 그 토큰을 못 본다
+    (소스 배포판을 빌드하면 제3자 빌드 코드가 돈다). PATH·HOME 은 받는다(못 받으면 pip 가 못 돈다)."""
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d)
+    d.run(["trade/scripts/requirements.txt"], extra_env={"PIP_INDEX_URL": "https://example.invalid/simple"})
+    names = set((d.state / "pip_env.txt").read_text(encoding="utf-8").split())
+    assert {"PATH", "HOME", "PIP_INDEX_URL", "LC_ALL"} <= names, names
+    assert not names & {"TRADE_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TRADE_CHANNEL_CHAT_IDS",
+                        "FAKE_STATE"}, names
+
+
+def test_trade_pin_install_timeout_is_named(tmp_path):
+    """독립 리뷰 L4·E1 — 타임아웃(`timeout` 의 rc 124)은 이름을 대서 적고, 출력이 없어도 빈
+    `<code></code>` 를 보내지 않는다. 값은 `TRADE_PIP_TIMEOUT_S` 로 줄일 수 있어 진짜로 끊기는지
+    잰다(타임아웃을 지우면 이 가짜 pip 는 3초 뒤 **성공**한다 — 단언이 갈린다)."""
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d, sleeps=3)
+    r, restarted, log, notes, applied = d.run(["trade/scripts/requirements.txt"],
+                                              extra_env={"TRADE_PIP_TIMEOUT_S": "1"})
+    assert r.returncode == 0 and applied and "trade-bot" in restarted, (r.stderr[-300:], log)
+    assert "Telethon 고정판 설치 실패(1초 안에 안 끝나 멈췄다(timeout))" in notes, notes
+    assert "<code></code>" not in notes and "<code>출력 없음</code>" in notes, notes
+    assert not _pip_mark(d).exists()
+
+
+def test_trade_pin_install_tail_is_ascii(tmp_path):
+    """독립 리뷰 L8 — C 로캘의 길이·자르기는 바이트 단위라 다중 바이트 글자를 반쪽 낸다. pip 출력은
+    ASCII 만 싣는다(우리가 쓴 한국어 문구는 그대로)."""
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d, fails="오류: 패키지 없음 ERROR: boom" + "가" * 300)
+    _, _, _, notes, _ = d.run(["trade/scripts/requirements.txt"])
+    code = re.search(r"설치 실패\([^)]*\): <code>(.*?)</code>", notes, re.S)
+    assert code and code.group(1).isascii() and "ERROR: boom" in code.group(1), notes
+
+
+def test_trade_deploy_failure_notices_carry_the_pin_install_outcome(tmp_path):
+    """독립 리뷰 M2b — trade-bot 재시작 실패 · 재시작 뒤 비활성 알림에도 고정판 설치 결과가 실린다
+    (옛 판은 그 두 알림에 `PIP_NOTE` 가 없어 '설치 실패' 가 통째로 빠졌다)."""
+    d = _Deploy(tmp_path, _TRADE_SH)
+    _with_prod_venv(d, fails=True)
+    r, _, log, notes, _ = d.run(["trade/scripts/requirements.txt"],
+                                fail=["/bin/systemctl restart trade-bot"])
+    assert r.returncode == 1 and "배포 실패" in notes and "고정판 설치 실패" in notes, notes
+    r, _, log, notes, _ = d.run(["trade/scripts/requirements.txt"], dies=["trade-bot"])
+    assert r.returncode == 1 and "active 상태가 아님" in notes and "고정판 설치 실패" in notes, notes

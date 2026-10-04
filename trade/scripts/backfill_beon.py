@@ -160,7 +160,19 @@ MAX_CONSECUTIVE_FAILURES = int(
 
 class BackfillAborted(Exception):
     """Raised when the script should exit gracefully so the operator
-    can resume later. Always paired with a Telegram notify."""
+    can resume later. Always paired with a Telegram notify.
+
+    `kind` = 알림 제목을 가른다: "budget" = 실행 예산 소진(남은 유닛은 다음
+    동기화가 잇는다 — 장애가 아니다, #432 리뷰 M1) · 그 밖 = 중단."""
+
+    def __init__(self, msg: str, *, kind: str = "failures"):
+        super().__init__(msg)
+        self.kind = kind
+
+
+class _ScanBudgetSpent(Exception):
+    """훑기 도중 실행 예산이 바닥났다 — 포워드 루프의 "budget" 과 같은 제목으로
+    끝낸다(형제 backfill_badonion 과 같은 규약 #38 · #432 리뷰 M1 후속)."""
 
 
 # ---------------------------------------------------------------------
@@ -510,46 +522,71 @@ async def run(
         # based on the observed rate in journal.
         fwd_fallback_count = 0
         iterated = 0
-        async for msg in client.iter_messages(
-            source, offset_date=since, reverse=True
-        ):
-            if until is not None and msg.date > until:
-                break
-            iterated += 1
-            # 🚫 사용자가 '동기화 완료' 알림의 버튼으로 영구 차단한 메시지 →
-            # 후보에서 제외해 재포워드 루프 종료(사용자 2026-06-15 '두 시간마다
-            # 계속 옴'). 유저-포워드 등 dedup 불가 메시지의 단일 종료 수단.
-            if _beon_skip.contains(msg.id):
-                skipped_skip += 1
-                continue
-            key, origin = _msg_key_with_origin(msg, source_chat_id)
-            is_fallback = (origin == _ORIGIN_FALLBACK)
-            if is_fallback:
-                fwd_fallback_count += 1
-                log.warning(
-                    "fwd fallback msg=%d — fwd_from present but "
-                    "channel_post/from_id missing; keying on "
-                    "(source, msg.id) — listener-recorded key may "
-                    "differ → potential re-forward on next tick",
-                    msg.id,
-                )
-            if key in existing:
-                skipped_existing += 1
-                continue
-            caption = msg.text or ""
-            if (
-                _ignored.matches_prefix(caption)
-                or _ignored.matches_contains(caption)
+        # 훑기도 실행 예산 안에서 — 글마다 남은 예산을 보고 telethon 자체 대기의 상한도
+        # 맞춘다(첫 페이지 요청 전에도 한 번 · 형제 backfill_badonion 과 같은 규약 #38).
+        from trade.tg_entities import cap_flood_sleep, run_budget_spent
+        cap_flood_sleep(client, started=_RUN_T0)
+        try:
+            async for msg in client.iter_messages(
+                source, offset_date=since, reverse=True
             ):
-                skipped_ignored += 1
-                log.info(
-                    "skip ignored msg=%d caption=%r",
-                    msg.id, caption[:60],
-                )
-                continue
-            candidates.append(msg)
-            if is_fallback:
-                fallback_ids.append(msg.id)   # 재포워드 루프 주범 → 알림 버튼에 실음
+                spent = run_budget_spent(started=_RUN_T0)
+                if spent:
+                    raise _ScanBudgetSpent("훑기 중 " + spent)
+                cap_flood_sleep(client, started=_RUN_T0)
+                if until is not None and msg.date > until:
+                    break
+                iterated += 1
+                # 🚫 사용자가 '동기화 완료' 알림의 버튼으로 영구 차단한 메시지 →
+                # 후보에서 제외해 재포워드 루프 종료(사용자 2026-06-15 '두 시간마다
+                # 계속 옴'). 유저-포워드 등 dedup 불가 메시지의 단일 종료 수단.
+                if _beon_skip.contains(msg.id):
+                    skipped_skip += 1
+                    continue
+                key, origin = _msg_key_with_origin(msg, source_chat_id)
+                is_fallback = (origin == _ORIGIN_FALLBACK)
+                if is_fallback:
+                    fwd_fallback_count += 1
+                    log.warning(
+                        "fwd fallback msg=%d — fwd_from present but "
+                        "channel_post/from_id missing; keying on "
+                        "(source, msg.id) — listener-recorded key may "
+                        "differ → potential re-forward on next tick",
+                        msg.id,
+                    )
+                if key in existing:
+                    skipped_existing += 1
+                    continue
+                caption = msg.text or ""
+                if (
+                    _ignored.matches_prefix(caption)
+                    or _ignored.matches_contains(caption)
+                ):
+                    skipped_ignored += 1
+                    log.info(
+                        "skip ignored msg=%d caption=%r",
+                        msg.id, caption[:60],
+                    )
+                    continue
+                candidates.append(msg)
+                if is_fallback:
+                    fallback_ids.append(msg.id)   # 재포워드 루프 주범 → 알림 버튼에 실음
+        except (FloodWaitError, _ScanBudgetSpent) as exc:
+            # telethon 임계(기본 60초)를 넘는 FloodWait 은 훑기에서도 예외로 온다 —
+            # 옛 판은 아무도 안 잡아 트레이스백으로 죽었다(알림 없음, #12 · #432 리뷰
+            # M1 · 형제 backfill_badonion 과 같은 규약 #38). 예산 소진은 FloodWait 이
+            # 아니라 제목을 가른다(#82).
+            if isinstance(exc, _ScanBudgetSpent):
+                why, _title = str(exc), "⏸ <b>BeOn 동기화 — 실행 예산 소진</b>"
+            else:
+                why = (f"훑기 중 텔레그램 요청 제한(FloodWait {getattr(exc, 'seconds', '?')}s) — "
+                       "기다리면 풀린다 · 다음 동기화가 다시 훑는다")
+                _title = "⏸ <b>BeOn 동기화 — 훑기 중단</b>"
+            log.error("aborted during scan: %s", why)
+            if not dry_run:
+                _notify(f"{_title}\n"
+                        f"사유: {html.escape(why)}")
+            return 1
 
         until_label = (until or datetime.now(timezone.utc)).date().isoformat()
         log.info(
@@ -591,6 +628,12 @@ async def run(
         total_msgs = len(candidates)
         try:
             for i, unit in enumerate(units, 1):
+                # 매 유닛 앞에서 예산을 다시 본다 · telethon 자체 대기도 남은 예산
+                # 안으로(#432 리뷰 M1 — 형제 backfill_badonion 과 같은 규약 #38).
+                spent = run_budget_spent(started=_RUN_T0)
+                if spent:
+                    raise BackfillAborted(spent, kind="budget")
+                cap_flood_sleep(client, started=_RUN_T0)
                 if i == 1 or i % DISK_CHECK_EVERY_UNITS == 0:
                     await _maybe_pause_for_disk(forwarded_msgs, total_msgs)
 
@@ -623,8 +666,11 @@ async def run(
                 await asyncio.sleep(_current_pause(forwarded_msgs))
         except BackfillAborted as exc:
             log.error("aborted: %s", exc)
+            # 예산 소진은 장애가 아니다 — 남은 유닛은 다음 동기화가 잇는다(#260).
+            _title = ("⏸ <b>BeOn 동기화 — 실행 예산 소진</b>" if exc.kind == "budget"
+                      else "❌ <b>백필 중단</b>")
             _notify(
-                f"❌ <b>백필 중단</b>\n"
+                f"{_title}\n"
                 f"사유: {html.escape(str(exc))}\n"
                 f"진행: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"같은 명령으로 재실행하면 이어서 진행 (idempotent)."

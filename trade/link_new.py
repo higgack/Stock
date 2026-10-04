@@ -71,8 +71,13 @@ def parse_ts(value) -> datetime | None:
     (ingest_inbox 의 posted_at · report_archive 의 ts)."""
     if not isinstance(value, str) or not value.strip():
         return None
+    v = value.strip()
+    if v.endswith(("Z", "z")):
+        # 끝의 `Z`(UTC)는 3.11 미만 `fromisoformat` 이 못 읽는다 — 형제 변환기 둘
+        # (`dashboard_audit._posted_date`·`daily_digest._kst_date_of`)과 같은 날을 내게 맞춘다.
+        v = v[:-1] + "+00:00"
     try:
-        dt = _aware(datetime.fromisoformat(value.strip()))
+        dt = _aware(datetime.fromisoformat(v))
         dt.astimezone(KST)
     except (ValueError, OverflowError):
         return None
@@ -84,9 +89,11 @@ def kst_day(value) -> str:
 
     ``posted_at`` 은 텔레그램이 준 UTC 라 ``[:10]`` 으로 자르면 **UTC 날**이다 — KST
     00~09시 글이 하루 일찍 찍혀 '오늘' 계수·7일 NEW·발표 대조에서 하루 늙는다(규칙
-    10a). 알림 카드·헤더 판정·매시간 health 가 이 한 함수로 날을 만든다(#38). 못
-    읽는 값은 옛 동작(앞 10자)을 그대로 돌려준다 — 판정 불가 값 때문에 표시가
-    사라지면 안 된다(#43)."""
+    10a). 알림 카드·헤더 판정·매시간 health 가 이 함수로 날을 만든다(#38). trade 에는
+    변환기가 이미 둘 있다(`dashboard_audit._posted_date` · `daily_digest._kst_date_of`) —
+    읽히는 값에서 셋이 같은 날을 내는지 회귀가 대조한다(독립 리뷰 #432 L6). 못 읽는 값만
+    의도적으로 갈린다: 그 둘은 판정 도구라 비우고, 이 함수는 표시용이라 옛 동작(앞 10자)을
+    그대로 돌려준다 — 판정 불가 값 때문에 표시가 사라지면 안 된다(#43)."""
     dt = parse_ts(value)
     if dt is None:
         return str(value or "")[:10]

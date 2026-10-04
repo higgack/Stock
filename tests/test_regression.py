@@ -58183,7 +58183,12 @@ class TestTradeSourceSilence20260910:
     def test_posted_date_uses_the_same_kst_rule_as_daily_digest(self):
         """naive 는 UTC(daily_digest._kst_date_of 와 같은 규칙) — 두 도구가 '마지막 게시'
         날짜를 하루 다르게 매기면 안 된다(#38, 독립 리뷰 2026-09-10). daily_digest 는 import
-        시 load_dotenv 를 타므로 함수 소스만 떼어 태운다(#294 운영 .env 를 읽지 않는다)."""
+        시 load_dotenv 를 타므로 함수 소스만 떼어 태운다(#294 운영 .env 를 읽지 않는다).
+
+        셋째 변환기 `trade.link_new.kst_day`(알림 카드·헤더 판정·매시간 health, #432)도 읽히는
+        값에선 같은 날을 내야 한다(독립 리뷰 #432 L6 — 이 대조 밖에 있었다). 못 읽는 값만
+        의도적으로 갈린다: 판정 도구 둘은 비우고(판정 불가), `kst_day` 는 표시용이라 앞 10자를
+        그대로 돌려준다(#43 — 판정 불가 값 때문에 표시가 사라지면 안 된다)."""
         import ast, inspect
         from datetime import date, timedelta, timezone
         from trade.scripts import dashboard_audit as da
@@ -58192,10 +58197,14 @@ class TestTradeSourceSilence20260910:
         ns = {"datetime": __import__("datetime").datetime, "timezone": timezone,
               "_KST": timezone(timedelta(hours=9))}
         exec(ast.unparse(fn), ns)
+        from trade.link_new import kst_day
         for ts in ("2026-08-31T23:30:00", "2026-08-31T23:30:00Z", "2026-08-31T14:59:59+00:00",
                    "2026-09-01T05:53:00+09:00", "garbage"):
             got = da._posted_date(ts)
             assert (got.isoformat() if got else "") == ns["_kst_date_of"](ts), ts
+            if got:
+                assert kst_day(ts) == got.isoformat(), ts
+        assert kst_day("garbage") == "garbage" and da._posted_date("garbage") is None
         assert da._posted_date("2026-08-31T23:30:00") == date(2026, 9, 1)   # naive = UTC → 다음날 KST
 
     def test_notify_text_stays_inside_the_telegram_budget(self):
@@ -66857,43 +66866,83 @@ class TestKoreaCompanyFlowBoards20260916:
         return sorted(r for r in out if r and len(_PP(r).parts) == 1
                       and _PP(r).name.startswith("test_") and r.endswith(".py"))
 
-    def test_every_test_tree_is_inside_the_commit_gate(self):
-        """게이트 밖 트리의 계약은 **없는 것과 같다**(#24·#54). 2026-09-16
-        실측: `trade/tests` 1,227건이 게이트 밖이라 레지스트리 계약 4건이
-        빨간불인 채 `make test` 가 green 이었다. 이름을 열거하지 않고
-        **파일 시스템에서 파생**해 새 트리가 생기면 여기서 터지게 한다."""
+    # 예외는 **이유와 함께** 명시한다(이름 열거가 아니라 allowlist, #24).
+    _GATE_EXEMPT = {
+        # 상류 벤더 서브트리. 이 슈트는 `tradingagents` 패키지(+무거운 LLM
+        # 의존성)를 요구해 샌드박스에선 **수집조차 안 된다**(실측 9 errors)
+        # — 게이트에 넣으면 의존성 없는 환경에서 상시 빨간불이다(#25·#260).
+        "TradingAgents/tests": "상류 벤더 서브트리 — 의존성 없는 환경에서 수집 불가",
+    }
+    # 최상위에 있어야 하는 테스트 파일 — 이유와 함께만(지금 0개).
+    _ROOT_TEST_EXEMPT: dict = {}
+
+    @classmethod
+    def _gate_problems(cls, root, *, exempt=None, root_exempt=None) -> list:
+        """게이트(`make test` 의 pytest 인자 + pytest.ini testpaths) 밖에 있는 것 →
+        문제 문장 목록(없으면 []). 레포 전수 회귀와 발화 회귀가 **같은 판정**을 쓴다
+        (독립 리뷰 #432 C1 — 판정이 테스트 본문에 있으면 단언을 꺼도 아무도 모른다)."""
+        import configparser
         import re as _re
-        from pathlib import Path as _P
-        root = _P(__file__).resolve().parents[1]
-        roots = self._test_trees(root)
-        assert roots, "테스트 트리를 하나도 못 찾았다(대조 0건 = 실패, #54)"
+        exempt = cls._GATE_EXEMPT if exempt is None else exempt
+        root_exempt = cls._ROOT_TEST_EXEMPT if root_exempt is None else root_exempt
+        out = []
+        roots = cls._test_trees(root)
+        if not roots:
+            out.append("테스트 트리를 하나도 못 찾았다(대조 0건 = 실패, #54)")
         mk = (root / "Makefile").read_text(encoding="utf-8")
         body = mk.split("\ntest:", 1)[1].split("\n\n", 1)[0]
         covered = {t for t in _re.findall(r"pytest ([^\n]*)", body)
                    for t in t.split() if not t.startswith("-")}
         # `pytest -v` (인자 없음) = pytest.ini testpaths.
-        import configparser
         cp = configparser.ConfigParser()
         cp.read(root / "pytest.ini")
         covered |= set(cp["pytest"].get("testpaths", "").split())
-        # 예외는 **이유와 함께** 명시한다(이름 열거가 아니라 allowlist, #24).
-        exempt = {
-            # 상류 벤더 서브트리. 이 슈트는 `tradingagents` 패키지(+무거운 LLM
-            # 의존성)를 요구해 샌드박스에선 **수집조차 안 된다**(실측 9 errors)
-            # — 게이트에 넣으면 의존성 없는 환경에서 상시 빨간불이다(#25·#260).
-            "TradingAgents/tests",
-        }
         stale = [t for t in exempt if t not in roots]
-        assert not stale, f"사라진 트리를 아직 면제하고 있다: {stale}"
+        if stale:
+            out.append(f"사라진 트리를 아직 면제하고 있다: {stale}")
         missing = [t for t in roots if t not in covered and t not in exempt]
-        assert not missing, f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})"
+        if missing:
+            out.append(f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})")
         # 최상위 테스트 파일은 어느 트리에도 안 속해 위 대조를 **빠져나간다** — 따로
-        # 막는다. 둘 곳은 게이트 트리 안(`tests/`)이다. 정말 최상위여야 하면 여기에
-        # **이유와 함께** 적는다(지금 0개).
-        root_exempt: dict = {}
-        stray = [f for f in self._root_test_files(root) if f not in root_exempt]
-        assert not stray, (f"레포 최상위의 테스트 파일은 어느 게이트에도 안 실린다: "
-                           f"{stray} — tests/ 로 옮길 것")
+        # 막는다. 둘 곳은 게이트 트리 안(`tests/`)이다.
+        stray = [f for f in cls._root_test_files(root) if f not in root_exempt]
+        if stray:
+            out.append(f"레포 최상위의 테스트 파일은 어느 게이트에도 안 실린다: "
+                       f"{stray} — tests/ 로 옮길 것")
+        return out
+
+    def test_every_test_tree_is_inside_the_commit_gate(self):
+        """게이트 밖 트리의 계약은 **없는 것과 같다**(#24·#54). 2026-09-16
+        실측: `trade/tests` 1,227건이 게이트 밖이라 레지스트리 계약 4건이
+        빨간불인 채 `make test` 가 green 이었다. 이름을 열거하지 않고
+        **파일 시스템에서 파생**해 새 트리가 생기면 여기서 터지게 한다."""
+        from pathlib import Path as _P
+        problems = self._gate_problems(_P(__file__).resolve().parents[1])
+        assert problems == [], problems
+
+    def test_the_gate_guard_fires_on_a_root_test_file_and_an_uncovered_tree(self, tmp_path,
+                                                                             monkeypatch):
+        """발화 — 임시 저장소에 최상위 `test_top.py` 와 게이트 밖 트리(`new/`)를 둔다.
+        반대 증거: 이유와 함께 면제하면 그 문장이 사라지고, 덮인 트리(`tests/`)와 최상위의
+        `.py` 아닌 `test_plan.md` 는 문제가 아니다(독립 리뷰 #432 C1·C3)."""
+        import os
+        import subprocess as _sp
+        for k in [k for k in os.environ if k.startswith("GIT_")]:
+            monkeypatch.delenv(k)
+        _sp.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+        for rel in ("tests/test_a.py", "new/test_c.py", "test_top.py", "test_plan.md"):
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("def test_x():\n    pass\n", encoding="utf-8")
+        (tmp_path / "Makefile").write_text(".PHONY: test\n\ntest:\n\tpytest tests\n\n",
+                                           encoding="utf-8")
+        (tmp_path / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n", encoding="utf-8")
+        problems = self._gate_problems(tmp_path, exempt={})
+        assert any("['test_top.py']" in p for p in problems), problems
+        assert any("['new']" in p for p in problems), problems
+        assert not any("test_plan" in p or "'tests'" in p.split("(덮는 것")[0] for p in problems), problems
+        assert self._gate_problems(tmp_path, exempt={"new": "이유"},
+                                   root_exempt={"test_top.py": "이유"}) == []
 
     def test_the_gate_scope_is_what_git_would_commit(self, tmp_path, monkeypatch):
         """트리 열거가 **무시된 경로는 빼고** 추적·새 파일은 센다 — 임시 저장소에서
@@ -66920,7 +66969,7 @@ class TestKoreaCompanyFlowBoards20260916:
         for rel in ("tests/test_a.py", "tests/deep/test_g.py", "pkg/tests/sub/test_b.py",
                     "new/test_c.py", "test_top.py", ".claude/worktrees/w/tests/test_d.py",
                     ".venv/lib/x/tests/test_e.py", "venvish/site-packages/y/test_f.py",
-                    "tests_e2e/test_h.py", "notes/test_plan.md"):
+                    "tests_e2e/test_h.py", "notes/test_plan.md", "test_plan.md"):
             f = tmp_path / rel
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("def test_x():\n    pass\n", encoding="utf-8")
@@ -66933,7 +66982,9 @@ class TestKoreaCompanyFlowBoards20260916:
         # 가상환경 · 레포 최상위 파일 · `.py` 가 아닌 파일은 뺀다.
         assert roots == ["new", "pkg/tests/sub", "tests", "tests_e2e"], roots
         # 최상위 파일은 트리가 아니지만 **따로 세진다** — 그래야 게이트 가드가 막는다
-        # (조용한 면제였던 것, 2026-10-04 · `test_plan.md` 같은 비-.py 는 아니다).
+        # (조용한 면제였던 것, 2026-10-04). 최상위의 `test_plan.md` 는 `.py` 가 아니라
+        # 아니다 — 옛 픽스처엔 그게 `notes/` 아래뿐이라 깊이 조건이 대신 걸러 접미 필터를
+        # 지우는 변형이 살아남았다(독립 리뷰 #432 C3).
         assert self._root_test_files(tmp_path) == ["test_top.py"]
         assert not outer.exists(), "임시 저장소의 git 이 바깥 인덱스를 고쳤다"
 

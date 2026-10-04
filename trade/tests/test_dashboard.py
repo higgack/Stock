@@ -10,6 +10,7 @@ the JSON payload embedded for the JS to consume.
 import json
 import re
 import unittest
+import pytest
 from pathlib import Path
 
 from trade.dashboard import _asof_label, _companies_for, render_html
@@ -849,10 +850,6 @@ class TestEvalMissBacklogFilter(unittest.TestCase):
         self.assertEqual(s["count"], 1)   # genuine miss 만
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestAlertPostedDateIsKst(unittest.TestCase):
     """알림 카드의 날짜(`posted_at`)는 **KST 달력일**이어야 한다(규칙 10a).
 
@@ -883,6 +880,15 @@ class TestAlertPostedDateIsKst(unittest.TestCase):
         m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
         payload = json.loads(m.group(1))
         self.assertEqual([p["posted_at"] for p in payload], ["2026-09-29"])
+
+    def test_payload_ingested_at_is_a_labelled_kst_stamp(self):
+        """같은 행의 받은 시각도 KST(라벨 포함) — 옛 판은 UTC 원문을 오프셋 없이 잘라
+        `posted_at 2026-09-29 | ingested_at 2026-09-28T15:31:00` 처럼 수집이 게시보다 하루
+        앞서 보였다(독립 리뷰 #432 L2 · CSV 내보내기와 `/api/alerts.json` 이 이 값을 싣는다)."""
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        self.assertEqual([p["ingested_at"] for p in payload], ["2026-09-29 00:31 KST"])
 
 
 def test_header_facts_count_and_match_by_kst_day(tmp_path, monkeypatch):
@@ -924,23 +930,36 @@ def test_header_facts_count_and_match_by_kst_day(tmp_path, monkeypatch):
     assert seen["facts"]["db_newest"] == "2026-09-01"
 
 
-def test_health_cycle_gap_matches_publications_by_kst_day(tmp_path, monkeypatch):
-    """매시간 health 의 발표 누락 대조도 KST 날짜로 — UTC 날로 자르면 KST 새벽 글이
-    ±2일 창 밖으로 밀려 **받은 발표를 '미수신'** 으로 알린다.
+@pytest.mark.parametrize("posted, today_day, alerts", [
+    # 합성 — 1~10일치를 발표 2일 전에 올릴 수는 없다. 옛 판(UTC 날 09-08)은 창 밖으로 셌다.
+    ("2026-09-08T16:00:00+00:00", 13, False),
+    # 실물에서 움직인 경계(독립 리뷰 #432 L5 실측) — 발표 +3일 KST 01:00 = UTC +2일. 옛 판은
+    # 창 안으로 세어 조용했고, 같은 날 KST 10:00 글은 옛 판도 알렸다(시각대에 따라 갈렸다).
+    ("2026-09-13T16:00:00+00:00", 14, True),
+    ("2026-09-14T01:00:00+00:00", 14, True),
+    # 발표 당일 KST 07:00 — 두 판 다 알리지 않는다.
+    ("2026-09-10T22:00:00+00:00", 11, False),
+])
+def test_health_cycle_gap_matches_publications_by_kst_day(tmp_path, monkeypatch,
+                                                         posted, today_day, alerts):
+    """매시간 health 의 발표 누락 대조도 KST 날짜로 — UTC 날로 자르면 같은 KST 날의 글도
+    00~09시와 그 뒤가 ±2일 창 판정을 다르게 받는다.
 
-    09-11 잠정(1~10일)이 KST 09-09 01:00(= UTC 09-08 16:00)에 올라온 경우: KST 로는
-    2일 차이(창 안), UTC 날로는 3일 차이(창 밖)다.
+    첫 판의 이 테스트는 합성 사례(09-11 잠정을 KST 09-09 01:00 에 게시) 하나로 '받은 발표를
+    미수신으로 알린다' 를 근거 삼았다 — 그건 발표 전 게시라 실물에선 안 일어난다(독립 리뷰
+    #432 L5). 옛 판과 새 판을 나란히 태운 실측으로 갈래를 넷 다 고정한다: 실물에서 움직인
+    경계는 늦은 쪽이다(+3일 KST 새벽 글이 이제 창 밖 = 미수신 알림).
     """
     from datetime import datetime, timedelta, timezone
     import trade.scripts.health_check as hc
     db = tmp_path / "store.db"
     db.write_bytes(b"")
-    rows = [{"posted_at": "2026-09-08T16:00:00+00:00", "period_kind": "decadal_10"}]
+    rows = [{"posted_at": posted, "period_kind": "decadal_10"}]
     monkeypatch.setattr(hc, "STORE_PATH", db)
     monkeypatch.setattr(hc, "open_db", lambda p: type("C", (), {"close": lambda s: None})())
     monkeypatch.setattr(hc, "list_all_alerts", lambda c: rows)
     monkeypatch.setattr(hc, "CYCLE_GAP_DAYS", 2)
-    monkeypatch.setattr(hc, "_kst_today", lambda: datetime(2026, 9, 13, 12, 0,
+    monkeypatch.setattr(hc, "_kst_today", lambda: datetime(2026, 9, today_day, 12, 0,
                                                            tzinfo=timezone(timedelta(hours=9))))
     monkeypatch.setattr(hc, "_expected_recent_publications",
                         lambda today: [("2026-09-11", "decadal_10")])
@@ -948,7 +967,7 @@ def test_health_cycle_gap_matches_publications_by_kst_day(tmp_path, monkeypatch)
     monkeypatch.setattr(hc, "_notify", lambda text: sent.append(text) or True)
     monkeypatch.setattr(hc, "_alert_once_per_window", lambda *a, **k: True)
     hc.check_cycle_gap()
-    assert sent == [], sent
+    assert bool(sent) is alerts, sent
 
 
 def test_inbox_newest_and_why_lines_use_kst(tmp_path, monkeypatch, capsys):
@@ -1001,3 +1020,37 @@ def test_inbox_newest_and_why_lines_use_kst(tmp_path, monkeypatch, capsys):
     kr_ln = [ln for ln in lines if "그중 관세청 캡션: " in ln]
     assert inbox_ln and "최신 2026-09-02 01:00 KST" in inbox_ln[0], inbox_ln
     assert kr_ln and "최신 2026-09-02 01:00 KST" in kr_ln[0], kr_ln
+
+
+def test_verdict_fallback_population_uses_the_kst_day(tmp_path, monkeypatch):
+    """파서를 못 불러오면 판정은 **전 소스** inbox 최신값으로 폴백한다 — 그 갈래도 KST 날
+    (독립 리뷰 B8b: 폴백 갈래만 UTC 로 되돌려도 전 슈트가 통과했다)."""
+    import json as _json
+    import sys as _sys
+    from datetime import date
+    import bot.daily_kr_flow as dkf
+    import trade.dashboard as td
+    import trade.header_health as hh
+    import trade.store as ts
+    db = tmp_path / "store.db"
+    ts.open_db(db).close()
+    monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+    monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+    monkeypatch.setattr(dkf, "systemd_facts",
+                        lambda timer=None, service="": {"ok": False, "err": "stub"})
+    (tmp_path / "inbox.jsonl").write_text(_json.dumps(
+        {"date": "2026-09-01T16:00:00+00:00", "caption": "아무 캡션", "message_id": 5},
+        ensure_ascii=False) + "\n", encoding="utf-8")
+    monkeypatch.setitem(_sys.modules, "trade.parser", None)   # 파서 미가용
+    seen: dict = {}
+    real_verdict = hh.verdict
+    monkeypatch.setattr(hh, "verdict",
+                        lambda facts, today: (seen.setdefault("f", facts),
+                                              real_verdict(facts, today))[1])
+    f = td.header_facts(db, tmp_path, today=date(2026, 9, 2))
+    assert f["parse_ok"] is False and "폴백" in f["verdict_population"], f
+    assert seen["f"]["inbox_newest"] == "2026-09-02", seen["f"]
+
+
+if __name__ == "__main__":
+    unittest.main()

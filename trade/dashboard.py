@@ -544,7 +544,7 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     materially for little browser-side gain.
     """
     from trade import price_provider
-    from trade.link_new import kst_day as _kst_day
+    from trade.link_new import kst_day as _kst_day, kst_stamp as _kst_stamp
     return {
         "id": a["id"],
         "dir": a["direction"],
@@ -571,7 +571,9 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
         "commentary": a.get("commentary") or "",
         # KST 달력일 — `[:10]` 은 UTC 날이라 KST 새벽 글이 하루 늙었다(규칙 10a).
         "posted_at": _kst_day(a.get("posted_at")),
-        "ingested_at": (a.get("ingested_at") or "")[:19],
+        # 받은 시각도 KST 로(라벨을 값에 싣는다) — 옛 판은 UTC 원문을 오프셋 없이 잘라, 같은
+        # 행의 KST `posted_at` 옆에서 '수집이 게시보다 하루 앞' 처럼 읽혔다(독립 리뷰 #432 L2).
+        "ingested_at": _kst_stamp(a.get("ingested_at")),
         "period_start": a.get("period_start") or "",
         "period_end": a.get("period_end") or "",
         "period_kind": a.get("period_kind") or "",

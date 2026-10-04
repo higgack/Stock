@@ -43,31 +43,36 @@ def test_eson_cells_round_trip_losslessly():
         assert decode_cell(_encode_cell(v)) == v, (v, _encode_cell(v))
 
 
-def test_research_plan_eson():
+def test_research_plan_eson_round_trips_through_the_repo_decoder():
+    """핸드오프 직렬화는 레포의 디코더로 **왕복**돼야 한다(독립 리뷰 #432 L3). 옛 판은 머리줄에
+    레코드 수가 없어(`plan{…}`) 디코더가 레코드를 통째로 놓쳤고, `=` 가 든 문장을 스칼라로
+    읽었다 — 기대 문자열만 맞춘 테스트는 그걸 축복했다(그 옛 계약을 이 계약으로 다시 쓴다, #222).
+    탭·`=`·따옴표로 시작하는 값을 일부러 넣는다."""
     plan = ResearchPlan(
-        rationale="Tech sector growth strong despite macro headwinds.",
+        rationale="Buy\tP/E=20 looks cheap.",
         recommendation=PortfolioRating.BUY,
-        strategic_actions="Accumulate on dips below 150; target 180 by Q3 2026.")
-    lines = research_plan_to_eson(plan, "AAPL").splitlines()
-    assert lines[:3] == ['!eson/1', 'ticker=AAPL',
-                         'plan{recommendation,rationale,strategic_actions}'], lines
-    assert lines[3].split('\t') == [
-        'Buy', 'Tech sector growth strong despite macro headwinds.',
-        'Accumulate on dips below 150; target 180 by Q3 2026.']
+        strategic_actions='"Accumulate" on dips below 150; target=180 by Q3 2026.')
+    text = research_plan_to_eson(plan, "AAPL")
+    assert text.splitlines()[:3] == ['!eson/1', 'ticker=AAPL',
+                                     'plan[1]{recommendation,rationale,strategic_actions}'], text
+    assert decode_document(text) == {"scalars": {"ticker": "AAPL"}, "arrays": {"plan": [{
+        "recommendation": "Buy", "rationale": "Buy\tP/E=20 looks cheap.",
+        "strategic_actions": '"Accumulate" on dips below 150; target=180 by Q3 2026.'}]}}
 
 
-def test_trader_proposal_eson():
+def test_trader_proposal_eson_round_trips_through_the_repo_decoder():
     proposal = TraderProposal(
-        reasoning="Plan is bullish; entry zone 145-150 on RSI pullback.",
-        action=TraderAction.BUY, entry_price=148.50, stop_loss=140.00,
+        reasoning="Plan is bullish; entry=145-150 on RSI pullback.",
+        action=TraderAction.BUY, entry_price=148.50, stop_loss=None,
         position_sizing="2.5% of portfolio", kill_trigger="Q3 earnings miss vs guidance")
-    lines = trader_proposal_to_eson(proposal, "AAPL").splitlines()
-    assert lines[:3] == ['!eson/1', 'ticker=AAPL',
-                         'proposal{action,reasoning,entry_price,stop_loss,'
-                         'position_sizing,kill_trigger}'], lines
-    assert lines[3].split('\t') == [
-        'Buy', 'Plan is bullish; entry zone 145-150 on RSI pullback.', '148.5', '140.0',
-        '2.5% of portfolio', 'Q3 earnings miss vs guidance']
+    text = trader_proposal_to_eson(proposal, "AAPL")
+    assert text.splitlines()[2] == ('proposal[1]{action,reasoning,entry_price,stop_loss,'
+                                    'position_sizing,kill_trigger}'), text
+    assert decode_document(text)["arrays"]["proposal"] == [{
+        "action": "Buy", "reasoning": "Plan is bullish; entry=145-150 on RSI pullback.",
+        "entry_price": 148.5, "stop_loss": None, "position_sizing": "2.5% of portfolio",
+        "kill_trigger": "Q3 earnings miss vs guidance"}]
+    assert decode_document(text)["scalars"] == {"ticker": "AAPL"}
 
 
 def test_eson_record_array_and_document_round_trip():

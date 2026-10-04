@@ -149,5 +149,16 @@ class TestJpExportsNotUnstored(unittest.TestCase):
         self.assertIn(10327, mids)      # 비-JP 미파싱 — 계속 잡힘
 
 
+
+class TestFormatAlertKstStamp(unittest.TestCase):
+    """샘플 줄의 받은 시각은 KST 라벨로(규칙 10a) — `[:19]` 는 UTC 를 라벨 없이 보여 KST 로
+    읽혔다(독립 리뷰 #432 L10 · `--why` 에서 고친 것과 같은 모양)."""
+
+    def test_sample_line_shows_the_received_time_in_kst(self):
+        text = uc.format_alert([_miss(1, 7, "캡션")])
+        self.assertIn("msg=7 · 2026-05-24 15:45 KST", text)
+        self.assertNotIn("2026-05-24T06:45:30", text)
+
+
 if __name__ == "__main__":
     unittest.main()

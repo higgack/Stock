@@ -61,8 +61,10 @@ PROD_VENV = ".backfill-venv"
 # 기다리게 짜여 있어, 앞서 포워드에 쓴 시간 + 대기가 600초를 넘으면 중단 알림도 회수
 # 기록도 없이 저널에만 남았다(#12). 유닛이 이 변수로 예산을 넘기고(값은
 # `TimeoutStartSec` 보다 작게 — 회귀가 두 값을 대조한다), 대기가 예산을 넘을 때는 기다리지
-# 않고 '긴 FloodWait' 중단으로 끝낸다 — 알림과 재시도 미산정 경로를 그대로 쓴다. 변수가
-# 없으면 예산이 없다(사람이 여는 넓은 백필은 제한하지 않는다).
+# 않고 '긴 FloodWait' 중단으로 끝낸다 — 알림과 재시도 미산정 경로를 그대로 쓴다. FloodWait 이
+# 났을 때만 보면 허용한 대기 뒤의 반복·telethon 이 혼자 자는 짧은 대기는 못 보므로, 훑기·포워드
+# 루프는 반복마다 `run_budget_spent` 로 다시 보고 `cap_flood_sleep` 으로 그 자동 대기의 상한을
+# 맞춘다(#432 리뷰 M1). 변수가 없으면 예산이 없다(사람이 여는 넓은 백필은 제한하지 않는다).
 SYNC_DEADLINE_ENV = "TRADE_SYNC_DEADLINE_S"
 SYNC_DEADLINE_MARGIN_S = 30      # 대기 뒤 알림·기록에 남겨 둘 몫
 
@@ -76,22 +78,82 @@ def sync_deadline_s() -> float | None:
     return v if v > 0 else None
 
 
+def _budget_left(started: float, now: float | None,
+                 deadline_s: float | None) -> tuple[float, float] | None:
+    """(예산, 남은 초). 예산이 없으면 None. ``started``·``now`` 는 ``time.monotonic()`` 값."""
+    budget = deadline_s if deadline_s is not None else sync_deadline_s()
+    if not budget:
+        return None
+    return budget, budget - ((time.monotonic() if now is None else now) - started)
+
+
 def flood_wait_overruns(wait_s: float, *, started: float, now: float | None = None,
                         deadline_s: float | None = None) -> str | None:
     """FloodWait 을 기다리면 실행 예산을 넘는가 → 넘으면 중단 사유 문장, 아니면 None.
 
     ``started``·``now`` 는 ``time.monotonic()`` 값(시계는 인자로 — 순수 판정).
     예산은 인자가 없으면 ``SYNC_DEADLINE_ENV`` 에서 읽는다."""
-    budget = deadline_s if deadline_s is not None else sync_deadline_s()
-    if not budget:
+    got = _budget_left(started, now, deadline_s)
+    if not got:
         return None
-    left = budget - ((time.monotonic() if now is None else now) - started)
+    budget, left = got
     if wait_s + SYNC_DEADLINE_MARGIN_S <= left:
         return None
     # 짧게 — 회수 판정 줄이 중단 사유를 잘라 싣는다(무엇이 다음에 일어나는지는 그
     # 판정·알림이 말한다).
     return (f"FloodWait {int(wait_s)}s 대기가 실행 예산을 넘는다(남은 {max(0, int(left))}s/"
             f"예산 {int(budget)}s, {SYNC_DEADLINE_ENV}) — systemd 무알림 종료 전에 끝냄")
+
+
+def run_budget_spent(*, started: float, now: float | None = None,
+                     deadline_s: float | None = None) -> str | None:
+    """다음 유닛을 **시작해도** 되나 → 남은 예산이 여유(`SYNC_DEADLINE_MARGIN_S`)보다
+    적으면 중단 사유 문장, 아니면 None(예산 없음도 None).
+
+    포워드 루프가 매 유닛 앞에서 부른다(독립 리뷰 M1a). `flood_wait_overruns` 는
+    FloodWait 이 **났을 때만** 돌아, 대기를 허용한 뒤의 유닛들이나 대기 없이 긴 일괄
+    (긴 다운타임 뒤)은 예산을 그대로 넘고 systemd 가 알림 없이 죽였다. 사유는
+    FloodWait 이라고 하지 않는다 — 예산을 무엇이 먹었는지는 이 판정이 모른다(#165)."""
+    got = _budget_left(started, now, deadline_s)
+    if not got:
+        return None
+    budget, left = got
+    if left >= SYNC_DEADLINE_MARGIN_S:
+        return None
+    return (f"실행 예산 소진(남은 {max(0, int(left))}s/예산 {int(budget)}s, "
+            f"{SYNC_DEADLINE_ENV}) — systemd 무알림 종료 전에 끝냄 · 남은 유닛은 다음 "
+            "동기화가 이어서 한다")
+
+
+# telethon `TelegramBaseClient(flood_sleep_threshold=60)` 기본값 — 1.36·1.45 같다.
+TELETHON_FLOOD_SLEEP_S = 60
+
+
+def cap_flood_sleep(client, *, started: float, now: float | None = None,
+                    deadline_s: float | None = None) -> int | None:
+    """telethon 이 **혼자** 자는 FloodWait 을 남은 예산 안으로 → 설정한 임계(초), 예산이
+    없으면 None(손대지 않는다 — 사람이 여는 넓은 백필은 telethon 기본 그대로).
+
+    telethon 은 ``flood_sleep_threshold`` 이하의 FloodWait 을 예외 없이 스스로 자고 같은
+    요청을 다시 보낸다(1.45.0 `client/users.py`). 그 대기는 ``except FloodWaitError`` 에
+    오지 않아 `flood_wait_overruns` 를 안 탄다(독립 리뷰 M1b). 호출 하나가 자는 횟수의
+    상한은 재시도(`retry_range` 가 `request_retries`+1 번) + 미리 기다리는 갈래 1번 =
+    ``request_retries + 2`` 이므로, 그 곱이 남은 예산 − 여유 안에 들게 임계를 낮춘다. 더 긴
+    대기는 예외로 올라와 호출부의 예산 판정을 탄다. ``request_retries`` 가 무한(음수·
+    None)이거나 정수가 아니면 임계를 0 으로 둔다 — 모든 FloodWait 이 호출부로 온다. 속성이
+    아예 없으면(가짜 클라이언트) telethon 기본값 5 로 본다."""
+    got = _budget_left(started, now, deadline_s)
+    if not got:
+        return None
+    _budget, left = got
+    retries = getattr(client, "_request_retries", 5)
+    if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
+        thr = 0
+    else:
+        thr = int(max(0.0, min(float(TELETHON_FLOOD_SLEEP_S),
+                               (left - SYNC_DEADLINE_MARGIN_S) / (retries + 2))))
+    client.flood_sleep_threshold = thr
+    return thr
 
 
 class SessionFormatError(RuntimeError):

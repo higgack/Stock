@@ -252,7 +252,10 @@ def format_alert(missing: list[dict]) -> str:
     for i, r in enumerate(samples, 1):
         caption = (r.get("caption") or r.get("text") or "")[:240]
         msg_id = r.get("message_id")
-        ingested = (r.get("ingested_at") or "")[:19]
+        # 받은 시각은 KST 라벨로(규칙 10a) — `[:19]` 는 UTC 를 라벨 없이 보여 KST 로 읽혔다
+        # (독립 리뷰 #432 L10 · `--why` 에서 고친 것과 같은 모양).
+        from trade.link_new import kst_stamp
+        ingested = kst_stamp(r.get("ingested_at"))
         lines.append(f"<b>[{i}]</b> msg={msg_id} · {ingested}")
         lines.append(f"<code>{html.escape(caption)}</code>")
         lines.append("")

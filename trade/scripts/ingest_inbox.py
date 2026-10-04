@@ -116,16 +116,22 @@ def _group_messages(rows: list[dict]) -> list[list[dict]]:
     """Group rows by media_group_id. Solo rows (None) each become a
     one-element group. Preserves the original arrival order so the
     'first captioned row' rule maps to the album's primary message.
+
+    단위는 **첫 행이 inbox 에 나온 순서**로 돌려준다 — 옛 판은 '앨범 전부 → 단독' 이라,
+    원 게시 시각이 같은 단위끼리(아래 `_unit_time` 안정 정렬의 동점)는 inbox 순서가 아니라
+    앨범이 먼저 돌았다(독립 리뷰 #432 L1 — 문서는 'inbox 순서' 라고 적고 있었다).
     """
     groups: dict[str, list[dict]] = defaultdict(list)
-    solos: list[list[dict]] = []
+    units: list[list[dict]] = []
     for row in rows:
         gid = row.get("media_group_id")
         if gid:
+            if gid not in groups:
+                units.append(groups[gid])        # 첫 행 자리에 그 앨범을 둔다
             groups[gid].append(row)
         else:
-            solos.append([row])
-    return list(groups.values()) + solos
+            units.append([row])
+    return units
 
 
 _UNPARSED_SHOW_CAP = 50   # --show-unparsed 가 찍는 최대 줄 수(자르면 고지)

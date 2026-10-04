@@ -1739,3 +1739,190 @@ def test_a_flood_wait_that_would_outlive_the_unit_aborts_with_a_note(
     slept.clear()
     assert _run(backfill, monkeypatch) == 0
     assert slept.count(101) == 1, slept
+
+
+def _fake_clock(backfill, monkeypatch, start: float) -> dict:
+    """`tg_entities` 의 단조 시계와 스크립트의 `asyncio.sleep` 을 **한** 가짜 시계로 —
+    대기와 페이스가 시계를 실제로 민다. 진짜 시간·순서로 재면 단독 green · 전체 red
+    가 된다(#128 — 시계를 주입해 결정적으로)."""
+    from trade import tg_entities as tg
+    clock = {"t": float(start)}
+    monkeypatch.setattr(tg, "time", types.SimpleNamespace(monotonic=lambda: clock["t"]))
+
+    async def _sleep(s):
+        clock["t"] += s
+
+    monkeypatch.setattr(backfill.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(backfill, "_RUN_T0", 0.0)
+    return clock
+
+
+def _many_kri(n: int) -> list:
+    return [_Msg(2000 + k, _KRI, _ago(1) + timedelta(seconds=k)) for k in range(n)]
+
+
+def test_the_forward_loop_rechecks_the_budget_after_an_allowed_wait(backfill, monkeypatch):
+    """독립 리뷰 M1a 재현 — 예산 판정이 FloodWait 이 났을 때만 돌면, 대기를 **허용**한
+    뒤의 유닛들은 예산을 그대로 넘는다(80유닛 · 시작 100초 뒤 FloodWait 400초 → 대기
+    401초는 남은 440초 안이라 허용 → 재개 501초 → 옛 판은 600초(`TimeoutStartSec`)
+    뒤에도 13유닛을 포워드했고, 운영이면 systemd 가 알림 없이 죽인다). 루프가 매 유닛
+    **앞에서** 예산을 다시 본다 — 남은 예산이 여유(알림·기록 몫)보다 적으면 그 유닛을
+    시작하지 않고 끝낸다. 자동 회수에서는 재시도 셈에 안 들어간다(남은 유닛은 다음
+    동기화가 이어 간다 — 기다리면 풀리는 FloodWait 이 예산을 먹은 것이다)."""
+    from trade import tg_entities as tg
+    clock = _fake_clock(backfill, monkeypatch, 100.0)
+    monkeypatch.setenv(tg.SYNC_DEADLINE_ENV, "540")
+    monkeypatch.setattr(backfill, "_current_pause", lambda n: 1.5)
+    at: list = []
+
+    async def _fwd(self, dest, ids_, from_peer=None):
+        if not getattr(self, "_flooded", False):
+            self._flooded = True
+            err = sys.modules["telethon.errors"].FloodWaitError()
+            err.seconds = 400
+            raise err
+        at.append(clock["t"])
+        self.forwarded.append(list(ids_))
+
+    monkeypatch.setattr(_Client, "forward_messages", _fwd)
+    _Client.messages = _many_kri(80)
+    assert _run(backfill, monkeypatch) == 1
+    assert at and at[0] == 501.0, at                 # 대기는 허용됐다(옛 동작 그대로)
+    assert max(at) <= 540 - tg.SYNC_DEADLINE_MARGIN_S, max(at)
+    assert len(at) < 80
+    note = backfill._test_notes[-1]
+    assert "실행 예산" in note and f"진행: {len(at)}/80 msgs" in note, note
+    assert _state(backfill)["retry"]["count"] == 0, _state(backfill)
+
+
+def test_a_budget_stop_is_not_named_a_flood_wait(backfill, monkeypatch):
+    """예산 소진은 FloodWait 이 아니다 — 큰 일괄(긴 다운타임 뒤)은 대기 없이도 예산을
+    넘는다. 사유·제목이 'FloodWait 대기가 예산을 넘는다' 고 적으면 처방(기다림)이
+    틀린다(#82·#292). 회수 판정도 같은 이유로 자기 사유를 댄다."""
+    from trade import tg_entities as tg
+    clock = _fake_clock(backfill, monkeypatch, 0.0)
+    monkeypatch.setenv(tg.SYNC_DEADLINE_ENV, "540")
+    monkeypatch.setattr(backfill, "_current_pause", lambda n: 9.0)   # 대기 없이 느린 일괄
+    _Client.messages = _many_kri(90)
+    assert _run(backfill, monkeypatch) == 1
+    assert clock["t"] <= 540
+    note = backfill._test_notes[-1]
+    assert "실행 예산 소진" in note and "FloodWait" not in note.split("\n")[1], note
+    assert "⏸" in note.split("\n")[0], note
+    counts, why = srcs.recovery_attempt_counts(aborted="x", abort_kind="budget")
+    assert counts is False and "실행 예산" in why and "FloodWait" not in why
+
+
+def test_telethon_does_not_silently_sleep_past_the_budget(backfill, monkeypatch):
+    """독립 리뷰 M1b — telethon 은 `flood_sleep_threshold`(기본 60초) 이하의 FloodWait 을
+    예외 없이 **혼자** 자고 같은 요청을 다시 보낸다(1.45.0 `client/users.py` — 재시도
+    `request_retries` 5회 + 1, 미리 기다리는 갈래 1회). 그 대기는 `except FloodWaitError`
+    에 오지 않아 예산 판정을 안 탄다. 루프가 매 유닛 앞에서 임계를 남은 예산 안으로
+    낮춘다: (재시도+2) × 임계 ≤ 남은 예산 − 여유."""
+    from trade import tg_entities as tg
+    clock = _fake_clock(backfill, monkeypatch, 0.0)
+    monkeypatch.setenv(tg.SYNC_DEADLINE_ENV, "540")
+    monkeypatch.setattr(backfill, "_current_pause", lambda n: 6.0)
+    seen: list = []
+
+    async def _fwd(self, dest, ids_, from_peer=None):
+        thr = getattr(self, "flood_sleep_threshold", None)
+        seen.append((clock["t"], thr))
+        self.forwarded.append(list(ids_))
+
+    monkeypatch.setattr(_Client, "forward_messages", _fwd)
+    _Client.messages = _many_kri(80)
+    _run(backfill, monkeypatch)
+    assert seen, "포워드가 한 번도 안 일어났다"
+    for t, thr in seen:
+        left = 540 - t
+        assert thr is not None and (5 + 2) * thr <= left - tg.SYNC_DEADLINE_MARGIN_S, (t, thr)
+    assert seen[0][1] == tg.TELETHON_FLOOD_SLEEP_S        # 첫머리는 기본값 그대로
+    assert seen[-1][1] < seen[0][1]                       # 예산이 줄면 따라 준다
+
+
+def test_the_scan_stops_when_the_budget_runs_out(backfill, monkeypatch):
+    """훑기(`iter_messages`)도 실행 예산 안에서 — 글마다 남은 예산을 본다. 옛 판은 훑기에서
+    예산을 안 봐, 느린 훑기(짧은 FloodWait 이 쌓이는 경우)가 600초를 넘기면 systemd 가
+    알림 없이 죽였다(#432 리뷰 M1 후속). 글 하나에 10초 → 520초째에 남은 20초 < 여유
+    30초라 멈춘다. 갈래는 예산 소진이라 재시도 셈에 안 들어간다."""
+    from trade import tg_entities as tg
+    clock = _fake_clock(backfill, monkeypatch, 0.0)
+    monkeypatch.setenv(tg.SYNC_DEADLINE_ENV, "540")
+
+    async def _slow_iter(self, source, offset_date=None, reverse=False, limit=None):
+        for m in sorted(_Client.messages, key=lambda m: m.date):
+            clock["t"] += 10.0
+            yield m
+
+    monkeypatch.setattr(_Client, "iter_messages", _slow_iter)
+    _Client.messages = _many_kri(80)
+    assert _run(backfill, monkeypatch) == 1
+    assert clock["t"] <= 540
+    note = backfill._test_notes[-1]
+    assert note.splitlines()[0] == "⏸ <b>나쁜양파 동기화 — 실행 예산 소진</b>", note
+    assert "훑기 중" in note and "FloodWait" not in note, note
+    assert _Client.instances[-1].forwarded == []
+    assert _state(backfill)["retry"]["count"] == 0, _state(backfill)
+
+
+def test_the_scan_keeps_telethons_own_flood_sleep_inside_the_budget(backfill, monkeypatch):
+    """훑기의 telethon 자동 대기 상한 — 첫 페이지 요청 **전에** 맞추고(그 요청은 첫 글보다
+    먼저 나간다) 글마다 다시 맞춘다. 옛 판은 훑기에서 상한을 안 건드려 기본값(60초 ×
+    재시도+2)이 예산 밖에서 혼자 잘 수 있었다. 300초에 시작하면 첫 글의 상한은
+    (540−300−30)/7 = 30 이고, 시간이 흐를수록 준다."""
+    from trade import tg_entities as tg
+    clock = _fake_clock(backfill, monkeypatch, 300.0)
+    monkeypatch.setenv(tg.SYNC_DEADLINE_ENV, "540")
+    seen: list = []
+
+    async def _slow_iter(self, source, offset_date=None, reverse=False, limit=None):
+        for m in sorted(_Client.messages, key=lambda m: m.date):
+            seen.append((clock["t"], getattr(self, "flood_sleep_threshold", None)))
+            clock["t"] += 2.0
+            yield m
+
+    monkeypatch.setattr(_Client, "iter_messages", _slow_iter)
+    _Client.messages = _many_kri(80)
+    _run(backfill, monkeypatch)
+    assert len(seen) == 80, len(seen)
+    for t, thr in seen:
+        assert thr is not None and (5 + 2) * thr <= (540 - t) - tg.SYNC_DEADLINE_MARGIN_S, (t, thr)
+    assert seen[0][1] == int((540 - 300 - tg.SYNC_DEADLINE_MARGIN_S) / 7)
+    assert seen[-1][1] < seen[0][1]
+
+
+def test_a_long_flood_wait_during_the_scan_aborts_with_a_note(backfill, monkeypatch):
+    """훑기(`iter_messages`)에서 임계를 넘는 FloodWait 은 예외로 올라온다 — 옛 판은 그걸
+    아무도 안 잡아 트레이스백으로 죽었다(알림·회수 판정 없음, #12). 포워드의 긴
+    FloodWait 과 같은 갈래로 끝낸다: 알림 · 재시도 셈에 안 넣음 · 다음 틱이 다시 훑는다."""
+    async def _flood_iter(self, source, offset_date=None, reverse=False, limit=None):
+        err = sys.modules["telethon.errors"].FloodWaitError()
+        err.seconds = 3600
+        raise err
+        yield  # pragma: no cover — async generator 로 만든다
+
+    monkeypatch.setattr(_Client, "iter_messages", _flood_iter)
+    _seed()
+    assert _run(backfill, monkeypatch) == 1
+    note = backfill._test_notes[-1]
+    assert "FloodWait 3600s" in note and "훑기" in note, note
+    assert _state(backfill)["retry"]["count"] == 0, _state(backfill)
+    assert _Client.instances[-1].forwarded == []
+
+
+def test_a_long_flood_wait_during_a_dry_run_scan_does_not_notify(backfill, monkeypatch, caplog):
+    """dry-run 은 사람이 터미널에서 돌린 진단이다 — 폰 알림은 타이머 장애로 읽힌다
+    (#82 · 시작 실패·후보 상한과 같은 규약). 로그로만 말하고 rc 1."""
+    async def _flood_iter(self, source, offset_date=None, reverse=False, limit=None):
+        err = sys.modules["telethon.errors"].FloodWaitError()
+        err.seconds = 3600
+        raise err
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(_Client, "iter_messages", _flood_iter)
+    _seed()
+    caplog.set_level("INFO")
+    assert _run(backfill, monkeypatch, "--dry-run") == 1
+    assert backfill._test_notes == []
+    assert "FloodWait 3600s" in caplog.text

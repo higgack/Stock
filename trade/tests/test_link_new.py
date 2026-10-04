@@ -913,6 +913,25 @@ def test_a_newer_correction_still_wins(tmp_path, monkeypatch):
     assert _ingest_main(tmp_path, monkeypatch, rows) == [(_NEWER, 9.9)]
 
 
+def test_same_posted_time_keeps_the_inbox_order(tmp_path, monkeypatch):
+    """원 게시 시각이 같은 단위끼리는 **inbox 순서**로 돈다(나중 줄이 마지막에 써서 이긴다) —
+    옛 판은 묶을 때 '앨범 전부 → 단독' 으로 내놓아, 동점에선 inbox 앞의 단독 글이 뒤의 앨범을
+    덮었다(독립 리뷰 #432 L1 재현: 9.1). 문서는 줄곧 'inbox 순서' 라고 적고 있었다."""
+    rows = [_tw_inbox_row(1, _ORIGIN, "9.1"),                       # inbox 앞 — 단독
+            _tw_inbox_row(2, _ORIGIN, "9.9", gid="g1"),              # inbox 뒤 — 앨범
+            _tw_inbox_row(3, _ORIGIN, "9.9", gid="g1", caption=False)]
+    assert _ingest_main(tmp_path, monkeypatch, rows) == [(_ORIGIN, 9.9)]
+
+
+def test_an_unreadable_time_is_processed_first(tmp_path, monkeypatch):
+    """못 읽는 시각은 **가장 이르게** — 어떤 날짜 있는 글에도 덮인다(독립 리뷰 F2: 옛 테스트는
+    `_EARLIEST` 를 자기 상수와 비교해, `datetime.max` 로 바꿔도 통과했다 — 동작으로 잰다). inbox
+    뒤에 붙은 못 읽는 글이 마지막에 써서 이기면 날짜 있는 글의 값을 덮는다."""
+    rows = [_tw_inbox_row(1, _NEWER, "9.9"),
+            {**_tw_inbox_row(2, "garbage", "9.1"), "date": "garbage"}]
+    assert _ingest_main(tmp_path, monkeypatch, rows) == [(_NEWER, 9.9)]
+
+
 def test_unit_time_is_the_posted_at_the_unit_will_store():
     """정렬 키는 그 단위가 **저장할** posted_at 과 같아야 한다 — `_ingest_group` 은 첫 캡션
     글을 대표로 쓴다. ⚠️ 합성 앨범이다: 실제 앨범은 구성원이 같은 시각을 갖는다(그래서
