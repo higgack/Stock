@@ -1260,7 +1260,10 @@ def test_drift_banner_scans_exactly_the_dashboard_restart_condition():
             if f.endswith(".py") and rx.search(f) and not f.startswith(cf.SCAN_EXCLUDED)}
     assert want, "대조 0건 — 정규식이나 파일 목록이 눈이 멀었다(#54)"
     tracked = set(files)
+    # **기본 인자**로 잰다 — 운영은 루트를 넘기지 않는다. 루트를 넘기면 기본값(`_REPO_ROOT`)이
+    # `bot/` 로 돌아가도 통과했다(독립 리뷰 #435 델타 Medium 2 실측).
+    assert Path(cf._REPO_ROOT).resolve() == _ROOT, (cf._REPO_ROOT, _ROOT)
     # 디스크에만 있고 git 이 모르는(무시된) .py 는 배포가 만들 수 없다 — 대조에서 뺀다
-    got = {p for _m, p in cf.source_mtimes(_ROOT) if p in tracked}
+    got = {p for _m, p in cf.source_mtimes() if p in tracked}
     assert got == want, ("배너가 못 보는 재시작 범위", sorted(want - got)[:8],
                          "재시작 조건 밖인데 배너가 세는 것", sorted(got - want)[:8])

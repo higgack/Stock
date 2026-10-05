@@ -62010,9 +62010,13 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         from bot import code_freshness as cf
 
         t0 = 5_000_000.0                  # 대시보드가 마지막으로 뜬 시각(그 뒤 재시작 권한 부재, #359)
-        t1 = t0 + 6 * 3600                # 첫 배포의 git reset — 이 프로세스가 놓친 첫 변경
-        t2 = t1 + 15 * 60                 # 15분 뒤 다음 배포 — 재시작이 또 실패했다
-        for rel, mt in {"bot/old.py": t0 - 3600, "bot/a.py": t1, "trade/b.py": t2}.items():
+        t1 = t0 + 90 * 60                 # 첫 배포의 git reset — 이 프로세스가 놓친 첫 변경(trade/)
+        t2 = t1 + 15 * 60                 # 15분 뒤 다음 배포(bot/) — 재시작이 또 실패했다
+        # ⚠️ 놓친 첫 변경을 스캔 순서로도 알파벳으로도 **뒤**인 `trade/` 에 두고 시차를 2시간 미만으로
+        # 잡는다 — 첫 변경이 `bot/a.py`·시차 6시간이던 첫 판은 '정렬 없이 스캔 순서 첫 파일' ·
+        # '알파벳 첫 파일' · '스캔을 bot/ 로 좁힘(7a 되돌리기)' · 'lag 를 최신에서 잼' 변형이 전부
+        # 통과했다(독립 리뷰 #435 델타 Medium 1 실측 — 시간 단위 표기가 시차 차이를 뭉갰다)
+        for rel, mt in {"bot/old.py": t0 - 3600, "trade/k.py": t1, "bot/a.py": t2}.items():
             p = tmp_path / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("x", encoding="utf-8")
@@ -62023,10 +62027,10 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
 
         late = cf.drift(started=t0, now=t1 + 21 * 60)    # 첫 배포 21분 뒤 · 둘째 배포 6분 뒤
         assert late["stale"] is True and late["pending"] is False, late
-        assert late["first_path"] == "bot/a.py", late
+        assert late["first_path"] == "trade/k.py" and late["first_new"] == t1, late
         msg = cf.note(late, unit="stock-bot-dashboard")
-        assert "21분 전에 갱신" in msg and "6시간 먼저 시작" in msg, msg
-        assert "`bot/a.py` 등" in msg, msg               # 어느 변경을 놓쳤나(#202 숫자·대상으로)
+        assert "21분 전에 갱신" in msg and "90분 먼저 시작" in msg, msg
+        assert "`trade/k.py` 등" in msg, msg             # 어느 변경을 놓쳤나(#202 숫자·대상으로)
         # 정상 배포 창은 그대로 — 첫 변경 뒤 20분 안이면 아직 자동 재시작을 기다린다
         early = cf.drift(started=t0, now=t1 + 19 * 60)
         assert early["stale"] is False and early["pending"] is True, early
@@ -62132,8 +62136,9 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
     def test_grace_covers_the_auto_update_restart_window(self):
         """유예의 하한은 임의값이 아니라 `auto-update.sh` 의 창에서 나온다(#269 주기에서
         도출): reset 뒤 stock-bot 정지(TimeoutStopSec) → 창 안의 sleep·알림(notify 호출 수 ×
-        curl 상한) → 대시보드 정지(TimeoutStopSec, 없으면 systemd 기본 90초). 그 값들이
-        늘면 여기서 빨간불이 되어 유예를 다시 보게 한다(#119 규율 대신 구조). 무엇을 읽고
+        curl 상한) → 대시보드 정지(TimeoutStopSec, 없으면 systemd 기본 90초). 그 합이
+        유예를 넘으면(지금 여유 157초) 여기서 빨간불이 되어 유예를 다시 보게 한다(#119 규율
+        대신 구조) — 하나가 늘어도 여유 안이면 통과한다. 무엇을 읽고
         무엇을 못 보는지는 `_window_need`·`_stop_timeout` 독스트링과 docs/tests.md #435.
         """
         from bot import code_freshness as cf
@@ -62234,7 +62239,7 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         d = cf.drift(started=reset - 3600, newest=reset, now=reset + cf.GRACE_SEC)
         assert d["stale"] is False and d["pending"] is True, d
 
-    def test_future_mtime_is_unmeasurable_not_pending_20261005(self):
+    def test_future_mtime_is_unmeasurable_not_pending_20261005(self, tmp_path, monkeypatch):
         """독립 리뷰 #435 L5: 소스 mtime 이 **미래**(시계 역행 등)면 ``age < 0`` 이라
         ``newest + 유예`` 까지 ``pending`` 에 머물렀다 — 재지 못한 것을 '자동 재시작을 기다리는
         중' 으로 적은 것이다(#165). 판정 불가로 두고 **사유를 남긴다**(#54·#82)."""
@@ -62244,8 +62249,20 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert d["measurable"] is False and d["stale"] is False and d["pending"] is False, d
         assert "2분" in d.get("why", "") and "시계" in d.get("why", ""), d
         assert cf.note(d) == "", "판정 불가인데 문구를 지어냈다"
-        # 절단 여유(1초) 안의 어긋남은 미래로 보지 않는다
+        # 절단 여유(1초) 안의 어긋남은 미래로 보지 않는다 · 넘으면 몇 초라도 미래다(여유를 100초로
+        # 늘리는 변형이 살아남았다 — 독립 리뷰 델타 L14 D)
         assert cf.drift(started=now - 3600, newest=now + 0.5, now=now)["measurable"] is True
+        assert cf.drift(started=now - 3600, newest=now + 5, now=now)["measurable"] is False
+        # 스캔 경로에선 **어느 파일인지** 댄다 — 한 파일만 미래여도 판정 전체가 불가가 된다(델타 L9)
+        import os
+        for rel, mt in {"bot/a.py": now - 10, "trade/f.py": now + 120}.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x", encoding="utf-8")
+            os.utime(p, (mt, mt))
+        monkeypatch.setattr(cf, "_REPO_ROOT", tmp_path)
+        d2 = cf.drift(started=now - 3600, now=now)
+        assert d2["measurable"] is False and "`trade/f.py`" in d2["why"], d2
 
     def test_sub_minute_lag_is_not_written_as_zero_minutes_20261005(self):
         """**재현 테스트**(실수 #435 배포 전 셀프리뷰): 유예를 ``age`` 로 옮기며 '옛 코드'
@@ -62331,6 +62348,100 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         b2 = banner()
         assert "⚠️" not in b2 and "판정 불가" not in b2, b2
 
+        # 판정 자체가 던지면 조용히 넘기지 않고 이름을 댄다(#12 — 예외 경로를 침묵시키는 변형이
+        # 살아남았다, 독립 리뷰 델타 L14 O)
+        def _boom(*a, **k):
+            raise RuntimeError("x")
+
+        monkeypatch.setattr(cf, "run_note", _boom)
+        assert "프로세스 신선도 판정 불가(RuntimeError)" in banner()
+
+    def test_run_note_speaks_for_every_branch_20261005(self):
+        """`run_note` 의 세 갈래를 dict 로 직접 잰다(독립 리뷰 #435 델타 L3 — CLI 테스트는 pending
+        한 갈래만 태워, stale 이면 침묵 · 판정 불가를 빈 문자열로 · 사유 생략 · '(N 전)' 을 시차로
+        바꾸는 변형이 전부 살아남았다). 문구는 '일부는 … 수 있습니다' — 감사는 모듈을 실행 중에
+        하나씩 import 하므로 전부 옛 코드라고 단정하지 않는다(델타 L4 · #165)."""
+        from bot import code_freshness as cf
+
+        un = {"measurable": False, "stale": False, "pending": False,
+              "why": "소스 mtime 을 못 읽었습니다"}
+        assert cf.run_note(un) == "프로세스 신선도 판정 불가(소스 mtime 을 못 읽었습니다)"
+        base = {"measurable": True, "lag_sec": 45.0, "age_sec": 1500.0,
+                "first_path": "trade/k.py"}
+        for flags in ({"stale": True, "pending": False}, {"stale": False, "pending": True}):
+            msg = cf.run_note({**base, **flags})
+            assert msg.startswith("⚠️"), (flags, msg)
+            assert "뜬 45초 뒤 `trade/k.py` 등 코드가 바뀌었습니다" in msg, (flags, msg)
+            assert "(25분 전)" in msg, (flags, msg)              # 경과는 age, 시차는 lag
+            assert "일부는 바뀌기 전 코드로 만들어졌을 수 있습니다" in msg, (flags, msg)
+        assert cf.run_note({**base, "stale": False, "pending": False}) == ""
+
+    def test_anchor_ignores_changes_within_the_truncation_slack_20261005(self, tmp_path,
+                                                                       monkeypatch):
+        """기준점도 절단 여유를 지킨다 — 시작 0.5초 뒤 mtime(btime 정수 초 절단 안)은 놓친 변경이
+        아니다. 그걸 기준점으로 잡으면 '0초 먼저 시작' 과 엉뚱한 경과를 적는다(독립 리뷰 #435
+        델타 L14 C — 기준점 필터가 여유를 무시하는 변형이 살아남았다)."""
+        import os
+
+        from bot import code_freshness as cf
+
+        t0 = 6_000_000.0
+        for rel, mt in {"bot/a.py": t0 + 0.5, "trade/k.py": t0 + 600}.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x", encoding="utf-8")
+            os.utime(p, (mt, mt))
+        monkeypatch.setattr(cf, "_REPO_ROOT", tmp_path)
+        d = cf.drift(started=t0, now=t0 + 600 + cf.GRACE_SEC + 60)
+        assert d["first_path"] == "trade/k.py" and d["stale"] is True, d
+        assert "10분 먼저 시작" in cf.note(d), cf.note(d)
+
+    def test_default_scan_reads_the_real_repo_20261005(self):
+        """기본 인자(`_REPO_ROOT`)가 **레포 루트**다 — 이번에 기본값의 뜻이 패키지 디렉터리에서 레포
+        루트로 바뀌었는데, 모든 테스트가 루트를 넘기거나 패치해서 기본값이 `bot/` 로 돌아가도 전부
+        통과했다. 그러면 배너가 영구 침묵하고 CLI 는 '판정 불가' 만 낸다(독립 리뷰 델타 Medium 2)."""
+        from bot import code_freshness as cf
+
+        root = pathlib.Path(cf.__file__).resolve().parent.parent
+        assert pathlib.Path(cf._REPO_ROOT).resolve() == root, cf._REPO_ROOT
+        d = cf.drift()
+        assert d["measurable"] is True and d["newest"] > 0, d
+        paths = {p for _m, p in cf.source_mtimes()}
+        assert "bot/code_freshness.py" in paths, sorted(paths)[:5]
+
+    def test_window_helper_counts_only_inside_the_window_20261005(self):
+        """`_window_need` 의 창 경계와 파서를 **합성 스크립트**로 못박는다 — 실물로만 재면 창 시작을
+        파일 맨 위로 옮기거나(1171초) 끝을 함수 본문 끝까지 늘려도(1085초) 통과했고, `1min 30s`·
+        sleep 인자 합산은 아예 안 쟀다(독립 리뷰 #435 델타 L12)."""
+        unit = "[Service]\nTimeoutStopSec=1\n"
+        sh = "\n".join([
+            "notify() {",
+            "    curl -s -m 7 https://example.invalid",
+            "}",
+            "restart_dashboard() {",
+            '    notify "before"',                       # 창 안 — 재시작 줄 앞
+            "    sleep 2",                               # 창 안
+            "    systemctl restart stock-bot-dashboard",
+            '    notify "after"',                        # 창 밖
+            "    sleep 100",                             # 창 밖
+            "}",
+            'notify "pre-reset"',                         # 창 밖 — reset 앞
+            "sleep 50",                                   # 창 밖
+            'if ! git reset --hard "origin/x" --quiet; then',
+            '    notify "reset failed"',                 # 창 안
+            "fi",
+            "sleep 1m 30s",                               # 창 안 — GNU sleep 은 인자를 합산한다
+            "restart_dashboard",
+            'notify "after call"',                        # 창 밖
+            "sleep 9",                                    # 창 밖
+        ])
+        w = self._window_need(unit, unit, sh)
+        assert w["notify"] == 2 and w["per_notify"] == 7, w
+        assert w["sleeps"] == 92, w                      # 90(1m 30s) + 2
+        assert w["need"] == 1 + 1 + 2 * 7 + 92, w
+        assert self._span_sec("1min 30s") == 90 and self._span_sec("2h") == 7200
+        assert self._sleep_sec("1m 30s") == 90 and self._sleep_sec("1.5") == 1.5
+
     def test_newest_source_mtime_scans_the_directory_not_a_name_list(self, tmp_path):
         """이름을 열거하면 목록 밖 파일을 못 잡는다(#24) — 새 파일이
         최신이면 그게 잡혀야 한다.
@@ -62352,6 +62463,16 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("x", encoding="utf-8")
             os.utime(p, (mt, mt))
+
+        # 가운데 디렉터리(`bot/scripts`)가 없어도 뒤 디렉터리(`trade`)를 본다 — 없는 디렉터리에서
+        # 스캔을 멈추는 변형이 살아남았다(독립 리뷰 델타 L14 B)
+        r2 = tmp_path / "r2"
+        for rel, mt in {"bot/x.py": 100, "trade/y.py": 200}.items():
+            q = r2 / rel
+            q.parent.mkdir(parents=True, exist_ok=True)
+            q.write_text("x", encoding="utf-8")
+            os.utime(q, (mt, mt))
+        assert cf.newest_source_mtime(r2) == 200, cf.source_mtimes(r2)
 
         put("bot/a.py", 1000)
         assert cf.newest_source_mtime(tmp_path) == 1000
@@ -62435,7 +62556,8 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert raw.split(b"\r\n")[0].endswith(b"200 OK"), raw[:120]
         body = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
         assert body["ok"] is True
-        for k in ("started", "newest", "stale", "pending", "measurable", "why", "note"):
+        for k in ("started", "newest", "stale", "pending", "measurable", "why",
+                  "first_new", "first_path", "age_sec", "grace_sec", "note"):
             assert k in body, (k, body)
         assert isinstance(body["stale"], bool) and isinstance(body["pending"], bool)
 
@@ -62453,11 +62575,19 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         import bot.code_freshness as cf
         monkeypatch.setattr(cf, "drift", lambda **k: {
             "stale": True, "pending": False, "measurable": True, "lag_sec": 4800.0,
-            "age_sec": 1500.0, "grace_sec": 1200.0, "started": 1.0, "newest": 4801.0})
+            "age_sec": 1500.0, "grace_sec": 1200.0, "started": 1.0, "newest": 9001.0,
+            "first_new": 4801.0, "first_path": "trade/k.py"})
         raw = self._get("/api/build")
         body = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
         assert body["stale"] is True and body["measurable"] is True
         assert body["pending"] is False, body
+        # 기준점(놓친 첫 변경)과 경과를 싣는다 — `newest` 만으로는 pending 이 언제 stale 이 되는지
+        # 못 센다(독립 리뷰 델타 L8). 정수로 싣는다(다른 시각 칸과 같은 형).
+        assert body["first_new"] == 4801 and isinstance(body["first_new"], int), body
+        assert body["first_path"] == "trade/k.py", body
+        assert body["age_sec"] == 1500 and isinstance(body["age_sec"], int), body
+        assert body["grace_sec"] == 1200 and isinstance(body["grace_sec"], int), body
+        assert "`trade/k.py` 등" in body["note"], body["note"]
         assert body["note"], "판정이 stale 인데 화면에 줄 문구가 비었다"
         # 두 간격이 따로 실린다 — 소스 경과(25분)와 프로세스 시차(80분)(실수 #435)
         assert "25분 전에 갱신" in body["note"] and "80분 먼저" in body["note"], body["note"]

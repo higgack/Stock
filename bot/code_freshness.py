@@ -26,10 +26,11 @@
 
 ⚠️ 기준점은 이 프로세스가 **놓친 첫 변경**(시작보다 새 mtime 중 가장 이른 것)이다 — 가장
 최근 변경으로 재면 20분 안쪽으로 이어지는 배포마다 유예가 다시 시작돼, 재시작이 계속
-실패해도 배너가 침묵한다(독립 리뷰 #435 M1: base 이력의 연속 배포 285쌍 중 91쌍이 20분
-미만). 재는 범위는 자동 배포가 대시보드를 다시 띄우는 조건(`auto-update.sh` CODE_CHANGED
-의 .py 갈래)과 같다(배포가 아닌 쓰기가 바꾸는 갈래 둘은 빼고 — `SCAN_EXCLUDED`) — 옛 판은
-`bot/` 최상위만 봐 `trade`·`TradingAgents` 만 바뀐 배포의 재시작 실패를 끝내 못 잡았다(같은
+실패해도 배너가 침묵한다(독립 리뷰 #435 M1: base 커밋 이력의 연속 쌍 285 중 91 이 20분
+미만 — 배포는 도는 동안 들어온 커밋을 한 번에 실으므로 실제 배포 쌍은 그보다 적다).
+재는 범위는 자동 배포가 대시보드를 다시 띄우는 조건(`auto-update.sh` CODE_CHANGED 의 .py
+갈래)과 같다(배포가 아닌 쓰기가 바꾸는 갈래 둘은 빼고 — `SCAN_EXCLUDED`) — 옛 판은 `bot/`
+최상위만 봐 `trade`·`TradingAgents` 만 바뀐 배포의 재시작 실패를 끝내 못 잡았다(같은
 리뷰 7a).
 """
 from __future__ import annotations
@@ -79,11 +80,17 @@ _STARTED = _proc_start() or _IMPORTED
 # 창 안의 sleep·알림(notify 호출마다 curl 상한) → 대시보드 정지(기본 90초)·시작. 회귀가
 # 두 유닛의 정지 상한(TimeoutStopSec·TimeoutSec, systemd 시간 단위 포함)과 reset 뒤 창 안의
 # sleep·notify 호출 수 × curl `-m`/`--max-time` 에서 경로 상한(현재 1043초)을 다시 계산해
-# 이 값이 그보다 큰지 잰다 — 그 값들이 늘면 거기서 빨간불이 된다.
+# 이 값이 그보다 큰지 잰다 — 그 합이 유예를 넘으면(지금 여유 157초) 거기서 빨간불이 된다.
+# 하나가 늘어도 여유 안이면 통과한다.
 # ⚠️ 못 보는 축(#274): (a) deploy/ 가 바뀐 배포의 install.sh 와 재시작 권한이 없을 때의
 # self-heal(install.sh) 실행 시간은 상한이 없다 (b) VM 의 systemd drop-in·
-# DefaultTimeoutStopSec 이 90초와 다르면 레포에서 안 보인다 (c) VM 에서 직접 push 한
-# 경로(LOCAL==REMOTE)는 소스가 타이머 발화 전에 바뀌어 창이 타이머 간격만큼 길다.
+# DefaultTimeoutStopSec 이 90초와 다르면 레포에서 안 보인다 (c) VM 에서 직접 고치고 push 하는
+# 경로(LOCAL==REMOTE)는 창이 **첫 편집부터** push·타이머 발화·재시작까지라, 편집이 20분을
+# 넘기면 그 사이에 배너가 뜬다 — 기준점을 놓친 첫 변경으로 잡아 연속 배포를 잡는 대가다
+# (d) systemd 는 SIGKILL 단계에서도 같은 상한을 다시 기다리는 것으로 알지만 재지 않았다 —
+# D 상태 프로세스가 있으면 봇 정지가 최악 두 배가 될 수 있다 (e) mtime 으로 재므로 내용이 같은
+# 재작성도 옛 코드로 센다(예: 문서만 바뀐 배포의 git reset 이 VM 의 로컬 편집을 되돌림 —
+# 그 배포는 대시보드를 재시작하지 않는다).
 GRACE_SEC = 1200
 # `/proc/stat` 의 btime 은 **정수 초**라 계산한 시작 시각이 실제보다 최대 1초 이르다 —
 # 그 1초 안의 어긋남은 '옛 코드' 로 판정하지 않는다.
@@ -102,17 +109,20 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 # 덮는다고 재므로, 같은 범위를 재면 '이 프로세스가 올린 코드' 를 덮는다. 열거지만 대조가 있다 —
 # 같은 파일의 `test_drift_banner_scans_exactly_the_dashboard_restart_condition` 이 정규식과
 # git 목록에서 파생한 집합과 이 스캔이 같은지 잰다(#24 열거는 대조가 있어야 열거다).
-# ⚠️ 조건 안이지만 **재지 않는** 갈래 둘 — 배포가 아닌 쓰기가 그 자리를 바꾼다. 그 쓰기를
-# '옛 코드' 라 부르고 재시작을 처방하면 틀린 라벨이고, 늘 뜨는 배너가 된다(#292·#25·#260):
-#   · `trade/data/` — 코드가 아니라 데이터이고, 운영자가 VM 에서 직접 다시 만드는 경로
-#     (`trade.scripts.build_hs_names`)가 있다.
+# 스캔은 아래 두 목록만으로 정해진다(`bot`·`trade` 는 바로 아래만 — 하위 디렉터리로 내려가지
+# 않는다). 조건 안이지만 **일부러 넣지 않은** 갈래 둘이 `SCAN_EXCLUDED` 다 — 배포가 아닌 쓰기가
+# 그 자리를 바꾸므로, 넣으면 그 쓰기를 '옛 코드' 라 부르고 재시작을 처방하는 틀린 라벨이 된다
+# (#292·#25·#260):
+#   · `trade/data/` — 코드가 아니라 데이터이고(지금은 .py 가 없어 스캔에 닿을 일도 없다),
+#     운영자가 VM 에서 직접 다시 만드는 경로(`trade.scripts.build_hs_names`)가 있다.
 #   · `bot/screener_themes/` — 봇이 **실행 중에** 새 테마 모듈(.py)을 직접 쓴다
-#     (`screener_freetext.promote_to_module`, 같은 자유어 5회 사용 시). 레포 전체에서 실행 중에
-#     .py 를 쓰는 곳은 그 하나다(2026-10-05 grep 실측).
-# 그 둘만 바뀐 배포에서 대시보드 재시작이 실패하면 이 배너는 못 잡는다(못 보는 축, #274).
+#     (`screener_freetext.promote_to_module`, 같은 자유어 5회 사용 시). 운영 코드에서 실행 중에
+#     .py 를 쓰는 곳은 그 하나다(2026-10-05 grep 실측 · 독립 리뷰 재확인).
+# `SCAN_EXCLUDED` 는 스캔이 읽는 목록이 아니라 대조 회귀가 정규식의 기대 집합에서 그 갈래를 빼는
+# 데 쓰는 목록이다 — 사유와 한 자리에 둬 두 목록이 갈라지지 않게 한다(#38). 그 둘만 바뀐
+# 배포에서 대시보드 재시작이 실패하면 이 배너는 못 잡는다(못 보는 축, #274).
 _SCAN_FLAT = ("bot", "bot/scripts", "trade")       # 그 디렉터리 바로 아래만
 _SCAN_TREE = ("TradingAgents/tradingagents",)      # 하위까지
-# 대조 회귀가 정규식에서 빼는 접두 — 위 사유와 한 쌍이라 여기 둔다(#38 두 목록이 갈라지지 않게)
 SCAN_EXCLUDED = ("trade/data/", "bot/screener_themes/")
 
 
@@ -120,7 +130,8 @@ def source_mtimes(root=None) -> list:
     """[(mtime, 레포 기준 경로)] — 위 범위의 .py 전부. 못 읽는 디렉터리는 건너뛴다.
 
     ⚠️ 이름을 열거하지 않는다 — 목록형 가드는 목록 밖 파일을 못 잡는다(#24). 디렉터리를
-    훑으므로 새 파일도 잡힌다. 비용은 약 700개 stat ≈ 1ms 라 요청마다 불러도 된다(실측).
+    훑으므로 새 파일도 잡힌다. 비용은 .py 약 360개 stat — 중앙값 1.5ms·p90 2ms 라 요청마다
+    불러도 된다(2026-10-05 실측).
     여기는 **의존이 없는 최하위 계층**이라 감사·헬스·페이지가 순환 없이 쓴다.
     """
     import os as _os
@@ -182,19 +193,21 @@ def drift(*, started: float | None = None, newest: float | None = None,
     t = float(time.time() if now is None else now)
     if newest is None:
         mt = source_mtimes()
-        nw = max((m for m, _p in mt), default=0.0)
+        nw, nwp = max(mt) if mt else (0.0, "")
         later = sorted((m, p) for m, p in mt if m - st > _CLOCK_SLACK)
         fm, fp = later[0] if later else (None, "")
     else:
-        nw = float(newest)
+        nw, nwp = float(newest), ""
         fm, fp = nw, ""
     base = {"stale": False, "pending": False, "measurable": False, "grace_sec": float(grace),
             "started": st, "newest": nw, "first_new": None, "first_path": ""}
     if nw <= 0:
         return {**base, "lag_sec": 0.0, "age_sec": 0.0, "why": "소스 mtime 을 못 읽었습니다"}
     if nw - t > _CLOCK_SLACK:
+        # 어느 파일인지 댄다 — 한 파일만 미래여도 판정 전체가 불가가 되므로(독립 리뷰 델타 L9)
+        where = f"`{nwp}` 의 " if nwp else "소스 "
         return {**base, "lag_sec": nw - st, "age_sec": t - nw,
-                "why": f"소스 mtime 이 지금보다 {_mins(nw - t)} 뒤입니다(시계 어긋남)"}
+                "why": f"{where}mtime 이 지금보다 {_mins(nw - t)} 뒤입니다(시계 어긋남)"}
     behind = fm is not None and fm - st > _CLOCK_SLACK
     anchor = fm if behind else nw
     age = t - anchor
@@ -268,8 +281,12 @@ def run_note(d: dict | None = None) -> str:
         return ""
     path = d.get("first_path") or ""
     what = f"`{path}` 등 코드가" if path else "코드가"
+    # '일부는 … 수 있습니다' — 감사는 모듈을 실행 중에 하나씩 import 하므로 바뀐 뒤 import 된
+    # 감사는 새 코드로 돌고, 바뀐 파일을 아예 안 쓰는 감사도 있다. 전부 옛 코드라고 단정하면 재지
+    # 않은 것을 적는 것이다(독립 리뷰 델타 L4 · #165).
     return (f"⚠️ 이 프로세스가 뜬 {_mins(d['lag_sec'])} 뒤 {what} 바뀌었습니다"
-            f"({_mins(d['age_sec'])} 전) — 이 결과는 바뀌기 전 코드로 만든 것입니다")
+            f"({_mins(d['age_sec'])} 전) — 이 결과의 일부는 바뀌기 전 코드로 만들어졌을 수 "
+            f"있습니다")
 
 
 # ── 화면 배너 ────────────────────────────────────────────────────────────
