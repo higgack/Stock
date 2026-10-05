@@ -2,12 +2,12 @@
 
 7종 endpoint wrap:
  1. 현재가 (inquire-price) — yfinance 보다 정확한 KRX 공식 현재가
- 2. 외인/기관/개인 순매수 (inquire-investor) — 당일 + 5일 누적
- 3. 기관 주체별 순매수 (연기금/투신/은행/보험 분리)
- 4. 외인 한도소진율 (inquire-foreign-investor)
- 5. 신용잔고 + 대차잔고
- 6. 프로그램 매매 (program-trade-by-stock)
- 7. 공매도 현황 (short-sale)
+ 2. 외인/기관/개인 순매수 (inquire-investor) — 최근 거래일 하루 + 5거래일 누적
+ 3. (기관 주체별 — 이 TR 에 없음. 옛 판이 읽던 이름은 공식 응답에 없었다, #433)
+ 4. 외인 한도소진율 — KIS 미제공(항상 None)
+ 5. 신용(융자)잔고 + 대주잔고 (daily-credit-balance)
+ 6. 프로그램 매매 — 종목별 일별, 전체 합계 (program-trade-by-stock-daily)
+ 7. 공매도 일별추이 (daily-short-sale)
 
 인증: POST /oauth2/tokenP → access_token (24h). 토큰 disk cache
 (~/.tradingagents/cache/kis_token.json) — 만료 1h 전 자동 갱신.
@@ -16,11 +16,17 @@ Rate limit: 초당 20건 / 일 10,000건 (무료 기준). 분석 1회당 5–7
 호출 기준 일 1,000–2,000 분석 커버.
 
 Graceful degradation: KIS_APP_KEY / KIS_APP_SECRET 미설정, 401,
-timeout 모두 빈 dict + warning log 반환. Rule A guard (agent_utils)
-가 데이터 미수집 시 fabrication 차단.
+timeout 모두 빈 값 + warning log 반환. Rule A guard (agent_utils)
+가 데이터 미수집 시 fabrication 차단. 수급 4종은 TR 마다 차단기(전송 실패
+2회 → 300초 열림)를 거치고, 토큰 발급 실패는 60초 동안 다시 묻지 않는다.
 
-Caching: per-ticker 12h disk cache. 장 마감 후 수급 데이터는 당일
-불변이므로 12h 충분.
+Caching: per-ticker 디스크 캐시. 현재가(``get_current_price``)는 12h — 실시간가·분봉 등은
+각자 더 짧다. 수급 4종은 판이 이름에 있는
+``{접두}_v{판}_{코드}.json`` 이고 12h · 잠정 행이 있던 응답 1h · 확정 행이 없던
+답 30분만 믿으며, 가장 최근 KRX 하루 끝(``after_close`` 시작 20:00) 이전에 쓴
+파일은 버린다 — 장 마감 뒤 채워진 값을 밤까지 못 보지 않게(``_flow_cache_get``).
+오늘(KST) 행은 하루 끝 전엔 잠정이고, 하루 끝 뒤인데 오늘 행이 아직 없어도 잠정으로
+센다(그래야 그 응답이 1시간만 산다 — ``_split_rows``).
 """
 
 from __future__ import annotations
@@ -28,8 +34,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -61,8 +68,21 @@ def _ticker_to_code(ticker: str) -> Optional[str]:
 
 
 def _mkt_div(ticker: str) -> str:
-    """FID_COND_MRKT_DIV_CODE: 'J'=KOSPI, 'Q'=KOSDAQ."""
-    return "Q" if ticker.upper().endswith(".KQ") else "J"
+    """FID_COND_MRKT_DIV_CODE — 코스닥 종목에도 ``J``.
+
+    KIS 공식 샘플(github.com/koreainvestment/open-trading-api
+    ``examples_llm/domestic_stock/*``, HEAD 277ec0e · 2026-09-28)은 이 값을 TR 마다
+    다르게 적는다 — 수급 4종만 봐도 투자자 ``J:KRX, NX:NXT`` · 신용·공매도
+    ``J: 주식`` · 프로그램 일별 ``J:KRX,NX:NXT,UN:통합`` 이다(코스피·코스닥 구분이
+    아니다). 어느 샘플도 이 칸의 ``Q`` 를 코스닥으로 적지 않는다 — 이 칸에 Q 가
+    나오는 곳(등락률 순위 ``chk_fluctuation``)은 Q 를 **ETF** 로 적고, 코스피 K·
+    코스닥 Q 는 다른 칸(``fid_mrkt_cls_code``)의 값이다. 2026-10-04 까지 코스닥에
+    ``Q`` 를 보냈다(실수 #433). J 가 코스닥을 포함한다는 실측은 52주 랭킹
+    TR(FHPST01870000, 2026-06-13 — 아래 주석)뿐이고 수급 TR 에서 잰 것은 아니다:
+    ``bot.scripts.kis_flow_audit`` 가 J·Q 를 나란히 물어 매일 잰다. 이 함수는 수급
+    4종만이 아니라 현재가·실시간·분봉·일봉 조회도 쓴다. ``ticker`` 는 호출부
+    호환으로 받는다."""
+    return "J"
 
 
 # ─── 해외주식 거래소 코드 매핑 (차트 라이브 현재가용) ──────────────────────────
@@ -140,8 +160,16 @@ def _app_secret() -> str:
 
 # ─── OAuth2 token ────────────────────────────────────────────────────────────
 
+_TOKEN_FAIL_COOL_SEC = 60     # 발급 실패 뒤 이만큼은 다시 POST 하지 않는다(리뷰 M7)
+_TOKEN_FAIL_UNTIL = 0.0
+
+
 def _get_token() -> Optional[str]:
-    """Return valid access_token. Disk-cached; refreshes 1h before expiry."""
+    """Return valid access_token. Disk-cached; refreshes 1h before expiry.
+
+    발급이 실패하면 1분 동안은 다시 묻지 않는다 — 인증 서버가 죽은 동안 조회마다
+    10초짜리 POST 를 다시 기다리면 상세 페이지가 TR 수만큼 붙잡힌다(리뷰 M7)."""
+    global _TOKEN_FAIL_UNTIL
     app_key = _app_key()
     app_secret = _app_secret()
     if not app_key or not app_secret:
@@ -157,6 +185,9 @@ def _get_token() -> Optional[str]:
                 return cached.get("access_token")
     except Exception:
         pass
+
+    if time.time() < _TOKEN_FAIL_UNTIL:
+        return None
 
     # Issue new token
     try:
@@ -182,19 +213,34 @@ def _get_token() -> Optional[str]:
             _TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
             _TOKEN_CACHE.write_text(json.dumps(payload))
             log.info("kis: token issued, expires_in=%ds", expires_in)
+            _TOKEN_FAIL_UNTIL = 0.0
             return token
         log.warning("kis: token response missing access_token: %s", list(data.keys()))
     except Exception as exc:
         log.warning("kis: token fetch failed: %s", exc)
+    _TOKEN_FAIL_UNTIL = time.time() + _TOKEN_FAIL_COOL_SEC
     return None
 
 
 # ─── generic GET wrapper ─────────────────────────────────────────────────────
 
-def _get(path: str, tr_id: str, params: dict, custtype: Optional[str] = None) -> Optional[dict]:
+_TRANSPORT_FAIL = ("http5xx", "timeout", "network")
+
+
+def _get_ex(path: str, tr_id: str, params: dict,
+            custtype: Optional[str] = None) -> tuple:
+    """원천 조회 → ``(응답 | None, 사유)``. 사유 = ``{"kind", "status", "msg"}`` —
+    kind ∈ ok · token · http4xx · http5xx · timeout · network · rt_cd · json · error.
+
+    ``_get`` 은 응답만 돌려주는 얇은 래퍼다(다른 호출부·테스트 호환). 실패를 None
+    하나로 접으면 'TR 경로가 틀렸다(404)' 와 '원천 장애(5xx·타임아웃)' 와 '키
+    문제(rt_cd)' 가 같은 모양이 된다 — 처방이 다르다(#82). 수급 4종의 차단기와
+    일일 감사(``bot.scripts.kis_flow_audit``)가 이 사유를 쓴다(2026-10-04 리뷰 M5:
+    감사가 404 를 DEBUG 로그라 못 봤다)."""
     token = _get_token()
     if not token:
-        return None
+        return None, {"kind": "token", "status": None,
+                      "msg": "토큰 없음 — 자격증명 미설정이거나 발급 실패(bot.kis 경고 참조)"}
 
     def _hdrs(tok: str) -> dict:
         h = {
@@ -231,19 +277,733 @@ def _get(path: str, tr_id: str, params: dict, custtype: Optional[str] = None) ->
                 )
         resp.raise_for_status()
         data = resp.json()
-        rt_cd = data.get("rt_cd", "")
-        if rt_cd != "0":
-            log.warning("kis: %s rt_cd=%s msg=%s", tr_id, rt_cd, data.get("msg1", ""))
-            return None
-        return data
     except requests.exceptions.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else "?"
+        status = exc.response.status_code if exc.response is not None else None
+        body = _error_body(exc.response)
         log_fn = log.debug if status == 404 else log.warning
-        log_fn("kis: %s http %s: %s", tr_id, status, exc)
-        return None
-    except Exception as exc:
+        log_fn("kis: %s http %s: %s %s", tr_id, status, exc, body)
+        kind = "http5xx" if isinstance(status, int) and status >= 500 else "http4xx"
+        return None, {"kind": kind, "status": status,
+                      "msg": f"HTTP {status}" + (f" — {body}" if body else "")}
+    except requests.exceptions.Timeout as exc:
+        log.warning("kis: %s timeout: %s", tr_id, exc)
+        return None, {"kind": "timeout", "status": None,
+                      "msg": f"응답 시간 초과({_HTTP_TIMEOUT}초)"}
+    except requests.exceptions.ConnectionError as exc:
+        log.warning("kis: %s 연결 실패: %s", tr_id, exc)
+        return None, {"kind": "network", "status": None, "msg": "연결 실패"}
+    except ValueError as exc:                                  # JSON 해석 실패
+        log.warning("kis: %s JSON 아님: %s", tr_id, exc)
+        return None, {"kind": "json", "status": None, "msg": "응답이 JSON 이 아님"}
+    except Exception as exc:                                   # noqa: BLE001
         log.warning("kis: %s failed: %s", tr_id, exc)
+        return None, {"kind": "error", "status": None, "msg": f"{type(exc).__name__}"}
+    if not isinstance(data, dict):
+        log.warning("kis: %s 응답이 dict 가 아님: %s", tr_id, type(data).__name__)
+        return None, {"kind": "json", "status": 200, "msg": "응답 모양이 dict 가 아님"}
+    rt_cd = data.get("rt_cd", "")
+    if rt_cd != "0":
+        msg1 = str(data.get("msg1", "") or "").strip()
+        log.warning("kis: %s rt_cd=%s msg=%s", tr_id, rt_cd, msg1)
+        return None, {"kind": "rt_cd", "status": 200, "msg": f"rt_cd={rt_cd} {msg1}".strip()}
+    return data, {"kind": "ok", "status": 200, "msg": ""}
+
+
+def _get(path: str, tr_id: str, params: dict, custtype: Optional[str] = None) -> Optional[dict]:
+    return _get_ex(path, tr_id, params, custtype)[0]
+
+
+def _error_body(resp) -> str:
+    """HTTP 오류 응답 본문의 업무 코드·메시지(``msg_cd``·``msg1``) — 버리면 5xx 로 온 업무
+    오류(예: 초당 건수 초과)가 '원천 장애' 와 같은 모양이 된다(2026-10-04 델타 리뷰 L3 —
+    KIS 가 업무 오류를 5xx 로 주는지는 재지 않았다). JSON 이 아니면 빈 문자열."""
+    try:
+        j = resp.json() if resp is not None else None
+    except Exception:                                          # noqa: BLE001
+        return ""
+    if not isinstance(j, dict):
+        return ""
+    parts = [str(j.get(k) or "").strip() for k in ("msg_cd", "msg1")]
+    return " ".join(x for x in parts if x)[:120]
+
+
+# ─── 수급 4종(투자자·신용·공매도·프로그램) 공통 ──────────────────────────────
+# ⚠️ 2026-10-04 까지 이 네 메서드는 KIS 공식 샘플과 다른 필드 이름을 읽었다 —
+# 개인 ``indv_*`` 와 기관 세부 ``pnsn_*``·``itrn_*``… 는 주식현재가 투자자 TR 의
+# 응답 목록에 없고, 대주 잔고는 ``stln_rmnd_qty`` 가 아니라 ``whol_stln_rmnd_stcn``
+# 이며, 프로그램매매는 TR·필드 이름이 모두 달랐다. 그래서 그 칸들은 늘 None 이었고
+# (분석 프롬프트의 '개인 N/A'), '당일 순매수' 는 **수량(주)** 을 만원으로 읽어 억원으로
+# 바꿔 싣고 있었다. 필드 이름은 공식 샘플의 COLUMN_MAPPING 에서 왔다 —
+# github.com/koreainvestment/open-trading-api ``examples_llm/domestic_stock/
+# {inquire_investor,daily_credit_balance,daily_short_sale,
+# program_trade_by_stock_daily}/chk_*.py`` (2026-10-04 확인).
+# 금액 칸의 단위는 그 샘플이 밝히지 않으므로 응답 자체의 항등식으로 잰다
+# (``_calibrate_unit``). 실제 응답이 이 가정과 맞는지는 매일
+# ``bot.scripts.kis_flow_audit`` 가 잰다(실수 #433).
+#
+# 판 3(2026-10-04 독립 리뷰 H2·M2·M3): '거래량이 0 이면 원천 미제공' 으로 버리던
+# 판 2 가 거래 0 인 확정일(거래 정지·프로그램 매매가 없던 날)을 창에서 빼 9거래일
+# 구간을 '5거래일' 이라 불렀다 → 미제공은 **날짜로** 가른다(오늘 행만). 금액 단위는
+# 응답 전체가 아니라 **화면에 싣는 행**으로 재고 행마다 대조한다(오래된 행이 다수결로
+# 최근 행을 이기지 않게). 오늘 행은 신용·공매도·프로그램도 확정 전엔 잠정이다.
+_FLOW_SCHEMA = 3
+_FLOW_WINDOW = 5          # 'N거래일 누적' — 원천이 주는 행 수와 무관하게 최근 5거래일
+_UNIT_CANDIDATES = (1, 1_000, 10_000, 1_000_000, 100_000_000)
+_INV_WHO = (("foreign", "frgn"), ("institution", "orgn"), ("individual", "prsn"))
+_KST = timezone(timedelta(hours=9))
+_PENDING_TTL_HOURS = 1    # 오늘 행이 아직 잠정이던 응답은 1시간만 믿는다
+_NONE_TTL_HOURS = 0.5     # 원천이 답했는데 값을 만들 행이 없던 응답은 30분만 믿는다
+_FLOW_PURGE_AGE_SEC = 48 * 3600   # 수급 캐시 파일은 12시간 뒤엔 안 읽힌다 — 이틀 지난 건 지운다
+
+# 요청·응답 모양 — 제품과 일일 감사(bot.scripts.kis_flow_audit)가 **같이** 쓴다.
+# 감사가 요청을 따로 적으면 제품 파라미터를 고쳐도 옛 요청을 잰다(#35·#38, 리뷰 M6).
+# 값 = (경로, tr_id, 행 키, 날짜 필드, 캐시 접두)
+FLOW_TRS = {
+    "investor": ("/uapi/domestic-stock/v1/quotations/inquire-investor", "FHKST01010900",
+                 "output", "stck_bsop_date", "investor"),
+    "credit": ("/uapi/domestic-stock/v1/quotations/daily-credit-balance", "FHPST04760000",
+               "output", "deal_date", "credit"),
+    "short": ("/uapi/domestic-stock/v1/quotations/daily-short-sale", "FHPST04830000",
+              "output2", "stck_bsop_date", "short"),
+    "program": ("/uapi/domestic-stock/v1/quotations/program-trade-by-stock-daily",
+                "FHPPG04650201", "output", "stck_bsop_date", "prog"),
+}
+# 기대 필드 — 공식 샘플 COLUMN_MAPPING 의 이름. ``_missing`` 이 응답과 대조해 원천이
+# 이름을 바꾸면 그 사실을 말한다(파서와 감사가 같은 목록을 본다).
+FLOW_FIELDS = {
+    "investor": ("stck_bsop_date", "stck_clpr") + tuple(
+        f"{p}_{k}" for _, p in _INV_WHO
+        for k in ("ntby_qty", "ntby_tr_pbmn", "shnu_vol", "shnu_tr_pbmn",
+                  "seln_vol", "seln_tr_pbmn")),
+    "credit": ("deal_date", "whol_loan_rmnd_stcn", "whol_loan_rmnd_rate",
+               "whol_stln_rmnd_stcn", "whol_stln_rmnd_rate"),
+    "short": ("stck_bsop_date", "ssts_cntg_qty", "ssts_vol_rlim", "ssts_tr_pbmn_rlim"),
+    "program": ("stck_bsop_date", "stck_clpr", "whol_smtn_ntby_qty",
+                "whol_smtn_ntby_tr_pbmn", "whol_smtn_shnu_vol", "whol_smtn_shnu_tr_pbmn",
+                "whol_smtn_seln_vol", "whol_smtn_seln_tr_pbmn"),
+}
+
+
+def flow_request(kind: str, ticker: str, *, date1: str = "") -> tuple:
+    """수급 4종 요청 → ``(경로, tr_id, 파라미터)``. ``date1`` 은 신용의 결제일자만 쓴다
+    (공식 샘플이 [필수]로 적는다 — 제품은 오늘(KST)을 먼저, 빈 값을 다음으로 묻는다)."""
+    path, tr_id, _rk, _df, _pre = FLOW_TRS[kind]
+    code = _ticker_to_code(ticker)
+    p = {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code}
+    if kind == "credit":
+        p = {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_COND_SCR_DIV_CODE": "20476",
+             "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": date1}
+    elif kind == "short":
+        p.update({"FID_INPUT_DATE_1": "", "FID_INPUT_DATE_2": ""})
+    elif kind == "program":
+        p["FID_INPUT_DATE_1"] = ""
+    return path, tr_id, p
+
+
+def _now_kst() -> datetime:
+    """시계 — 테스트가 고정한다(오늘 행 판정이 시각에 달려 있다, #249·#425)."""
+    return datetime.now(_KST)
+
+
+def _krx_day_end_min() -> int:
+    """KRX 의 그날 마지막 거래 국면이 끝나는 시각(자정부터 분) — ``bot.kr_session``
+    단일 출처(#38). 2026 개편으로 KRX 애프터마켓이 20:00 까지라 그 전의 오늘 행은
+    장중 부분값이거나 자리표시일 수 있다. 표에서 못 찾으면 하루 끝(=오늘 행은 늘
+    잠정 — 보수적)으로 두고 경고한다."""
+    from bot.kr_session import VENUES
+    for sh, sm, _eh, _em, key, _label in VENUES.get("KRX", ()):
+        if key == "after_close":
+            return sh * 60 + sm
+    log.warning("kis: kr_session 의 KRX 표에 after_close 국면이 없습니다 — 오늘 행을 늘 잠정으로 봅니다")
+    return 24 * 60
+
+
+def _last_day_end(now: datetime) -> datetime:
+    """``now`` 이하의 가장 최근 'KRX 하루 끝' 시각. 그보다 먼저 쓴 캐시는 그 뒤 원천에
+    새 확정 값이 생겼을 수 있어 믿지 않는다(마감 전 응답을 12시간 들고 있으면 그날
+    저녁 확정 값을 밤까지 못 본다)."""
+    m = _krx_day_end_min()
+    end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=m)
+    return end if now >= end else end - timedelta(days=1)
+
+
+def _flow_cache_key(kind: str, code: str) -> str:
+    """캐시 파일 이름에 판을 싣는다 — 배포 중 재시작 전의 옛 프로세스가 새 모양을
+    읽거나 그 반대가 되지 않게(이름이 다르면 서로 못 읽는다, 리뷰 L4)."""
+    return f"{FLOW_TRS[kind][4]}_v{_FLOW_SCHEMA}_{code}.json"
+
+
+def _flow_cache_get(key: str, *, now: Optional[datetime] = None) -> Optional[dict]:
+    """수급 캐시는 판(``schema``)까지 맞아야 쓴다(#21b). 오늘 행이 잠정이던 응답은
+    1시간, 값을 못 만든 응답(``none``)은 30분만 믿는다. 그리고 마지막 'KRX 하루 끝'
+    보다 먼저 쓴 것은 믿지 않는다 — 그 뒤 원천에 그날 확정 값이 생긴다."""
+    f = _CACHE_DIR / key
+    try:
+        mtime = f.stat().st_mtime
+        cached = json.loads(f.read_text())
+    except (OSError, ValueError):
         return None
+    if not (isinstance(cached, dict) and cached.get("schema") == _FLOW_SCHEMA):
+        return None
+    # 나이는 **같은 시계**(``_now_kst``)로 잰다 — 12시간 TTL 만 벽시계로 재면 오늘 행
+    # 판정(주입한 시계)과 캐시 판정이 다른 '지금' 을 본다.
+    now = now or _now_kst()
+    age_h = (now.timestamp() - mtime) / 3600
+    if age_h >= _CACHE_TTL_HOURS:
+        return None
+    if cached.get("pending") and age_h >= _PENDING_TTL_HOURS:
+        return None
+    if cached.get("none") and age_h >= _NONE_TTL_HOURS:
+        return None
+    if mtime < _last_day_end(now).timestamp():
+        return None
+    return cached
+
+
+_FLOW_PURGED = False
+
+
+def _flow_put(key: str, value: dict) -> None:
+    """수급 캐시 쓰기. 프로세스당 한 번, 이틀 넘은 수급 캐시 파일(옛 이름·옛 판 포함)을
+    지운다 — 이름에 판을 싣는 캐시는 지우는 코드가 없으면 쌓인다(#430). 다른 KIS 캐시
+    (현재가·차트 등)는 접두가 달라 건드리지 않는다."""
+    global _FLOW_PURGED
+    if not _FLOW_PURGED:
+        _FLOW_PURGED = True
+        cutoff = time.time() - _FLOW_PURGE_AGE_SEC
+        try:
+            for pre in {v[4] for v in FLOW_TRS.values()}:
+                for f in _CACHE_DIR.glob(f"{pre}_*.json"):
+                    try:
+                        if f.stat().st_mtime < cutoff:
+                            f.unlink()
+                    except OSError:
+                        pass
+        except OSError as exc:
+            log.debug("kis: 수급 캐시 정리 실패: %s", exc)
+    _cache_put(key, value)
+
+
+def _rows_of(data: Optional[dict], key: str = "output") -> list:
+    raw = (data or {}).get(key)
+    if isinstance(raw, dict):
+        return [raw]
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)]
+    return []
+
+
+def _dated(rows: list, field: str) -> list:
+    """``(YYYY-MM-DD, 행)`` 을 최신 날짜부터. 원천의 행 순서에 기대지 않는다 —
+    옛 판의 '[0] = 오늘' 은 문서에 없는 가정이었다. 날짜를 못 읽는 행은 버린다."""
+    out = []
+    for r in rows:
+        s = str(r.get(field) or "").strip()
+        if len(s) == 8 and s.isdigit():
+            out.append((f"{s[:4]}-{s[4:6]}-{s[6:]}", r))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out
+
+
+_MISSING_WARNED: set = set()
+
+
+def _missing(tr_id: str, row: dict, fields, *, warn: bool = True) -> list:
+    """기대한 필드 중 응답에 없는 것. 원천이 이름을 바꾸면 그 칸이 조용히 None 이
+    된다(2026-10-04 까지 그랬다) — 같은 조합은 프로세스당 한 번 경고한다. 감사는
+    ``warn=False`` 로 부른다(진단이 제품의 경고 예산을 쓰지 않게, #264 · 리뷰 L8)."""
+    miss = [f for f in fields if f not in row]
+    if warn and miss and (tr_id, tuple(miss)) not in _MISSING_WARNED:
+        _MISSING_WARNED.add((tr_id, tuple(miss)))
+        log.warning("kis: %s 응답에 기대한 필드 %d개가 없습니다: %s — 원천이 이름을 "
+                    "바꿨을 수 있습니다", tr_id, len(miss), ", ".join(miss[:8]))
+    return miss
+
+
+def _split_rows(rows: list, *, active, now: datetime) -> dict:
+    """날짜순 행 → ``{"confirmed", "pending", "pending_note", "dropped", "dropped_note"}``.
+
+    오늘(KST) 행은 KRX 의 그날 마지막 거래 국면이 끝나기 전엔 장중 부분값이거나
+    자리표시일 수 있어 **잠정**이다. 끝난 뒤에도 그날 값이 비었거나 0 이면 잠정이다
+    (원천이 아직 안 채웠는지 정말 0 인지 오늘은 못 가른다 — 다음 날엔 지난 날짜라
+    확정으로 센다). 끝난 뒤인데 오늘(거래일) 행이 **아예 없어도** 잠정으로 센다 — 안
+    세면 그 응답이 12시간 캐시돼 밤새 어제 값이 나간다(2026-10-04 델타 리뷰 M2. 달력을
+    못 쓰면 보수적으로 센다). 오늘보다 뒤 날짜도 잠정. **지난 날짜는 확정이고 그날의
+    0 은 0** 이다 — 판 2 는 거래가 0 인 날(정지일·프로그램 매매가 없던 날)을 '미제공'
+    으로 버려 9거래일 구간을 '5거래일' 이라 불렀다(리뷰 H2).
+
+    쓰지 않는 행(``dropped``): 같은 날짜가 **값이 다르게** 두 번 온 지난 날(어느 쪽이
+    맞는지 모른다 — 같은 값이면 하나만 남긴다)과 달력상 거래일이 아닌 날짜의 행. 둘 다
+    'N거래일' 을 거짓으로 만든다(델타 리뷰 M3). 달력을 못 쓰면 거래일 대조는 건너뛴다."""
+    from bot import market_calendar as mc
+    today = now.strftime("%Y-%m-%d")
+    m = _krx_day_end_min()
+    closed = now.hour * 60 + now.minute >= m
+    by_date: dict = {}
+    for d, r in rows:
+        by_date.setdefault(d, []).append(r)
+    confirmed, why, dropped = [], [], []
+    for d, rs in by_date.items():                  # 원천 순서가 아니라 ``_dated`` 의 날짜순
+        r = rs[0]
+        clash = any(x != r for x in rs[1:])
+        if d > today:
+            why.append(f"{d}(오늘보다 뒤 날짜)")
+        elif clash and d == today:
+            why.append(f"{d}(오늘 — 같은 날짜 행이 값이 다르게 {len(rs)}번 옴)")
+        elif clash:
+            dropped.append(f"{d}(같은 날짜 행이 값이 다르게 {len(rs)}번 옴)")
+        elif mc.is_trading_day("KR", d) is False:
+            dropped.append(f"{d}(달력상 거래일이 아님)")
+        elif d == today and not closed:
+            why.append(f"{d}(오늘 — KRX 거래가 끝나는 {m // 60:02d}:{m % 60:02d} 전이라 잠정)")
+        elif d == today and not active(r):
+            why.append(f"{d}(오늘 — 마감 뒤에도 값이 비었거나 0 이라 확정으로 보지 않음)")
+        else:
+            confirmed.append((d, r))
+    if closed and today not in by_date:
+        sess = mc.is_trading_day("KR", today)
+        if sess is not False:
+            why.append(f"{today}(오늘 행이 아직 없음 — KRX 하루 끝 뒤인데 원천이 주지 않았습니다"
+                       + ("" if sess else " · 달력을 못 써 오늘이 거래일인지 모름") + ")")
+    return {"confirmed": confirmed, "pending": len(why), "pending_note": " · ".join(why),
+            "dropped": len(dropped), "dropped_note": " · ".join(dropped)}
+
+
+def _ratio(q, p, a) -> Optional[float]:
+    return (q * p / a) if (q and p and a and q > 0 and p > 0 and a > 0) else None
+
+
+def _calibrate_unit(samples) -> tuple:
+    """원천 금액 칸의 단위(원으로 바꾸는 배수)를 응답 자체에서 잰다 → (배수|None, 사유).
+
+    ``samples`` = (수량, 가격, 금액) 묶음 — 금액 × 단위 ≈ 수량 × 가격. 공식 샘플이
+    단위를 밝히지 않아 가정하면 100배 어긋난다(옛 판은 만원이라 가정했다). **총**
+    매수·매도 수량과 대금을 넘길 것 — 순매수는 매수·매도가 상쇄돼 작아지고 부호가 갈려
+    비가 흔들린다. 하루 평균 체결가는 종가와 상·하한가(±30%) 안이라 비는 참 단위의
+    0.5~2배 안에 들고, 후보끼리는 10배 이상 떨어져 그 창이 겹치지 않는다. 표본이 둘
+    미만이거나 3분의 2 가 한 후보에 모이지 않으면 단위를 **모른다**고 돌려준다."""
+    ratios = sorted(x for x in (_ratio(q, p, a) for q, p, a in samples) if x is not None)
+    if len(ratios) < 2:
+        return None, f"표본 {len(ratios)}개 — 금액 단위를 잴 수 없습니다"
+    med = ratios[len(ratios) // 2]
+    for c in _UNIT_CANDIDATES:
+        if 0.5 <= med / c <= 2:
+            agree = sum(1 for r in ratios if 0.5 <= r / c <= 2)
+            if agree * 3 >= len(ratios) * 2:
+                return c, f"표본 {len(ratios)}개 중 {agree}개가 ×{c:,}"
+            return None, f"표본이 갈립니다(×{c:,} 에 {agree}/{len(ratios)}개)"
+    return None, (f"중앙 비 {med:,.1f} 가 어느 후보(×1·×1천·×1만·×100만·×1억)와도 "
+                  "맞지 않습니다")
+
+
+def _unit_for(rows: list, samples_of) -> tuple:
+    """싣는 행들로 단위를 재고 행마다 대조한다 → ``(단위|None, 사유, 어긋난 날짜들, 표본 수)``.
+
+    응답 전체(~30행)로 재면 오래된 행이 다수결로 최근 행을 이길 수 있다 — 예: 며칠 전
+    액면분할 뒤 옛 행의 종가가 수정주가가 아니면 비가 10배 갈리고, 후보 간격(10배)이
+    흔한 분할 비율과 같다(2026-10-04 리뷰 M2). 그래서 화면에 싣는 행(최신 + 창)만 쓰고,
+    그 행마다 자기 표본의 중앙 비가 고른 단위의 0.5~2배 안인지 본다 — 어긋나는 날의
+    금액은 싣지 않는다. 표본이 없는 날(거래 0)은 대조할 것이 없고 그날 금액은 0 이다."""
+    samples = [s for _d, r in rows for s in samples_of(r)]
+    n = sum(1 for s in samples if _ratio(*s) is not None)
+    unit, note = _calibrate_unit(samples)
+    if not unit:
+        return None, note, [], n
+    bad = []
+    for d, r in rows:
+        rs = sorted(x for x in (_ratio(*s) for s in samples_of(r)) if x is not None)
+        if rs and not (0.5 <= rs[len(rs) // 2] / unit <= 2):
+            bad.append(d)
+    if bad:
+        note += f" · 행별 대조에서 {', '.join(bad)} 의 비가 이 단위와 맞지 않습니다"
+    return unit, note, bad, n
+
+
+def _sum_all(vals) -> Optional[int]:
+    """창의 칸이 하나라도 비면 합을 만들지 않는다 — 4일 합을 '5거래일 누적'이라
+    부르면 거짓말이다(실수 #99)."""
+    vals = list(vals)
+    if not vals or any(v is None for v in vals):
+        return None
+    return sum(vals)
+
+
+def _won(v: Optional[int], unit: Optional[int]) -> Optional[int]:
+    """원천 금액 → 원. 0 은 어느 단위로도 0 이다(거래 0 인 날은 단위 없이도 0)."""
+    if v is None:
+        return None
+    if v == 0:
+        return 0
+    return v * unit if unit else None
+
+
+def _session_gaps(win: list) -> Optional[list]:
+    """창(최신부터)의 시작~끝 사이 KRX 거래일 중 원천이 행을 주지 않은 날. 달력을 못
+    쓰면 None(대조 불가 — 그때 라벨은 '거래일' 이라 하지 않는다). 원천이 거래 0 인 날을
+    0 으로 채워 주지 않고 아예 빼면 5개 행이 5거래일이 아니다(2026-10-04 리뷰 H2)."""
+    if not win:
+        return []
+    from bot import market_calendar as mc
+    sess = mc.sessions_between("KR", win[-1][0], win[0][0])
+    if sess is None:
+        return None
+    have = {d for d, _r in win}
+    return [s for s in sess if s not in have]
+
+
+def _window_of(confirmed: list, start: int, unit, bad: list, value_of) -> dict:
+    """확정 행 ``start`` 부터 최근 ``_FLOW_WINDOW`` 개 → 창 dict. 합을 못 만든 칸은
+    None 이고 ``note`` 가 이유를 말한다(#43). ``label`` 은 달력으로 그 구간이 정말
+    연속한 거래일일 때만 'N거래일' 이다 — 원천이 거래 0 인 날을 빼고 주면 5개 행이
+    5거래일이 아니다(리뷰 H2). 그때는 합을 만들지 않는다(#99)."""
+    win = confirmed[start:start + _FLOW_WINDOW]
+    gaps = _session_gaps(win)
+    days = len(win)
+    blocked = ""
+    if gaps:
+        blocked = (f"달력상 거래일 {', '.join(gaps)} 의 행이 응답에 없습니다"
+                   "(원천 누락이거나 달력이 모르는 휴장일)")
+    elif bad and any(d in bad for d, _r in win):
+        blocked = "그 구간에 금액 단위가 맞지 않는 날이 있습니다"
+
+    def _sum(field):
+        if blocked:
+            return None
+        return _sum_all(_won(_int(r.get(field)), unit) for _d, r in win)
+
+    won = value_of(_sum)
+    vals = list(won.values()) if isinstance(won, dict) else [won]
+    note = blocked
+    if not note and any(v is None for v in vals):
+        note = ("금액 단위를 확정하지 못했습니다" if not unit
+                else "그 구간에 값이 빈 날이 있어 합을 만들지 않은 칸이 있습니다")
+    return {"from": win[-1][0], "to": win[0][0], "days": days,
+            "label": f"{days}거래일" if gaps == [] else f"최근 {days}개 영업일 행",
+            "sessions_checked": gaps is not None, "gaps": gaps or [],
+            "won": won, "note": note}
+
+
+def _inv_active(r: dict) -> bool:
+    return any(_int(r.get(f"{p}_{s}_vol")) for _k, p in _INV_WHO for s in ("shnu", "seln"))
+
+
+def _inv_valued(r: dict) -> bool:
+    return any(_int(r.get(f"{p}_{k}")) is not None for _k, p in _INV_WHO
+               for k in ("ntby_qty", "ntby_tr_pbmn", "shnu_vol", "seln_vol"))
+
+
+def _inv_samples(r: dict) -> list:
+    return [(_int(r.get(f"{p}_{s}_vol")), _int(r.get("stck_clpr")),
+             _int(r.get(f"{p}_{s}_tr_pbmn"))) for _k, p in _INV_WHO for s in ("shnu", "seln")]
+
+
+def _latest_pick(confirmed: list, valued) -> tuple:
+    """확정 행 중 값이 하나라도 있는 가장 최근 행 → ``(위치, 그보다 최근인 빈 행 수)``."""
+    for i, (_d, r) in enumerate(confirmed):
+        if valued(r):
+            return i, i
+    return None, len(confirmed)
+
+
+def parse_investor_flow(data: Optional[dict], *, now: Optional[datetime] = None,
+                        warn: bool = True) -> Optional[dict]:
+    """주식현재가 투자자(FHKST01010900) 응답 → 수급 dict(판 ``_FLOW_SCHEMA``).
+
+    ``latest`` = 가장 최근 확정 거래일 하루(``qty`` 주 · ``won`` 원), ``window`` = 그날까지
+    최근 ``_FLOW_WINDOW`` 거래일 순매수 합(원 · ``label`` 은 달력으로 대조한 'N거래일').
+    오늘 행은 ``_split_rows`` 규칙으로 잠정이면 빼고 ``pending``·``pending_note`` 에
+    적는다 — 당일 투자자별 수급은 장 종료 후 제공된다(공식 유의사항). 그래서
+    ``latest.date`` 가 어제일 수 있고, 화면·프롬프트는 그 날짜를 적는다."""
+    now = now or _now_kst()
+    rows = _dated(_rows_of(data), "stck_bsop_date")
+    sp = _split_rows(rows, active=_inv_active, now=now)
+    confirmed = sp["confirmed"]
+    i, blank = _latest_pick(confirmed, _inv_valued)
+    if i is None:
+        return None
+    latest_d, latest = confirmed[i]
+    calib = confirmed[i:i + _FLOW_WINDOW]
+    unit, unit_note, bad, n_samples = _unit_for(calib, _inv_samples)
+    lunit = None if latest_d in bad else unit
+    window = _window_of(
+        confirmed, i, unit, bad,
+        lambda s: {k: s(f"{p}_ntby_tr_pbmn") for k, p in _INV_WHO})
+    return {
+        "schema": _FLOW_SCHEMA,
+        "asof": latest_d,
+        "unit_won": unit,
+        "unit_note": unit_note,
+        "unit_bad": bad,
+        "unit_samples": n_samples,
+        "latest": {
+            "date": latest_d,
+            "qty": {k: _int(latest.get(f"{p}_ntby_qty")) for k, p in _INV_WHO},
+            "won": {k: _won(_int(latest.get(f"{p}_ntby_tr_pbmn")), lunit)
+                    for k, p in _INV_WHO},
+            "unit_ok": lunit is not None,
+        },
+        "window": window,
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
+        "blank": blank,
+        "missing": _missing("FHKST01010900", latest, FLOW_FIELDS["investor"], warn=warn),
+    }
+
+
+def _one_row(kind: str, data: Optional[dict], now: Optional[datetime]) -> dict:
+    """신용·공매도 — 값이 하나라도 있는 가장 최근 확정 행(``row``). 판 3 첫 판은 최신
+    확정 행을 **빈 행이어도** 골라 None 만 든 값을 12시간 캐시했다(사유도 없이 섹션이
+    사라졌다 — 델타 리뷰 M1). 투자자·프로그램처럼 빈 행은 건너뛰고 ``blank`` 로 센다."""
+    _path, _tr, rows_key, date_field, _pre = FLOW_TRS[kind]
+    active, valued = _FLOW_PREDICATES[kind]
+    rows = _dated(_rows_of(data, rows_key), date_field)
+    sp = _split_rows(rows, active=active, now=now or _now_kst())
+    i, blank = _latest_pick(sp["confirmed"], valued)
+    sp["row"] = sp["confirmed"][i] if i is not None else None
+    sp["at"] = i
+    sp["blank"] = blank
+    return sp
+
+
+def _credit_active(r: dict) -> bool:
+    return bool(_int(r.get("whol_loan_rmnd_stcn")))
+
+
+def _credit_valued(r: dict) -> bool:
+    return (any(_int(r.get(k)) is not None for k in ("whol_loan_rmnd_stcn", "whol_stln_rmnd_stcn"))
+            or any(_float(r.get(k)) is not None for k in ("whol_loan_rmnd_rate",
+                                                         "whol_stln_rmnd_rate")))
+
+
+def _short_active(r: dict) -> bool:
+    return bool(_int(r.get("ssts_cntg_qty")))
+
+
+def _short_valued(r: dict) -> bool:
+    return (_int(r.get("ssts_cntg_qty")) is not None
+            or any(_float(r.get(k)) is not None for k in ("ssts_vol_rlim", "ssts_tr_pbmn_rlim")))
+
+
+_CREDIT_PLACEHOLDER_MAX = 3   # 신용잔고 0 이 이만큼 이하로 이어지면 자리표시로 본다
+
+
+def _credit_skip_placeholders(sp: dict) -> None:
+    """신용잔고는 **저량**이라 '지난 날의 0 은 0' 이 맞지 않는다 — 수만 주 잔고가 하루
+    만에 정확히 0 이 되는 일은 사실상 없으므로, 최신 확정 행부터 0 이 이어지다 그 뒤(더
+    옛날)에 0 이 아닌 잔고가 있으면 그 0 들을 원천이 아직 안 채운 자리표시로 보고 쓰지
+    않는다(델타 리뷰 M1 짝 — 오늘 행 자리표시를 잠정으로 뺀 규칙이 하루 밀리면 같은
+    증상이다). 0 이 ``_CREDIT_PLACEHOLDER_MAX`` 를 넘게 이어지면 진짜 0 으로 둔다(신용
+    불가 종목). ⚠️ 원천이 지난 날을 0 으로 채워 주는지는 재지 않았다 — 방어 규칙이다."""
+    conf, i = sp["confirmed"], sp.get("at")
+    if i is None or _int(conf[i][1].get("whol_loan_rmnd_stcn")) != 0:
+        return
+    zeros = []
+    for d, r in conf[i:]:
+        if not _credit_valued(r):
+            continue
+        bal = _int(r.get("whol_loan_rmnd_stcn"))
+        if bal == 0:
+            zeros.append(d)
+            continue
+        if bal and len(zeros) <= _CREDIT_PLACEHOLDER_MAX:
+            sp["row"] = (d, r)
+            note = f"{', '.join(zeros)}(신용잔고가 직전 {bal:,}주에서 0 — 자리표시로 보고 쓰지 않음)"
+            sp["dropped"] += len(zeros)
+            sp["dropped_note"] = " · ".join(x for x in (sp["dropped_note"], note) if x)
+        return
+
+
+def parse_credit_balance(data: Optional[dict], *, now: Optional[datetime] = None,
+                         warn: bool = True) -> Optional[dict]:
+    """신용잔고 일별추이(FHPST04760000) — 값이 있는 가장 최근 확정 매매일 한 행. 잔고
+    **금액**은 화면이 쓰지 않아 싣지 않는다(단위를 재지 않은 값을 남기면 나중에 누가 추측해
+    쓴다). 오늘 행은 자리표시일 수 있어 확정 전엔 잠정이다(리뷰 M3)."""
+    sp = _one_row("credit", data, now)
+    _credit_skip_placeholders(sp)
+    if not sp["row"]:
+        return None
+    d, r = sp["row"]
+    return {
+        "schema": _FLOW_SCHEMA,
+        "asof": d,
+        "credit_balance_shares": _int(r.get("whol_loan_rmnd_stcn")),
+        "credit_balance_pct": _float(r.get("whol_loan_rmnd_rate")),
+        "credit_short_shares": _int(r.get("whol_stln_rmnd_stcn")),
+        "credit_short_pct": _float(r.get("whol_stln_rmnd_rate")),
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
+        "blank": sp["blank"],
+        "missing": _missing("FHPST04760000", r, FLOW_FIELDS["credit"], warn=warn),
+    }
+
+
+def parse_short_sale(data: Optional[dict], *, now: Optional[datetime] = None,
+                     warn: bool = True) -> Optional[dict]:
+    """공매도 일별추이(FHPST04830000) — ``output2`` 의 값이 있는 가장 최근 확정 영업일 한
+    행. 공매도 수량은 **흐름**이라 지난 날의 0 은 0 이다(신용잔고의 자리표시 규칙과 다르다)."""
+    sp = _one_row("short", data, now)
+    if not sp["row"]:
+        return None
+    d, r = sp["row"]
+    return {
+        "schema": _FLOW_SCHEMA,
+        "asof": d,
+        "short_qty": _int(r.get("ssts_cntg_qty")),
+        "short_ratio_pct": _float(r.get("ssts_vol_rlim")),        # 공매도 거래량 비중
+        "short_amt_ratio_pct": _float(r.get("ssts_tr_pbmn_rlim")),  # 공매도 거래대금 비중
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
+        "blank": sp["blank"],
+        "missing": _missing("FHPST04830000", r, FLOW_FIELDS["short"], warn=warn),
+    }
+
+
+def _prog_active(r: dict) -> bool:
+    return bool(_int(r.get("whol_smtn_shnu_vol")) or _int(r.get("whol_smtn_seln_vol")))
+
+
+def _prog_valued(r: dict) -> bool:
+    return any(_int(r.get(k)) is not None for k in (
+        "whol_smtn_ntby_qty", "whol_smtn_ntby_tr_pbmn", "whol_smtn_shnu_vol",
+        "whol_smtn_seln_vol"))
+
+
+def _prog_samples(r: dict) -> list:
+    return [(_int(r.get(f"whol_smtn_{s}_vol")), _int(r.get("stck_clpr")),
+             _int(r.get(f"whol_smtn_{s}_tr_pbmn"))) for s in ("shnu", "seln")]
+
+
+def parse_program_daily(data: Optional[dict], *, now: Optional[datetime] = None,
+                        warn: bool = True) -> Optional[dict]:
+    """종목별 프로그램매매추이(일별, FHPPG04650201) — **전체 합계** 순매수. 이 TR 은
+    차익·비차익을 나누지 않는다(옛 판은 공식 응답에 없는 필드로 차익·비차익을
+    읽었다). 모양은 ``parse_investor_flow`` 의 ``latest``·``window`` 와 같다. 장중
+    오늘 행은 부분값이라 잠정이다 — 판 2 는 그걸 '하루' 로 12시간 구웠다(리뷰 M3)."""
+    now = now or _now_kst()
+    rows = _dated(_rows_of(data), "stck_bsop_date")
+    sp = _split_rows(rows, active=_prog_active, now=now)
+    confirmed = sp["confirmed"]
+    i, blank = _latest_pick(confirmed, _prog_valued)
+    if i is None:
+        return None
+    latest_d, latest = confirmed[i]
+    unit, unit_note, bad, n_samples = _unit_for(confirmed[i:i + _FLOW_WINDOW], _prog_samples)
+    lunit = None if latest_d in bad else unit
+    window = _window_of(confirmed, i, unit, bad, lambda s: s("whol_smtn_ntby_tr_pbmn"))
+    return {
+        "schema": _FLOW_SCHEMA,
+        "asof": latest_d,
+        "unit_won": unit,
+        "unit_note": unit_note,
+        "unit_bad": bad,
+        "unit_samples": n_samples,
+        "latest": {"date": latest_d,
+                   "qty": _int(latest.get("whol_smtn_ntby_qty")),
+                   "won": _won(_int(latest.get("whol_smtn_ntby_tr_pbmn")), lunit),
+                   "unit_ok": lunit is not None},
+        "window": window,
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
+        "blank": blank,
+        "missing": _missing("FHPPG04650201", latest, FLOW_FIELDS["program"], warn=warn),
+    }
+
+
+FLOW_PARSERS = {"investor": parse_investor_flow, "credit": parse_credit_balance,
+                "short": parse_short_sale, "program": parse_program_daily}
+# (그날 거래가 있었나, 값이 하나라도 있나) — 잠정 판정·빈 행 판정·빈 응답 사유가 같이 쓴다.
+_FLOW_PREDICATES = {"investor": (_inv_active, _inv_valued),
+                    "credit": (_credit_active, _credit_valued),
+                    "short": (_short_active, _short_valued),
+                    "program": (_prog_active, _prog_valued)}
+
+
+def why_empty(kind: str, data: Optional[dict], *, now: Optional[datetime] = None) -> str:
+    """원천은 답했는데 값을 못 만든 이유(파서와 같은 규칙으로 되짚는다). 판 3 첫 판은
+    확정 행이 있는데 전부 빈 경우까지 '확정된 행이 없습니다(잠정 행만 왔거나…)' 라고
+    적었다(델타 리뷰 L6). 감사의 판정 줄도 이 문장을 쓴다(#356 — 그 줄이 자족해야 한다)."""
+    _path, _tr, rows_key, date_field, _pre = FLOW_TRS[kind]
+    raw = _rows_of(data, rows_key)
+    rows = _dated(raw, date_field)
+    if not rows:
+        return f"날짜({date_field})를 읽을 수 있는 행이 없습니다(행 {len(raw)}개)"
+    active, _valued = _FLOW_PREDICATES[kind]
+    sp = _split_rows(rows, active=active, now=now or _now_kst())
+    if not sp["confirmed"]:
+        parts = [x for x in (sp["pending_note"], sp["dropped_note"]) if x]
+        return "확정 행이 없습니다 — " + (" · ".join(parts) or "사유 미상")
+    return f"확정 행 {len(sp['confirmed'])}개의 값이 모두 비어 있습니다"
+
+# ── 수급 4종 차단기(#72 — 금융위 API 차단기와 같은 규약). 죽어 있던 경로를 살렸으니
+# KIS 가 느려지면 KR 상세·스냅샷이 TR 마다 10초씩 붙잡힌다(리뷰 M7). 전송 실패
+# (5xx·타임아웃·연결)만 세고 4xx·rt_cd 는 세지 않는다(쉰다고 안 풀린다). 성공하면
+# 카운터를 지운다. 차단은 TR 단위.
+_BREAKER_TRIP = 2
+_BREAKER_COOL_SEC = 300
+_BREAKER: dict = {}
+_BREAKER_LOCK = threading.Lock()
+
+
+def _flow_ask(kind: str, ticker: str, *, date1: str = "") -> tuple:
+    """수급 4종 원천 조회(차단기 경유) → ``(응답 | None, 사유)``."""
+    path, tr_id, params = flow_request(kind, ticker, date1=date1)
+    now = time.time()
+    with _BREAKER_LOCK:
+        n, until = _BREAKER.get(tr_id, (0, 0.0))
+    if until > now:
+        return None, {"kind": "breaker", "status": None,
+                      "msg": f"연속 전송 실패 {n}회로 {int(until - now)}초 동안 묻지 않습니다"}
+    data, info = _get_ex(path, tr_id, params)
+    with _BREAKER_LOCK:
+        if info.get("kind") == "ok":
+            _BREAKER.pop(tr_id, None)
+        elif info.get("kind") in _TRANSPORT_FAIL:
+            n = _BREAKER.get(tr_id, (0, 0.0))[0] + 1
+            opened = n >= _BREAKER_TRIP
+            _BREAKER[tr_id] = (n, now + _BREAKER_COOL_SEC if opened else 0.0)
+            if opened:
+                log.warning("kis: %s 연속 전송 실패 %d회 — %d초 동안 묻지 않습니다(%s)",
+                            tr_id, n, _BREAKER_COOL_SEC, info.get("msg"))
+    return data, info
+
+
+def _flow_get(kind: str, ticker: str) -> tuple:
+    """수급 한 종 → ``(값 | None, 비었을 때 사유)``. 캐시(판·잠정·하루 끝 규칙) →
+    원천(차단기) → 파서. 원천이 답했는데 값을 만들 행이 없으면 그 사실을 30분 기억한다
+    (조회마다 같은 빈손을 다시 묻지 않게 — 전송 실패는 기억하지 않고 차단기가 맡는다)."""
+    code = _ticker_to_code(ticker)
+    if not code:
+        return None, "국내 6자리 티커가 아닙니다"
+    key = _flow_cache_key(kind, code)
+    cached = _flow_cache_get(key)
+    if cached is not None:
+        if cached.get("none"):
+            return None, f"{cached['none']} (30분 안에 받은 같은 답)"
+        return cached, ""
+    parse = FLOW_PARSERS[kind]
+    d1s = (_now_kst().strftime("%Y%m%d"), "") if kind == "credit" else ("",)
+    result, data, info = None, None, {"kind": "error", "msg": ""}
+    for d1 in d1s:
+        data, info = _flow_ask(kind, ticker, date1=d1)
+        result = parse(data) if data else None
+        if result:
+            break
+    if result:
+        _flow_put(key, result)
+        return result, ""
+    if data is not None:                       # 원천은 답했다 — 만들 행이 없었다
+        why = "원천이 답했는데 값을 만들 수 없습니다 — " + why_empty(kind, data)
+        _flow_put(key, {"schema": _FLOW_SCHEMA, "none": why})
+        return None, why
+    return None, f"원천 응답 실패 — {info.get('msg') or info.get('kind')}"
 
 
 # ─── KisClient ──────────────────────────────────────────────────────────────
@@ -421,69 +1181,14 @@ class KisClient:
             return result
         return None
 
-    # 2+3. 외인/기관/개인 + 기관 주체별
+    # 2. 외인/기관/개인 순매수 (inquire-investor)
     def get_investor_flow(self, ticker: str) -> Optional[dict]:
-        """외인/기관/개인 당일 + 5일 누적 순매수 + 기관 주체별.
-        tr_id FHKST01010900.
+        """외인·기관·개인 순매수 — 가장 최근 확정 거래일 하루(수량·금액) + 그날까지
+        최근 5거래일 금액 합. tr_id FHKST01010900. 모양은 ``parse_investor_flow``.
 
-        Returns:
-        {
-          today:   {foreign, institution, individual},   # 당일 (만원)
-          5d:      {foreign, institution, individual},   # 5일 누적 (만원)
-          inst_breakdown: {pension, trust, bank, insurance, etc_inst},  # 기관 주체별 5일
-        }
-        """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"investor_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/inquire-investor",
-            "FHKST01010900",
-            {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code},
-        )
-        if not data:
-            return None
-        # FHKST01010900 output is a LIST of daily rows: [0]=today, up to 5 days
-        raw_out = data.get("output")
-        if not raw_out:
-            return None
-        rows = raw_out if isinstance(raw_out, list) else [raw_out]
-        if not rows:
-            return None
-        today_r = rows[0]
-
-        def _sum_rows(field: str) -> Optional[int]:
-            vals = [_int(r.get(field)) for r in rows]
-            vals = [v for v in vals if v is not None]
-            return sum(vals) if vals else None
-
-        result = {
-            "today": {
-                "foreign":     _int(today_r.get("frgn_ntby_qty")),
-                "institution": _int(today_r.get("orgn_ntby_qty")),
-                "individual":  _int(today_r.get("indv_ntby_qty")),
-            },
-            "5d": {
-                "foreign":     _sum_rows("frgn_ntby_tr_pbmn"),
-                "institution": _sum_rows("orgn_ntby_tr_pbmn"),
-                "individual":  _sum_rows("indv_ntby_tr_pbmn"),
-            },
-            "inst_breakdown": {
-                "pension":    _sum_rows("pnsn_ntby_tr_pbmn"),   # 연기금
-                "trust":      _sum_rows("itrn_ntby_tr_pbmn"),   # 투신
-                "bank":       _sum_rows("bank_ntby_tr_pbmn"),   # 은행
-                "insurance":  _sum_rows("insu_ntby_tr_pbmn"),   # 보험
-                "etc_inst":   _sum_rows("etcg_ntby_tr_pbmn"),   # 기타기관
-                "private_eq": _sum_rows("samo_ntby_tr_pbmn"),   # 사모
-            },
-        }
-        _cache_put(cache_key, result)
-        return result
+        기관 세부(연기금·투신…)는 이 TR 의 응답에 없다 — 옛 판이 읽던 ``pnsn_*`` 등은
+        공식 샘플 목록에 없는 이름이라 늘 None 이었다(실수 #433)."""
+        return _flow_get("investor", ticker)[0]
 
     # 4. 외인 한도소진율 — KIS Open API 미제공
     def get_foreign_limit(self, ticker: str) -> Optional[dict]:
@@ -499,136 +1204,29 @@ class KisClient:
 
     # 5. 신용잔고 일별추이 (daily-credit-balance)
     def get_credit_short_balance(self, ticker: str) -> Optional[dict]:
-        """신용잔고 일별추이. tr_id FHPST04760000.
+        """신용잔고 일별추이(FHPST04760000) — 신용(융자)·대주 잔고 주수와 비율.
+        모양은 ``parse_credit_balance``.
 
-        Returns: {credit_balance_shares: int, credit_balance_amt: int,
-                  credit_balance_pct: float, loan_balance_shares: int}
-        """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"credit_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
+        공식 샘플은 결제일자(``FID_INPUT_DATE_1``)를 [필수]로 적는다 — 오늘(KST)을 먼저
+        보내고, 확정 행이 없으면 빈 값으로 한 번 더 묻는다. 어느 쪽을 원천이 받는지는
+        ``bot.scripts.kis_flow_audit`` 가 잰다."""
+        return _flow_get("credit", ticker)[0]
 
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/daily-credit-balance",
-            "FHPST04760000",
-            {
-                "FID_COND_MRKT_DIV_CODE": _mkt_div(ticker),
-                "FID_COND_SCR_DIV_CODE": "20476",
-                "FID_INPUT_ISCD": code,
-                "FID_INPUT_DATE_1": "",
-            },
-        )
-        if not data:
-            return None
-        raw_out = data.get("output")
-        if not raw_out:
-            return None
-        rows = raw_out if isinstance(raw_out, list) else [raw_out]
-        if not rows:
-            return None
-        today_r = rows[0]
-        result = {
-            "credit_balance_shares": _int(today_r.get("whol_loan_rmnd_stcn")),
-            "credit_balance_amt":    _int(today_r.get("whol_loan_rmnd_amt")),
-            "credit_balance_pct":    _float(today_r.get("whol_loan_rmnd_rate")),
-            "loan_balance_shares":   _int(today_r.get("stln_rmnd_qty")),
-        }
-        _cache_put(cache_key, result)
-        return result
-
-    # 6. 프로그램 매매
+    # 6. 프로그램 매매 — 종목별 일별 (program-trade-by-stock-daily)
     def get_program_trade(self, ticker: str) -> Optional[dict]:
-        """당일 프로그램 매매 (차익 + 비차익). tr_id FHPPG04650100.
+        """종목별 프로그램매매추이(일별, FHPPG04650201) — 전체 합계 순매수, 최근 확정
+        거래일 하루 + 그날까지 최근 5거래일 합. 모양은 ``parse_program_daily``.
 
-        Returns: {arb_buy: int, arb_sell: int, nonarb_buy: int, nonarb_sell: int,
-                  arb_net: int, nonarb_net: int}  (만원)
-        """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"prog_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/program-trade-by-stock",
-            "FHPPG04650100",
-            {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code},
-        )
-        if not data:
-            return None
-        out = data.get("output") or {}
-        arb_buy  = _int(out.get("pgtr_seln_amt1"))   # 차익 매도 (역설적으로 seln=sell amt)
-        arb_sell = _int(out.get("pgtr_shnu_amt1"))
-        nb_buy   = _int(out.get("pgtr_seln_amt2"))
-        nb_sell  = _int(out.get("pgtr_shnu_amt2"))
-
-        def _net(a: Optional[int], b: Optional[int]) -> Optional[int]:
-            if a is None and b is None:
-                return None
-            return (a or 0) - (b or 0)
-
-        result = {
-            "arb_buy":    arb_buy,
-            "arb_sell":   arb_sell,
-            "arb_net":    _net(arb_buy, arb_sell),
-            "nonarb_buy":  nb_buy,
-            "nonarb_sell": nb_sell,
-            "nonarb_net":  _net(nb_buy, nb_sell),
-        }
-        _cache_put(cache_key, result)
-        return result
+        옛 판은 체결 TR(FHPPG04650100)을 부르면서 공식 응답 목록에 없는 필드
+        (``pgtr_*``)로 차익·비차익을 읽었고, 응답(공식 샘플은 목록으로 받는다)을 dict 로
+        다뤘다. 이 TR 은 차익·비차익을 나누지 않는다(실수 #433)."""
+        return _flow_get("program", ticker)[0]
 
     # 7. 공매도 일별추이 (daily-short-sale)
     def get_short_sale(self, ticker: str) -> Optional[dict]:
-        """공매도 일별추이. tr_id FHPST04830000.
-
-        Response output1 = 단일 요약 row, output2 = 일별 list.
-
-        Returns: {short_qty: int, short_amt: int, short_ratio_pct: float,
-                  avg_price: float}
-        """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"short_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/daily-short-sale",
-            "FHPST04830000",
-            {
-                "FID_COND_MRKT_DIV_CODE": _mkt_div(ticker),
-                "FID_INPUT_ISCD": code,
-                "FID_INPUT_DATE_1": "",
-                "FID_INPUT_DATE_2": "",
-            },
-        )
-        if not data:
-            return None
-        # output2 = 일별 행 list; [0] = 가장 최근 영업일
-        raw_out2 = data.get("output2")
-        if not raw_out2:
-            return None
-        rows = raw_out2 if isinstance(raw_out2, list) else [raw_out2]
-        if not rows:
-            return None
-        today_r = rows[0]
-        result = {
-            "short_qty":          _int(today_r.get("ssts_cntg_qty")),
-            "short_amt":          _int(today_r.get("ssts_tr_pbmn")),
-            "short_ratio_pct":    _float(today_r.get("ssts_vol_rlim")),
-            "avg_price":          _float(today_r.get("avrg_prc")),
-        }
-        _cache_put(cache_key, result)
-        return result
+        """공매도 일별추이(FHPST04830000) — 가장 최근 확정 영업일의 공매도 수량·비중.
+        모양은 ``parse_short_sale``. 시작·종료일자는 공식 샘플에서도 선택이다."""
+        return _flow_get("short", ticker)[0]
 
     # 8. 당일 분봉 차트 (국내주식 당일분봉조회 FHKST03010200)
     def get_minute_chart(self, ticker: str, interval_min: int = 5) -> Optional[list]:
@@ -872,10 +1470,114 @@ def get_kis() -> KisClient:
     return _instance
 
 
+def kis_ready() -> bool:
+    """KIS 자격증명이 있나 — 수급 블록이 키 없이 조회마다 '미설정' 경고를 찍지 않게
+    먼저 본다."""
+    return bool(_app_key() and _app_secret())
+
+
+# 수집 함수가 돌려주는 키 ↔ 수급 종류. ``kis_why`` 는 빈 칸의 사유(화면이 말한다).
+FLOW_KEYS = (("investor_flow", "investor"), ("credit", "credit"),
+             ("short_sale", "short"), ("program", "program"))
+_COLLECT_BUDGET_SEC = 25.0     # 한 종목 수급 블록 전체 — 넘으면 남은 조회는 다음 기회에
+
+
+def kis_flow_present(flow: Optional[dict]) -> bool:
+    """수급 dict 에 지금 판(``_FLOW_SCHEMA``)의 KIS 값이 하나라도 있나. '수급 칸이
+    있으면 건너뜀' 으로 판정하면 pykrx 추세만 든 저장 스냅샷(옛 아카이브)이 KIS 칸을
+    영영 못 얻는다(#18 · 리뷰 L2)."""
+    return isinstance(flow, dict) and any(
+        isinstance(flow.get(k), dict) and flow[k].get("schema") == _FLOW_SCHEMA
+        for k, _kind in FLOW_KEYS)
+
+
+def collect_kis_flow(ticker: str, *, budget: float = _COLLECT_BUDGET_SEC,
+                     clock=time.monotonic) -> dict:
+    """수급 탭(종목 페이지)과 스냅샷이 같이 쓰는 KIS 수급 4종 — 받은 것과, 못 받은
+    칸의 **사유**(``kis_why``)를 담는다. 키: ``investor_flow``·``credit``·
+    ``short_sale``·``program``·``kis_why``.
+
+    ⚠️ 2026-10-04 까지 이 블록은 ``stock_snapshot`` 과 ``dashboard`` 에 **복제**돼
+    있었고, 둘 다 ``KisClient`` 에 없는 ``_ready()`` 를 불러 AttributeError 가 DEBUG
+    로그에 삼켜졌다 — 수급 탭의 KIS 칸은 한 번도 채워진 적이 없다(실수 #433).
+    한 곳에 두고, 레포 클래스에 없는 메서드를 부르는 자리는 회귀(전수 스캔)가 막는다.
+    한 조회의 실패가 나머지를 지우지 않게 하나씩 감싼다(실수 #315). 키가 없으면 원천을
+    부르지 않고 사유만 적는다(빈 칸이 왜 비었는지 화면이 말한다 — 리뷰 L3). 블록 전체
+    예산(``budget`` 초)을 넘기면 남은 조회는 건너뛰고 그렇게 적는다(리뷰 M7 — TR 마다
+    10초 타임아웃이라 장애 때 상세 페이지가 수십 초 붙잡혔다)."""
+    if not kis_ready():
+        return {"kis_why": {k: "KIS 자격증명(KIS_APP_KEY/KIS_APP_SECRET)이 없습니다"
+                            for k, _kind in FLOW_KEYS}}
+    t0 = clock()
+    out: dict = {}
+    why: dict = {}
+    for key, kind in FLOW_KEYS:
+        if clock() - t0 > budget:
+            why[key] = f"수급 블록 예산 {budget:.0f}초를 넘겨 이번엔 묻지 않았습니다"
+            continue
+        try:
+            value, reason = _flow_get(kind, ticker)
+        except Exception as exc:                       # noqa: BLE001
+            log.warning("kis: %s %s 실패: %s", key, ticker, exc)
+            why[key] = f"수집 중 예외 — {type(exc).__name__}"
+            continue
+        if value:
+            out[key] = value
+        else:
+            why[key] = reason or "사유 미기록"
+    skipped = [k for k, v in why.items() if "예산" in v]
+    if skipped:
+        log.warning("kis: %s 수급 블록 예산 %.0f초 초과 — %s 건너뜀",
+                    ticker, budget, ", ".join(skipped))
+    if why:
+        out["kis_why"] = why
+    return out
+
+
 # ─── formatter ──────────────────────────────────────────────────────────────
 
+def fmt_eok(v: Optional[int]) -> Optional[str]:
+    """원 → 억 숫자 문자열(부호 포함, 소수 2자리 — 단위 글자는 호출부가 붙인다).
+    화면과 프롬프트가 **같이** 쓴다(#38). 반올림해 0 이면 부호 없이 ``0.00`` —
+    화면이 소수 1자리로 찍던 판은 1천만원 미만 순매수를 '+0.0억' 으로 초록 칠했다
+    (2026-10-04 리뷰 M1). 파이썬이 환산한다 — LLM 에 단위 변환을 맡기면 100배
+    틀린다(경동나비엔 2026-05-22: '+11,730만원' 을 PM 이 '117억원' 으로 읽었다)."""
+    if v is None:
+        return None
+    r = round(v / 1e8, 2)
+    if r == 0:
+        return "0.00"
+    return f"{'+' if r > 0 else ''}{r:,.2f}"
+
+
+def eok_sign(v: Optional[int]) -> int:
+    """``fmt_eok`` 가 찍는 값의 부호(반올림 뒤) — 화면 색이 글자와 어긋나지 않게."""
+    if v is None:
+        return 0
+    r = round(v / 1e8, 2)
+    return (r > 0) - (r < 0)
+
+
+def _fmt_eok(v: Optional[int]) -> str:
+    t = fmt_eok(v)
+    return "N/A" if t is None else f"{t}억원"
+
+
+def _fmt_shares(v: Optional[int]) -> str:
+    if v is None:
+        return "N/A"
+    return f"{'+' if v > 0 else ''}{v:,}주"
+
+
+_EOK_100 = 10_000_000_000          # 100억원(원 단위) — RULE 10 noise 경계
+
+
 def format_kis_block(data: dict) -> str:
-    """KIS 7종 데이터 → instrument_context 주입용 텍스트 블록."""
+    """KIS 데이터 → instrument_context 주입용 텍스트 블록.
+
+    수급 4종은 판(``_FLOW_SCHEMA``)이 맞는 것만 싣는다 — 옛 모양은 수량을 만원으로
+    읽던 판이라 그대로 실으면 거짓 숫자다. 줄마다 그 값의 **기준일**을 적는다 —
+    당일 투자자별 수급은 장 종료 후에야 나오므로 장중엔 전 거래일 값이다."""
     lines: list[str] = []
 
     # 현재가
@@ -893,85 +1595,64 @@ def format_kis_block(data: dict) -> str:
                 per_str += f" / PBR {price['pbr']:.2f}배"
             lines.append(per_str)
 
-    # 외인/기관/개인 flow
+    # 외인/기관/개인 순매수
     flow = data.get("investor_flow") or {}
-    if flow:
-        today = flow.get("today") or {}
-        five_d = flow.get("5d") or {}
-        inst_bd = flow.get("inst_breakdown") or {}
-
-        def _fmt_wanwon(v) -> str:
-            # Always render in 억원 to prevent LLM unit-conversion errors.
-            # Raw API values are in 만원; divide by 100,000 to get 억원.
-            # 경동나비엔 2026-05-22: "+11,730만원" was misread as "117억원"
-            # (100x error) by the PM because 만원 unit was left for the LLM
-            # to convert. Now Python does it: 11,730만원 → +0.12억원.
-            if v is None:
-                return "N/A"
-            sign = "+" if v >= 0 else ""
-            return f"{sign}{v / 100_000:.2f}억원"
-
-        if any(today.values()):
+    if flow.get("schema") == _FLOW_SCHEMA:
+        lat = flow.get("latest") or {}
+        win = flow.get("window") or {}
+        qty = lat.get("qty") or {}
+        won = lat.get("won") or {}
+        wwon = win.get("won") or {}
+        d = lat.get("date") or "?"
+        n_label = win.get("label") or f"{win.get('days')}거래일"
+        if any(v is not None for v in qty.values()):
             lines.append(
-                f"• 당일 순매수: 외인 {_fmt_wanwon(today.get('foreign'))} /"
-                f" 기관 {_fmt_wanwon(today.get('institution'))} /"
-                f" 개인 {_fmt_wanwon(today.get('individual'))}"
+                f"• 순매수 수량 ({d} 하루): 외인 {_fmt_shares(qty.get('foreign'))} /"
+                f" 기관 {_fmt_shares(qty.get('institution'))} /"
+                f" 개인 {_fmt_shares(qty.get('individual'))}"
             )
-        if any(five_d.values()):
-            five_d_foreign    = five_d.get("foreign") or 0
-            five_d_inst       = five_d.get("institution") or 0
-            five_d_individual = five_d.get("individual") or 0
+        if any(v is not None for v in won.values()):
             lines.append(
-                f"• 5일 누적: 외인 {_fmt_wanwon(five_d.get('foreign'))} /"
-                f" 기관 {_fmt_wanwon(five_d.get('institution'))} /"
-                f" 개인 {_fmt_wanwon(five_d.get('individual'))}"
+                f"• 순매수 금액 ({d} 하루): 외인 {_fmt_eok(won.get('foreign'))} /"
+                f" 기관 {_fmt_eok(won.get('institution'))} /"
+                f" 개인 {_fmt_eok(won.get('individual'))}"
             )
-            # RULE 10 threshold check: ±100억 미만은 noise — dominant variable 인용 불가.
-            # Python pre-computes this so the LLM doesn't have to convert units.
-            for label_k, val_k in (("외인", five_d_foreign), ("기관", five_d_inst)):
-                if abs(val_k) < 10_000_000:  # < 100억 (10,000,000만원)
+        if not lat.get("unit_ok") and any(v is None for v in won.values()):
+            # 0 은 단위 없이도 0 이라 싣는다 — 그래서 '금액이 하나라도 빈' 때 사유를 적는다
+            # (전부 빈 때만 적던 판은 'N/A / 0.00억원 / N/A' 를 사유 없이 냈다, 델타 리뷰 L5)
+            lines.append(f"  (금액 단위를 확정하지 못해 그날 금액은 싣지 않습니다 —"
+                         f" {flow.get('unit_note') or '사유 미상'})")
+        if any(v is not None for v in wwon.values()):
+            f5, i5, p5 = wwon.get("foreign"), wwon.get("institution"), wwon.get("individual")
+            lines.append(
+                f"• {n_label} 누적 ({win.get('from')}~{win.get('to')}):"
+                f" 외인 {_fmt_eok(f5)} / 기관 {_fmt_eok(i5)} / 개인 {_fmt_eok(p5)}"
+            )
+            # RULE 10: ±100억 미만은 noise — dominant variable 인용 불가.
+            # 파이썬이 원 단위로 미리 판정해 LLM 이 단위를 환산하지 않게 한다.
+            for label_k, val_k in (("외인", f5), ("기관", i5)):
+                if val_k is not None and abs(val_k) < _EOK_100:
                     lines.append(
-                        f"  ⚠️ RULE 10: {label_k} 5일 누적"
-                        f" {_fmt_wanwon(val_k)} — ±100억 미만이므로"
-                        f" dominant variable 인용 불가 (noise level)"
+                        f"  ⚠️ RULE 10: {label_k} {n_label} 누적 {_fmt_eok(val_k)}"
+                        f" — ±100억 미만이므로 dominant variable 인용 불가 (noise level)"
                     )
             # Step 2C: 개인 떠받침 패턴 (개인 +100억 + 외인/기관 한쪽 -100억).
-            # 한국 시장 classic 약세 동학 — Python 계산으로 LLM 누락 방지.
-            if (five_d_individual >= 10_000_000 and
-                    (five_d_foreign <= -10_000_000 or five_d_inst <= -10_000_000)):
-                contrast = []
-                if five_d_foreign <= -10_000_000:
-                    contrast.append(f"외인 {_fmt_wanwon(five_d_foreign)}")
-                if five_d_inst <= -10_000_000:
-                    contrast.append(f"기관 {_fmt_wanwon(five_d_inst)}")
+            contrast = [f"{lbl} {_fmt_eok(v)}" for lbl, v in (("외인", f5), ("기관", i5))
+                        if v is not None and v <= -_EOK_100]
+            if p5 is not None and p5 >= _EOK_100 and contrast:
                 lines.append(
                     f"  ⚠️ RULE 10 [Step 2C]: Retail 떠받침 패턴 — 개인"
-                    f" {_fmt_wanwon(five_d_individual)} vs {' + '.join(contrast)}."
+                    f" {_fmt_eok(p5)} vs {' + '.join(contrast)}."
                     f" 5거래일+α 하방 risk dominant"
                 )
-        # 기관 주체별 — 의미있는 값만 출력
-        bd_parts = []
-        label_map = {
-            "pension":    "연기금",
-            "trust":      "투신",
-            "bank":       "은행",
-            "insurance":  "보험",
-            "private_eq": "사모",
-            "etc_inst":   "기타기관",
-        }
-        for key, label in label_map.items():
-            v = inst_bd.get(key)
-            if v:
-                bd_parts.append(f"{label} {_fmt_wanwon(v)}")
-        if bd_parts:
-            lines.append("• 기관 주체별 5일: " + " / ".join(bd_parts))
-            # Step 2C: 투신 5일 -50억 = 펀드 환매 신호 (외인 매도 5일 선행 패턴).
-            trust_val = inst_bd.get("trust") or 0
-            if trust_val <= -5_000_000:  # ≤ -50억 (5,000,000만원)
-                lines.append(
-                    f"  ⚠️ RULE 10 [Step 2C]: 투신 5일 {_fmt_wanwon(trust_val)} —"
-                    f" 펀드 환매 dominant, 외인 sell-off 선행 leading indicator"
-                )
+        if win.get("note"):
+            lines.append(f"  ({n_label} 누적 중 합을 만들지 않은 칸이 있습니다 — {win['note']})")
+        if flow.get("pending"):
+            lines.append(f"  (아직 확정 전인 날: {flow.get('pending_note') or flow['pending']})")
+        if flow.get("dropped"):
+            lines.append(f"  (쓰지 않은 행: {flow.get('dropped_note') or flow['dropped']})")
+        if flow.get("blank"):
+            lines.append(f"  (원천이 값을 비워 둔 최근 {flow['blank']}일은 뺐습니다)")
 
     # 외인 한도소진율
     fl = data.get("foreign_limit") or {}
@@ -984,47 +1665,54 @@ def format_kis_block(data: dict) -> str:
             warn = " (한도 여유 적음)"
         lines.append(f"• 외인 한도소진율: {pct:.1f}%{warn}")
 
-    # 신용 + 대차
+    # 신용·대주 잔고
     cs = data.get("credit_short") or {}
-    if cs.get("credit_balance_pct") is not None:
-        cr_pct = cs["credit_balance_pct"]
-        warn = " ⚠️ 신용 과열 — 청산 압력 주의" if cr_pct >= 4.0 else ""
-        lines.append(f"• 신용잔고율: {cr_pct:.2f}%{warn}")
-    if cs.get("loan_balance_shares"):
-        lines.append(f"• 대차잔고: {cs['loan_balance_shares']:,}주")
+    if cs.get("schema") == _FLOW_SCHEMA:
+        d = cs.get("asof") or "?"
+        if cs.get("credit_balance_pct") is not None:
+            cr_pct = cs["credit_balance_pct"]
+            warn = " ⚠️ 신용 과열 — 청산 압력 주의" if cr_pct >= 4.0 else ""
+            lines.append(f"• 신용잔고율 ({d}): {cr_pct:.2f}%{warn}")
+        if cs.get("credit_short_shares"):
+            lines.append(f"• 대주잔고(신용 매도) ({d}): {cs['credit_short_shares']:,}주")
+        if cs.get("dropped"):
+            lines.append(f"  (신용 — 쓰지 않은 행: {cs.get('dropped_note') or cs['dropped']})")
 
-    # 프로그램 매매
+    # 프로그램 매매 — 전체 합계(이 TR 은 차익·비차익을 나누지 않는다)
     pt = data.get("program_trade") or {}
-    if pt.get("arb_net") is not None or pt.get("nonarb_net") is not None:
-        def _fmt_prog(v) -> str:
-            if v is None:
-                return "N/A"
-            sign = "+" if v >= 0 else ""
-            return f"{sign}{v/100_000:.1f}억원" if abs(v) >= 100_000 else f"{sign}{v:,}만원"
-        lines.append(
-            f"• 프로그램: 차익 {_fmt_prog(pt.get('arb_net'))} /"
-            f" 비차익 {_fmt_prog(pt.get('nonarb_net'))}"
-        )
-        # Step 2C: 비차익 ±200억 = 알고리즘 systematic flow dominant.
-        # 차익(arb)은 선물-현물 베이시스 hedging 으로 단기 방향 신호 약함 —
-        # 비차익(nonarb)이 외인/기관 systematic buy/sell 의 합산.
-        nonarb = pt.get("nonarb_net")
-        if isinstance(nonarb, (int, float)) and abs(nonarb) >= 20_000_000:  # ±200억
-            direction = "매수" if nonarb > 0 else "매도"
-            lines.append(
-                f"  ⚠️ RULE 10 [Step 2C]: 프로그램 비차익 {_fmt_prog(nonarb)} —"
-                f" 알고리즘 systematic {direction} dominant, 단기 momentum"
-                f" {'강화' if nonarb > 0 else '가속'}"
-            )
+    if pt.get("schema") == _FLOW_SCHEMA:
+        lat = pt.get("latest") or {}
+        win = pt.get("window") or {}
+        n_label = win.get("label") or f"{win.get('days')}거래일"
+        if lat.get("won") is not None:
+            lines.append(f"• 프로그램 순매수 ({lat.get('date')} 하루, 전체 합계 —"
+                         f" 차익·비차익 구분 없음): {_fmt_eok(lat['won'])}")
+        elif lat.get("qty") is not None:
+            # 단위를 못 재도 수량은 싣는다 — 조용히 통째로 빼면 왜 없는지 아무도
+            # 모른다(리뷰 L3).
+            lines.append(f"• 프로그램 순매수 수량 ({lat.get('date')} 하루, 전체 합계):"
+                         f" {_fmt_shares(lat['qty'])}")
+            lines.append(f"  (금액 단위를 확정하지 못해 프로그램 금액은 싣지 않습니다 —"
+                         f" {pt.get('unit_note') or '사유 미상'})")
+        if win.get("won") is not None:
+            lines.append(f"• 프로그램 {n_label} 누적"
+                         f" ({win.get('from')}~{win.get('to')}): {_fmt_eok(win['won'])}")
+        elif win.get("note"):
+            lines.append(f"  (프로그램 {n_label} 누적은 싣지 않습니다 — {win['note']})")
+        if pt.get("pending"):
+            lines.append(f"  (프로그램 — 아직 확정 전인 날: {pt.get('pending_note') or pt['pending']})")
+        if pt.get("dropped"):
+            lines.append(f"  (프로그램 — 쓰지 않은 행: {pt.get('dropped_note') or pt['dropped']})")
 
     # 공매도
     ss = data.get("short_sale") or {}
-    if ss.get("short_ratio_pct") is not None:
+    if ss.get("schema") == _FLOW_SCHEMA and ss.get("short_ratio_pct") is not None:
+        d = ss.get("asof") or "?"
         sr = ss["short_ratio_pct"]
         warn = " ⚠️ 공매도 압력 높음" if sr >= 15 else ""
-        lines.append(f"• 공매도 비율: {sr:.1f}%{warn}")
+        lines.append(f"• 공매도 비율 (거래량 대비, {d}): {sr:.1f}%{warn}")
         if ss.get("short_qty"):
-            lines.append(f"• 공매도 거래량: {ss['short_qty']:,}주")
+            lines.append(f"• 공매도 거래량 ({d}): {ss['short_qty']:,}주")
 
     return "\n".join(lines)
 
@@ -1033,24 +1721,20 @@ def format_kis_block(data: dict) -> str:
 
 KIS_INTERP_GUIDE = """\
 KIS 단기 수급 해석 가이드 (5거래일 horizon):
-• 외인 5일 누적 순매수 방향이 단기 가격 방향의 최우선 예측 변수.
+• 각 줄의 괄호 안 날짜가 그 값의 기준일이다 — 당일 투자자별 수급은 장 종료 후에야
+  나오므로 장중엔 전 거래일 값이다. 기준일을 '오늘'이라고 바꿔 쓰지 말 것.
+• 외인 5거래일 누적 순매수 방향이 단기 가격 방향의 최우선 예측 변수.
   +100억 이상 = 단기 매수 압력 dominant / -100억 이하 = 단기 매도 압력.
-• 연기금 5일 순매수 양수 = 중기 지지 신호 (연기금은 저점 분할 매수 패턴).
 • 신용잔고율 4% 이상 → 반대매매 청산 압력 risk 5거래일 내 현실화 가능.
-• 공매도 비율 15% 이상 → 숏 압력 dominant, 결론에 명시 의무.
-• [Step 2C] 외인 한도소진율 95% 이상 → 외인 추가 매수 ceiling impact,
-  buy flow +값이어도 신규 매수 여력 없음, 외인 dominant 매수 신호 무효.
+• 공매도 비율(거래량 대비) 15% 이상 → 숏 압력 dominant, 결론에 명시 의무.
 • [Step 2C] 개인 +100억 동시에 외인/기관 -100억 → Retail 떠받침 패턴,
   외인/기관 차익실현 vs 개인 매수, 한국 시장 classic 약세 동학.
-• [Step 2C] 투신 5일 -50억 이상 → 펀드 환매 dominant, 외인 sell-off
-  선행 leading indicator (한국 mutual fund redemption cycle).
-• [Step 2C] 프로그램 비차익 ±200억 → 외인/기관 알고리즘 systematic flow
-  합산. 비차익(nonarb)이 방향성 신호 — 차익(arb)은 헤징이라 신호 약함.
-• 프로그램 차익 매도 큰 날 (-500억 이상) → 인덱스 편입/편출 또는 파생 만기
-  효과 — 펀더멘털 무관한 수급 왜곡, 단기 매도 공백 후 반등 가능성.
+• 프로그램 순매수는 **전체 합계**다(이 데이터는 차익·비차익을 나누지 않는다) —
+  비차익 규칙의 근거로 쓰지 말 것.
+• 이 블록에 없는 것: 기관 세부(연기금·투신 등)·외인 한도소진율 — KIS 가 이 조회로
+  주지 않는다. 다른 블록(KRX 등)에도 그 수치가 없으면 언급하지 말 것.
 이 데이터는 KIS API에서 직접 수신한 수치이므로 그대로 인용하라.
-다음 패턴 금지: 수치가 없으면 'KR 외국인 매수세 지속' 같은 generic 추측 금지.
-외인 한도소진율은 KIS API foreign_limit endpoint 로 fetch 완료 (Step 2B).\
+다음 패턴 금지: 수치가 없으면 'KR 외국인 매수세 지속' 같은 generic 추측 금지.\
 """
 
 
