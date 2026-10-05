@@ -1237,3 +1237,33 @@ def test_trade_deploy_failure_notices_carry_the_pin_install_outcome(tmp_path):
     assert r.returncode == 1 and "배포 실패" in notes and "고정판 설치 실패" in notes, notes
     r, _, log, notes, _ = d.run(["trade/scripts/requirements.txt"], dies=["trade-bot"])
     assert r.returncode == 1 and "active 상태가 아님" in notes and "고정판 설치 실패" in notes, notes
+
+
+def test_drift_banner_scans_exactly_the_dashboard_restart_condition():
+    """배포 drift 배너(`bot.code_freshness.source_mtimes`)가 재는 .py = 자동 배포가 대시보드를
+    다시 띄우는 조건(CODE_CHANGED)의 .py 갈래(독립 리뷰 #435 7a).
+
+    옛 판은 `bot/` **최상위**만 훑어, `trade`·`TradingAgents`·`bot/scripts` 만 바뀐 배포에서
+    재시작이 실패하면 배너가 끝내 안 떴다. 이 조건은 위 회귀들이 대시보드의 import 폐포를 덮는다고
+    재므로, 같은 범위를 재면 '이 프로세스가 올린 코드' 를 덮는다. 두 목록이 갈라지면(누가 정규식에
+    디렉터리를 더하면) 여기서 빨간불이다(#24 열거는 대조가 있어야 열거다).
+    ⚠️ 조건 안이지만 재지 않는 갈래(`cf.SCAN_EXCLUDED` — 데이터·실행 중에 봇이 쓰는 테마 모듈)는
+    빼고 잰다. 사유는 `bot/code_freshness.py` 의 범위 주석이고, 그 목록은 크기를 단언한다(#24·#286
+    allowlist 는 늘리려면 테스트를 고치게).
+    """
+    from bot import code_freshness as cf
+
+    assert cf.SCAN_EXCLUDED == ("trade/data/", "bot/screener_themes/"), cf.SCAN_EXCLUDED
+    rx = _noah_var("CODE_CHANGED")
+    files = _tracked_files()
+    want = {f for f in files
+            if f.endswith(".py") and rx.search(f) and not f.startswith(cf.SCAN_EXCLUDED)}
+    assert want, "대조 0건 — 정규식이나 파일 목록이 눈이 멀었다(#54)"
+    tracked = set(files)
+    # **기본 인자**로 잰다 — 운영은 루트를 넘기지 않는다. 루트를 넘기면 기본값(`_REPO_ROOT`)이
+    # `bot/` 로 돌아가도 통과했다(독립 리뷰 #435 델타 Medium 2 실측).
+    assert Path(cf._REPO_ROOT).resolve() == _ROOT, (cf._REPO_ROOT, _ROOT)
+    # 디스크에만 있고 git 이 모르는(무시된) .py 는 배포가 만들 수 없다 — 대조에서 뺀다
+    got = {p for _m, p in cf.source_mtimes() if p in tracked}
+    assert got == want, ("배너가 못 보는 재시작 범위", sorted(want - got)[:8],
+                         "재시작 조건 밖인데 배너가 세는 것", sorted(got - want)[:8])

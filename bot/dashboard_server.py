@@ -2429,7 +2429,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "started": int(d["started"]),
                 "newest": int(d["newest"]),
                 "stale": bool(d["stale"]),
+                # 옛 코드지만 자동 재시작 창 안(실수 #435) — 화면(배너)은 침묵한다. 이 칸은
+                # JSON 을 직접 조회하는 사람에게만 말한다(배너·감사는 읽지 않는다, 독립 리뷰 L6)
+                "pending": bool(d.get("pending")),
                 "measurable": bool(d["measurable"]),
+                # 판정 불가의 사유 — 소스를 못 읽음·미래 mtime 은 처방이 다르다(#54·#82)
+                "why": d.get("why") or "",
+                # 기준점(놓친 첫 변경)과 경과 — `newest` 는 최신 변경이라 pending 이 언제 stale 이
+                # 되는지 설명하지 못한다. JSON 만으로 셀 수 있게 싣는다(독립 리뷰 델타 L8)
+                "first_new": int(d["first_new"]) if d.get("first_new") else None,
+                "first_path": d.get("first_path") or "",
+                "age_sec": int(d.get("age_sec") or 0),
+                "grace_sec": int(d.get("grace_sec") or 0),
                 "note": _cf.note(d, unit="stock-bot-dashboard"),
             })
         except Exception as exc:                               # noqa: BLE001
