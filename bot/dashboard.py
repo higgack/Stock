@@ -5023,10 +5023,11 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         kr = si.setdefault("kr", {})
         flow0 = kr.get("flow") or {}
         # KIS 칸은 '지금 판(schema)의 KIS 값이 하나라도 있나' 로 판정한다 — '수급 칸이
-        # 있으면 건너뜀' 이면 pykrx 추세만 든 저장 스냅샷(옛 아카이브)이 KIS 칸을 영영
-        # 못 얻는다(#18 · 2026-10-04 리뷰 L2). 스냅샷(stock_snapshot._t_flow)과 **같은
-        # 함수** — 두 사본이 둘 다 없는 메서드(`_ready`)를 불러 KIS 칸이 한 번도 안
-        # 채워졌다(실수 #433).
+        # 있으면 건너뜀' 이면 pykrx 추세만 든 저장 스냅샷(옛 아카이브)이 라이브 오버레이
+        # 에서도 KIS 칸을 영영 못 얻는다(#18 · 2026-10-04 리뷰 L2. 정적 렌더의 게이트는
+        # 리서치 HTTP 때문에 옛 규칙 그대로다 — 그 페이지의 KIS 칸은 이 라이브 경로가
+        # 채운다). 스냅샷(stock_snapshot._t_flow)과 **같은 함수** — 두 사본이 둘 다 없는
+        # 메서드(`_ready`)를 불러 KIS 칸이 한 번도 안 채워졌다(실수 #433).
         try:
             from bot.kis_client import collect_kis_flow, kis_flow_present
             if not kis_flow_present(flow0):
@@ -8295,15 +8296,20 @@ def _render_stock_info_html(rec: dict) -> str:
                 body += (f"<tr><td>{label}</td>{_shr_td(qty.get(k))}"
                          f"{_eok_td(won.get(k))}{_eok_td(wwon.get(k))}</tr>\n")
             notes = []
-            if not lat.get("unit_ok"):
+            # 0 은 단위 없이도 0 이라 그린다 — 사유는 금액 칸이 하나라도 빌 때만(정지 종목은
+            # 전부 0.00억이라 '싣지 않았다' 와 모순된다, 2026-10-04 델타 리뷰 L4).
+            if not lat.get("unit_ok") and any(won.get(k) is None for k in
+                                             ("foreign", "institution", "individual")):
                 notes.append("금액 단위를 확정하지 못해 그날 금액은 싣지 않았습니다 — "
                              + esc(str(inv.get("unit_note") or "사유 미상")))
             if win.get("note"):
                 notes.append(f"{wl} 누적 중 합을 만들지 않은 칸이 있습니다 — "
                              + esc(str(win["note"])))
             if inv.get("pending"):
-                notes.append("잠정이라 뺀 행: " + esc(str(inv.get("pending_note") or inv["pending"]))
+                notes.append("아직 확정 전인 날: " + esc(str(inv.get("pending_note") or inv["pending"]))
                              + " — 그래서 기준일이 전 거래일일 수 있습니다.")
+            if inv.get("dropped"):
+                notes.append("쓰지 않은 행: " + esc(str(inv.get("dropped_note") or inv["dropped"])))
             if inv.get("blank"):
                 notes.append(f"원천이 값을 비워 둔 최근 {int(inv['blank'])}일은 뺐습니다.")
             note_html = "".join(f'<div class="si-note">{n}</div>' for n in notes)
@@ -8374,9 +8380,20 @@ def _render_stock_info_html(rec: dict) -> str:
             if short_sale.get("short_qty"):
                 cs_rows += f'<tr><td>공매도 수량 (주)</td><td class="num">{sd}</td><td class="num">{int(short_sale["short_qty"]):,}</td></tr>\n'
         if cs_rows:
+            cs_notes = []
+            for nm, d_ in (("신용", credit), ("공매도", short_sale)):
+                if not _kis_ok(d_):
+                    continue
+                if d_.get("dropped"):
+                    cs_notes.append(f"{nm} — 쓰지 않은 행: "
+                                    + esc(str(d_.get("dropped_note") or d_["dropped"])))
+                if d_.get("blank"):
+                    cs_notes.append(f"{nm} — 원천이 값을 비워 둔 최근 {int(d_['blank'])}일은 뺐습니다.")
+            cs_note_html = "".join(f'<div class="si-note">{n}</div>' for n in cs_notes)
             side_tables += f"""<div class="si-section">
       <div class="si-section-title">신용·공매도 (KIS)</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">기준일</th><th class="num">값</th></tr></thead><tbody>{cs_rows}</tbody></table>
+      {cs_note_html}
     </div>"""
 
         if _kis_ok(program):
@@ -8399,8 +8416,11 @@ def _render_stock_info_html(rec: dict) -> str:
             elif pwin.get("note"):
                 pgm_notes.append(f"{pwl} 누적은 싣지 않았습니다 — " + esc(str(pwin["note"])))
             if program.get("pending"):
-                pgm_notes.append("잠정이라 뺀 행: "
+                pgm_notes.append("아직 확정 전인 날: "
                                  + esc(str(program.get("pending_note") or program["pending"])))
+            if program.get("dropped"):
+                pgm_notes.append("쓰지 않은 행: "
+                                 + esc(str(program.get("dropped_note") or program["dropped"])))
             if pgm_rows:
                 pgm_note_html = "".join(f'<div class="si-note">{n}</div>' for n in pgm_notes)
                 side_tables += f"""<div class="si-section">
@@ -10235,6 +10255,11 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
             tkr_u = (ticker or "").upper()
             if tkr_u.endswith((".KS", ".KQ")):
                 _kr = si.get("kr", {})
+                # ⚠️ 여기는 '수급 칸이 있으면 건너뜀' 그대로 둔다 — KIS 판 대조로 바꾸면 KIS 값
+                # 없는 옛 기록마다 정적 렌더가 _ensure_detail_enrichment 전체(리서치 HTTP 포함)를
+                # 돈다. pykrx 추세만 든 옛 기록의 KIS 칸·빈 이유는 페이지를 열면 라이브
+                # 오버레이(/api/quote?full=1 → _ensure_detail_enrichment ⑦)가 채운다
+                # (2026-10-04 델타 리뷰 L9 — ⑦ 의 판 대조는 그 라이브 경로의 규칙이다).
                 _needs = not _kr.get("flow") or not _kr.get("disclosures")
             else:
                 _mkt_key = (

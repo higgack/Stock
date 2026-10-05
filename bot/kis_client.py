@@ -20,11 +20,13 @@ timeout 모두 빈 값 + warning log 반환. Rule A guard (agent_utils)
 가 데이터 미수집 시 fabrication 차단. 수급 4종은 TR 마다 차단기(전송 실패
 2회 → 300초 열림)를 거치고, 토큰 발급 실패는 60초 동안 다시 묻지 않는다.
 
-Caching: per-ticker 디스크 캐시. 현재가 등은 12h. 수급 4종은 판이 이름에 있는
+Caching: per-ticker 디스크 캐시. 현재가(``get_current_price``)는 12h — 실시간가·분봉 등은
+각자 더 짧다. 수급 4종은 판이 이름에 있는
 ``{접두}_v{판}_{코드}.json`` 이고 12h · 잠정 행이 있던 응답 1h · 확정 행이 없던
 답 30분만 믿으며, 가장 최근 KRX 하루 끝(``after_close`` 시작 20:00) 이전에 쓴
 파일은 버린다 — 장 마감 뒤 채워진 값을 밤까지 못 보지 않게(``_flow_cache_get``).
-오늘(KST) 행은 하루 끝 전엔 잠정이다(``_split_rows``).
+오늘(KST) 행은 하루 끝 전엔 잠정이고, 하루 끝 뒤인데 오늘 행이 아직 없어도 잠정으로
+센다(그래야 그 응답이 1시간만 산다 — ``_split_rows``).
 """
 
 from __future__ import annotations
@@ -277,10 +279,12 @@ def _get_ex(path: str, tr_id: str, params: dict,
         data = resp.json()
     except requests.exceptions.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else None
+        body = _error_body(exc.response)
         log_fn = log.debug if status == 404 else log.warning
-        log_fn("kis: %s http %s: %s", tr_id, status, exc)
+        log_fn("kis: %s http %s: %s %s", tr_id, status, exc, body)
         kind = "http5xx" if isinstance(status, int) and status >= 500 else "http4xx"
-        return None, {"kind": kind, "status": status, "msg": f"HTTP {status}"}
+        return None, {"kind": kind, "status": status,
+                      "msg": f"HTTP {status}" + (f" — {body}" if body else "")}
     except requests.exceptions.Timeout as exc:
         log.warning("kis: %s timeout: %s", tr_id, exc)
         return None, {"kind": "timeout", "status": None,
@@ -307,6 +311,20 @@ def _get_ex(path: str, tr_id: str, params: dict,
 
 def _get(path: str, tr_id: str, params: dict, custtype: Optional[str] = None) -> Optional[dict]:
     return _get_ex(path, tr_id, params, custtype)[0]
+
+
+def _error_body(resp) -> str:
+    """HTTP 오류 응답 본문의 업무 코드·메시지(``msg_cd``·``msg1``) — 버리면 5xx 로 온 업무
+    오류(예: 초당 건수 초과)가 '원천 장애' 와 같은 모양이 된다(2026-10-04 델타 리뷰 L3 —
+    KIS 가 업무 오류를 5xx 로 주는지는 재지 않았다). JSON 이 아니면 빈 문자열."""
+    try:
+        j = resp.json() if resp is not None else None
+    except Exception:                                          # noqa: BLE001
+        return ""
+    if not isinstance(j, dict):
+        return ""
+    parts = [str(j.get(k) or "").strip() for k in ("msg_cd", "msg1")]
+    return " ".join(x for x in parts if x)[:120]
 
 
 # ─── 수급 4종(투자자·신용·공매도·프로그램) 공통 ──────────────────────────────
@@ -502,29 +520,53 @@ def _missing(tr_id: str, row: dict, fields, *, warn: bool = True) -> list:
     return miss
 
 
-def _split_rows(rows: list, *, active, now: datetime) -> tuple:
-    """날짜순 행 → ``(확정 행, 잠정 행 수, 잠정 사유)``.
+def _split_rows(rows: list, *, active, now: datetime) -> dict:
+    """날짜순 행 → ``{"confirmed", "pending", "pending_note", "dropped", "dropped_note"}``.
 
     오늘(KST) 행은 KRX 의 그날 마지막 거래 국면이 끝나기 전엔 장중 부분값이거나
     자리표시일 수 있어 **잠정**이다. 끝난 뒤에도 그날 값이 비었거나 0 이면 잠정이다
     (원천이 아직 안 채웠는지 정말 0 인지 오늘은 못 가른다 — 다음 날엔 지난 날짜라
-    확정으로 센다). 오늘보다 뒤 날짜도 잠정. **지난 날짜는 확정이고 그날의 0 은 0**
-    이다 — 판 2 는 거래가 0 인 날(정지일·프로그램 매매가 없던 날)을 '미제공' 으로
-    버려 9거래일 구간을 '5거래일' 이라 불렀다(2026-10-04 리뷰 H2)."""
+    확정으로 센다). 끝난 뒤인데 오늘(거래일) 행이 **아예 없어도** 잠정으로 센다 — 안
+    세면 그 응답이 12시간 캐시돼 밤새 어제 값이 나간다(2026-10-04 델타 리뷰 M2. 달력을
+    못 쓰면 보수적으로 센다). 오늘보다 뒤 날짜도 잠정. **지난 날짜는 확정이고 그날의
+    0 은 0** 이다 — 판 2 는 거래가 0 인 날(정지일·프로그램 매매가 없던 날)을 '미제공'
+    으로 버려 9거래일 구간을 '5거래일' 이라 불렀다(리뷰 H2).
+
+    쓰지 않는 행(``dropped``): 같은 날짜가 **값이 다르게** 두 번 온 지난 날(어느 쪽이
+    맞는지 모른다 — 같은 값이면 하나만 남긴다)과 달력상 거래일이 아닌 날짜의 행. 둘 다
+    'N거래일' 을 거짓으로 만든다(델타 리뷰 M3). 달력을 못 쓰면 거래일 대조는 건너뛴다."""
+    from bot import market_calendar as mc
     today = now.strftime("%Y-%m-%d")
-    closed = now.hour * 60 + now.minute >= _krx_day_end_min()
-    confirmed, why = [], []
+    m = _krx_day_end_min()
+    closed = now.hour * 60 + now.minute >= m
+    by_date: dict = {}
     for d, r in rows:
+        by_date.setdefault(d, []).append(r)
+    confirmed, why, dropped = [], [], []
+    for d, rs in by_date.items():                  # 원천 순서가 아니라 ``_dated`` 의 날짜순
+        r = rs[0]
+        clash = any(x != r for x in rs[1:])
         if d > today:
             why.append(f"{d}(오늘보다 뒤 날짜)")
+        elif clash and d == today:
+            why.append(f"{d}(오늘 — 같은 날짜 행이 값이 다르게 {len(rs)}번 옴)")
+        elif clash:
+            dropped.append(f"{d}(같은 날짜 행이 값이 다르게 {len(rs)}번 옴)")
+        elif mc.is_trading_day("KR", d) is False:
+            dropped.append(f"{d}(달력상 거래일이 아님)")
         elif d == today and not closed:
-            m = _krx_day_end_min()
             why.append(f"{d}(오늘 — KRX 거래가 끝나는 {m // 60:02d}:{m % 60:02d} 전이라 잠정)")
         elif d == today and not active(r):
             why.append(f"{d}(오늘 — 마감 뒤에도 값이 비었거나 0 이라 확정으로 보지 않음)")
         else:
             confirmed.append((d, r))
-    return confirmed, len(why), " · ".join(why)
+    if closed and today not in by_date:
+        sess = mc.is_trading_day("KR", today)
+        if sess is not False:
+            why.append(f"{today}(오늘 행이 아직 없음 — KRX 하루 끝 뒤인데 원천이 주지 않았습니다"
+                       + ("" if sess else " · 달력을 못 써 오늘이 거래일인지 모름") + ")")
+    return {"confirmed": confirmed, "pending": len(why), "pending_note": " · ".join(why),
+            "dropped": len(dropped), "dropped_note": " · ".join(dropped)}
 
 
 def _ratio(q, p, a) -> Optional[float]:
@@ -619,7 +661,8 @@ def _window_of(confirmed: list, start: int, unit, bad: list, value_of) -> dict:
     days = len(win)
     blocked = ""
     if gaps:
-        blocked = f"원천이 그 구간의 거래일 {', '.join(gaps)} 을 주지 않았습니다"
+        blocked = (f"달력상 거래일 {', '.join(gaps)} 의 행이 응답에 없습니다"
+                   "(원천 누락이거나 달력이 모르는 휴장일)")
     elif bad and any(d in bad for d, _r in win):
         blocked = "그 구간에 금액 단위가 맞지 않는 날이 있습니다"
 
@@ -673,7 +716,8 @@ def parse_investor_flow(data: Optional[dict], *, now: Optional[datetime] = None,
     ``latest.date`` 가 어제일 수 있고, 화면·프롬프트는 그 날짜를 적는다."""
     now = now or _now_kst()
     rows = _dated(_rows_of(data), "stck_bsop_date")
-    confirmed, pending, pending_note = _split_rows(rows, active=_inv_active, now=now)
+    sp = _split_rows(rows, active=_inv_active, now=now)
+    confirmed = sp["confirmed"]
     i, blank = _latest_pick(confirmed, _inv_valued)
     if i is None:
         return None
@@ -699,30 +743,88 @@ def parse_investor_flow(data: Optional[dict], *, now: Optional[datetime] = None,
             "unit_ok": lunit is not None,
         },
         "window": window,
-        "pending": pending,
-        "pending_note": pending_note,
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
         "blank": blank,
         "missing": _missing("FHKST01010900", latest, FLOW_FIELDS["investor"], warn=warn),
     }
 
 
-def _one_row(kind: str, data: Optional[dict], active, now: Optional[datetime]) -> tuple:
+def _one_row(kind: str, data: Optional[dict], now: Optional[datetime]) -> dict:
+    """신용·공매도 — 값이 하나라도 있는 가장 최근 확정 행(``row``). 판 3 첫 판은 최신
+    확정 행을 **빈 행이어도** 골라 None 만 든 값을 12시간 캐시했다(사유도 없이 섹션이
+    사라졌다 — 델타 리뷰 M1). 투자자·프로그램처럼 빈 행은 건너뛰고 ``blank`` 로 센다."""
     _path, _tr, rows_key, date_field, _pre = FLOW_TRS[kind]
+    active, valued = _FLOW_PREDICATES[kind]
     rows = _dated(_rows_of(data, rows_key), date_field)
-    confirmed, pending, pending_note = _split_rows(rows, active=active, now=now or _now_kst())
-    return (confirmed[0] if confirmed else None), pending, pending_note
+    sp = _split_rows(rows, active=active, now=now or _now_kst())
+    i, blank = _latest_pick(sp["confirmed"], valued)
+    sp["row"] = sp["confirmed"][i] if i is not None else None
+    sp["at"] = i
+    sp["blank"] = blank
+    return sp
+
+
+def _credit_active(r: dict) -> bool:
+    return bool(_int(r.get("whol_loan_rmnd_stcn")))
+
+
+def _credit_valued(r: dict) -> bool:
+    return (any(_int(r.get(k)) is not None for k in ("whol_loan_rmnd_stcn", "whol_stln_rmnd_stcn"))
+            or any(_float(r.get(k)) is not None for k in ("whol_loan_rmnd_rate",
+                                                         "whol_stln_rmnd_rate")))
+
+
+def _short_active(r: dict) -> bool:
+    return bool(_int(r.get("ssts_cntg_qty")))
+
+
+def _short_valued(r: dict) -> bool:
+    return (_int(r.get("ssts_cntg_qty")) is not None
+            or any(_float(r.get(k)) is not None for k in ("ssts_vol_rlim", "ssts_tr_pbmn_rlim")))
+
+
+_CREDIT_PLACEHOLDER_MAX = 3   # 신용잔고 0 이 이만큼 이하로 이어지면 자리표시로 본다
+
+
+def _credit_skip_placeholders(sp: dict) -> None:
+    """신용잔고는 **저량**이라 '지난 날의 0 은 0' 이 맞지 않는다 — 수만 주 잔고가 하루
+    만에 정확히 0 이 되는 일은 사실상 없으므로, 최신 확정 행부터 0 이 이어지다 그 뒤(더
+    옛날)에 0 이 아닌 잔고가 있으면 그 0 들을 원천이 아직 안 채운 자리표시로 보고 쓰지
+    않는다(델타 리뷰 M1 짝 — 오늘 행 자리표시를 잠정으로 뺀 규칙이 하루 밀리면 같은
+    증상이다). 0 이 ``_CREDIT_PLACEHOLDER_MAX`` 를 넘게 이어지면 진짜 0 으로 둔다(신용
+    불가 종목). ⚠️ 원천이 지난 날을 0 으로 채워 주는지는 재지 않았다 — 방어 규칙이다."""
+    conf, i = sp["confirmed"], sp.get("at")
+    if i is None or _int(conf[i][1].get("whol_loan_rmnd_stcn")) != 0:
+        return
+    zeros = []
+    for d, r in conf[i:]:
+        if not _credit_valued(r):
+            continue
+        bal = _int(r.get("whol_loan_rmnd_stcn"))
+        if bal == 0:
+            zeros.append(d)
+            continue
+        if bal and len(zeros) <= _CREDIT_PLACEHOLDER_MAX:
+            sp["row"] = (d, r)
+            note = f"{', '.join(zeros)}(신용잔고가 직전 {bal:,}주에서 0 — 자리표시로 보고 쓰지 않음)"
+            sp["dropped"] += len(zeros)
+            sp["dropped_note"] = " · ".join(x for x in (sp["dropped_note"], note) if x)
+        return
 
 
 def parse_credit_balance(data: Optional[dict], *, now: Optional[datetime] = None,
                          warn: bool = True) -> Optional[dict]:
-    """신용잔고 일별추이(FHPST04760000) — 가장 최근 확정 매매일 한 행. 잔고 **금액**은
-    화면이 쓰지 않아 싣지 않는다(단위를 재지 않은 값을 남기면 나중에 누가 추측해 쓴다).
-    오늘 행은 자리표시일 수 있어 확정 전엔 잠정이다(리뷰 M3)."""
-    first, pending, pending_note = _one_row(
-        "credit", data, lambda r: bool(_int(r.get("whol_loan_rmnd_stcn"))), now)
-    if not first:
+    """신용잔고 일별추이(FHPST04760000) — 값이 있는 가장 최근 확정 매매일 한 행. 잔고
+    **금액**은 화면이 쓰지 않아 싣지 않는다(단위를 재지 않은 값을 남기면 나중에 누가 추측해
+    쓴다). 오늘 행은 자리표시일 수 있어 확정 전엔 잠정이다(리뷰 M3)."""
+    sp = _one_row("credit", data, now)
+    _credit_skip_placeholders(sp)
+    if not sp["row"]:
         return None
-    d, r = first
+    d, r = sp["row"]
     return {
         "schema": _FLOW_SCHEMA,
         "asof": d,
@@ -730,28 +832,34 @@ def parse_credit_balance(data: Optional[dict], *, now: Optional[datetime] = None
         "credit_balance_pct": _float(r.get("whol_loan_rmnd_rate")),
         "credit_short_shares": _int(r.get("whol_stln_rmnd_stcn")),
         "credit_short_pct": _float(r.get("whol_stln_rmnd_rate")),
-        "pending": pending,
-        "pending_note": pending_note,
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
+        "blank": sp["blank"],
         "missing": _missing("FHPST04760000", r, FLOW_FIELDS["credit"], warn=warn),
     }
 
 
 def parse_short_sale(data: Optional[dict], *, now: Optional[datetime] = None,
                      warn: bool = True) -> Optional[dict]:
-    """공매도 일별추이(FHPST04830000) — ``output2`` 의 가장 최근 확정 영업일 한 행."""
-    first, pending, pending_note = _one_row(
-        "short", data, lambda r: bool(_int(r.get("ssts_cntg_qty"))), now)
-    if not first:
+    """공매도 일별추이(FHPST04830000) — ``output2`` 의 값이 있는 가장 최근 확정 영업일 한
+    행. 공매도 수량은 **흐름**이라 지난 날의 0 은 0 이다(신용잔고의 자리표시 규칙과 다르다)."""
+    sp = _one_row("short", data, now)
+    if not sp["row"]:
         return None
-    d, r = first
+    d, r = sp["row"]
     return {
         "schema": _FLOW_SCHEMA,
         "asof": d,
         "short_qty": _int(r.get("ssts_cntg_qty")),
         "short_ratio_pct": _float(r.get("ssts_vol_rlim")),        # 공매도 거래량 비중
         "short_amt_ratio_pct": _float(r.get("ssts_tr_pbmn_rlim")),  # 공매도 거래대금 비중
-        "pending": pending,
-        "pending_note": pending_note,
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
+        "blank": sp["blank"],
         "missing": _missing("FHPST04830000", r, FLOW_FIELDS["short"], warn=warn),
     }
 
@@ -779,7 +887,8 @@ def parse_program_daily(data: Optional[dict], *, now: Optional[datetime] = None,
     오늘 행은 부분값이라 잠정이다 — 판 2 는 그걸 '하루' 로 12시간 구웠다(리뷰 M3)."""
     now = now or _now_kst()
     rows = _dated(_rows_of(data), "stck_bsop_date")
-    confirmed, pending, pending_note = _split_rows(rows, active=_prog_active, now=now)
+    sp = _split_rows(rows, active=_prog_active, now=now)
+    confirmed = sp["confirmed"]
     i, blank = _latest_pick(confirmed, _prog_valued)
     if i is None:
         return None
@@ -799,8 +908,10 @@ def parse_program_daily(data: Optional[dict], *, now: Optional[datetime] = None,
                    "won": _won(_int(latest.get("whol_smtn_ntby_tr_pbmn")), lunit),
                    "unit_ok": lunit is not None},
         "window": window,
-        "pending": pending,
-        "pending_note": pending_note,
+        "pending": sp["pending"],
+        "pending_note": sp["pending_note"],
+        "dropped": sp["dropped"],
+        "dropped_note": sp["dropped_note"],
         "blank": blank,
         "missing": _missing("FHPPG04650201", latest, FLOW_FIELDS["program"], warn=warn),
     }
@@ -808,6 +919,28 @@ def parse_program_daily(data: Optional[dict], *, now: Optional[datetime] = None,
 
 FLOW_PARSERS = {"investor": parse_investor_flow, "credit": parse_credit_balance,
                 "short": parse_short_sale, "program": parse_program_daily}
+# (그날 거래가 있었나, 값이 하나라도 있나) — 잠정 판정·빈 행 판정·빈 응답 사유가 같이 쓴다.
+_FLOW_PREDICATES = {"investor": (_inv_active, _inv_valued),
+                    "credit": (_credit_active, _credit_valued),
+                    "short": (_short_active, _short_valued),
+                    "program": (_prog_active, _prog_valued)}
+
+
+def why_empty(kind: str, data: Optional[dict], *, now: Optional[datetime] = None) -> str:
+    """원천은 답했는데 값을 못 만든 이유(파서와 같은 규칙으로 되짚는다). 판 3 첫 판은
+    확정 행이 있는데 전부 빈 경우까지 '확정된 행이 없습니다(잠정 행만 왔거나…)' 라고
+    적었다(델타 리뷰 L6). 감사의 판정 줄도 이 문장을 쓴다(#356 — 그 줄이 자족해야 한다)."""
+    _path, _tr, rows_key, date_field, _pre = FLOW_TRS[kind]
+    raw = _rows_of(data, rows_key)
+    rows = _dated(raw, date_field)
+    if not rows:
+        return f"날짜({date_field})를 읽을 수 있는 행이 없습니다(행 {len(raw)}개)"
+    active, _valued = _FLOW_PREDICATES[kind]
+    sp = _split_rows(rows, active=active, now=now or _now_kst())
+    if not sp["confirmed"]:
+        parts = [x for x in (sp["pending_note"], sp["dropped_note"]) if x]
+        return "확정 행이 없습니다 — " + (" · ".join(parts) or "사유 미상")
+    return f"확정 행 {len(sp['confirmed'])}개의 값이 모두 비어 있습니다"
 
 # ── 수급 4종 차단기(#72 — 금융위 API 차단기와 같은 규약). 죽어 있던 경로를 살렸으니
 # KIS 가 느려지면 KR 상세·스냅샷이 TR 마다 10초씩 붙잡힌다(리뷰 M7). 전송 실패
@@ -867,7 +1000,7 @@ def _flow_get(kind: str, ticker: str) -> tuple:
         _flow_put(key, result)
         return result, ""
     if data is not None:                       # 원천은 답했다 — 만들 행이 없었다
-        why = "원천이 답했는데 확정된 행이 없습니다(잠정 행만 왔거나 날짜를 읽을 수 없음)"
+        why = "원천이 답했는데 값을 만들 수 없습니다 — " + why_empty(kind, data)
         _flow_put(key, {"schema": _FLOW_SCHEMA, "none": why})
         return None, why
     return None, f"원천 응답 실패 — {info.get('msg') or info.get('kind')}"
@@ -1433,7 +1566,7 @@ def _fmt_eok(v: Optional[int]) -> str:
 def _fmt_shares(v: Optional[int]) -> str:
     if v is None:
         return "N/A"
-    return f"{'+' if v >= 0 else ''}{v:,}주"
+    return f"{'+' if v > 0 else ''}{v:,}주"
 
 
 _EOK_100 = 10_000_000_000          # 100억원(원 단위) — RULE 10 noise 경계
@@ -1484,7 +1617,9 @@ def format_kis_block(data: dict) -> str:
                 f" 기관 {_fmt_eok(won.get('institution'))} /"
                 f" 개인 {_fmt_eok(won.get('individual'))}"
             )
-        elif not lat.get("unit_ok"):
+        if not lat.get("unit_ok") and any(v is None for v in won.values()):
+            # 0 은 단위 없이도 0 이라 싣는다 — 그래서 '금액이 하나라도 빈' 때 사유를 적는다
+            # (전부 빈 때만 적던 판은 'N/A / 0.00억원 / N/A' 를 사유 없이 냈다, 델타 리뷰 L5)
             lines.append(f"  (금액 단위를 확정하지 못해 그날 금액은 싣지 않습니다 —"
                          f" {flow.get('unit_note') or '사유 미상'})")
         if any(v is not None for v in wwon.values()):
@@ -1513,7 +1648,9 @@ def format_kis_block(data: dict) -> str:
         if win.get("note"):
             lines.append(f"  ({n_label} 누적 중 합을 만들지 않은 칸이 있습니다 — {win['note']})")
         if flow.get("pending"):
-            lines.append(f"  (잠정이라 뺀 행: {flow.get('pending_note') or flow['pending']})")
+            lines.append(f"  (아직 확정 전인 날: {flow.get('pending_note') or flow['pending']})")
+        if flow.get("dropped"):
+            lines.append(f"  (쓰지 않은 행: {flow.get('dropped_note') or flow['dropped']})")
         if flow.get("blank"):
             lines.append(f"  (원천이 값을 비워 둔 최근 {flow['blank']}일은 뺐습니다)")
 
@@ -1538,6 +1675,8 @@ def format_kis_block(data: dict) -> str:
             lines.append(f"• 신용잔고율 ({d}): {cr_pct:.2f}%{warn}")
         if cs.get("credit_short_shares"):
             lines.append(f"• 대주잔고(신용 매도) ({d}): {cs['credit_short_shares']:,}주")
+        if cs.get("dropped"):
+            lines.append(f"  (신용 — 쓰지 않은 행: {cs.get('dropped_note') or cs['dropped']})")
 
     # 프로그램 매매 — 전체 합계(이 TR 은 차익·비차익을 나누지 않는다)
     pt = data.get("program_trade") or {}
@@ -1561,7 +1700,9 @@ def format_kis_block(data: dict) -> str:
         elif win.get("note"):
             lines.append(f"  (프로그램 {n_label} 누적은 싣지 않습니다 — {win['note']})")
         if pt.get("pending"):
-            lines.append(f"  (프로그램 — 잠정이라 뺀 행: {pt.get('pending_note') or pt['pending']})")
+            lines.append(f"  (프로그램 — 아직 확정 전인 날: {pt.get('pending_note') or pt['pending']})")
+        if pt.get("dropped"):
+            lines.append(f"  (프로그램 — 쓰지 않은 행: {pt.get('dropped_note') or pt['dropped']})")
 
     # 공매도
     ss = data.get("short_sale") or {}

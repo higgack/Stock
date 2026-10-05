@@ -553,7 +553,10 @@ def test_token_failure_is_not_retried_within_the_cooldown(kc, monkeypatch, tmp_p
 # ─── TR · 파라미터 · 캐시 ────────────────────────────────────────────────────
 
 def test_market_code_is_J_for_kosdaq_too(monkeypatch, kc):
-    """공식 샘플은 J:KRX·NX:NXT·UN:통합 만 적는다 — 코스닥도 J 다."""
+    """공식 샘플(examples_llm)이 TR 마다 적는 시장 코드에 코스닥 전용 값은 없다 — 투자자
+    FHKST01010900 'J:KRX, NX:NXT' · 신용 FHPST04760000 'J: 주식' · 공매도 FHPST04830000
+    'J:주식' · 프로그램 FHPPG04650201 'J:KRX,NX:NXT,UN:통합'(legacy ``_getStockDiv`` 도 늘
+    'J'). 그래서 코스닥도 J 다 — 실서버 수락은 일일 감사가 잰다."""
     assert kc._mkt_div("247540.KQ") == "J" and kc._mkt_div("005930.KS") == "J"
     calls = _router(monkeypatch, kc, _ok_table())
     k = kc.KisClient()
@@ -657,7 +660,7 @@ def test_pending_cache_lives_one_hour_and_none_thirty_minutes(monkeypatch, kc):
     c2 = _router(monkeypatch, kc, {"FHKST01010900": only_today})
     k2 = kc._flow_cache_key("investor", "000660")
     v, why = kc._flow_get("investor", "000660.KS")
-    assert v is None and "확정된 행이 없습니다" in why and len(c2) == 1
+    assert v is None and "확정 행이 없습니다" in why and "20:00 전이라 잠정" in why and len(c2) == 1
     v, why = kc._flow_get("investor", "000660.KS")
     assert v is None and "30분 안에 받은 같은 답" in why and len(c2) == 1
     _age(kc, k2, 0.6)
@@ -848,7 +851,7 @@ def test_flow_pane_values_are_locked_to_the_parsed_numbers(monkeypatch, kc):
     # 프로그램 칸도 값으로
     assert f">{kc.fmt_eok(prog['latest']['won'])}억</td>" in pane
     assert f">{kc.fmt_eok(prog['window']['won'])}억</td>" in pane
-    assert "잠정이라 뺀 행: 2026-10-02(오늘" in pane
+    assert "아직 확정 전인 날: 2026-10-02(오늘" in pane
     assert "대주잔고 (신용 매도, 주)" in pane and ">35<" in pane
     assert "프로그램 순매수 (KIS · 전체 합계)" in pane
     # 옛 판이 지어 그리던 칸은 없다 — 각주의 '차익·비차익을 나누지 않습니다' 는 그 사실을
@@ -944,7 +947,7 @@ def test_prompt_block_dates_units_and_rule10_in_won(kc):
     # RULE 10 noise 판정은 원 단위로 — 외인 50억은 noise, 기관 200억은 아니다
     assert "⚠️ RULE 10: 외인 5거래일 누적 +50.00억원" in txt
     assert "RULE 10: 기관" not in txt
-    assert "잠정이라 뺀 행: 2026-10-02(오늘" in txt
+    assert "아직 확정 전인 날: 2026-10-02(오늘" in txt
     assert "당일 순매수" not in txt                        # 옛 라벨(날짜 없는 '당일')
 
 
@@ -1030,11 +1033,18 @@ _RULE10_SOURCES = {
     "[Step 2C] 개인 5거래일": ("kis", ("거래일 누적", "개인", "기관", "외인")),
     "주입된 블록에 없는 수치": None,
 }
+# 블록 → ``build_instrument_context`` 가 그 블록을 거는 섹션 이름. 규칙이 그 수치를 찍는
+# 블록을 대도, 그 블록이 **이 분석가에게** 안 가면 규칙은 여전히 받지 않는 데이터를 요구한다
+# — 2026-10-04 델타 리뷰 M4: 펀더멘털 프롬프트의 KIS 규칙 넷은 ``kis_supply`` 가 펀더멘털에서
+# 빠져 있어(``_ANALYST_CONTEXT_EXCLUDE``) 한 번도 데이터를 본 적이 없었다(실수 #433).
+_RULE10_SECTIONS = {"kis": "kis_supply", "seibro": "seibro_foreign"}
+_RULE10_ANALYST = "fundamentals"       # 이 프롬프트를 받는 분석가(fundamentals_analyst.py)
 
 
-def _rule10_bullets() -> list:
-    """분석가 프롬프트의 RULE 10 보강 줄들 — 인접 문자열 리터럴은 AST 에서 상수 하나로
-    합쳐지므로 그 상수를 찾아 자른다(LLM 을 부르지 않고 실제 프롬프트 문구를 읽는다)."""
+def _rule10_segment() -> str:
+    """분석가 프롬프트의 RULE 10 보강 절(머리부터 다음 RULE 11 머리 앞까지) — 인접 문자열
+    리터럴은 AST 에서 상수 하나로 합쳐지므로 그 상수를 찾아 자른다(LLM 을 부르지 않고 실제
+    프롬프트 문구를 읽는다)."""
     src = (_REPO / "TradingAgents/tradingagents/agents/analysts/fundamentals_analyst.py"
            ).read_text(encoding="utf-8")
     texts = [n.value for n in ast.walk(ast.parse(src))
@@ -1042,12 +1052,17 @@ def _rule10_bullets() -> list:
              and "RULE 10 보강 — KIS" in n.value]
     assert len(texts) == 1, len(texts)
     t = texts[0]
-    seg = t[t.index("RULE 10 보강 — KIS"):t.index("위 기준에 해당하지 않는 경우")]
-    return [ln.strip()[1:].strip() for ln in seg.splitlines() if ln.strip().startswith("•")]
+    return t[t.index("RULE 10 보강 — KIS"):t.index("RULE 11 (JP INDUSTRY")]
 
 
-def _unbacked_rule_bullets(bullets, outputs, sources=None) -> list:
-    """규칙 줄 중 그 수치를 찍는 블록이 없는 것(순수). ``outputs`` = {블록: 출력 텍스트}."""
+def _rule10_bullets() -> list:
+    return [ln.strip()[1:].strip() for ln in _rule10_segment().splitlines()
+            if ln.strip().startswith("•")]
+
+
+def _unbacked_rule_bullets(bullets, outputs, sources=None, *, delivered=None) -> list:
+    """규칙 줄 중 그 수치를 찍는 블록이 없는 것(순수). ``outputs`` = {블록: 출력 텍스트} ·
+    ``delivered`` = 이 프롬프트를 받는 분석가에게 실제로 가는 블록(None = 판정 안 함)."""
     sources = _RULE10_SOURCES if sources is None else sources
     bad = []
     for b in bullets:
@@ -1058,6 +1073,9 @@ def _unbacked_rule_bullets(bullets, outputs, sources=None) -> list:
         if sources[key] is None:
             continue
         block, words = sources[key]
+        if delivered is not None and block not in delivered:
+            bad.append(f"{block} 블록이 이 분석가에게 주입되지 않는다: {b[:60]}")
+            continue
         if not any(all(w in ln for w in words) for ln in (outputs.get(block) or "").splitlines()):
             bad.append(f"{block} 블록의 어느 줄도 {words} 를 함께 찍지 않는다: {b[:60]}")
     return bad
@@ -1081,10 +1099,13 @@ def test_rule10_kis_rules_cite_only_numbers_some_block_prints(kc):
     """분석가 프롬프트 RULE 10 보강의 줄마다 그 수치를 실제로 찍는 블록이 있어야 한다 —
     없으면 '명시 의무' 가 지어내기를 부른다(실수 #433). 그리고 '없다' 고 말하는 줄은 정말
     어느 블록도 그 수치를 안 찍어야 참이다."""
+    from tradingagents.agents.utils import agent_utils as au
     bullets = _rule10_bullets()
-    assert len(bullets) >= 5, bullets          # 추출이 깨져 0줄이면 아무것도 안 잰다(#54)
+    assert len(bullets) >= 2, bullets          # 추출이 깨져 0줄이면 아무것도 안 잰다(#54)
     outs = _real_block_outputs(kc)
-    assert _unbacked_rule_bullets(bullets, outs) == []
+    delivered = {b for b, sec in _RULE10_SECTIONS.items()
+                 if au._section_allowed(_RULE10_ANALYST, sec)}
+    assert _unbacked_rule_bullets(bullets, outs, delivered=delivered) == []
     absent = [b for b in bullets if b.startswith("주입된 블록에 없는 수치")]
     assert len(absent) == 1, absent
     for word in ("연기금", "투신"):
@@ -1107,6 +1128,57 @@ def test_rule10_contract_fires(kc):
                                   {"kis": "• 공매도 비율: 1%\n• 거래량 대비: x"})
     # ④ 정상 줄은 통과
     assert not _unbacked_rule_bullets(["신용잔고율 4% 이상 → …"], outs)
+    # ⑤ 그 수치를 찍는 블록이 있어도 **이 분석가에게** 안 가면 실패한다(M4)
+    assert _unbacked_rule_bullets(["신용잔고율 4% 이상 → …"], outs, delivered={"seibro"})
+    assert not _unbacked_rule_bullets(["신용잔고율 4% 이상 → …"], outs, delivered={"kis"})
+
+
+def test_rule10_prompt_routing_claims_are_true(kc):
+    """RULE 10 보강 절은 '이 분석가에게는 KIS·KRX 수급 블록이 주입되지 않고, 그 기준은 블록의
+    해석 가이드와 함께 시장 분석가와 리서치 매니저·트레이더·PM 에게 간다' 고 **주장**한다
+    (2026-10-04 델타 리뷰 M4 — 받지 않는 수치를 '명시 의무' 로 요구하던 넷을 그렇게 옮겼다).
+    그 문장이 참인지 제품 라우팅(``_section_allowed``)과 가이드 문구로 잰다 — 라우팅이나
+    가이드가 바뀌면 프롬프트가 거짓말을 하게 되므로 여기서 빨간불이어야 한다(#424·#55)."""
+    from tradingagents.agents.utils import agent_utils as au
+    seg = _rule10_segment()
+    assert "이 분석가에게는 KIS·KRX 단기 수급 블록" in seg
+    for sec in ("kis_supply", "krx_flow"):
+        assert not au._section_allowed(_RULE10_ANALYST, sec), sec
+    assert "시장 분석가와 리서치 매니저·" in seg and "트레이더·PM" in seg
+    # 매니저·트레이더·PM 은 analyst_id 없이(None) 컨텍스트를 받는다
+    for who in ("market", None):
+        assert au._section_allowed(who, "kis_supply"), who
+    # '그 기준(…)은 그 블록에 실린 해석 가이드와 함께 간다' — 넷 다 가이드에 있어야 참이다
+    g = kc.KIS_INTERP_GUIDE
+    for crit in ("외인 5거래일 누적", "+100억", "신용잔고율 4%", "공매도 비율(거래량 대비) 15%",
+                 "개인 +100억"):
+        assert crit in g, crit
+    # 이 분석가에게 남는 규칙은 수급 방향 판단·'수급 이상 없음' 을 금한다(옛 판은 받지도 않은
+    # 수치로 '수급 이상 없음' 한 줄을 늘 쓰게 만들었다)
+    assert "'수급 이상 없음'" in seg and "쓰지 말 것" in seg.split("'수급 이상 없음'")[1][:40]
+
+
+def test_short_term_flow_candidate_is_conditional_on_injected_numbers():
+    """분석가 프롬프트의 '5거래일 지배 변수 후보 (c) 단기 수급' 은 그 수치가 그 프롬프트의
+    블록에 실렸을 때만 고를 수 있어야 한다 — 펀더멘털·뉴스·감정 분석가는 거래소·KIS 수급
+    블록을 받지 않는데(``_ANALYST_CONTEXT_EXCLUDE``) 후보가 조건 없이 열려 있으면 수치 없는
+    '외국인 flow 유입' 류 서술을 부른다(M4 와 같은 병, 실수 #433). 파일 열거가 아니라 분석가
+    패키지 전수로 잰다(#24) — 후보 목록을 새로 복제한 프롬프트도 걸린다."""
+    root = _REPO / "TradingAgents/tradingagents/agents"
+    seen = 0
+    for f in sorted(root.rglob("*.py")):
+        for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if not (isinstance(n, ast.Constant) and isinstance(n.value, str)):
+                continue
+            t = n.value
+            i = t.find("(c) 단기")
+            while i != -1:
+                seen += 1
+                j = t.find("(d)", i)
+                part = t[i:j if j != -1 else len(t)]
+                assert "블록에 실렸을 때만" in part, f"{f.relative_to(_REPO)}: {part[:80]}"
+                i = t.find("(c) 단기", i + 1)
+    assert seen >= 3, seen          # 셋 다 찾았는가 — 0 이면 아무것도 안 잰다(#54)
 
 
 
@@ -1136,7 +1208,10 @@ def test_audit_tr_verdict_branches(kc):
     assert empty[0].startswith("❌") and "0개" in empty[0]
     # 행은 있는데 확정 행이 없다(오늘 잠정 행만) — 파서 실패 분기
     only_today = _verdict(kc, "investor", {"rt_cd": "0", "output": [_inv_row("20261002", 6)]})
-    assert only_today[-1] == "❌ 005930.KS ① 투자자: 파서가 값을 못 만들었습니다(확정된 행 없음)"
+    # 그 줄 하나로 이유가 서야 한다 — 결산은 ❌ 줄만 올린다(#356 · 델타 리뷰 L6)
+    assert only_today[-1].startswith(
+        "❌ 005930.KS ① 투자자: 파서가 값을 못 만들었습니다 — 확정 행이 없습니다"), only_today
+    assert "20:00 전이라 잠정" in only_today[-1]
     # 표본이 부족해 단위를 못 잼 → ⚠️(판정 보류) — ✅ 가 아니다(금액 칸이 전부 0 인
     # 응답 — 순=매수−매도 는 그대로 맞는다)
     z = _inv_payload()
@@ -1182,17 +1257,18 @@ def test_audit_net_identity_catches_a_field_that_means_something_else(kc):
 
 
 def test_audit_credit_verdict_single_and_double_failure(kc):
-    """한쪽만 쓸 수 있어도 제품은 폴백으로 받으니 그 ❌ 는 정보로 내리고(리뷰 M43),
-    둘 다 못 쓰면 **두 사유를 그 한 줄에** 싣는다 — 결산은 ❌ 줄만 올린다(M42 · M4)."""
+    """제품이 폴백하는 실패(그 시도를 안 쓴다)의 ❌ 는 정보로 내리고(리뷰 M43), 둘 다 못
+    쓰면 **두 사유를 그 한 줄에** 싣는다 — 결산은 ❌ 줄만 올린다(M42 · M4)."""
     from bot.scripts import kis_flow_audit as au
     okl = _verdict(kc, "credit", _credit_payload())
-    one = au.credit_verdict("005930.KS", [("20261002", ["❌ 005930.KS ② 신용(결제일자=20261002): 원천이 답하지 않았습니다 — rt_cd=1 X"]),
-                                         ("", okl)])
+    one = au.credit_verdict("005930.KS", [
+        ("20261002", ["❌ 005930.KS ② 신용(결제일자=20261002): 원천이 답하지 않았습니다 — rt_cd=1 X"],
+         False), ("", okl, True)])
     assert not any(x.startswith("❌") for x in one), one
     assert any("원천이 답하지 않았습니다 — rt_cd=1 X" in x for x in one)
     both = au.credit_verdict("005930.KS", [
-        ("20261002", ["❌ a: 원천이 답하지 않았습니다 — rt_cd=1 A"]),
-        ("", ["❌ b: 응답은 왔는데 날짜(deal_date)를 읽을 수 있는 행이 0개 — 응답 키: x"])])
+        ("20261002", ["❌ a: 원천이 답하지 않았습니다 — rt_cd=1 A"], False),
+        ("", ["❌ b: 응답은 왔는데 날짜(deal_date)를 읽을 수 있는 행이 0개 — 응답 키: x"], False)])
     last = both[-1]
     assert last.startswith("❌ 005930.KS ② 신용: 결제일자 오늘·빈값 둘 다")
     assert "20261002: 원천이 답하지 않았습니다 — rt_cd=1 A" in last
@@ -1200,14 +1276,61 @@ def test_audit_credit_verdict_single_and_double_failure(kc):
     assert sum(1 for x in both if x.startswith("❌")) == 1
 
 
+def test_audit_credit_verdict_keeps_the_defect_of_the_response_the_product_uses(kc):
+    """제품(``_flow_get``)은 파서가 값을 만든 **첫** 응답을 쓴다 — 오늘 응답이 필드가 빠진
+    채 파싱되면 제품은 그걸 싣는다. 빈값 응답이 깨끗하다고 그 ❌ 를 지우면 결함을 숨긴다
+    (델타 리뷰 L1 — 옛 판은 결산이 비고 rc 0 이었다)."""
+    from bot.scripts import kis_flow_audit as au
+    p = _credit_payload()
+    for r in p["output"]:
+        r.pop("whol_stln_rmnd_stcn")
+    today = _verdict(kc, "credit", p)
+    assert any(x.startswith("❌") and "whol_stln_rmnd_stcn" in x for x in today), today
+    out = au.credit_verdict("005930.KS", [("20261002", today, True),
+                                          ("", _verdict(kc, "credit", _credit_payload()), True)])
+    assert any(x.startswith("❌") and "whol_stln_rmnd_stcn" in x for x in out), out
+    # 제품이 쓰지 않는 두 번째 응답의 ❌·⚠️ 는 정보다
+    out2 = au.credit_verdict("005930.KS", [
+        ("20261002", _verdict(kc, "credit", _credit_payload()), True),
+        ("", ["❌ b: 원천이 답하지 않았습니다 — HTTP 503", "⚠️ b: 무엇"], False)])
+    assert not any(x.startswith(("❌", "⚠️")) for x in out2), out2
+    assert "   · b: 원천이 답하지 않았습니다 — HTTP 503" in out2
+
+
 def test_audit_market_code_verdict(kc):
     from bot.scripts import kis_flow_audit as au
-    assert au.market_code_verdict("247540.KQ", {"J": (100, ""), "Q": (None, "x")})[-1].startswith(
+    assert au.market_code_verdict(
+        "247540.KQ", {"J": (100, "", "ok"), "Q": (None, "x", "rt_cd")})[-1].startswith(
         "✅ 247540.KQ 시장 분류 코드")
-    bad = au.market_code_verdict("247540.KQ", {"J": (None, "rt_cd=1"), "Q": (100, "")})[-1]
-    assert bad.startswith("❌ 247540.KQ") and "_mkt_div" in bad
-    both = au.market_code_verdict("247540.KQ", {"J": (None, "a"), "Q": (None, "b")})[-1]
+    # 원천이 답하고 J 를 받지 않았다 — ❌, J 의 사유가 그 줄에(결산은 ❌ 줄만 올린다)
+    for kind in ("rt_cd", "http4xx"):
+        bad = au.market_code_verdict(
+            "247540.KQ", {"J": (None, "rt_cd=1 X", kind), "Q": (100, "", "ok")})[-1]
+        assert bad.startswith("❌ 247540.KQ") and "_mkt_div" in bad and "rt_cd=1 X" in bad, bad
+    both = au.market_code_verdict(
+        "247540.KQ", {"J": (None, "a", "rt_cd"), "Q": (None, "b", "rt_cd")})[-1]
     assert both.startswith("❌") and "J: a" in both and "Q: b" in both
+    # 원천이 답했는데(kind ok) J 로는 현재가가 비었다 — 판정 보류가 아니라 관측이다(배포전
+    # 셀프리뷰: 옛 판은 '원천이 답하지 않음 — ok' 로 적고 보류했다)
+    empty = au.market_code_verdict(
+        "247540.KQ", {"J": (None, "ok", "ok"), "Q": (100, "", "ok")})[-1]
+    assert empty.startswith("❌ 247540.KQ") and "_mkt_div" in empty, empty
+    assert au._EMPTY_PRICE in empty and "답하지 않음" not in empty and "ok" not in empty
+    none = au.market_code_verdict(
+        "247540.KQ", {"J": (None, "ok", "ok"), "Q": (None, "ok", "ok")})
+    assert none[-1].startswith("❌") and none[-1].count(au._EMPTY_PRICE) == 2, none
+    assert "Q(옛 판): 못 받음 — " + au._EMPTY_PRICE in none[1], none
+
+
+@pytest.mark.parametrize("kind", ["timeout", "http5xx", "network", "token", "json", "error"])
+def test_audit_market_code_does_not_call_a_transient_j_failure_a_rejection(kc, kind):
+    """J 가 일시 장애로 실패하고 Q 가 우연히 받아졌을 때 '_mkt_div 를 되돌려야 합니다' 를
+    처방하면 현재가·실시간·분봉·일봉 조회까지 같이 되돌린다 — 판정 보류(델타 리뷰 H1)."""
+    from bot.scripts import kis_flow_audit as au
+    v = au.market_code_verdict(
+        "247540.KQ", {"J": (None, "응답 시간 초과(10초)", kind), "Q": (100, "", "ok")})[-1]
+    assert v.startswith("⚠️ 247540.KQ 시장 분류 코드: J 를 못 쟀습니다"), v
+    assert "응답 시간 초과(10초)" in v and "_mkt_div" not in v
 
 
 def test_audit_why_names_a_404(kc):
@@ -1257,6 +1380,16 @@ def test_audit_main_end_to_end(monkeypatch, kc, capsys):
     _router(monkeypatch, kc, table)
     assert au.main(["247540.KQ"]) == 1
     assert "❌ 247540.KQ 시장 분류 코드" in capsys.readouterr().out
+    # 원천이 답했는데(rt_cd 0) J 로는 현재가가 비었다 — '원천이 답하지 않음' 이 아니라 ❌ 관측
+    table["FHKST01010100"] = lambda p: {"rt_cd": "0", "output": {
+        "stck_prpr": "250000" if p["FID_COND_MRKT_DIV_CODE"] == "Q" else ""}}
+    _router(monkeypatch, kc, table)
+    assert au.main(["247540.KQ"]) == 1
+    out = capsys.readouterr().out
+    v = [ln for ln in out.splitlines()
+         if ln.startswith(("❌ 247540.KQ 시장", "⚠️ 247540.KQ 시장"))]
+    assert len(v) == 1 and v[0].startswith("❌") and au._EMPTY_PRICE in v[0], out
+    assert "답하지 않음" not in out
 
 
 def test_audit_does_not_spend_the_products_warning_budget(monkeypatch, kc, capsys):
@@ -1321,7 +1454,15 @@ def test_audit_stops_after_consecutive_transport_failures(monkeypatch, kc, capsy
     assert au.main([]) == 1
     out = capsys.readouterr().out
     assert len(calls) == 2, calls
-    assert "❌ 원천 장애 — 연속 전송 실패 2회(응답 시간 초과(10초)) 뒤 남은 조회 10개를 건너뛰었습니다" in out
+    assert ("❌ 원천 장애 — 005930.KS ① 투자자 부터 연속 전송 실패 2회(응답 시간 초과(10초)) "
+            "뒤 남은 조회 10개를 건너뛰었습니다") in out
+    # 그 줄은 자기 절에 붙는다 — 마지막 종목 절에 붙으면 한 번도 안 물은 종목을 장애로
+    # 지목한다(델타 리뷰 L2)
+    from bot import audit_sweep
+    found = [f for f in audit_sweep._findings(out) if "원천 장애 —" in f]
+    assert found and all(f.startswith("[원천 장애]") for f in found), found
+    # 장애 때 ❌ 는 첫 실패 둘 + 요약 하나 — 건너뛴 조회마다 ❌ 를 내면 결산이 도배된다
+    assert sum(1 for ln in out.splitlines() if ln.startswith("❌")) == 3, out
     # 장애 사이에 정상 응답이 끼면 다시 센다 — 투자자 실패 → 신용(오늘) 성공 → 신용(빈값)
     # 실패 순이면 연속 2회가 아니므로 공매도·프로그램까지 묻는다
     calls2 = _router(monkeypatch, kc, {
@@ -1335,6 +1476,384 @@ def test_audit_stops_after_consecutive_transport_failures(monkeypatch, kc, capsy
 def test_audit_is_registered_daily():
     from bot.audit_sweep import AUDITS
     assert dict((m, c) for _n, m, c in AUDITS)["bot.scripts.kis_flow_audit"] == "daily"
+
+
+# ─── 델타 리뷰(체크포인트 2 이후) — 새 규칙의 재현 + 생존 뮤테이션 픽스처 ──────────
+# 2026-10-04 델타 리뷰가 남긴 결함(M1·M2·M3·L3·L4·L5·L6·L7·L8·H1)을 실패하는 상태로 먼저
+# 재현하고, 그 리뷰의 뮤테이션 중 살아남은 20종(K01·K09·K11·K31·K36·K52·D02~D08·D11·
+# A01~A04·A07·C01)을 잡는 픽스처를 둔다(#91 — 발화 경로가 없는 가드는 가드가 아니다).
+
+def test_absent_today_row_after_day_end_is_pending(kc, monkeypatch):
+    """하루 끝(20:00) 뒤인데 오늘(거래일) 행이 아예 없으면 잠정으로 센다 — 안 세면 그
+    응답이 12시간 캐시돼 밤새 어제 값이 '최신' 으로 나간다(델타 리뷰 M2)."""
+    p = _inv_payload()
+    p["output"] = [r for r in p["output"] if r["stck_bsop_date"] != "20261002"]
+    r = kc.parse_investor_flow(p, now=_AFTER_CLOSE)
+    assert r["asof"] == "2026-10-01" and r["pending"] == 1
+    assert r["pending_note"] == ("2026-10-02(오늘 행이 아직 없음 — KRX 하루 끝 뒤인데 원천이 "
+                                 "주지 않았습니다)"), r["pending_note"]
+    # 하루 끝 전엔 오늘 행이 없어도 잠정이 아니다(하루 끝을 넘으면 캐시가 어차피 무효다)
+    assert kc.parse_investor_flow(p)["pending"] == 0
+    # 오늘이 달력상 거래일이 아니면(토요일) 없는 게 정상이다
+    sat = datetime(2026, 10, 3, 20, 30, tzinfo=_KST)
+    assert kc.parse_investor_flow(_inv_payload(head_unfilled=False), now=sat)["pending"] == 0
+    # 신용·공매도·프로그램도 같은 함수다
+    assert kc.parse_credit_balance(_credit_payload(), now=_AFTER_CLOSE)["pending"] == 1
+    assert kc.parse_short_sale(_short_payload(), now=_AFTER_CLOSE)["pending"] == 1
+    assert kc.parse_program_daily(_prog_payload(), now=_AFTER_CLOSE)["pending"] == 1
+    # 달력을 못 쓰면 보수적으로 세고 그 사실을 말한다
+    from bot import market_calendar as mc
+    monkeypatch.setattr(mc, "is_trading_day", lambda *a, **k: None)
+    r2 = kc.parse_investor_flow(p, now=_AFTER_CLOSE)
+    assert r2["pending"] == 1 and r2["pending_note"].endswith(
+        " · 달력을 못 써 오늘이 거래일인지 모름)"), r2["pending_note"]
+
+
+def test_day_end_boundary_is_inclusive_at_twenty(kc):
+    """20:00 정각이면 하루가 끝난 것이다(K01 — ``>`` 로 바꾸면 그 1분 동안 채워진 오늘 행을
+    잠정으로 본다). 19:59 는 아직 잠정."""
+    full = _inv_payload(head_unfilled=False)
+    at = kc.parse_investor_flow(full, now=datetime(2026, 10, 2, 20, 0, tzinfo=_KST))
+    assert at["asof"] == "2026-10-02" and at["pending"] == 0
+    before = kc.parse_investor_flow(full, now=datetime(2026, 10, 2, 19, 59, tzinfo=_KST))
+    assert before["asof"] == "2026-10-01" and before["pending"] == 1
+
+
+def test_duplicate_dates_collapse_or_are_dropped(kc):
+    """같은 날짜가 같은 값으로 두 번 오면 하나로, 값이 다르면 그날은 쓰지 않는다 — 어느
+    쪽이 맞는지 모르고, 둘 다 세면 'N거래일' 이 거짓이 된다(델타 리뷰 M3)."""
+    p = _inv_payload()
+    i = _DATES.index("20260929")
+    p["output"].append(dict(p["output"][i]))                    # 같은 값 — 하나로
+    same = kc.parse_investor_flow(p)
+    assert same["dropped"] == 0 and same["window"]["label"] == "5거래일"
+    assert same["window"]["won"]["institution"] == sum(_won_of(d) for d in _DATES[1:6])
+    clash = dict(p["output"][i])
+    clash["frgn_ntby_qty"] = "1"                                 # 값이 다르다 — 못 쓴다
+    p["output"].append(clash)
+    r = kc.parse_investor_flow(p)
+    assert r["dropped"] == 1
+    assert r["dropped_note"] == "2026-09-29(같은 날짜 행이 값이 다르게 3번 옴)", r["dropped_note"]
+    assert r["window"]["gaps"] == ["2026-09-29"] and r["window"]["label"] == "최근 5개 영업일 행"
+    # 오늘 행이 값이 다르게 두 번 오면 마감 뒤라도 잠정이다(지난 날이면 버린다)
+    t = _inv_payload(head_unfilled=False)
+    t2 = dict(t["output"][-1])
+    t2["orgn_ntby_qty"] = "7"
+    t["output"].append(t2)
+    rt = kc.parse_investor_flow(t, now=_AFTER_CLOSE)
+    assert rt["asof"] == "2026-10-01" and rt["dropped"] == 0
+    assert "2026-10-02(오늘 — 같은 날짜 행이 값이 다르게 2번 옴)" in rt["pending_note"]
+
+
+def test_non_session_row_is_dropped_and_kept_without_a_calendar(kc, monkeypatch):
+    """달력상 거래일이 아닌 날짜의 행은 쓰지 않는다 — 세면 4거래일 + 일요일이 '5거래일' 이
+    된다(델타 리뷰 M3). 달력을 못 쓰면 대조를 건너뛴다(그때 라벨은 '거래일' 이라 하지 않는다)."""
+    p = _inv_payload()
+    p["output"].append(_inv_row("20260927", 2))                  # 일요일
+    r = kc.parse_investor_flow(p)
+    assert r["dropped"] == 1 and r["dropped_note"] == "2026-09-27(달력상 거래일이 아님)"
+    assert (r["window"]["from"], r["window"]["label"]) == ("2026-09-23", "5거래일")
+    from bot import market_calendar as mc
+    monkeypatch.setattr(mc, "is_trading_day", lambda *a, **k: None)
+    monkeypatch.setattr(mc, "sessions_between", lambda *a, **k: None)
+    r2 = kc.parse_investor_flow(p)
+    assert r2["dropped"] == 0 and r2["window"]["from"] == "2026-09-27"
+    assert r2["window"]["label"] == "최근 5개 영업일 행"
+
+
+def test_credit_short_blank_rows_are_skipped_and_why_empty_names_the_case(kc, monkeypatch):
+    """신용·공매도도 값이 전부 빈 행은 '최신' 이 될 수 없다(델타 리뷰 M1 — 첫 판은 None 만 든
+    값을 12시간 구웠다). 값을 못 만든 이유는 경우를 이름으로 말한다(L6)."""
+    pc = _credit_payload()
+    pc["output"][1] = _blank(pc["output"][1])                    # 10-01 이 빈 행
+    c = kc.parse_credit_balance(pc)
+    assert c["asof"] == "2026-09-29" and c["blank"] == 1 and c["credit_balance_pct"] == 0.5
+    ps = _short_payload()
+    ps["output2"][1] = _blank(ps["output2"][1])
+    sh = kc.parse_short_sale(ps)
+    assert sh["asof"] == "2026-09-30" and sh["blank"] == 1 and sh["short_qty"] == 500
+    allb = {"rt_cd": "0", "output": [_blank(x) for x in _credit_payload()["output"]]}
+    assert kc.parse_credit_balance(allb) is None
+    assert kc.why_empty("credit", allb, now=_NOW) == "확정 행 2개의 값이 모두 비어 있습니다"
+    only_today = {"rt_cd": "0", "output": [_credit_row("20261002", 1, "0.10", 1)]}
+    assert kc.why_empty("credit", only_today, now=_NOW).startswith(
+        "확정 행이 없습니다 — 2026-10-02(오늘 — KRX 거래가 끝나는 20:00 전이라 잠정)")
+    nodate = {"rt_cd": "0", "output": [{"deal_date": "x"}]}
+    assert kc.why_empty("credit", nodate, now=_NOW) == (
+        "날짜(deal_date)를 읽을 수 있는 행이 없습니다(행 1개)")
+    # 배선 — 원천이 답했는데 못 만든 사유가 수집 사유(kis_why)로 간다
+    _router(monkeypatch, kc, dict(_ok_table(), FHPST04760000=allb))
+    v, why = kc._flow_get("credit", "005930.KS")
+    assert v is None and why == ("원천이 답했는데 값을 만들 수 없습니다 — "
+                                 "확정 행 2개의 값이 모두 비어 있습니다")
+
+
+def test_credit_zero_balance_head_is_a_placeholder_up_to_three_days(kc):
+    """신용잔고는 저량이라 수천 주가 하루 만에 정확히 0 이 되지 않는다 — 최신부터 0 이 셋
+    이하로 이어지고 그 뒤에 잔고가 있으면 자리표시로 보고 쓰지 않는다(델타 리뷰 M1 짝).
+    넷 이상이면 진짜 0(신용 불가 종목) · 처음부터 0 이면 0."""
+    def pay(*rows):
+        return {"rt_cd": "0", "output": list(rows)}
+    two = kc.parse_credit_balance(pay(_credit_row("20260928", 5000, "1.10", 9),
+                                      _credit_row("20260929", 0, "0.00", 0),
+                                      _credit_row("20260930", 0, "0.00", 0)))
+    assert two["asof"] == "2026-09-28" and two["credit_balance_shares"] == 5000
+    assert two["dropped"] == 2 and two["dropped_note"] == (
+        "2026-09-30, 2026-09-29(신용잔고가 직전 5,000주에서 0 — 자리표시로 보고 쓰지 않음)")
+    three = kc.parse_credit_balance(pay(_credit_row("20260923", 5000, "1.10", 9), *[
+        _credit_row(d, 0, "0.00", 0) for d in ("20260928", "20260929", "20260930")]))
+    assert three["asof"] == "2026-09-23" and three["dropped"] == 3      # 경계 — 셋은 자리표시
+    four = kc.parse_credit_balance(pay(_credit_row("20260922", 5000, "1.10", 9), *[
+        _credit_row(d, 0, "0.00", 0) for d in ("20260923", "20260928", "20260929", "20260930")]))
+    assert four["asof"] == "2026-09-30" and four["credit_balance_shares"] == 0
+    assert four["dropped"] == 0
+    zero = kc.parse_credit_balance(pay(_credit_row("20260930", 0, "0.00", 0)))
+    assert zero["asof"] == "2026-09-30" and zero["credit_balance_shares"] == 0
+    assert zero["dropped"] == 0
+    txt = kc.format_kis_block({"credit_short": two})
+    assert "(신용 — 쓰지 않은 행: 2026-09-30, 2026-09-29(신용잔고가 직전 5,000주에서 0" in txt
+
+
+def test_http_error_message_carries_the_business_code(kc, monkeypatch):
+    """4xx·5xx 본문의 업무 코드·메시지를 사유에 싣는다 — 버리면 5xx 로 온 업무 오류(초당
+    건수 초과 등)가 '원천 장애' 와 같은 모양이 된다(델타 리뷰 L3). kind 는 그대로다."""
+    import requests
+    monkeypatch.setattr(kc, "_get_token", lambda: "tok")
+    body = {"msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다." + "가" * 200}
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(500, body))
+    _d, info = kc._get_ex("/p", "TR", {})
+    assert info["kind"] == "http5xx"
+    assert info["msg"].startswith("HTTP 500 — EGW00201 초당 거래건수를 초과하였습니다.")
+    assert len(info["msg"]) == len("HTTP 500 — ") + 120               # 본문은 120자까지
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(503, ValueError("html")))
+    assert kc._get_ex("/p", "TR", {})[1]["msg"] == "HTTP 503"         # JSON 아니면 상태만
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(400, {"msg1": "잘못된 요청"}))
+    assert kc._get_ex("/p", "TR", {})[1] == {"kind": "http4xx", "status": 400,
+                                             "msg": "HTTP 400 — 잘못된 요청"}
+
+
+def test_zero_quantity_is_unsigned_and_uncolored(monkeypatch, kc):
+    """수량 0 은 부호도 색도 없다 — '+0주' 를 초록으로 칠하면 매수처럼 읽힌다(델타 리뷰 L5 ·
+    생존 D02)."""
+    assert kc._fmt_shares(0) == "0주" and kc._fmt_shares(5) == "+5주"
+    assert kc._fmt_shares(-5) == "-5주" and kc._fmt_shares(None) == "N/A"
+    inv = kc.parse_investor_flow(_inv_payload(zero=("20261001",)))
+    assert inv["latest"]["qty"]["foreign"] == 0
+    pane = _flow_pane(monkeypatch, {"investor_flow": inv})
+    assert '<td class="num">0주</td>' in _row_of(pane, "외국인")
+
+
+def test_unit_note_appears_only_when_an_amount_is_missing(monkeypatch, kc):
+    """거래 0 인 날은 단위 없이도 금액이 0 이다 — 그날 '금액 단위를 확정하지 못해 싣지
+    않았다' 를 적으면 0.00억 칸과 모순된다(델타 리뷰 L4). 한 칸이라도 비면 적는다(L5)."""
+    inv = kc.parse_investor_flow(_inv_payload(zero=("20261001",)))
+    inv["latest"]["unit_ok"] = False                              # 단위를 못 잰 날이지만
+    assert all(v == 0 for v in inv["latest"]["won"].values())     # 금액은 전부 0
+    pane = _flow_pane(monkeypatch, {"investor_flow": inv})
+    txt = kc.format_kis_block({"investor_flow": inv})
+    assert "금액 단위를 확정하지 못해" not in pane and "금액 단위를 확정하지 못해" not in txt
+    inv["latest"]["won"]["institution"] = None                    # 한 칸이 빔
+    pane2 = _flow_pane(monkeypatch, {"investor_flow": inv})
+    txt2 = kc.format_kis_block({"investor_flow": inv})
+    assert "금액 단위를 확정하지 못해 그날 금액은 싣지 않았습니다" in pane2
+    assert "(금액 단위를 확정하지 못해 그날 금액은 싣지 않습니다" in txt2
+
+
+def test_unit_per_row_check_uses_the_median_not_the_minimum(kc):
+    """행별 단위 대조는 그 행 표본의 **중앙** 비로 한다 — 한 칸이 100배 어긋났다고 그날
+    금액을 통째로 버리지 않는다(생존 K09 — 최솟값으로 재면 버린다)."""
+    p = _inv_payload()
+    r = p["output"][_DATES.index("20261001")]
+    r["prsn_seln_tr_pbmn"] = str(int(r["prsn_seln_tr_pbmn"]) * 100)
+    out = kc.parse_investor_flow(p)
+    assert out["unit_bad"] == [] and out["latest"]["unit_ok"] is True, out["unit_note"]
+
+
+def test_program_latest_amount_is_withheld_when_its_row_disagrees(kc):
+    """프로그램도 최신 행의 비가 고른 단위와 어긋나면 그날 금액을 싣지 않는다(생존 K11 —
+    투자자에만 잠겨 있었다). 수량은 싣는다."""
+    p = _prog_payload()
+    top = p["output"][0]                                          # 10-01(최신)
+    assert top["stck_bsop_date"] == "20261001"
+    for k in ("whol_smtn_shnu_tr_pbmn", "whol_smtn_seln_tr_pbmn", "whol_smtn_ntby_tr_pbmn"):
+        top[k] = str(int(top[k]) * 100)
+    r = kc.parse_program_daily(p)
+    assert r["unit_won"] == 1_000_000 and r["unit_bad"] == ["2026-10-01"], r["unit_note"]
+    assert r["latest"]["won"] is None and r["latest"]["unit_ok"] is False
+    assert r["latest"]["qty"] is not None
+    assert r["window"]["won"] is None and "단위가 맞지 않는 날" in r["window"]["note"]
+
+
+def test_detail_enrichment_does_not_refetch_present_kis_or_pykrx_trends(monkeypatch, kc):
+    """지금 판의 KIS 값이 저장돼 있으면 수집을 부르지 않는다 — 캐시가 원천 호출을 가려
+    '호출 수' 로는 안 보이므로 수집 함수 자체를 잰다(생존 K31). pykrx 추세는 옛 동작
+    그대로 수급 칸이 아예 없을 때만 받는다(생존 D11)."""
+    import bot.dashboard as dash
+    import bot.pykrx_client as pk
+    seen = {"kis": 0, "pykrx": 0}
+
+    def _collect(ticker, **kw):
+        seen["kis"] += 1
+        return {}
+
+    def _trend(*a, **k):
+        seen["pykrx"] += 1
+        return None
+
+    monkeypatch.setattr(kc, "collect_kis_flow", _collect)
+    monkeypatch.setattr(pk, "get_kr_foreign_ownership_trend", _trend)
+    monkeypatch.setattr(pk, "get_kr_short_balance_trend", _trend)
+    present = {"investor_flow": kc.parse_investor_flow(_inv_payload()),
+               "foreign_ownership": [{"d": "2026-10-01", "pct": 50.0}]}
+    si = {"news": [1], "kr": {"research_reports": [1], "flow": present}}
+    dash._ensure_detail_enrichment("005930.KS", si)
+    assert seen == {"kis": 0, "pykrx": 0}
+    trends_only = {"foreign_ownership": [{"d": "2026-10-01", "pct": 50.0}]}
+    dash._ensure_detail_enrichment("005930.KS", {"news": [1], "kr": {
+        "research_reports": [1], "flow": trends_only}})
+    assert seen == {"kis": 1, "pykrx": 0}
+    dash._ensure_detail_enrichment("005930.KS", {"news": [1], "kr": {"research_reports": [1]}})
+    assert seen == {"kis": 2, "pykrx": 2}
+
+
+def test_rule10_noise_boundary_is_exactly_100_eok(kc):
+    """±100억 '미만' 이 noise 다 — 정확히 100억은 인용할 수 있다(생존 K36). 개인 떠받침도
+    정확히 +100억 · -100억 에서 선다."""
+    at = kc.format_kis_block({"investor_flow": _flow_dict(kc, 10**10, -10**10, 1)})
+    assert "RULE 10: 외인" not in at and "RULE 10: 기관" not in at, at
+    under = kc.format_kis_block({"investor_flow": _flow_dict(kc, 10**10 - 10**6, None, 1)})
+    assert "⚠️ RULE 10: 외인 5거래일 누적 +99.99억원" in under
+    retail = kc.format_kis_block({"investor_flow": _flow_dict(kc, -10**10, None, 10**10)})
+    assert "Retail 떠받침 패턴 — 개인 +100.00억원 vs 외인 -100.00억원" in retail
+
+
+def test_prompt_block_program_pending_and_dropped_lines(kc):
+    """프로그램 블록도 확정 전인 날·쓰지 않은 행을 말한다(생존 K52 — 그 줄이 무가드였다)."""
+    p = _prog_payload(today="partial")
+    p["output"].append(_prog_row("20260927", 9))                  # 일요일 행
+    txt = kc.format_kis_block({"program_trade": kc.parse_program_daily(p)})
+    assert "(프로그램 — 아직 확정 전인 날: 2026-10-02(오늘 — KRX 거래가 끝나는 20:00 전" in txt
+    assert "(프로그램 — 쓰지 않은 행: 2026-09-27(달력상 거래일이 아님))" in txt
+    inv = _inv_payload()
+    inv["output"].append(_inv_row("20260927", 2))
+    itxt = kc.format_kis_block({"investor_flow": kc.parse_investor_flow(inv)})
+    assert "(쓰지 않은 행: 2026-09-27(달력상 거래일이 아님))" in itxt
+
+
+def test_flow_pane_notes_blank_pending_dropped_and_window(monkeypatch, kc):
+    """화면 각주 — 투자자 빈 행(생존 D03)·쓰지 않은 행 · 프로그램 잠정(D04)·창(D05)·쓰지
+    않은 행(델타 생존 DR7) · 신용·공매도 빈 행. 프로그램 각주는 **프로그램 절만** 그려 투자자
+    절의 같은 문구가 대신 만족시키지 못하게 잰다(#75)."""
+    p = _inv_payload()
+    i = _DATES.index("20261001")
+    p["output"][i] = _blank(p["output"][i])
+    p["output"].append(_inv_row("20260927", 2))
+    pane = _flow_pane(monkeypatch, {"investor_flow": kc.parse_investor_flow(p)})
+    assert "원천이 값을 비워 둔 최근 1일은 뺐습니다." in pane
+    assert "쓰지 않은 행: 2026-09-27(달력상 거래일이 아님)" in pane
+    prog = kc.parse_program_daily(_prog_payload(today="partial"))
+    ppane = _flow_pane(monkeypatch, {"program": prog})
+    assert "아직 확정 전인 날: 2026-10-02(오늘" in ppane
+    pd2 = _prog_payload()
+    pd2["output"].append(_prog_row("20260927", 9))               # 일요일 행 — 프로그램 절만
+    dpane = _flow_pane(monkeypatch, {"program": kc.parse_program_daily(pd2)})
+    assert "쓰지 않은 행: 2026-09-27(달력상 거래일이 아님)" in dpane
+    pw = _prog_payload()
+    pw["output"][1]["whol_smtn_ntby_tr_pbmn"] = ""               # 09-30 칸이 빔
+    wpane = _flow_pane(monkeypatch, {"program": kc.parse_program_daily(pw)})
+    assert "5거래일 누적은 싣지 않았습니다 — 그 구간에 값이 빈 날이 있어" in wpane
+    pc = _credit_payload()
+    pc["output"][1] = _blank(pc["output"][1])
+    cpane = _flow_pane(monkeypatch, {"credit": kc.parse_credit_balance(pc)})
+    assert "신용 — 원천이 값을 비워 둔 최근 1일은 뺐습니다." in cpane
+    zc = {"rt_cd": "0", "output": [_credit_row("20260929", 5000, "1.10", 9),
+                                   _credit_row("20260930", 0, "0.00", 0)]}
+    zpane = _flow_pane(monkeypatch, {"credit": kc.parse_credit_balance(zc)})
+    assert "신용 — 쓰지 않은 행: 2026-09-30(신용잔고가 직전 5,000주에서 0" in zpane
+
+
+def test_flow_pane_credit_and_short_rows_show_their_own_dates(monkeypatch, kc):
+    """신용·공매도는 기준일이 다를 수 있다 — 행마다 **자기** 기준일을 적는다(생존 D06·D07)."""
+    ps = _short_payload()
+    ps["output2"][1] = _blank(ps["output2"][1])                   # 공매도 최신 = 09-30
+    flow = {"credit": kc.parse_credit_balance(_credit_payload()),
+            "short_sale": kc.parse_short_sale(ps)}
+    pane = _flow_pane(monkeypatch, flow)
+    assert '<td class="num">2026-10-01</td>' in _row_of(pane, "신용잔고율")
+    assert '<td class="num">2026-09-30</td>' in _row_of(pane, "공매도 비율 (거래량 대비)")
+
+
+def test_flow_pane_escapes_the_kis_why_reason(monkeypatch, kc):
+    """수집 사유는 원천 메시지를 담는다 — 그대로 실으면 HTML 이 깨진다(실수 #7 · 생존 D08)."""
+    pane = _flow_pane(monkeypatch, {"kis_why": {"credit": "원천 응답 실패 — <b>x</b> & y"}})
+    assert "신용·대주: 원천 응답 실패 — &lt;b&gt;x&lt;/b&gt; &amp; y" in pane
+    assert "<b>x</b>" not in pane
+
+
+def test_sessions_between_contract(monkeypatch):
+    """빈 리스트 = 그 구간에 거래일이 정말 없음 · None = 잴 수 없음 — 뒤집힌 구간을 None 으로
+    돌려주면 호출부가 '달력을 못 쓴다' 로 읽는다(생존 C01)."""
+    from bot import market_calendar as mc
+    assert mc.sessions_between("KR", "2026-09-26", "2026-09-27") == []      # 주말
+    assert mc.sessions_between("KR", "2026-10-01", "2026-09-22") == []      # 뒤집힘
+    assert mc.sessions_between("KR", "2026-09-28", "2026-09-30") == [
+        "2026-09-28", "2026-09-29", "2026-09-30"]
+    assert mc.sessions_between("KR", "", "2026-09-30") is None
+    monkeypatch.setattr(mc, "_calendar", lambda m: None)
+    assert mc.sessions_between("KR", "2026-09-28", "2026-09-30") is None
+
+
+def test_audit_flags_a_stale_latest_date_from_ten_sessions(kc):
+    """최신 확정일이 마지막으로 끝난 거래일보다 10거래일 이상 뒤면 ❌ — 원천이 멈췄거나 옛
+    행을 고르고 있다(델타 리뷰 L8). 9거래일은 아직 아니다. ✅ 줄은 몇 거래일 전인지 싣는다."""
+    def pay(last):
+        days = ["20260909", "20260910", "20260911", "20260914", "20260915", "20260916"]
+        days = days[:days.index(last) + 1]
+        return {"rt_cd": "0", "output": [_inv_row(d, i) for i, d in enumerate(days)]}
+    stale = _verdict(kc, "investor", pay("20260915"))
+    assert any(x.startswith("❌ 005930.KS ① 투자자: 최신 확정일 2026-09-15 이 10거래일 전입니다")
+               for x in stale), stale
+    fresh = _verdict(kc, "investor", pay("20260916"))
+    assert not any(x.startswith("❌") for x in fresh), fresh
+    assert any("· 최근 2026-09-16(9거래일 전)" in x for x in fresh), fresh
+    ok = _verdict(kc, "investor", _inv_payload())
+    assert any("· 최근 2026-10-01(0거래일 전)" in x for x in ok), ok
+
+
+def test_audit_thin_sample_with_exactly_one_is_a_hold(kc):
+    """표본이 정확히 1개면 단위를 못 재는 게 정상이다 — ⚠️(판정 보류)이지 ❌ 가 아니다(생존
+    A01 — 경계 1 이 무가드였다)."""
+    rows = [_prog_row(d, i, zero=True) for i, d in enumerate(_DATES[:-1])]
+    one = rows[_DATES.index("20260930")]
+    one["whol_smtn_shnu_vol"] = "500000"
+    one["whol_smtn_shnu_tr_pbmn"] = str(round(500_000 * 70_000 / 1e6))
+    one["whol_smtn_ntby_qty"] = "500000"
+    one["whol_smtn_ntby_tr_pbmn"] = one["whol_smtn_shnu_tr_pbmn"]
+    data = {"rt_cd": "0", "output": list(reversed(rows))}
+    assert kc.parse_program_daily(data)["unit_samples"] == 1
+    v = _verdict(kc, "program", data)
+    assert any(x.startswith("⚠️ 005930.KS ④ 프로그램(일별): 표본이 부족해") for x in v), v
+    assert not any(x.startswith("❌") for x in v), v
+
+
+def test_audit_net_identity_skips_todays_pending_row_and_checks_older_rows(kc):
+    """순 = 매수 − 매도 대조는 **확정 행만**(생존 A02 — 장중 오늘 행의 부분값은 어긋날 수
+    있다) · 최근 5행 **전부**(생존 A03 — 한 행만 보면 옛 행의 뜻 바뀜을 못 본다) · 금액은
+    0.1% 까지(생존 A07 — 10% 어긋남은 ❌)."""
+    p = _inv_payload(head_unfilled=False)
+    p["output"][-1]["frgn_ntby_qty"] = "123"                      # 오늘(10-02) — 잠정
+    v = _verdict(kc, "investor", p)
+    assert any(x.startswith("✅ 005930.KS ① 투자자: 순매수 = 매수 − 매도") for x in v), v
+    old = _inv_payload()
+    old["output"][_DATES.index("20260928")]["orgn_ntby_qty"] = "1"   # 확정 3번째 행
+    vo = _verdict(kc, "investor", old)
+    assert any(x.startswith("❌ 005930.KS ① 투자자: 순매수 ≠ 매수 − 매도") and "2026-09-28" in x
+               for x in vo), vo
+    amt = _inv_payload()
+    r = amt["output"][_DATES.index("20261001")]
+    r["frgn_ntby_tr_pbmn"] = str(round(int(r["frgn_ntby_tr_pbmn"]) * 1.1))
+    va = _verdict(kc, "investor", amt)
+    assert any(x.startswith("❌ 005930.KS ① 투자자: 순매수 ≠ 매수 − 매도") for x in va), va
 
 
 # ─── 전수 가드: 레포 클래스 인스턴스에서 없는 메서드를 부르는 자리 ─────────────
@@ -1352,11 +1871,18 @@ def _scan_missing_methods(root: Path, pkgs=_PKGS) -> list:
         2026-10-04 독립 리뷰가 (a) 만 보던 판이 ``get_kis().get_price(ticker)`` 두 곳
         (분석 경로의 피어 PER/PBR 폴백·D1 Phase 4)을 못 본 것을 잡았다(실수 #433).
 
-    ⚠️ 정확성보다 **오탐 없음**을 고른다 — 이름이 그 스코프에서 다른 방법으로도
-    묶이면(루프·다른 대입·인자·with·예외·중첩 def), 기반이 레포 밖이거나
-    ``__getattr__`` 이 있으면, 반환 주석이 ``Optional[...]`` 처럼 이름 하나가 아니면
-    판정하지 않는다. 그래서 못 보는 축: 인자로 받은 인스턴스·속성에 담긴
-    인스턴스·컨테이너를 거친 인스턴스·주석 없는 공장(#274)."""
+    (a) 는 함수 본문의 람다·컴프리헨션·중첩 함수 **안까지** 본다(2026-10-04 델타 리뷰 M5 —
+    분석 경로 KIS 선조회가 ``_kis = get_kis()`` 뒤 ``lambda: _kis.get_x(t)`` 모양이다).
+
+    ⚠️ 정확성보다 **오탐 없음**을 고른다 — 이름이 그 함수 안 어디서든(안쪽 람다·함수
+    인자 · 컴프리헨션 대상 · 중첩 def·class 이름 · 안쪽 함수의 nonlocal 대입 · global 선언 ·
+    match 포착 포함) 다른 방법으로도 묶이면, 기반이 레포 밖이거나 ``__getattr__`` 이 있으면,
+    반환 주석이 ``Optional[...]`` 처럼 이름 하나가 아니면 판정하지 않는다. 그래서 못 보는
+    축: 인자로 받은 인스턴스 · 속성에 담긴 인스턴스 · 컨테이너를 거친 인스턴스 · 주석 없는
+    공장 · 중첩 **클래스** 본문(메서드)이 바깥 인스턴스를 부르는 모양 · 안쪽에서 같은
+    이름을 다시 묶은 함수의 바깥 호출(그 이름을 통째로 판정하지 않는다)(#274). 오탐 쪽
+    예외 하나: 3.12 의 ``type`` 별칭·타입 매개변수는 묶임으로 세지 않는다 — 이 레포
+    인터프리터(3.11)엔 그 문법이 없어 픽스처로 못 잰다(#291)."""
     mods: dict = {}
     for pkg in pkgs:
         base = root / pkg
@@ -1439,9 +1965,24 @@ def _scan_missing_methods(root: Path, pkgs=_PKGS) -> list:
                 return rr
         return None
 
+    def pattern_names(n):
+        """match 포착이 묶는 이름 — ``case P() as x`` · ``case x`` · ``case [*x]`` ·
+        ``case {**x}``. 이름 노드(``ast.Name``)가 아니라 문자열 칸이라 대입 셈에 안 걸린다."""
+        if isinstance(n, (ast.MatchAs, ast.MatchStar)):
+            return {n.name} if n.name else set()
+        if isinstance(n, ast.MatchMapping):
+            return {n.rest} if n.rest else set()
+        return set()
+
     def own_nodes(fn):
-        """함수 자신의 스코프 노드만(중첩 함수·람다·클래스·컴프리헨션 본문 제외)."""
-        stack = list(fn.body) + list(fn.args.args) + list(fn.args.kwonlyargs)
+        """함수 본문의 노드 — 중첩 함수·람다·컴프리헨션 **안까지** 내려간다(클래스는 이름·
+        장식·기반만 보고 본문은 뺀다). 바깥에서 묶은 인스턴스를 안쪽 람다가 부르는 모양(``_kis = get_kis()`` 뒤
+        ``lambda: _kis.get_x(t)`` — 분석 경로의 KIS 선조회가 바로 그 모양이다)을 옛 판은
+        람다·컴프리헨션을 건너뛰어 못 봤다(2026-10-04 델타 리뷰 M5). 안쪽에서 같은 이름이
+        다시 묶이면(람다·함수 인자 · 컴프리헨션 대상 · 대입) 아래 '다른 묶임' 셈에 들어가
+        그 이름은 판정하지 않는다 — 오탐 없음 쪽이다."""
+        stack = (list(fn.body) + list(fn.args.posonlyargs) + list(fn.args.args)
+                 + list(fn.args.kwonlyargs))
         if fn.args.vararg:
             stack.append(fn.args.vararg)
         if fn.args.kwarg:
@@ -1449,12 +1990,14 @@ def _scan_missing_methods(root: Path, pkgs=_PKGS) -> list:
         while stack:
             n = stack.pop()
             yield n
-            for c in ast.iter_child_nodes(n):
-                if isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
-                                  ast.ClassDef, ast.ListComp, ast.SetComp, ast.DictComp,
-                                  ast.GeneratorExp)):
-                    continue
-                stack.append(c)
+            if isinstance(n, ast.ClassDef):
+                # 클래스 이름은 이 스코프의 묶임이다(아래 셈). 장식·기반은 바깥에서 평가되고,
+                # 본문은 들어가지 않는다 — 못 보는 축(바깥 인스턴스를 메서드가 부르는 모양).
+                # 그 대신 본문에서 다시 묶인 이름(메서드 인자 등 — 다른 스코프다)이 바깥
+                # 판정을 가리지도 않는다(델타 생존 M5c)
+                stack.extend(n.decorator_list + n.bases)
+                continue
+            stack.extend(ast.iter_child_nodes(n))
 
     hits = []
     for mod, tree in mods.items():
@@ -1496,6 +2039,13 @@ def _scan_missing_methods(root: Path, pkgs=_PKGS) -> list:
                     other.add(n.name)
                 elif isinstance(n, (ast.Import, ast.ImportFrom)):
                     other |= {(a.asname or a.name).split(".")[0] for a in n.names}
+                elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    other.add(n.name)              # 같은 이름의 중첩 def·class 가 다시 묶는다
+                elif isinstance(n, ast.Global):
+                    # 안쪽 함수의 global 은 모듈 이름을 가리킨다 — 대입 없이 읽기만 해도 바깥
+                    # 묶임으로 판정하면 오탐이다(nonlocal 은 바깥 그 이름이라 판정이 맞다)
+                    other |= set(n.names)
+                other |= pattern_names(n)
                 for t in tgt:
                     other |= {x.id for x in ast.walk(t) if isinstance(x, ast.Name)}
             bound = {k: v[0] for k, v in made.items()
@@ -1560,6 +2110,7 @@ def _scan_missing_methods(root: Path, pkgs=_PKGS) -> list:
                 other.add(n.name)
             elif isinstance(n, (ast.Global, ast.Nonlocal)):
                 other |= set(n.names)
+            other |= pattern_names(n)
         return imp, other            # import 과 다른 묶임이 겹치면 lookup 이 판정하지 않는다
 
     def as_module(target):
@@ -1670,7 +2221,42 @@ def test_missing_method_scanner_fires_and_spares(tmp_path):
         "def ok_local_import():\n    from bot.cli import Client as C\n"
         "    c = C()\n    return c.real()\n"
         "def bad_local_import():\n    from bot.cli import Client as C\n"
-        "    c = C()\n    return c.ghost()\n", encoding="utf-8")
+        "    c = C()\n    return c.ghost()\n"
+        # M5(2026-10-04 델타 리뷰) — 바깥에서 묶은 인스턴스를 안쪽 람다·컴프리헨션·중첩 함수가
+        # 부르는 모양(분석 경로 KIS 선조회의 ``_kis = get_kis()`` 뒤 ``lambda: _kis.get_x(t)``)
+        "def bad_lambda_bound():\n    c = Client()\n    f = lambda: c.ghost2()\n"
+        "    return f()\n"                                                      # 발화(람다)
+        "def bad_comp_bound(xs):\n    c = Client()\n    return [c.ghost3() for _ in xs]\n"  # 발화
+        "def bad_inner_def_bound():\n    c = Client()\n    def inner():\n"
+        "        return c.ghost4()\n    return inner()\n"                       # 발화(중첩 def)
+        # 안쪽에서 같은 이름이 다시 묶이면 그 이름은 판정하지 않는다(오탐 없음 쪽)
+        "def ok_lambda_param():\n    c = Client()\n    return lambda c: c.nope()\n"
+        "def ok_comp_target_bound(xs):\n    c = Client()\n    return [c.nope() for c in xs]\n"
+        "def ok_inner_param():\n    c = Client()\n    def inner(c):\n"
+        "        return c.nope()\n    return inner\n"
+        "def ok_inner_rebind():\n    c = Client()\n    def inner():\n"
+        "        c = object()\n        return c.nope()\n    return inner\n"
+        "def ok_nested_def_name():\n    c = Client()\n    def c():\n        return 1\n"
+        "    return c.nope()\n"
+        "def ok_nested_class_name():\n    c = Client()\n    class c:\n        pass\n"
+        "    return c.nope()\n"
+        "def ok_nonlocal_writer():\n    c = Client()\n    def w():\n        nonlocal c\n"
+        "        c = None\n    w()\n    return c.nope()\n"
+        # 안쪽 함수의 global 은 모듈 이름을 가리킨다 — 대입 없이 읽기만 해도 판정하면 오탐
+        "def ok_inner_global():\n    c = Client()\n    def inner():\n        global c\n"
+        "        return c.nope()\n    return inner\n"
+        # match 포착 세 모양(as · * · **)도 다시 묶는다 — 문자열 칸이라 대입 셈에 안 걸린다
+        "def ok_match_as(x):\n    c = Client()\n    match x:\n        case str() as c:\n"
+        "            return c.nope()\n    return None\n"
+        "def ok_match_star(x):\n    c = Client()\n    match x:\n        case [*c]:\n"
+        "            return c.nope()\n    return None\n"
+        "def ok_match_rest(x):\n    c = Client()\n    match x:\n        case {**c}:\n"
+        "            return c.nope()\n    return None\n"
+        # 중첩 클래스 본문엔 들어가지 않는다 — 그 메서드 인자(다른 스코프)가 바깥 판정을
+        # 가리지도 않는다(델타 생존 M5c: 본문까지 내려가면 이 발화가 사라진다)
+        "def bad_outer_beside_class():\n    c = Client()\n    class Inner:\n"
+        "        def m(self, c):\n            return c\n    return c.ghost5()\n",
+        encoding="utf-8")
     # (b) 묶지 않은 체인 — 2026-10-04 리뷰가 잡은 get_kis().get_price() 모양
     (pkg / "chain.py").write_text(
         "from bot import cli\n"
@@ -1695,11 +2281,14 @@ def test_missing_method_scanner_fires_and_spares(tmp_path):
         "def ok_shadow_nested():\n    def get_client():\n        return 1\n"
         "    return get_client().nope()\n"
         "def ok_comp_target(fs):\n    return [get_client().nope() for get_client in fs]\n"
+        "def ok_shadow_match(x):\n    match x:\n        case get_client:\n"
+        "            return get_client().nope()\n"
         "def ok_unknown():\n    return dict().nope()\n", encoding="utf-8")
     hits = _scan_missing_methods(tmp_path, ("bot",))
     names = sorted(h.split(" ")[1] for h in hits)
     assert names == sorted(
-        ["c._ready()", "c.ghost()", "k.nope()",
+        ["c._ready()", "c.ghost()", "k.nope()", "c.ghost2()", "c.ghost3()", "c.ghost4()",
+         "c.ghost5()",
          "get_client().gone()", "Client().gone2()", "cli.get_client().gone3()",
          "cm.Client().gone4()", "icm.get_client().gone5()", "g().gone6()",
          "get_client().gone7()", "get_client().gone8()", "get_client().gone9()"]), hits

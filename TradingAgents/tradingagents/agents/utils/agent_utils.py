@@ -334,7 +334,8 @@ def get_analyst_directive() -> str:
         " (a) RULE 10/11/12/13/14 의 dominant 변수 (산업별 정책 / 매크로),"
         " (b) imminent catalyst (어닝 D-5 / FOMC / 가격 인상 / 신제품 출시 / M&A /"
         " FDA / entity list / 판호 등 — PM trigger 패턴과 동일 셋),"
-        " (c) 단기 수급 신호 (외국인 flow / 港股통 flow / 신용잔고 / 대차잔고 추이),"
+        " (c) 단기 수급 신호 (외국인 flow / 港股통 flow / 신용잔고 / 대차잔고 추이"
+        " — 그 수치가 이 프롬프트의 블록에 실렸을 때만, 없으면 고르지 말 것),"
         " (d) 기술적 extreme (RSI ≥75 또는 ≤25, MACD divergence,"
         " corp action HARD GUARD 등).\n"
         " (3) 결론 마지막 verdict 라인은 '5거래일 horizon' 관점 명확히 안고 작성."
@@ -681,7 +682,9 @@ def _fetch_peer_multiples(ticker: str) -> str:
             # 일부 mid-cap 케이스). ⚠️ 2026-10-04 까지 KisClient 에 **없는**
             # get_price 를 불러 AttributeError 가 아래 except 에 조용히 먹혔다 —
             # 이 폴백은 한 번도 안 돌았다(실수 #433). 현재가 조회는 get_current_price
-            # (12시간 캐시 — 프롬프트 KIS 블록과 같은 캐시라 호출이 늘지 않는다).
+            # (12시간 캐시). 이 함수는 동종 종목마다 불리므로, 네이버가 PER·PBR 을 못 준
+            # 동종 종목에 한해 KIS 호출이 종목당 12시간에 1회 늘어난다(분석 대상 자신은
+            # 프롬프트 KIS 블록과 같은 캐시를 쓴다).
             if not (kr_per or kr_pbr):
                 try:
                     from bot.kis_client import get_kis
