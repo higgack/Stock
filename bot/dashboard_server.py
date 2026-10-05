@@ -2429,6 +2429,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "started": int(d["started"]),
                 "newest": int(d["newest"]),
                 "stale": bool(d["stale"]),
+                # 옛 코드지만 자동 재시작 창 안(실수 #435) — 화면은 침묵하고 이 칸이 말한다
+                "pending": bool(d.get("pending")),
                 "measurable": bool(d["measurable"]),
                 "note": _cf.note(d, unit="stock-bot-dashboard"),
             })

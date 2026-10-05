@@ -61946,14 +61946,101 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert cf.drift(started=1000, newest=900)["stale"] is False
 
     def test_deploy_order_grace_does_not_become_an_always_on_badge(self):
-        """배포 직후 몇 초는 정상적으로 어긋난다(봇 먼저·대시보드 뒤) — 유예가
-        없으면 **늘 뜨는 배지**가 되어 아무것도 안 재는 것과 같다(#25·#260)."""
+        """배포 중에는 정상적으로 어긋난다(reset 뒤 봇 먼저·대시보드 뒤) — 유예가
+        없으면 **늘 뜨는 배지**가 되어 아무것도 안 재는 것과 같다(#25·#260).
+
+        ⚠️ 계약을 다시 썼다(2026-10-05 실수 #435 · #222): 옛 판은 유예를 ``소스
+        mtime − 프로세스 시작`` 으로 재고, 픽스처도 '프로세스가 소스 변경 **직전**에
+        떴다' 는 실제 흐름에 없는 순서로 짰다 — 그래서 정작 배포 창(대시보드 시작은
+        지난 배포·소스는 방금)을 한 번도 안 덮었다. 지금 계약: 유예는 **소스가 바뀐
+        뒤 지난 시간**이고, 그 안의 옛 코드는 ``pending`` 이다."""
         from bot import code_freshness as cf
-        assert cf.GRACE_SEC >= 60, "유예가 너무 짧아 배포마다 배너가 뜬다"
-        inside = cf.drift(started=1000, newest=1000 + cf.GRACE_SEC - 1)
-        assert inside["stale"] is False
-        outside = cf.drift(started=1000, newest=1000 + cf.GRACE_SEC + 1)
-        assert outside["stale"] is True
+        changed = 50_000.0                      # 이번 배포의 git reset
+        started = changed - 5 * 3600            # 대시보드는 지난 배포에 떴다
+        inside = cf.drift(started=started, newest=changed,
+                          now=changed + cf.GRACE_SEC - 1)
+        assert inside["stale"] is False and inside["pending"] is True, inside
+        outside = cf.drift(started=started, newest=changed,
+                           now=changed + cf.GRACE_SEC + 1)
+        assert outside["stale"] is True and outside["pending"] is False, outside
+        # 신선하면 둘 다 거짓 — pending 이 '늘 켜진 칸' 이 되지 않는다
+        fresh = cf.drift(started=changed + 90, newest=changed, now=changed + 99_999)
+        assert fresh["stale"] is False and fresh["pending"] is False, fresh
+
+    def test_deploy_window_is_not_reported_as_stale_20261005(self):
+        """**재현 테스트**(§Pre-commit 9, 실수 #435): 사용자 2026-10-05 "재시작됐어.
+        타이밍 문제야." — #1318 배포 직후 메인 대시보드에 '이 프로세스는 옛
+        코드입니다 — `bot/` 소스가 4시간 전에 갱신됐는데…' 가 떴는데 대시보드는
+        `auto-update.sh` 가 곧 **스스로** 재시작했다.
+
+        실제 순서(`deploy/auto-update.sh`): git reset(소스 mtime = T) → stock-bot
+        재시작(정지가 끝날 때까지 기다린다) → sleep 3 → '✅ 배포 완료' 알림 → 그제야
+        대시보드 재시작. 그 창에서 대시보드 시작 시각은 **지난 배포**라 옛 판의
+        ``lag`` 는 몇 시간이고 180초 유예를 늘 넘었다. 옛 코드에서 이 픽스처는
+        ``stale=True`` 와 정확히 그 문구('4시간 전에 갱신됐는데')를 냈다(실측).
+        """
+        from bot import code_freshness as cf
+        prev_deploy = 1_000_000.0                  # 대시보드가 마지막으로 뜬 시각
+        reset = prev_deploy + 4 * 3600 + 30 * 60   # 4시간 반 뒤 이번 배포의 git reset
+        d = cf.drift(started=prev_deploy, newest=reset, now=reset + 90)
+        assert d["stale"] is False, d              # 자동 재시작 창 안
+        assert d["pending"] is True, d             # 옛 코드인 사실은 남긴다(#41)
+        assert cf.note(d, unit="stock-bot-dashboard") == "", \
+            "배포 창에 수동 재시작을 처방했다"
+        # 창이 지나도 재시작이 안 됐으면 그때는 옛 코드다 — 처방이 정당해진다
+        late = cf.drift(started=prev_deploy, newest=reset,
+                        now=reset + cf.GRACE_SEC + 1)
+        assert late["stale"] is True and late["pending"] is False, late
+        assert "systemctl restart stock-bot-dashboard" in cf.note(
+            late, unit="stock-bot-dashboard")
+
+    def test_grace_covers_the_auto_update_restart_window(self):
+        """유예의 하한은 임의값이 아니라 `auto-update.sh` 의 창에서 나온다(#269 주기에서
+        도출): reset 뒤 stock-bot 정지(TimeoutStopSec) → 스크립트의 sleep·알림 대기
+        (curl -m) → 대시보드 정지(TimeoutStopSec, 없으면 systemd 기본 90초). 누가 그중
+        하나를 늘리면 여기서 빨간불이 되어 유예를 다시 보게 한다(#119 규율 대신 구조).
+        """
+        from bot import code_freshness as cf
+
+        def stop_timeout(unit: str) -> int:
+            txt = pathlib.Path("deploy", unit).read_text(encoding="utf-8")
+            m = re.search(r"^TimeoutStopSec=(\d+)\s*$", txt, re.M)
+            return int(m.group(1)) if m else 90       # systemd DefaultTimeoutStopSec
+
+        bot_stop = stop_timeout("stock-bot.service")
+        dash_stop = stop_timeout("stock-bot-dashboard.service")
+        assert bot_stop >= 600, "픽스처가 실물과 다르다 — 봇 정지 상한을 못 읽었다"
+        script = pathlib.Path("deploy/auto-update.sh").read_text(encoding="utf-8")
+        body = "\n".join(ln for ln in script.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        waits = (sum(int(x) for x in re.findall(r"\bsleep\s+(\d+)", body))
+                 + sum(int(x) for x in re.findall(r"\bcurl\b[^\n]*?-m\s+(\d+)", body)))
+        assert waits > 0, "스크립트의 대기를 하나도 못 읽었다 — 정규식이 눈이 멀었다"
+        need = bot_stop + dash_stop + waits
+        assert cf.GRACE_SEC > need, (cf.GRACE_SEC, bot_stop, dash_stop, waits)
+
+    def test_note_names_both_intervals_separately_20261005(self):
+        """실수 #435 — 옛 문구는 ``lag``(프로세스 대비 소스 시차)를 '소스가 N 전에
+        갱신됐다' 로 적었다. 방금 끝난 배포가 '4시간 전' 으로 읽혀, 대시보드가 배포
+        뒤 4시간째 옛 코드인 것처럼 보였다(#34 한 숫자가 두 뜻을 대표하면 한쪽은
+        거짓말). 두 간격을 **따로** 적는지 값으로 본다."""
+        from bot import code_freshness as cf
+        reset = 2_000_000.0
+        d = cf.drift(started=reset - 4 * 3600, newest=reset, now=reset + 25 * 60)
+        msg = cf.note(d, unit="stock-bot-dashboard")
+        assert "25분 전에 갱신" in msg, msg           # 소스가 바뀐 뒤 지난 시간
+        assert "4시간 먼저 시작" in msg, msg          # 프로세스가 얼마나 낡았나
+        assert "4시간 전에 갱신" not in msg, msg       # 옛 판의 뒤섞인 문구
+        assert f"{cf.GRACE_SEC // 60}분이 지났습니다" in msg, msg
+
+    def test_clock_slack_absorbs_btime_truncation(self):
+        """`/proc/stat` btime 은 정수 초라 계산한 시작 시각이 최대 1초 이르다 — 그
+        1초 안의 어긋남을 옛 코드로 판정하면 정상 배포를 오보한다(#25·#260). 반대
+        증거: 1초를 넘는 어긋남은 그대로 잡는다(#25)."""
+        from bot import code_freshness as cf
+        far = 10_000_000.0
+        assert cf.drift(started=1000.0, newest=1000.9, now=far)["stale"] is False
+        assert cf.drift(started=1000.0, newest=1002.0, now=far)["stale"] is True
 
     def test_unmeasurable_is_not_reported_as_fresh(self):
         """소스 mtime 을 못 읽으면 '신선' 이 아니라 **판정 불가**다(#54)."""
@@ -62052,9 +62139,9 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert raw.split(b"\r\n")[0].endswith(b"200 OK"), raw[:120]
         body = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
         assert body["ok"] is True
-        for k in ("started", "newest", "stale", "measurable", "note"):
+        for k in ("started", "newest", "stale", "pending", "measurable", "note"):
             assert k in body, (k, body)
-        assert isinstance(body["stale"], bool)
+        assert isinstance(body["stale"], bool) and isinstance(body["pending"], bool)
 
     def test_unknown_api_still_404s(self):
         """대조 — 없는 라우트가 200 을 주면 위 신호가 무의미해진다(#25 반대
@@ -62069,13 +62156,15 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         """
         import bot.code_freshness as cf
         monkeypatch.setattr(cf, "drift", lambda **k: {
-            "stale": True, "measurable": True, "lag_sec": 4800.0,
-            "started": 1.0, "newest": 4801.0})
+            "stale": True, "pending": False, "measurable": True, "lag_sec": 4800.0,
+            "age_sec": 1500.0, "grace_sec": 1200.0, "started": 1.0, "newest": 4801.0})
         raw = self._get("/api/build")
         body = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
         assert body["stale"] is True and body["measurable"] is True
+        assert body["pending"] is False, body
         assert body["note"], "판정이 stale 인데 화면에 줄 문구가 비었다"
-        assert "80분" in body["note"], body["note"]
+        # 두 간격이 따로 실린다 — 소스 경과(25분)와 프로세스 시차(80분)(실수 #435)
+        assert "25분 전에 갱신" in body["note"] and "80분 먼저" in body["note"], body["note"]
         # 처방(유닛 이름)은 **아는 호출부만** 적는다(#292 틀린 라벨 금지)
         assert "stock-bot-dashboard" in body["note"], body["note"]
         # 신선하면 문구가 없다 — 늘 뜨는 배너 금지(#25·#260)
@@ -62084,6 +62173,12 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
             "started": 2.0, "newest": 1.0})
         body = json.loads(self._get("/api/build").split(b"\r\n\r\n", 1)[1])
         assert body["note"] == "", body
+        # 배포 창(옛 코드지만 자동 재시작 전) — 화면은 침묵하고 pending 이 사실을 말한다
+        monkeypatch.setattr(cf, "drift", lambda **k: {
+            "stale": False, "pending": True, "measurable": True, "lag_sec": 16200.0,
+            "age_sec": 90.0, "grace_sec": 1200.0, "started": 1.0, "newest": 16201.0})
+        body = json.loads(self._get("/api/build").split(b"\r\n\r\n", 1)[1])
+        assert body["note"] == "" and body["pending"] is True, body
 
     def test_stale_verdict_reaches_the_dom_end_to_end(self, tmp_path):
         """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 Medium): 옛 판은 `buildBanner`

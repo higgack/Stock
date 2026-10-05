@@ -15,9 +15,14 @@
 옛 코드를 들고 있다. 파일이 아니라 **프로세스**를 재는 것이 핵심이다(같은
 체크아웃을 두 프로세스가 공유하므로 파일 mtime 만으론 갈리지 않는다).
 
-⚠️ 배포 직후 몇 초는 정상적으로 어긋난다(봇이 먼저, 대시보드가 몇 초 뒤).
-유예를 두지 않으면 **늘 뜨는 배지**가 되어 아무것도 안 재는 것과 같다
-(#25·#260). 그리고 유예 안이라도 **사실과 폭은 그대로 말한다**(#41).
+⚠️ 배포 중에는 정상적으로 어긋난다 — `auto-update.sh` 는 git reset(소스 mtime 이
+바뀐다) 뒤 **stock-bot 정지가 끝날 때까지 기다리고**(TimeoutStopSec 900) 알림을
+보낸 다음에야 대시보드를 재시작한다. 유예는 그 창을 덮어야 하므로 **소스가 바뀐 뒤
+지난 시간**(``age``)으로 잰다. 2026-10-05 까지는 ``소스 mtime − 프로세스 시작``
+(``lag``)으로 쟀는데, 배포 창에서 그 값은 **지난 배포 이후 시간**(몇 시간)이라
+유예를 늘 넘었다 — 사용자가 배포 직후 '4시간 전에 갱신됐는데…' 배너를 봤고 대시보드는
+몇 분 뒤 스스로 재시작됐다(실수 #435 "타이밍 문제야"). 유예 안이라도 옛 코드인
+사실은 ``pending`` 으로 남긴다(#41 — 숨기는 게 아니라 처방을 미룬다).
 """
 from __future__ import annotations
 
@@ -60,9 +65,17 @@ def _proc_start() -> float:
 _IMPORTED = time.time()
 _STARTED = _proc_start() or _IMPORTED
 
-# 이 초 안의 어긋남은 배포 순서 때문일 수 있다 — 그 아래는 '옛 코드'라고
-# 단정하지 않는다(#165 재지 않은 것을 단정하지 말 것).
-GRACE_SEC = 180
+# 소스가 바뀐 뒤 이만큼은 '자동 재시작이 오는 중' 으로 본다 — 그 안에서는 수동 재시작을
+# 처방하지 않는다(#165 재지 않은 것을 단정하지 말 것). 값은 `auto-update.sh` 의 창에서
+# 정한다: reset → stock-bot 정지(`deploy/stock-bot.service` TimeoutStopSec 900) →
+# sleep·알림(curl -m) → 대시보드 정지(기본 90초)·시작. 회귀가 두 유닛 파일과 스크립트의
+# 대기에서 하한을 다시 계산해 이 값이 그보다 큰지 잰다 — 누가 TimeoutStopSec 를 늘리면
+# 거기서 빨간불이 된다. ⚠️ 못 보는 축(#274): deploy/ 가 바뀐 배포의 install.sh 실행
+# 시간은 상한이 없다(그 경우 install.sh 가 스스로 대시보드를 try-restart 한다).
+GRACE_SEC = 1200
+# `/proc/stat` 의 btime 은 **정수 초**라 계산한 시작 시각이 실제보다 최대 1초 이르다 —
+# 그 1초 안의 어긋남은 '옛 코드' 로 판정하지 않는다.
+_CLOCK_SLACK = 1.0
 
 
 def process_started() -> float:
@@ -95,20 +108,33 @@ def newest_source_mtime(pkg_dir=None) -> float:
 
 
 def drift(*, started: float | None = None, newest: float | None = None,
-          grace: float = GRACE_SEC) -> dict:
-    """{'stale', 'lag_sec', 'started', 'newest', 'measurable'} (순수 — 인자 주입).
+          now: float | None = None, grace: float = GRACE_SEC) -> dict:
+    """{'stale', 'pending', 'lag_sec', 'age_sec', 'grace_sec', 'started', 'newest',
+    'measurable'} (순수 — 인자 주입).
+
+    ``lag_sec`` = 소스가 프로세스보다 얼마나 새것인가(양수면 옛 코드) · ``age_sec`` =
+    소스가 바뀐 지 얼마나 됐나. 옛 코드이면서 ``age_sec > grace`` 일 때만 ``stale`` —
+    그 전에는 ``pending``(자동 재시작이 오는 중)이다. 두 간격은 **다른 사실**이다:
+    배포 창에서 ``lag`` 는 지난 배포 이후 시간(몇 시간)이고 ``age`` 는 방금(몇 초)이다
+    (실수 #435 — 옛 판은 ``lag`` 로 유예를 재 배포마다 거짓 배너를 냈다).
 
     `measurable=False` 는 소스 mtime 을 못 읽은 경우다 — **'신선하다'가 아니라
     판정 불가**다(#54 대조 0건은 통과가 아니다).
     """
     st = float(process_started() if started is None else started)
     nw = float(newest_source_mtime() if newest is None else newest)
+    t = float(time.time() if now is None else now)
     if nw <= 0:
-        return {"stale": False, "measurable": False, "lag_sec": 0.0,
+        return {"stale": False, "pending": False, "measurable": False,
+                "lag_sec": 0.0, "age_sec": 0.0, "grace_sec": float(grace),
                 "started": st, "newest": nw}
     lag = nw - st
-    return {"stale": bool(lag > grace), "measurable": True,
-            "lag_sec": lag, "started": st, "newest": nw}
+    age = t - nw
+    behind = lag > _CLOCK_SLACK
+    stale = behind and age > grace
+    return {"stale": bool(stale), "pending": bool(behind and not stale),
+            "measurable": True, "lag_sec": lag, "age_sec": age,
+            "grace_sec": float(grace), "started": st, "newest": nw}
 
 
 def _mins(sec: float) -> str:
@@ -136,8 +162,16 @@ def note(d: dict | None = None, *, unit: str = "") -> str:
     # `bot/scripts/**`·`trade/**` 만 바뀐 배포는 이 배너를 못 띄운다. 문장이
     # 그보다 넓게 말하면 재지 않은 것을 단정하는 것이다(#165·#274 못 보는 축을
     # 밝힐 것).
-    head = (f"이 프로세스는 옛 코드입니다 — `bot/` 소스가 {_mins(d['lag_sec'])} "
-            "전에 갱신됐는데 프로세스는 그보다 먼저 시작했습니다")
+    # ⚠️ 두 간격을 **따로** 적는다(실수 #435): 옛 판은 `lag`(프로세스 대비 소스 시차)를
+    # '소스가 N 전에 갱신됐다' 로 적어, 방금 끝난 배포가 '4시간 전' 으로 읽혔다(#34 한 숫자가
+    # 두 뜻을 대표하면 한쪽은 반드시 거짓말).
+    age = d.get("age_sec")
+    when = f"{_mins(age)} 전에 " if age is not None else ""
+    head = (f"이 프로세스는 옛 코드입니다 — `bot/` 소스가 {when}갱신됐는데 이 프로세스는 "
+            f"그보다 {_mins(d['lag_sec'])} 먼저 시작했습니다")
+    grace = d.get("grace_sec")
+    if grace:
+        head += f"(자동 배포가 재시작했어야 할 {_mins(grace)}이 지났습니다)"
     return f"{head}. `sudo systemctl restart {unit}` 로 재시작하세요." if unit \
         else head + "."
 
