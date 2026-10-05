@@ -62042,6 +62042,23 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert cf.drift(started=1000.0, newest=1000.9, now=far)["stale"] is False
         assert cf.drift(started=1000.0, newest=1002.0, now=far)["stale"] is True
 
+    def test_sub_minute_lag_is_not_written_as_zero_minutes_20261005(self):
+        """**재현 테스트**(실수 #435 배포 전 셀프리뷰): 유예를 ``age`` 로 옮기며 '옛 코드'
+        문턱이 ``lag > 180초`` 에서 ``lag > 1초`` 가 됐다 — 1분 미만의 시차도 ``stale`` 에
+        닿을 수 있다(예: 대시보드가 git reset 30초 전에 마침 떴고 그 뒤 재시작이 실패).
+        옛 ``_mins`` 는 분 단위로 내려 '그보다 0분 먼저 시작했습니다' 를 적었다 — 0 이 사실을
+        말하지 않는다(#34·#43). 1분 미만은 초로 적는다."""
+        from bot import code_freshness as cf
+        reset = 3_000_000.0
+        d = cf.drift(started=reset - 30, newest=reset, now=reset + cf.GRACE_SEC + 60)
+        assert d["stale"] is True, d
+        msg = cf.note(d, unit="stock-bot-dashboard")
+        assert "30초 먼저 시작" in msg, msg
+        assert "0분 먼저" not in msg, msg
+        # 경계: 1분부터는 분으로(분 단위 문구가 바뀌지 않았다)
+        d2 = cf.drift(started=reset - 60, newest=reset, now=reset + cf.GRACE_SEC + 60)
+        assert "1분 먼저 시작" in cf.note(d2), cf.note(d2)
+
     def test_unmeasurable_is_not_reported_as_fresh(self):
         """소스 mtime 을 못 읽으면 '신선' 이 아니라 **판정 불가**다(#54)."""
         from bot import code_freshness as cf

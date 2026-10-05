@@ -2989,7 +2989,7 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 - RULE 10 대응 표는 **펀더멘털 프롬프트의 RULE 10 보강 문단**만 본다 — 다른 분석가·PM 프롬프트의 문구와 `KIS_INTERP_GUIDE` 의 줄은 대응 표 밖이다(가이드는 위 금지 목록·배선 주장 테스트가 따로 본다). '그 블록이 그 라벨을 찍고 그 분석가에게 간다' 까지 잰다 — LLM 이 그 규칙을 실제로 따르는지는 안 잰다. '(c) 단기 수급' 조건은 문구가 있는지까지다(분석가가 수치 없이 (c) 를 고르지 않는지는 LLM 출력을 봐야 안다).
 - 시장 분석가는 KRX(pykrx) 블록과 KIS 블록을 **둘 다** 받는다 — 같은 외인·기관·개인 순매수가 두 원천에서 다른 기준일·창으로 실릴 수 있고, 어느 쪽을 인용해야 하는지는 각 블록의 기준일 표기에 맡긴다(두 블록의 일치는 재지 않는다).
 
-## #435 — 배포 drift 배너: 유예는 '소스가 바뀐 뒤 지난 시간' · 문구는 두 간격을 따로 (`tests/test_regression.py::TestDeployDriftIsVisible20260912` +4 · 옛 1건 다시 씀 · 응답 계약 2건 확장 · 2026-10-05)
+## #435 — 배포 drift 배너: 유예는 '소스가 바뀐 뒤 지난 시간' · 문구는 두 간격을 따로 (`tests/test_regression.py::TestDeployDriftIsVisible20260912` +5 · 옛 1건 다시 씀 · 응답 계약 2건 확장 · 2026-10-05)
 
 사용자 "재시작됐어. 타이밍 문제야." — #1318 배포 직후 메인 대시보드에 '이 프로세스는 옛 코드입니다 — `bot/` 소스가 4시간 전에 갱신됐는데…' 가 떴고, 대시보드는 곧 `auto-update.sh` 가 스스로 재시작했다. 유예(180초)를 `소스 mtime − 프로세스 시작` 으로 재고 있어, 배포 창(git reset 뒤 stock-bot 정지를 기다리는 동안 대시보드는 **지난 배포**의 프로세스)에서 그 값은 몇 시간이 되어 유예를 늘 넘었다. 옛 테스트도 '프로세스가 소스 변경 직전에 떴다' 는 실제 흐름에 없는 순서를 픽스처로 썼다. 옛 코드에서 재현 픽스처는 `stale=True` 와 정확히 그 문구를 냈다(실측).
 
@@ -2998,10 +2998,11 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 | 유예는 **소스가 바뀐 뒤 지난 시간**(`age`)으로 잰다 — 배포 창 안의 옛 코드는 `pending`(침묵, 처방 없음), 창이 지나도 재시작이 안 됐을 때만 `stale`(배너·재시작 처방) · 신선하면 둘 다 거짓 | ✅ 자동 | `test_deploy_window_is_not_reported_as_stale_20261005`(재현) · `test_deploy_order_grace_does_not_become_an_always_on_badge`(옛 계약을 다시 씀) |
 | 유예 값(20분)은 창의 상한에서 나온다 — `deploy/stock-bot.service`·`deploy/stock-bot-dashboard.service` 의 TimeoutStopSec(없으면 90초) + `auto-update.sh` 의 sleep·curl -m 대기의 합보다 커야 한다(누가 늘리면 빨간불) | ✅ 자동 | `test_grace_covers_the_auto_update_restart_window` |
 | 문구가 두 간격을 **따로** 적는다 — '소스가 N 전에 갱신' 은 경과(`age`), '그보다 M 먼저 시작' 은 시차(`lag`), 그리고 지난 유예 · 옛 판의 뒤섞인 문구('4시간 전에 갱신')가 다시 나오지 않는다 | ✅ 자동 | `test_note_names_both_intervals_separately_20261005` · `test_build_api_relays_the_real_verdict_not_a_constant`(두 간격 · pending 중계) |
+| 1분 미만의 시차는 **초**로 적는다 — 문턱이 `lag > 1초` 라 1분 미만도 `stale` 에 닿는데, 분으로 내리면 '그보다 0분 먼저 시작' 이 된다(배포 전 셀프리뷰가 재현) · 1분부터는 종전대로 분 | ✅ 자동 | `test_sub_minute_lag_is_not_written_as_zero_minutes_20261005` |
 | btime 정수 초 절단(최대 1초) 안의 어긋남은 옛 코드가 아니다 — 1초를 넘으면 잡는다 | ✅ 자동 | `test_clock_slack_absorbs_btime_truncation` |
 | `/api/build` 가 `pending` 을 싣는다(화면은 침묵하고 이 칸이 사실을 말한다) | ✅ 자동 | `test_build_endpoint_is_routed_and_answers` · `test_build_api_relays_the_real_verdict_not_a_constant` |
 
-뮤테이션 9종(유예를 다시 `lag` 로 · 절단 여유 제거·확대 · 문구에 `lag` 를 '전에' 로 · 유예 180초 · `pending` 상수 · 서버 `pending` 상수 · 유예 문장 제거 · `age` 를 시차로) **전부** 겨냥한 테스트에서 잡혔다 — 녹색 백업 + md5 복원.
+뮤테이션 9종(유예를 다시 `lag` 로 · 절단 여유 제거·확대 · 문구에 `lag` 를 '전에' 로 · 유예 180초 · `pending` 상수 · 서버 `pending` 상수 · 유예 문장 제거 · `age` 를 시차로) **전부** 겨냥한 테스트에서 잡혔다 — 녹색 백업 + md5 복원. 10번째(`_mins` 를 분 단위로 되돌림)는 고치기 전 코드가 곧 그 변형이라 재현 테스트의 실패 먼저가 그것을 잰다.
 
 못 보는 축:
 - deploy/ 가 바뀐 배포의 `install.sh` 실행 시간은 상한이 없다 — 그 경우 install.sh 가 스스로 대시보드를 `try-restart` 하므로 창이 길어지지 않는다고 보지만, install.sh 가 그 줄에 닿기 전에 20분을 넘기면 배너가 뜬다.

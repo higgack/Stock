@@ -138,6 +138,11 @@ def drift(*, started: float | None = None, newest: float | None = None,
 
 
 def _mins(sec: float) -> str:
+    # 1분 미만은 초로 — 유예를 ``age`` 로 옮긴 뒤 '옛 코드' 문턱이 ``lag > 1초`` 라 1분 미만의
+    # 시차도 문구에 닿는다. 분으로 내리면 '0분 먼저 시작' 이 되어 숫자가 사실을 말하지 않는다
+    # (실수 #435 배포 전 셀프리뷰 · #34·#43).
+    if abs(sec) < 60:
+        return f"{int(abs(sec))}초"
     m = int(abs(sec) // 60)
     if m < 120:
         return f"{m}분"
