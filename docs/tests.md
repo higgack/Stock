@@ -2989,22 +2989,33 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 - RULE 10 대응 표는 **펀더멘털 프롬프트의 RULE 10 보강 문단**만 본다 — 다른 분석가·PM 프롬프트의 문구와 `KIS_INTERP_GUIDE` 의 줄은 대응 표 밖이다(가이드는 위 금지 목록·배선 주장 테스트가 따로 본다). '그 블록이 그 라벨을 찍고 그 분석가에게 간다' 까지 잰다 — LLM 이 그 규칙을 실제로 따르는지는 안 잰다. '(c) 단기 수급' 조건은 문구가 있는지까지다(분석가가 수치 없이 (c) 를 고르지 않는지는 LLM 출력을 봐야 안다).
 - 시장 분석가는 KRX(pykrx) 블록과 KIS 블록을 **둘 다** 받는다 — 같은 외인·기관·개인 순매수가 두 원천에서 다른 기준일·창으로 실릴 수 있고, 어느 쪽을 인용해야 하는지는 각 블록의 기준일 표기에 맡긴다(두 블록의 일치는 재지 않는다).
 
-## #435 — 배포 drift 배너: 유예는 '소스가 바뀐 뒤 지난 시간' · 문구는 두 간격을 따로 (`tests/test_regression.py::TestDeployDriftIsVisible20260912` +5 · 옛 1건 다시 씀 · 응답 계약 2건 확장 · 2026-10-05)
+## #435 — 배포 drift 배너: 유예는 '놓친 첫 변경 뒤 지난 시간' · 범위는 재시작 조건과 같게 · 문구는 두 간격을 따로 (`tests/test_regression.py::TestDeployDriftIsVisible20260912` +10 · `tests/test_restart_closure_20260928.py` +1 · 옛 2건 다시 씀 · 계약 3건 확장 · 2026-10-05)
 
 사용자 "재시작됐어. 타이밍 문제야." — #1318 배포 직후 메인 대시보드에 '이 프로세스는 옛 코드입니다 — `bot/` 소스가 4시간 전에 갱신됐는데…' 가 떴고, 대시보드는 곧 `auto-update.sh` 가 스스로 재시작했다. 유예(180초)를 `소스 mtime − 프로세스 시작` 으로 재고 있어, 배포 창(git reset 뒤 stock-bot 정지를 기다리는 동안 대시보드는 **지난 배포**의 프로세스)에서 그 값은 몇 시간이 되어 유예를 늘 넘었다. 옛 테스트도 '프로세스가 소스 변경 직전에 떴다' 는 실제 흐름에 없는 순서를 픽스처로 썼다. 옛 코드에서 재현 픽스처는 `stale=True` 와 정확히 그 문구를 냈다(실측).
 
+배포 전 독립 리뷰가 그 고침의 다음 층을 잡았다(Blocking·High 없음): 기준점을 **가장 최근** 변경으로 잡아 20분 안쪽으로 이어지는 배포마다 유예가 다시 시작됐고(base 이력의 연속 배포 285쌍 중 91쌍이 20분 미만 — 재시작이 계속 실패해도 최장 약 97분 침묵), 측정 범위는 `bot/` 최상위뿐이라 `trade`·`TradingAgents`·`bot/scripts` 만 바뀐 배포의 재시작 실패는 끝내 못 잡았으며(선재 결함), 창 상한 테스트는 숫자만 읽는 근사라 실제 상한을 늘려도 통과했다.
+
 | 계약 | 강제 | 테스트 |
 |---|---|---|
-| 유예는 **소스가 바뀐 뒤 지난 시간**(`age`)으로 잰다 — 배포 창 안의 옛 코드는 `pending`(침묵, 처방 없음), 창이 지나도 재시작이 안 됐을 때만 `stale`(배너·재시작 처방) · 신선하면 둘 다 거짓 | ✅ 자동 | `test_deploy_window_is_not_reported_as_stale_20261005`(재현) · `test_deploy_order_grace_does_not_become_an_always_on_badge`(옛 계약을 다시 씀) |
-| 유예 값(20분)은 창의 상한에서 나온다 — `deploy/stock-bot.service`·`deploy/stock-bot-dashboard.service` 의 TimeoutStopSec(없으면 90초) + `auto-update.sh` 의 sleep·curl -m 대기의 합보다 커야 한다(누가 늘리면 빨간불) | ✅ 자동 | `test_grace_covers_the_auto_update_restart_window` |
-| 문구가 두 간격을 **따로** 적는다 — '소스가 N 전에 갱신' 은 경과(`age`), '그보다 M 먼저 시작' 은 시차(`lag`), 그리고 지난 유예 · 옛 판의 뒤섞인 문구('4시간 전에 갱신')가 다시 나오지 않는다 | ✅ 자동 | `test_note_names_both_intervals_separately_20261005` · `test_build_api_relays_the_real_verdict_not_a_constant`(두 간격 · pending 중계) |
-| 1분 미만의 시차는 **초**로 적는다 — 문턱이 `lag > 1초` 라 1분 미만도 `stale` 에 닿는데, 분으로 내리면 '그보다 0분 먼저 시작' 이 된다(배포 전 셀프리뷰가 재현) · 1분부터는 종전대로 분 | ✅ 자동 | `test_sub_minute_lag_is_not_written_as_zero_minutes_20261005` |
-| btime 정수 초 절단(최대 1초) 안의 어긋남은 옛 코드가 아니다 — 1초를 넘으면 잡는다 | ✅ 자동 | `test_clock_slack_absorbs_btime_truncation` |
-| `/api/build` 가 `pending` 을 싣는다(화면은 침묵하고 이 칸이 사실을 말한다) | ✅ 자동 | `test_build_endpoint_is_routed_and_answers` · `test_build_api_relays_the_real_verdict_not_a_constant` |
+| 유예는 이 프로세스가 **놓친 첫 변경**(시작보다 새 mtime 중 가장 이른 것) 뒤 지난 시간으로 잰다 — 배포 창 안의 옛 코드는 `pending`(침묵, 처방 없음), 창이 지나도 재시작이 안 됐을 때만 `stale`(배너·재시작 처방) · 신선하면 둘 다 거짓 | ✅ 자동 | `test_deploy_window_is_not_reported_as_stale_20261005`(재현) · `test_deploy_order_grace_does_not_become_an_always_on_badge`(옛 계약을 다시 씀) |
+| 20분 안쪽으로 이어지는 배포가 유예를 다시 시작하지 않는다 — 첫 배포 21분 뒤면 둘째 배포가 6분 전이어도 `stale` · 첫 배포 19분 뒤면 아직 `pending` · 임시 레포 루트로 **진짜 스캔**을 태운다 | ✅ 자동 | `test_burst_deploys_do_not_restart_the_grace_20261005`(재현 — 옛 코드는 `pending`) |
+| 재는 범위 = 자동 배포가 대시보드를 다시 띄우는 조건(`auto-update.sh` CODE_CHANGED)의 .py 갈래 — `bot`·`bot/scripts`·`trade` 바로 아래와 `TradingAgents/tradingagents` 하위 · 조건 밖 디렉터리·`__pycache__` 는 세지 않는다 · 조건 안이라도 배포가 아닌 쓰기가 바꾸는 갈래(`SCAN_EXCLUDED` — 데이터 `trade/data/` · 봇이 실행 중에 테마 모듈을 쓰는 `bot/screener_themes/`)는 빼고 그 목록의 크기를 단언한다 · 정규식과 git 목록에서 파생한 집합과 스캔이 같다(누가 정규식에 디렉터리를 더하면 빨간불) | ✅ 자동 | `test_newest_source_mtime_scans_the_directory_not_a_name_list`(옛 계약을 다시 씀 — 인자가 레포 루트) · `test_restart_closure_20260928.py::test_drift_banner_scans_exactly_the_dashboard_restart_condition` |
+| 유예 값(20분)은 창의 **경로 상한**(현재 1043초)에서 나온다 — git reset 다음 줄부터 대시보드 재시작 줄까지의 notify 호출 수 × notify 의 curl 상한(`-m`·`--max-time`) + sleep(접미 s/m/h/d) + 두 유닛의 정지 상한(`TimeoutStopSec`·`TimeoutSec`, systemd 시간 단위, 나중 줄이 이긴다, 없으면 90초). 상한 없음(`infinity`·0)·못 읽는 값·상한 없는 curl·변수 sleep 은 통과가 아니라 실패 | ✅ 자동 | `test_grace_covers_the_auto_update_restart_window` · `test_window_bound_reads_units_and_counts_calls_20261005`(발화 — 리뷰가 살린 다섯 변형과 유예 1012 가 전부 빨간불) |
+| 문구가 두 간격을 **따로** 적는다 — '`파일` 등 코드가 N 전에 갱신' 은 놓친 첫 변경 뒤 경과, '그보다 M 먼저 시작' 은 그 변경과 시작의 시차 · 유예 문장은 가정('자동 배포라면 재시작이 끝났을 20분이 지났습니다' — VM 직접 편집처럼 배포가 아닌 drift 에 원인을 단정하지 않는다) · 옛 판의 뒤섞인 문구('4시간 전에 갱신')가 다시 나오지 않는다 | ✅ 자동 | `test_note_names_both_intervals_separately_20261005` · `test_burst_deploys_do_not_restart_the_grace_20261005`(파일 이름) · `test_build_api_relays_the_real_verdict_not_a_constant` |
+| 1분 미만의 시차는 **초**로 적는다 — 문턱이 시차 1초라 1분 미만도 `stale` 에 닿는데, 분으로 내리면 '그보다 0분 먼저 시작' 이 된다(배포 전 셀프리뷰가 재현) · 1분부터는 종전대로 분 | ✅ 자동 | `test_sub_minute_lag_is_not_written_as_zero_minutes_20261005` |
+| btime 정수 초 절단(최대 1초) 안의 어긋남은 옛 코드가 아니다 — 정확히 1초는 절단 안(엄격한 `>`), 1.5초는 넘는다 · 유예도 정확히 20분인 순간은 아직 `pending` | ✅ 자동 | `test_clock_slack_absorbs_btime_truncation` · `test_grace_boundary_is_strict_20261005` |
+| 판정 불가(`measurable=False`)는 '신선' 도 '대기 중' 도 아니다 — `stale`·`pending` 둘 다 거짓이고 사유(`why`)를 싣는다: 소스를 못 읽음 · mtime 이 지금보다 **미래**(시계 어긋남 — 옛 판은 `age<0` 이라 유예가 끝날 때까지 '대기 중' 이었다) · 판정 불가 dict 에 `stale` 이 서 있어도 note 가 처방을 지어내지 않는다 | ✅ 자동 | `test_unmeasurable_is_not_reported_as_fresh` · `test_future_mtime_is_unmeasurable_not_pending_20261005` |
+| `/api/build` 가 `pending`·`why` 를 싣고, `pending` 일 때 `stale` 은 거짓이다(배너는 침묵 — 이 칸은 JSON 을 직접 조회하는 사람에게만 말한다) | ✅ 자동 | `test_build_endpoint_is_routed_and_answers` · `test_build_api_relays_the_real_verdict_not_a_constant` |
+| `audit_sweep` CLI 는 자동 재시작 대상이 아니라 유예를 보지 않는다(`run_note` — `stale` 이든 `pending` 이든 '이 프로세스가 뜬 N 뒤 `파일` 등 코드가 바뀌었습니다') · 실행 뒤 안 바뀌었으면 침묵 | ✅ 자동 | `test_audit_cli_reports_code_that_changed_mid_run_20261005`(재현 — 옛 코드는 침묵) |
 
-뮤테이션 9종(유예를 다시 `lag` 로 · 절단 여유 제거·확대 · 문구에 `lag` 를 '전에' 로 · 유예 180초 · `pending` 상수 · 서버 `pending` 상수 · 유예 문장 제거 · `age` 를 시차로) **전부** 겨냥한 테스트에서 잡혔다 — 녹색 백업 + md5 복원. 10번째(`_mins` 를 분 단위로 되돌림)는 고치기 전 코드가 곧 그 변형이라 재현 테스트의 실패 먼저가 그것을 잰다.
+뮤테이션: 1차 9종(유예를 다시 `lag` 로 · 절단 여유 제거·확대 · 문구에 `lag` 를 '전에' 로 · 유예 180초 · `pending` 상수 · 서버 `pending` 상수 · 유예 문장 제거 · `age` 를 시차로) **전부** 잡혔다. 리뷰 반영분 27종(기준점을 최신으로 · 첫 변경 대신 마지막 · 범위에서 `trade`/`bot/scripts` 제거 · 트리 비재귀 · `__pycache__` 포함 · 미래 검사 제거·여유 0 · 판정 불가 `pending=True`·사유 제거 · 여유·유예 경계 `>=` · 여유 1.9초 · 단정 문구 · 파일 이름 생략 · `run_note` 가 `stale` 만·분 단위 · `main` 이 `run_note` 를 안 씀 · API `why` 제거·`stale or pending` · 테스트 계산기의 notify 1회·단위 무시·`TimeoutSec` 무시·sleep 접미 무시·`--max-time` 미인식 …) 중 25종이 겨냥한 테스트에서 잡혔고, 살아남은 2종은 고쳤다 — 아무도 안 쓰는 주입 인자(`first_new`)는 지웠고(#291), note 의 판정 불가 가드는 테스트로 못박았다. 녹색 백업 + md5 복원.
 
 못 보는 축:
-- deploy/ 가 바뀐 배포의 `install.sh` 실행 시간은 상한이 없다 — 그 경우 install.sh 가 스스로 대시보드를 `try-restart` 하므로 창이 길어지지 않는다고 보지만, install.sh 가 그 줄에 닿기 전에 20분을 넘기면 배너가 뜬다.
-- 유예 안(최대 20분)에는 진짜 실패(재시작 권한 부재 등)도 침묵한다 — 그 실패는 `auto-update.sh` 의 텔레그램 알림('⚠️ 대시보드 재시작 실패')이 즉시 말한다.
+- `trade/data/`·`bot/screener_themes/` 만 바뀐 배포에서 대시보드 재시작이 실패하면 이 배너는 못 잡는다 — 그 둘은 배포가 아닌 쓰기(운영자의 데이터 재생성 · 봇의 테마 모듈 승격)도 바꾸므로 재지 않는다. 실행 중에 .py 를 쓰는 곳은 레포 전체에서 `screener_freetext.promote_to_module` 하나였다(2026-10-05 grep) — 새로 생기면 그 디렉터리도 빼야 한다.
+- deploy/ 가 바뀐 배포의 `install.sh` 와, 재시작 권한이 없을 때의 self-heal(install.sh 가 대시보드를 `try-restart`) 실행 시간은 상한이 없다 — 리뷰 분석으로 self-heal 경로 최악 약 1110초라 여유가 작다. install.sh 가 그 줄에 닿기 전에 20분을 넘기면 배너가 뜬다.
+- VM 의 systemd drop-in·`DefaultTimeoutStopSec` 이 90초와 다르면 레포만 읽는 상한 계산이 못 본다.
+- VM 에서 직접 push 한 경로(LOCAL==REMOTE)는 소스가 타이머 발화 전에 바뀌어 창이 타이머 간격(1분 + 기본 정확도 1분)만큼 길다.
+- 유예 안(놓친 첫 변경 뒤 최대 20분)에는 진짜 실패(재시작 권한 부재 등)도 배너가 침묵한다 — 그 실패는 `auto-update.sh` 의 텔레그램 알림('⚠️ 대시보드 재시작 실패')이 말하지만, `.env` 에 텔레그램 키가 없으면 `notify` 가 조용히 끝나 그 알림도 없다.
 - 배포가 봇 활성 확인(3초)에서 실패해 끝나면, 다음 실행은 소스가 이미 최신(LOCAL==REMOTE)이라 봇 시작 시각만 보고 대시보드는 다시 안 본다 — 그 대시보드는 유예 뒤 이 배너가 잡고, 그때 재시작 처방은 정당하다.
+- 이 고침을 싣는 **첫 배포**의 창에서는 아직 옛 프로세스가 옛 판정(180초 유예·`lag` 기준)으로 답하므로 거짓 배너가 한 번 더 뜰 수 있다 — 새 동작은 대시보드가 새 코드로 재시작한 뒤(그다음 배포 창)부터다(#432 와 같은 꼴).
+

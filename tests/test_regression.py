@@ -61994,30 +61994,205 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert "systemctl restart stock-bot-dashboard" in cf.note(
             late, unit="stock-bot-dashboard")
 
+    def test_burst_deploys_do_not_restart_the_grace_20261005(self, tmp_path, monkeypatch):
+        """**재현 테스트**(독립 리뷰 #435 M1): 재시작이 계속 실패하는데 배포가 20분
+        안쪽 간격으로 이어지면 배너가 계속 침묵했다 — ``age`` 를 **가장 최근** mtime 에서
+        재서 배포가 올 때마다 유예가 처음부터 다시 시작됐기 때문이다(리뷰 실측: base
+        이력에서 최상위 `bot/*.py` 를 건드린 연속 배포 285쌍 중 91쌍이 20분 미만, 최장
+        8연속·77분 → 마지막 배포 뒤 20분까지 약 97분 침묵).
+
+        유예는 이 프로세스가 **놓친 첫 변경**(`started` 보다 새 mtime 중 가장 이른 것)에서
+        잰다 — 정상 배포 창은 그대로이고, 연속 배포는 첫 배포 기준 20분 뒤에 잡힌다.
+        진짜 스캔(임시 레포 루트)을 태운다(#20 배선 — 주입만 재면 스캔을 떼도 통과한다).
+        """
+        import os
+
+        from bot import code_freshness as cf
+
+        t0 = 5_000_000.0                  # 대시보드가 마지막으로 뜬 시각(그 뒤 재시작 권한 부재, #359)
+        t1 = t0 + 6 * 3600                # 첫 배포의 git reset — 이 프로세스가 놓친 첫 변경
+        t2 = t1 + 15 * 60                 # 15분 뒤 다음 배포 — 재시작이 또 실패했다
+        for rel, mt in {"bot/old.py": t0 - 3600, "bot/a.py": t1, "trade/b.py": t2}.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x", encoding="utf-8")
+            os.utime(p, (mt, mt))
+        monkeypatch.setattr(cf, "_REPO_ROOT", tmp_path, raising=False)
+        # 옛 판 재현용 — 옛 drift 는 `newest_source_mtime()` 만 불렀다. 같은 세계(최신 = t2)로 맞춘다.
+        monkeypatch.setattr(cf, "newest_source_mtime", lambda *a, **k: t2)
+
+        late = cf.drift(started=t0, now=t1 + 21 * 60)    # 첫 배포 21분 뒤 · 둘째 배포 6분 뒤
+        assert late["stale"] is True and late["pending"] is False, late
+        assert late["first_path"] == "bot/a.py", late
+        msg = cf.note(late, unit="stock-bot-dashboard")
+        assert "21분 전에 갱신" in msg and "6시간 먼저 시작" in msg, msg
+        assert "`bot/a.py` 등" in msg, msg               # 어느 변경을 놓쳤나(#202 숫자·대상으로)
+        # 정상 배포 창은 그대로 — 첫 변경 뒤 20분 안이면 아직 자동 재시작을 기다린다
+        early = cf.drift(started=t0, now=t1 + 19 * 60)
+        assert early["stale"] is False and early["pending"] is True, early
+
+    # ── 창 상한 계산 — 본 테스트와 발화 테스트가 **같은 함수**를 쓴다(#286 인라인 재구현은
+    #    동어반복: 본 테스트의 비교식을 무력화하는 변형이 발화 테스트를 그대로 통과한다) ──
+    _SPAN_UNIT = {"": 1.0, "s": 1.0, "sec": 1.0, "second": 1.0, "seconds": 1.0,
+                  "ms": 1e-3, "msec": 1e-3, "us": 1e-6, "usec": 1e-6, "µs": 1e-6,
+                  "m": 60.0, "min": 60.0, "minute": 60.0, "minutes": 60.0,
+                  "h": 3600.0, "hr": 3600.0, "hour": 3600.0, "hours": 3600.0,
+                  "d": 86400.0, "day": 86400.0, "days": 86400.0,
+                  "w": 604800.0, "week": 604800.0, "weeks": 604800.0,
+                  "M": 2629800.0, "month": 2629800.0, "months": 2629800.0,
+                  "y": 31557600.0, "year": 31557600.0, "years": 31557600.0}
+
+    @classmethod
+    def _span_sec(cls, v: str) -> float:
+        """systemd time span → 초(`900` · `15min` · `1min 30s` — systemd.time(7)). 상한 없음
+        (`infinity`·0)과 못 읽는 값은 **실패**한다 — 숫자만 받던 옛 판은 `5min` 을 못 읽고
+        기본 90초로 떨어져 실제 상한을 늘려도 통과했다(독립 리뷰 #435 M2)."""
+        v = v.strip()
+        assert v and v.lower() != "infinity", f"정지 상한이 없다(무한) — 유예로 덮을 수 없다: {v!r}"
+        toks = re.findall(r"(\d+(?:\.\d+)?)\s*([A-Za-zµ]*)", v)
+        assert toks and re.fullmatch(r"(?:\s*\d+(?:\.\d+)?\s*[A-Za-zµ]*)+\s*", v), \
+            f"못 읽는 시간값: {v!r}"
+        total = 0.0
+        for num, u in toks:
+            assert u in cls._SPAN_UNIT, f"모르는 시간 단위 {u!r}: {v!r}"
+            total += float(num) * cls._SPAN_UNIT[u]
+        assert total > 0, f"0 은 systemd 에서 '상한 없음' 이다: {v!r}"
+        return total
+
+    @classmethod
+    def _stop_timeout(cls, unit_text: str) -> float:
+        """유닛의 정지 상한. `TimeoutSec=` 은 시작·정지를 **둘 다** 정하고 나중 줄이 이긴다 ·
+        빈 대입은 기본값으로 되돌린다(systemd.service(5)). 기본값은 systemd 의
+        DefaultTimeoutStopSec(90초) — ⚠️ VM 의 drop-in·system.conf 는 레포에서 못 본다(못 보는 축)."""
+        val = 90.0
+        for ln in unit_text.splitlines():
+            m = re.match(r"\s*(TimeoutStopSec|TimeoutSec)\s*=\s*(.*?)\s*$", ln)
+            if m:
+                val = cls._span_sec(m.group(2)) if m.group(2) else 90.0
+        return val
+
+    @staticmethod
+    def _sleep_sec(args: str) -> float:
+        """`sleep` 인자 → 초(GNU: 여러 개 합산 · 접미 s/m/h/d · 소수). 변수·`infinity` 는
+        상한을 모르므로 실패한다 — `sleep 5m` 을 5 로 읽던 옛 판의 사각(독립 리뷰 #435 M2)."""
+        total = 0.0
+        for a in re.sub(r"\s+#.*$", "", args).split():
+            m = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", a)
+            assert m, f"상한을 모르는 대기: sleep {args!r}"
+            total += float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+        return total
+
+    @classmethod
+    def _window_need(cls, bot_unit: str, dash_unit: str, script: str) -> dict:
+        """git reset(소스 mtime 이 바뀐다)부터 대시보드 새 프로세스가 뜰 때까지의 **경로 상한**.
+
+        창 = `git reset --hard` 다음 줄부터 첫 `restart_dashboard` 호출까지 + 그 함수 안의
+        재시작 줄 앞까지. 그 안의 **notify 호출 수 × notify 의 curl 상한** + sleep + 봇 정지
+        + 대시보드 정지. 옛 판은 창 밖의 sleep(대시보드 재시작 뒤 2·daju 3·VM 직접 push 3)을
+        더하고 창 안의 notify 여러 번을 curl 한 줄(1회)로 세어 경로의 합이 아니었다 — 그래서
+        `GRACE_SEC=1012` 도 통과했다. 서로 배타인 갈래(설치 성공/실패 알림)도 둘 다 세므로
+        보수적이다(유예가 그만큼 더 커야 통과)."""
+        lines = ["" if ln.lstrip().startswith("#") else ln for ln in script.split("\n")]
+
+        def fn_body(name: str) -> list:
+            i = next((k for k, ln in enumerate(lines) if re.match(rf"{name}\(\)\s*\{{\s*$", ln)), None)
+            assert i is not None, f"{name}() 정의를 못 찾았다 — 스크립트 모양이 바뀌었다"
+            j = next(k for k in range(i + 1, len(lines)) if re.match(r"\}\s*$", lines[k]))
+            return lines[i + 1:j]
+
+        # notify 한 번의 상한 = 본문 curl 의 --max-time/-m(이어진 줄을 합쳐서). 없으면 상한이 없다.
+        logical = re.sub(r"\\\n", " ", "\n".join(fn_body("notify")))
+        curls = [ln for ln in logical.split("\n") if re.search(r"\bcurl\b", ln)]
+        assert curls, "notify 에서 curl 을 못 찾았다"
+        per = 0.0
+        for c in curls:
+            m = re.search(r"\s(?:-m\s*|--max-time(?:\s+|=))(\d+(?:\.\d+)?)\b", c)
+            assert m, f"notify 의 curl 에 상한(-m/--max-time)이 없다: {c.strip()[:80]}"
+            per += float(m.group(1))
+        # 명령 줄만 — 실패 알림 문자열('… git reset --hard (…)')도 그 낱말을 담는다(실측)
+        resets = [k for k, ln in enumerate(lines)
+                  if re.match(r"\s*(?:if\s+!\s*)?git reset --hard\b", ln)]
+        assert len(resets) == 1, f"git reset --hard 줄이 {len(resets)}개 — 창의 시작을 못 정한다"
+        call = next((k for k in range(resets[0] + 1, len(lines))
+                     if re.match(r"\s*restart_dashboard\s*$", lines[k])), None)
+        assert call is not None, "reset 뒤 restart_dashboard 호출을 못 찾았다"
+        body = fn_body("restart_dashboard")
+        cut = next((k for k, ln in enumerate(body)
+                    if "systemctl restart stock-bot-dashboard" in ln), None)
+        assert cut is not None, "restart_dashboard 안의 대시보드 재시작 줄을 못 찾았다"
+        text = re.sub(r"\\\n", " ", "\n".join(lines[resets[0] + 1:call] + body[:cut]))
+        n_notify = len(re.findall(r"(?<![\w-])notify\s+[\"'$]", text))
+        sleeps = sum(cls._sleep_sec(a)
+                     for a in re.findall(r"(?<![\w-])sleep\s+([^;&|)\n]+)", text))
+        bot_stop, dash_stop = cls._stop_timeout(bot_unit), cls._stop_timeout(dash_unit)
+        return {"need": bot_stop + dash_stop + n_notify * per + sleeps,
+                "bot_stop": bot_stop, "dash_stop": dash_stop,
+                "notify": n_notify, "per_notify": per, "sleeps": sleeps}
+
     def test_grace_covers_the_auto_update_restart_window(self):
         """유예의 하한은 임의값이 아니라 `auto-update.sh` 의 창에서 나온다(#269 주기에서
-        도출): reset 뒤 stock-bot 정지(TimeoutStopSec) → 스크립트의 sleep·알림 대기
-        (curl -m) → 대시보드 정지(TimeoutStopSec, 없으면 systemd 기본 90초). 누가 그중
-        하나를 늘리면 여기서 빨간불이 되어 유예를 다시 보게 한다(#119 규율 대신 구조).
+        도출): reset 뒤 stock-bot 정지(TimeoutStopSec) → 창 안의 sleep·알림(notify 호출 수 ×
+        curl 상한) → 대시보드 정지(TimeoutStopSec, 없으면 systemd 기본 90초). 그 값들이
+        늘면 여기서 빨간불이 되어 유예를 다시 보게 한다(#119 규율 대신 구조). 무엇을 읽고
+        무엇을 못 보는지는 `_window_need`·`_stop_timeout` 독스트링과 docs/tests.md #435.
         """
         from bot import code_freshness as cf
 
-        def stop_timeout(unit: str) -> int:
-            txt = pathlib.Path("deploy", unit).read_text(encoding="utf-8")
-            m = re.search(r"^TimeoutStopSec=(\d+)\s*$", txt, re.M)
-            return int(m.group(1)) if m else 90       # systemd DefaultTimeoutStopSec
+        w = self._window_need(
+            pathlib.Path("deploy/stock-bot.service").read_text(encoding="utf-8"),
+            pathlib.Path("deploy/stock-bot-dashboard.service").read_text(encoding="utf-8"),
+            pathlib.Path("deploy/auto-update.sh").read_text(encoding="utf-8"))
+        assert w["bot_stop"] >= 600, f"픽스처가 실물과 다르다 — 봇 정지 상한을 못 읽었다: {w}"
+        assert w["notify"] >= 1 and w["per_notify"] >= 1, f"창 안 알림을 못 읽었다(#54): {w}"
+        assert cf.GRACE_SEC > w["need"], (cf.GRACE_SEC, w)
 
-        bot_stop = stop_timeout("stock-bot.service")
-        dash_stop = stop_timeout("stock-bot-dashboard.service")
-        assert bot_stop >= 600, "픽스처가 실물과 다르다 — 봇 정지 상한을 못 읽었다"
-        script = pathlib.Path("deploy/auto-update.sh").read_text(encoding="utf-8")
-        body = "\n".join(ln for ln in script.splitlines()
-                         if not ln.lstrip().startswith("#"))
-        waits = (sum(int(x) for x in re.findall(r"\bsleep\s+(\d+)", body))
-                 + sum(int(x) for x in re.findall(r"\bcurl\b[^\n]*?-m\s+(\d+)", body)))
-        assert waits > 0, "스크립트의 대기를 하나도 못 읽었다 — 정규식이 눈이 멀었다"
-        need = bot_stop + dash_stop + waits
-        assert cf.GRACE_SEC > need, (cf.GRACE_SEC, bot_stop, dash_stop, waits)
+    def test_window_bound_reads_units_and_counts_calls_20261005(self):
+        """**발화 테스트**(독립 리뷰 #435 M2): 옛 판은 실제 상한이 1200초를 넘어도 통과했다 —
+        대시보드 `TimeoutStopSec=5min`(숫자만 받아 90 으로 떨어짐) · `TimeoutSec=400` · curl
+        `--max-time 300` · notify 25회 추가 · `sleep 5m`(5 로 읽음), 그리고 `GRACE_SEC=1012`.
+        같은 계산 함수를 변형한 텍스트에 태워, 각 변형이 유예를 넘는 하한을 내는지 본다.
+        """
+        from bot import code_freshness as cf
+
+        bot = pathlib.Path("deploy/stock-bot.service").read_text(encoding="utf-8")
+        dash = pathlib.Path("deploy/stock-bot-dashboard.service").read_text(encoding="utf-8")
+        sh = pathlib.Path("deploy/auto-update.sh").read_text(encoding="utf-8")
+        base = self._window_need(bot, dash, sh)
+        assert base["need"] < cf.GRACE_SEC, base
+        # 경로의 합이라 '겨우 넘는' 유예(1012)는 막힌다 — 옛 근사(1011)는 통과시켰다
+        assert base["need"] > 1012, base
+
+        def svc(extra: str) -> str:
+            assert dash.count("[Service]\n") == 1
+            return dash.replace("[Service]\n", f"[Service]\n{extra}\n", 1)
+
+        anchor = "if ! sudo /bin/systemctl restart stock-bot; then"   # reset 뒤 · 봇 재시작 앞
+        nap = ("# Give systemd a moment to actually start the new process before we check.\n"
+               "sleep 3")
+        assert sh.count(anchor) == 1 and sh.count(nap) == 1 and sh.count("curl -s -m 10") == 1
+        muts = {
+            "대시보드 TimeoutStopSec=5min": (bot, svc("TimeoutStopSec=5min"), sh),
+            "대시보드 TimeoutSec=400": (bot, svc("TimeoutSec=400"), sh),
+            "curl --max-time 300": (bot, dash, sh.replace("curl -s -m 10",
+                                                          "curl -s --max-time 300")),
+            "notify 25회 추가": (bot, dash, sh.replace(anchor, 'notify "x"\n' * 25 + anchor)),
+            "sleep 5m": (bot, dash, sh.replace(nap, nap[:-len("sleep 3")] + "sleep 5m")),
+        }
+        for name, (b, d, s) in muts.items():
+            got = self._window_need(b, d, s)
+            assert got["need"] >= cf.GRACE_SEC, (name, got)
+        # 나중 줄이 이긴다 — `TimeoutSec=400` 뒤 `TimeoutStopSec=60` 이면 정지 상한은 60
+        assert self._stop_timeout("[Service]\nTimeoutSec=400\nTimeoutStopSec=60\n") == 60
+        assert self._stop_timeout("[Service]\nTimeoutStopSec=60\nTimeoutStopSec=\n") == 90
+        # 상한을 모르면 통과가 아니라 실패다(#54)
+        for bad in ("[Service]\nTimeoutStopSec=infinity\n", "[Service]\nTimeoutStopSec=0\n",
+                    "[Service]\nTimeoutStopSec=15fortnights\n"):
+            with pytest.raises(AssertionError):
+                self._stop_timeout(bad)
+        with pytest.raises(AssertionError):
+            self._window_need(bot, dash, sh.replace("curl -s -m 10", "curl -s"))
+        with pytest.raises(AssertionError):
+            self._window_need(bot, dash, sh.replace(nap, nap[:-len("sleep 3")] + 'sleep "$X"'))
 
     def test_note_names_both_intervals_separately_20261005(self):
         """실수 #435 — 옛 문구는 ``lag``(프로세스 대비 소스 시차)를 '소스가 N 전에
@@ -62032,6 +62207,10 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert "4시간 먼저 시작" in msg, msg          # 프로세스가 얼마나 낡았나
         assert "4시간 전에 갱신" not in msg, msg       # 옛 판의 뒤섞인 문구
         assert f"{cf.GRACE_SEC // 60}분이 지났습니다" in msg, msg
+        # 유예 문장은 **가정**으로 적는다 — VM 에서 직접 고친 소스처럼 배포가 아닌 drift 에도
+        # '자동 배포가 재시작했어야' 라고 단정하면 재지 않은 원인을 적는 것이다(독립 리뷰 #435
+        # L4 · #165)
+        assert "자동 배포라면" in msg and "재시작했어야" not in msg, msg
 
     def test_clock_slack_absorbs_btime_truncation(self):
         """`/proc/stat` btime 은 정수 초라 계산한 시작 시각이 최대 1초 이르다 — 그
@@ -62041,6 +62220,32 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         far = 10_000_000.0
         assert cf.drift(started=1000.0, newest=1000.9, now=far)["stale"] is False
         assert cf.drift(started=1000.0, newest=1002.0, now=far)["stale"] is True
+        # 경계 고정(독립 리뷰 #435 L6 — `>=` 변형과 여유 1.9초 변형이 살아남았다):
+        # 정확히 1초는 절단 안이고(엄격한 `>`), 1.5초는 넘는다
+        at = cf.drift(started=1000.0, newest=1001.0, now=far)
+        assert at["stale"] is False and at["pending"] is False, at
+        assert cf.drift(started=1000.0, newest=1001.5, now=far)["stale"] is True
+
+    def test_grace_boundary_is_strict_20261005(self):
+        """유예는 **넘었을 때만** 옛 코드다 — 정확히 유예만큼 지난 순간은 아직 자동 재시작을
+        기다린다(독립 리뷰 #435 L6: `age >= grace` 변형이 살아남았다)."""
+        from bot import code_freshness as cf
+        reset = 7_000_000.0
+        d = cf.drift(started=reset - 3600, newest=reset, now=reset + cf.GRACE_SEC)
+        assert d["stale"] is False and d["pending"] is True, d
+
+    def test_future_mtime_is_unmeasurable_not_pending_20261005(self):
+        """독립 리뷰 #435 L5: 소스 mtime 이 **미래**(시계 역행 등)면 ``age < 0`` 이라
+        ``newest + 유예`` 까지 ``pending`` 에 머물렀다 — 재지 못한 것을 '자동 재시작을 기다리는
+        중' 으로 적은 것이다(#165). 판정 불가로 두고 **사유를 남긴다**(#54·#82)."""
+        from bot import code_freshness as cf
+        now = 9_000_000.0
+        d = cf.drift(started=now - 3600, newest=now + 120, now=now)
+        assert d["measurable"] is False and d["stale"] is False and d["pending"] is False, d
+        assert "2분" in d.get("why", "") and "시계" in d.get("why", ""), d
+        assert cf.note(d) == "", "판정 불가인데 문구를 지어냈다"
+        # 절단 여유(1초) 안의 어긋남은 미래로 보지 않는다
+        assert cf.drift(started=now - 3600, newest=now + 0.5, now=now)["measurable"] is True
 
     def test_sub_minute_lag_is_not_written_as_zero_minutes_20261005(self):
         """**재현 테스트**(실수 #435 배포 전 셀프리뷰): 유예를 ``age`` 로 옮기며 '옛 코드'
@@ -62064,7 +62269,14 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         from bot import code_freshness as cf
         d = cf.drift(started=1000, newest=0)
         assert d["measurable"] is False and d["stale"] is False
+        # 판정 불가는 '자동 재시작 대기 중' 도 아니다(독립 리뷰 #435 L6 — 이 분기의
+        # `pending=True` 변형이 살아남았다)
+        assert d["pending"] is False, d
+        assert d.get("why"), f"판정 불가인데 사유가 없다(#82): {d}"
         assert cf.note(d) == "", "판정 불가인데 문구를 지어냈다"
+        # note() 는 공개 함수라 남이 만든 dict 도 받는다 — 판정 불가에 stale 이 서 있어도
+        # 처방을 지어내지 않는다(뮤테이션: measurable 검사를 지워도 위 줄은 통과했다)
+        assert cf.note({**d, "stale": True}, unit="stock-bot-dashboard") == ""
 
     def test_note_carries_the_measured_lag_and_only_when_stale(self):
         """'다르다' 만 말하면 얼마나·왜를 알 수 없다(#202). 신선하면 침묵."""
@@ -62077,22 +62289,89 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
                        unit="stock-bot-dashboard")
         assert "systemctl restart stock-bot-dashboard" in msg2, msg2
 
-    def test_newest_source_mtime_scans_the_directory_not_a_name_list(self):
-        """이름을 열거하면 목록 밖 파일을 못 잡는다(#24) — 새 파일이
-        최신이면 그게 잡혀야 한다."""
+    def test_audit_cli_reports_code_that_changed_mid_run_20261005(self, monkeypatch):
+        """**재현 테스트**(독립 리뷰 #435 L3): `audit_sweep` CLI 는 **자동 재시작 대상이
+        아니다** — 유예(자동 재시작을 기다리는 창)라는 개념이 맞지 않는다. 그런데 `main()` 이
+        유예가 있는 ``stale`` 에 기대고 있어, 10분 실행 중에 배포가 일어나면 옛 판(lag 기준)은
+        잡고 #435 판(age 기준)은 ``pending`` 이라 **침묵**했다 — 지문은 디스크의 새 코드를,
+        결과는 메모리의 옛 코드를 반영한 채 아무 표시가 없다(#45·#274).
+        유예를 보지 않고(``run_note`` — stale 이든 pending 이든 말한다) 1분 미만도 초로
+        적는다(#435 셀프리뷰 '0분')."""
+        import bot.audit_sweep as A
         from bot import code_freshness as cf
-        import tempfile
+
+        now = time.time()
+        monkeypatch.setattr(cf, "_STARTED", now - 600)             # 10분 전에 뜬 CLI
+        changed = now - 570                                        # 뜬 지 30초 뒤에 배포
+        monkeypatch.setattr(cf, "source_mtimes", lambda root=None: [
+            (now - 86_400, "bot/old.py"), (changed, "bot/audit_sweep.py")], raising=False)
+        # 옛 판 재현용 — 옛 drift 는 `newest_source_mtime()` 만 불렀다
+        monkeypatch.setattr(cf, "newest_source_mtime", lambda *a, **k: changed)
+        fake = {"findings": [], "warn": 0, "errors": [], "fp": "abcdef0123", "ran": 7,
+                "raw": "raw"}
+        monkeypatch.setattr(A, "sweep", lambda include_weekly=False: fake)
+        monkeypatch.setattr(sys, "argv", ["audit_sweep", "--daily"])
+
+        def banner() -> str:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                A.main()
+            got = [ln for ln in buf.getvalue().splitlines() if ln.startswith("# audit_sweep")]
+            assert got, buf.getvalue()
+            return got[0]
+
+        b = banner()
+        assert "⚠️" in b and "30초 뒤" in b, b                   # 유예와 무관 · 초 단위
+        assert "`bot/audit_sweep.py` 등" in b, b                # 어느 변경이 실행 뒤에 왔나
+        assert "뜬 0분" not in b, b
+        # 반대 증거: 실행 뒤 코드가 안 바뀌었으면 아무 말도 안 한다(#25·#260)
+        monkeypatch.setattr(cf, "source_mtimes",
+                            lambda root=None: [(now - 86_400, "bot/old.py")])
+        monkeypatch.setattr(cf, "newest_source_mtime", lambda *a, **k: now - 86_400)
+        b2 = banner()
+        assert "⚠️" not in b2 and "판정 불가" not in b2, b2
+
+    def test_newest_source_mtime_scans_the_directory_not_a_name_list(self, tmp_path):
+        """이름을 열거하면 목록 밖 파일을 못 잡는다(#24) — 새 파일이
+        최신이면 그게 잡혀야 한다.
+
+        ⚠️ 계약을 다시 썼다(독립 리뷰 #435 7a · #222): 옛 판은 `bot/` **최상위**만 훑었는데
+        자동 배포는 `bot/scripts`·`trade`·`TradingAgents/tradingagents` 가 바뀌어도 대시보드를
+        다시 띄운다(`auto-update.sh` CODE_CHANGED — 대시보드가 그쪽도 import 한다). 그쪽만 바뀐
+        배포에서 재시작이 실패하면 배너가 끝내 안 떴다. 범위는 그 조건과 같고(대조는
+        `tests/test_restart_closure_20260928.py`), 인자는 이제 패키지 디렉터리가 아니라 **레포
+        루트**다. 조건 밖 디렉터리와, 조건 안이라도 배포가 아닌 쓰기가 바꾸는 갈래(데이터
+        `trade/data/` · 봇이 실행 중에 테마 모듈을 쓰는 `bot/screener_themes/`)는 세지 않는다.
+        """
         import os
-        d = tempfile.mkdtemp()
-        old = pathlib.Path(d) / "a.py"
-        old.write_text("x")
-        os.utime(old, (1000, 1000))
-        assert cf.newest_source_mtime(d) == 1000
-        new = pathlib.Path(d) / "zz_brand_new_module.py"
-        new.write_text("y")
-        os.utime(new, (5000, 5000))
-        assert cf.newest_source_mtime(d) == 5000, "목록 밖 새 파일을 놓쳤다"
-        assert cf.newest_source_mtime(d + "/nope") == 0.0
+
+        from bot import code_freshness as cf
+
+        def put(rel: str, mt: float) -> None:
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x", encoding="utf-8")
+            os.utime(p, (mt, mt))
+
+        put("bot/a.py", 1000)
+        assert cf.newest_source_mtime(tmp_path) == 1000
+        put("bot/zz_brand_new_module.py", 2000)
+        assert cf.newest_source_mtime(tmp_path) == 2000, "목록 밖 새 파일을 놓쳤다"
+        # 재시작 조건 안의 다른 디렉터리 — 옛 판은 여기를 하나도 못 봤다
+        for i, rel in enumerate(("bot/scripts/s.py", "trade/k.py",
+                                 "TradingAgents/tradingagents/x/y/z.py"), 1):
+            put(rel, 2000 + 1000 * i)
+            assert cf.newest_source_mtime(tmp_path) == 2000 + 1000 * i, rel
+        top = cf.newest_source_mtime(tmp_path)
+        # 조건 밖 — 세면 남의 변경이 '옛 코드' 가 된다(#45 모집단)
+        for rel in ("trade/data/hs.py", "bot/screener_themes/promoted.py",
+                    "trade/scripts/x.py", "bot/tests/test_x.py",
+                    "docs/x.py", "tests/test_y.py", "TradingAgents/other/w.py",
+                    "bot/a.txt", "TradingAgents/tradingagents/__pycache__/c.py"):
+            put(rel, top + 10_000)
+        assert cf.newest_source_mtime(tmp_path) == top, \
+            sorted(p for m, p in cf.source_mtimes(tmp_path) if m > top)
+        assert cf.newest_source_mtime(tmp_path / "nope") == 0.0
 
     # ── ③ 서버·화면 배선 ────────────────────────────────────────────────
     @staticmethod
@@ -62156,7 +62435,7 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         assert raw.split(b"\r\n")[0].endswith(b"200 OK"), raw[:120]
         body = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
         assert body["ok"] is True
-        for k in ("started", "newest", "stale", "pending", "measurable", "note"):
+        for k in ("started", "newest", "stale", "pending", "measurable", "why", "note"):
             assert k in body, (k, body)
         assert isinstance(body["stale"], bool) and isinstance(body["pending"], bool)
 
@@ -62196,6 +62475,17 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
             "age_sec": 90.0, "grace_sec": 1200.0, "started": 1.0, "newest": 16201.0})
         body = json.loads(self._get("/api/build").split(b"\r\n\r\n", 1)[1])
         assert body["note"] == "" and body["pending"] is True, body
+        # pending 은 stale 이 **아니다** — API 가 `stale or pending` 을 실어도 배너는 note 가
+        # 비어 안 뜨지만 JSON 의 판정은 틀린다(독립 리뷰 #435 L6 N4 생존)
+        assert body["stale"] is False, body
+        # 판정 불가는 사유를 싣는다(#54·#82) — 미래 mtime·소스 못 읽음은 처방이 다르다
+        monkeypatch.setattr(cf, "drift", lambda **k: {
+            "stale": False, "pending": False, "measurable": False, "lag_sec": 0.0,
+            "age_sec": -120.0, "grace_sec": 1200.0, "started": 1.0, "newest": 2.0,
+            "why": "소스 mtime 이 지금보다 2분 뒤입니다(시계 어긋남)"})
+        body = json.loads(self._get("/api/build").split(b"\r\n\r\n", 1)[1])
+        assert body["measurable"] is False and "시계" in body["why"], body
+        assert body["note"] == "", body
 
     def test_stale_verdict_reaches_the_dom_end_to_end(self, tmp_path):
         """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 Medium): 옛 판은 `buildBanner`

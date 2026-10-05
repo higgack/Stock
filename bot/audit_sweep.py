@@ -181,7 +181,7 @@ def audit_fingerprint(modules: tuple[str, ...] | list[str] | None = None) -> str
     ⚠️ **못 보는 축**(#274): 이건 **디스크**를 잰다. 장수 프로세스가 새
     코드를 못 올린 채(배포 후 재시작 실패) 돌면 결산은 **옛 메모리 코드**로
     만들어지는데 지문은 새것을 찍는다 — 신호가 뒤집히는 자리다. 그래서
-    `main()` 배너가 `code_freshness.drift()` 로 **프로세스 축을 따로**
+    `main()` 배너가 `code_freshness.run_note()` 로 **프로세스 축을 따로**
     말한다(둘은 다른 사실이다, #45). 손 bump 가 아니라 소스 해시인 이유는
     #119(규율은 여섯 번 졌다).
     """
@@ -326,13 +326,13 @@ def main() -> int:
     # 이라 배너가 거짓말한다 — 모호함을 없애려고 만든 줄에서(#55).
     ran = r.get("ran")
     # ⚠️ 지문은 **디스크**를 잰다. 프로세스가 옛 코드를 들고 있으면 신호가
-    # 뒤집히므로(배포 후 재시작 실패) 그 축은 따로 말한다(#45·#274).
+    # 뒤집히므로(실행 도중 배포) 그 축은 따로 말한다(#45·#274). CLI 는 자동 재시작
+    # 대상이 아니라 **유예를 보지 않는다** — `stale` 에만 기대면 실행 중 배포가
+    # `pending` 으로 침묵했다(독립 리뷰 #435 L3).
     try:
-        from bot.code_freshness import drift
-        d = drift()
-        proc = (f" · ⚠️ 이 프로세스는 소스보다 {d['lag_sec'] / 60:.0f}분 낡음"
-                if d.get("stale") else
-                ("" if d.get("measurable") else " · 프로세스 신선도 판정 불가"))
+        from bot.code_freshness import run_note
+        rn = run_note()
+        proc = f" · {rn}" if rn else ""
     except Exception as exc:                                   # noqa: BLE001
         proc = f" · 프로세스 신선도 판정 불가({type(exc).__name__})"
     print(f"# audit_sweep · 코드 지문 {r.get('fp') or '지문불가'}"

@@ -2429,9 +2429,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "started": int(d["started"]),
                 "newest": int(d["newest"]),
                 "stale": bool(d["stale"]),
-                # 옛 코드지만 자동 재시작 창 안(실수 #435) — 화면은 침묵하고 이 칸이 말한다
+                # 옛 코드지만 자동 재시작 창 안(실수 #435) — 화면(배너)은 침묵한다. 이 칸은
+                # JSON 을 직접 조회하는 사람에게만 말한다(배너·감사는 읽지 않는다, 독립 리뷰 L6)
                 "pending": bool(d.get("pending")),
                 "measurable": bool(d["measurable"]),
+                # 판정 불가의 사유 — 소스를 못 읽음·미래 mtime 은 처방이 다르다(#54·#82)
+                "why": str(d.get("why") or ""),
                 "note": _cf.note(d, unit="stock-bot-dashboard"),
             })
         except Exception as exc:                               # noqa: BLE001
