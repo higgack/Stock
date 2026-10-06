@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 log = logging.getLogger("bot.dart_fav_alerts")
@@ -56,19 +57,48 @@ def _save_state(st: dict) -> None:
         log.warning("dart_fav_alerts: state save failed: %s", exc)
 
 
-def fav_kr_codes() -> set[str]:
-    """관심종목 중 KR 6자리 코드 집합 ('005930.KS'/'247540' → '005930'...)."""
+# 관심종목 목록을 못 읽었을 때의 마지막 사유 — `enable`·`status` 가 사람 말로
+# 옮긴다. 경고는 사유별로 한 시간에 한 번(75초 폴마다 같은 줄이 쌓이지 않게,
+# #317 '모델당 1회' 선례).
+_LAST_FAV_ERROR = ""
+_FAV_WARNED: dict = {}
+_FAV_WARN_EVERY = 3600
+
+
+def fav_kr_codes() -> "set[str] | None":
+    """관심종목 중 KR 6자리 코드 집합 ('005930.KS'/'247540' → '005930'...).
+
+    ⚠️ 목록을 **못 읽으면 None** 이다 — 빈 집합(관심종목이 정말 없다)과 갈라야
+    한다. 옛 판은 실패를 빈 집합으로 접어 `poll_new` 가 상태의 `codes` 를 [] 로
+    덮었고, 파일이 돌아오면 전 종목을 '새로 담긴 종목' 으로 seed 해 **그 사이 공시를
+    영영 안 보냈다**(독립 델타 리뷰 2026-10-06 M1, 실수 #436 — 못 읽음 ≠ 비었음,
+    #82). 사유는 `_LAST_FAV_ERROR` 에 남는다.
+    """
+    global _LAST_FAV_ERROR
     try:
-        from bot.market_favorites import get_favorites
-        codes: set[str] = set()
-        for f in get_favorites() or []:
-            m = _KR_TICKER_RE.match(str(f.get("ticker", "")).strip())
-            if m:
-                codes.add(m.group(1))
-        return codes
-    except Exception as exc:
-        log.warning("dart_fav_alerts: favorites load failed: %s", exc)
-        return set()
+        from bot import market_favorites as _mf
+    except Exception as exc:                                   # noqa: BLE001
+        why = f"{type(exc).__name__}: {exc}"
+    else:
+        try:
+            codes: set[str] = set()
+            for f in _mf.get_favorites(strict=True) or []:
+                m = _KR_TICKER_RE.match(str(f.get("ticker", "")).strip())
+                if m:
+                    codes.add(m.group(1))
+            _LAST_FAV_ERROR = ""
+            return codes
+        except Exception as exc:                               # noqa: BLE001
+            # 화면(대시보드 API)과 같은 문장 — 규칙은 `error_text` 한 곳(#38).
+            why = _mf.error_text(exc)
+    _LAST_FAV_ERROR = why[:300]
+    now = time.time()
+    if now - _FAV_WARNED.get(_LAST_FAV_ERROR, 0.0) >= _FAV_WARN_EVERY:
+        _FAV_WARNED[_LAST_FAV_ERROR] = now
+        log.warning("dart_fav_alerts: 관심종목 목록을 못 읽어 이번 폴을 건너뛴다"
+                    "(상태 그대로 — 같은 사유는 한 시간에 한 번만 적는다): %s",
+                    _LAST_FAV_ERROR)
+    return None
 
 
 def _scan_archive_items() -> list[dict]:
@@ -90,9 +120,16 @@ def _ids_for_codes(codes: set[str]) -> set[str]:
 
 
 def enable(chat_id: int) -> dict:
-    """알림 활성화 — 현재 관심종목의 기존 공시를 전부 seed(무발송)."""
+    """알림 활성화 — 현재 관심종목의 기존 공시를 전부 seed(무발송).
+
+    관심종목 목록을 못 읽으면 **켜지 않고**(상태 그대로) 사유를 돌려준다 — 빈 목록
+    으로 켜면 복구 뒤 전 종목이 '새 종목' seed 가 된다(`fav_kr_codes`)."""
     st = _load_state()
     codes = fav_kr_codes()
+    if codes is None:
+        # `error` 는 사유 그대로 — 틀(켜지 못했다)은 부르는 쪽이 댄다(텔레그램 답).
+        return {"codes": 0, "seeded": 0,
+                "error": _LAST_FAV_ERROR or "관심종목 목록을 못 읽었습니다"}
     seeded = _ids_for_codes(codes)
     seen = set(st.get("seen", []))
     st.update({
@@ -112,10 +149,15 @@ def disable() -> None:
 
 
 def status() -> dict:
+    """알림 상태. `codes` 는 목록을 못 읽으면 None 이고 사유가 `codes_error` 에 —
+    0 으로 적으면 '관심종목이 없다' 로 읽힌다(#82). 이 함수는 결산·보고서가
+    `chat_id` 를 꺼내러 부르므로 던지지 않는다."""
     st = _load_state()
+    codes = fav_kr_codes()
     return {"enabled": bool(st.get("enabled")),
             "chat_id": st.get("chat_id"),
-            "codes": len(fav_kr_codes()),
+            "codes": len(codes) if codes is not None else None,
+            "codes_error": _LAST_FAV_ERROR if codes is None else "",
             "seen": len(st.get("seen", []))}
 
 
@@ -131,6 +173,11 @@ def poll_new() -> tuple[list[dict], int | None]:
         return [], None
 
     codes = fav_kr_codes()
+    if codes is None:
+        # 목록을 못 읽은 폴은 **상태를 건드리지 않고** 건너뛴다 — `codes` 를 [] 로
+        # 덮으면 복구 뒤 전 종목이 '새로 담긴 종목' seed 가 돼 그 사이 공시가
+        # 사라진다(델타 리뷰 M1). 복구되면 날짜 가드(어제 이후) 안의 공시는 보낸다.
+        return [], st.get("chat_id")
     known = set(st.get("codes", []))
     seen = set(st.get("seen", []))
     dirty = False

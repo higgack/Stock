@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 8   # 8 = 스냅샷 2개 섹션이 엉뚱한 키를 읽어 늘 통과하던 것 fix
+_PROBE_VER = 9   # 9 = 관심종목 목록 파일을 못 읽음을 ❌ 로(결산에 실린다) · 8 = 스냅샷 2개 섹션이 엉뚱한 키를 읽어 늘 통과하던 것 fix
 
 
 def _p(*a):
@@ -164,6 +164,72 @@ def freshness_mark(n_rows: int, latest: str | None, expected: str | None,
     return "✅ 완결 세션"
 
 
+def _audit_favorites() -> None:
+    """⑥ 관심종목 — **검산**: 예상 PER = 현재가 ÷ 예상 EPS.
+
+    섹션을 함수로 뺀 것은 태워 볼 수 있게 하려는 것이다(#176 경로는 함수로 존재해야
+    베낀다) — 목록 파일을 못 읽은 갈래가 일일 결산에 실리는지를 값으로 잰다.
+    """
+    _p("")
+    _p("── 관심종목 (검산: 예상 PER = 현재가 ÷ 예상 EPS)")
+    try:
+        from bot import market_favorites as mf
+        # ⚠️ v3 는 `get_favorites_with_prices()` 를 그냥 불렀다가 **콜드 캐시**
+        # 라 디스크 원본을 받았다 — 현재가는 None 인데 PER 은 종목 담던 날의
+        # 값이 남아 108행 전부 '❌ 불일치' 로 오보했다(2026-08-20). 프로브는
+        # 화면과 **같은 값**을 봐야 하므로 갱신을 동기로 돌린다.
+        favs = mf._compute_favorites_with_prices()
+        bad, ok, blank, noprice = [], 0, 0, 0
+        for f in favs:
+            px, eps, per = (f.get("current_price"), f.get("eps_estimate"),
+                            f.get("per"))
+            if px is None:
+                noprice += 1          # 가격을 못 받은 종목 — 검산 대상 아님
+                continue
+            if per is None:
+                blank += 1            # EPS 없음 → PER 빈칸(정상 동작)
+                continue
+            if not eps:
+                bad.append((f, per, None))
+                continue
+            calc = px / eps
+            if abs(calc - per) <= max(0.02 * abs(per), 0.05):
+                ok += 1
+            else:
+                bad.append((f, per, calc))
+        # ⚠️ **판정 글자를 계수 라벨로 쓰지 말 것.** 옛 줄은 불일치가 0건
+        # 이어도 `❌ 불일치 0` 을 찍어, ❌ 줄을 결함으로 세는 sweep 이
+        # 멀쩡한 결과를 결함으로 보고했다(2026-08-26 실측 — #47 계수 패턴
+        # 오류의 생산부판). 라벨에서 글자를 빼고, 줄 앞에 **실제 판정**을 둔다.
+        _p(f"   {'❌' if bad else '✅'} {len(favs)}종목 · 검산통과 {ok}"
+           f" · 불일치 {len(bad)} · PER 빈칸(EPS 없음) {blank}"
+           f" · 가격 미수신 {noprice}")
+        if noprice:
+            _p(f"      ↪ 가격 미수신 {noprice}건은 상장폐지·심볼 오류 후보 —"
+               f" 아래 목록 참고")
+            for f in [x for x in favs if x.get("current_price") is None][:8]:
+                _p(f"      · {str(f.get('name_kr') or f.get('name'))[:18]:18} "
+                   f"{f.get('ticker','')}")
+        for f, per, calc in bad[:12]:
+            _p(f"   ❌ {str(f.get('name_kr') or f.get('name'))[:16]:16} "
+               f"{f.get('ticker',''):12} 화면 PER {per:.2f} · "
+               f"현재가 {f.get('current_price')} ÷ EPS {f.get('eps_estimate')} = "
+               f"{f'{calc:.2f}' if calc else '계산불가(EPS 0/없음)'}")
+    except Exception as exc:                                   # noqa: BLE001
+        # 목록 파일을 못 읽은 것은 일시 장애가 아니라 **사람이 고쳐야 하는 결함**이다
+        # — ❌ 로 찍어야 일일 결산(sweep 은 ❌ 줄만 센다)이 말한다. 옛 줄 '조회 실패
+        # …' 는 결산에 안 실려 무음이었다(델타 리뷰 2026-10-06 L4 · #303). 줄은
+        # 혼자서 무엇인지 말한다(#356).
+        try:
+            from bot.market_favorites import FavoritesUnreadable as _fu
+        except Exception:                                      # noqa: BLE001
+            _fu = ()
+        if isinstance(exc, _fu):
+            _p(f"   ❌ 관심종목 — {exc.reason}")
+        else:
+            _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+
 def _audit_home_surfaces(show_all):
     """홈 대시보드 6종 — 신선도 + **검산** + **교차일관성**."""
     _p("")
@@ -283,54 +349,8 @@ def _audit_home_surfaces(show_all):
     except Exception as exc:                                   # noqa: BLE001
         _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
-    # ⑥ 관심종목 — **검산**: 예상 PER = 현재가 ÷ 예상 EPS
-    _p("")
-    _p("── 관심종목 (검산: 예상 PER = 현재가 ÷ 예상 EPS)")
-    try:
-        from bot import market_favorites as mf
-        # ⚠️ v3 는 `get_favorites_with_prices()` 를 그냥 불렀다가 **콜드 캐시**
-        # 라 디스크 원본을 받았다 — 현재가는 None 인데 PER 은 종목 담던 날의
-        # 값이 남아 108행 전부 '❌ 불일치' 로 오보했다(2026-08-20). 프로브는
-        # 화면과 **같은 값**을 봐야 하므로 갱신을 동기로 돌린다.
-        favs = mf._compute_favorites_with_prices()
-        bad, ok, blank, noprice = [], 0, 0, 0
-        for f in favs:
-            px, eps, per = (f.get("current_price"), f.get("eps_estimate"),
-                            f.get("per"))
-            if px is None:
-                noprice += 1          # 가격을 못 받은 종목 — 검산 대상 아님
-                continue
-            if per is None:
-                blank += 1            # EPS 없음 → PER 빈칸(정상 동작)
-                continue
-            if not eps:
-                bad.append((f, per, None))
-                continue
-            calc = px / eps
-            if abs(calc - per) <= max(0.02 * abs(per), 0.05):
-                ok += 1
-            else:
-                bad.append((f, per, calc))
-        # ⚠️ **판정 글자를 계수 라벨로 쓰지 말 것.** 옛 줄은 불일치가 0건
-        # 이어도 `❌ 불일치 0` 을 찍어, ❌ 줄을 결함으로 세는 sweep 이
-        # 멀쩡한 결과를 결함으로 보고했다(2026-08-26 실측 — #47 계수 패턴
-        # 오류의 생산부판). 라벨에서 글자를 빼고, 줄 앞에 **실제 판정**을 둔다.
-        _p(f"   {'❌' if bad else '✅'} {len(favs)}종목 · 검산통과 {ok}"
-           f" · 불일치 {len(bad)} · PER 빈칸(EPS 없음) {blank}"
-           f" · 가격 미수신 {noprice}")
-        if noprice:
-            _p(f"      ↪ 가격 미수신 {noprice}건은 상장폐지·심볼 오류 후보 —"
-               f" 아래 목록 참고")
-            for f in [x for x in favs if x.get("current_price") is None][:8]:
-                _p(f"      · {str(f.get('name_kr') or f.get('name'))[:18]:18} "
-                   f"{f.get('ticker','')}")
-        for f, per, calc in bad[:12]:
-            _p(f"   ❌ {str(f.get('name_kr') or f.get('name'))[:16]:16} "
-               f"{f.get('ticker',''):12} 화면 PER {per:.2f} · "
-               f"현재가 {f.get('current_price')} ÷ EPS {f.get('eps_estimate')} = "
-               f"{f'{calc:.2f}' if calc else '계산불가(EPS 0/없음)'}")
-    except Exception as exc:                                   # noqa: BLE001
-        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+    # ⑥ 관심종목 — **검산**: 예상 PER = 현재가 ÷ 예상 EPS(`_audit_favorites`)
+    _audit_favorites()
 
     # ⑦ 교차일관성 — 같은 이름의 지표가 두 화면에서 다른 값인가
     _p("")

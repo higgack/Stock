@@ -4007,6 +4007,11 @@ async def cmd_dart_alert(update, context) -> None:
     arg = (context.args[0].lower() if getattr(context, "args", None) else "")
     if arg in ("on", "켜기", "1"):
         info = await asyncio.to_thread(dfa.enable, update.effective_chat.id)
+        if info.get("error"):
+            # 관심종목 목록을 못 읽었다 — 켜지 않았고 상태도 그대로다(실수 #436
+            # 델타 리뷰 M1). '0개 대상으로 켰다' 로 적으면 거짓말이다(#43).
+            await msg.reply_text(f"📋 관심종목 공시 알림을 켜지 못했습니다 — {info['error']}")
+            return
         await msg.reply_text(
             f"📋 관심종목 공시 알림 ON — KR 관심종목 {info['codes']}개 대상.\n"
             f"기존 공시 {info['seeded']}건은 기준점 등록(발송 안 함). "
@@ -4017,9 +4022,11 @@ async def cmd_dart_alert(update, context) -> None:
     else:
         s = await asyncio.to_thread(dfa.status)
         state_txt = "ON ✅" if s["enabled"] else "OFF"
+        codes_txt = (f"{s['codes']}개" if s.get("codes") is not None
+                     else f"확인 불가 — {s.get('codes_error') or '관심종목 목록을 못 읽음'}")
         await msg.reply_text(
             f"📋 관심종목 DART 공시 알림: {state_txt}\n"
-            f"대상: KR 관심종목 {s['codes']}개 (US 티커는 DART 미해당)\n"
+            f"대상: KR 관심종목 {codes_txt} (US 티커는 DART 미해당)\n"
             f"피드가 수집하는 전 카테고리(실적·계약·주주환원·자금조달·"
             f"시설투자·지분·리스크·조회공시 등) 알림.\n"
             f"사용법: /dart_alert on · /dart_alert off")

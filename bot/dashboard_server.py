@@ -931,6 +931,18 @@ def _startup_cache_purge(root: Path) -> dict | None:
     return res
 
 
+def _fav_error_text(exc: BaseException) -> str:
+    """관심종목 API 의 오류를 화면 문장으로 — 조회·담기·삭제·순서·별표가 같이 쓰고,
+    규칙 자체는 `market_favorites.error_text` 한 곳에 있다(DART 알림도 그것을 쓴다,
+    #38 · 독립 델타 리뷰 2026-10-06 M3·L3). 그 모듈을 못 부르면(ImportError 등)
+    종류와 내용만 싣는다 — 그때의 예외는 경로를 싣는 OSError 가 아니다."""
+    try:
+        from bot.market_favorites import error_text
+    except Exception:                                          # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"[:300]
+    return error_text(exc)
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
     URL-token and Basic-Auth gating."""
@@ -2211,8 +2223,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             rows, as_of = favorites_rows_with_as_of()
             self._json_ok({"ok": True, "favorites": rows, "as_of": as_of})
         except Exception as exc:
-            log.warning("favorites_get: %s", exc)
-            self._json_ok({"ok": False, "favorites": []})
+            log.warning("favorites_get: %s: %s", type(exc).__name__, exc)
+            # 사유를 싣는다 — '불러올 수 없다' 한 마디로는 '파일이 깨졌다(고침)' 와
+            # '일시 오류(다시 시도)' 가 안 갈린다(#82). 목록 파일을 못 읽은 경우는
+            # 사람 문장을 그대로(독립 리뷰 2026-10-06 L5 — 옛 판은 그걸 빈 목록으로
+            # 접어 화면이 '저장한 종목이 없다' 고 그렸다, #43). 규칙은 쓰기와 같다.
+            self._json_ok({"ok": False, "favorites": [],
+                           "error": _fav_error_text(exc)})
 
     def _handle_favorite_add(self) -> None:
         """POST /api/favorite_add — save a ticker with current price snapshot."""
@@ -2233,7 +2250,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_ok({"ok": True, "entry": entry})
         except Exception as exc:
             log.warning("favorite_add: %s", exc)
-            self._json_ok({"ok": False, "error": str(exc)})
+            self._json_ok({"ok": False, "error": _fav_error_text(exc)})
 
     def _handle_important_get(self) -> None:
         """GET /api/important — 전 표면 중요 마크 + 메모 + 알람. 정적 페이지가 로드 시
@@ -2387,10 +2404,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             from bot.market_favorites import remove_favorite
             removed = remove_favorite(ticker)
-            self._json_ok({"ok": removed})
+            # ⚠️ 삭제 경로가 로그를 한 줄도 안 남겨 "✕ 가 안 먹는다" 에 무엇이
+            # 일어났는지 잴 재료가 없었다(사용자 2026-10-06, 실수 #436 · #82).
+            # '목록에 없음' 은 실패가 아니라 **이미 그 상태**다 — 다른 탭·앞선
+            # 클릭이 지웠다. `error` 를 안 실어 화면이 다시 읽기만 하게 하고,
+            # 다시 읽은 목록에 그 종목이 남아 있으면 그때 화면이 말한다.
+            # `%r` — 이 경로는 티커 모양 검사가 없어 줄바꿈이 섞이면 로그 줄을
+            # 위조할 수 있다(독립 리뷰 L6). 따옴표가 공백·제어문자를 드러낸다.
+            log.info("favorite_remove: %r → %s", ticker,
+                     "삭제" if removed else "목록에 없음")
+            self._json_ok({"ok": True} if removed
+                          else {"ok": False, "reason": "not_found"})
         except Exception as exc:
             log.warning("favorite_remove: %s", exc)
-            self._json_ok({"ok": False, "error": str(exc)})
+            self._json_ok({"ok": False, "error": _fav_error_text(exc)})
 
     def _handle_favorite_reorder(self) -> None:
         """POST /api/favorite_reorder — move a ticker up/down in saved order."""
@@ -2412,7 +2439,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_ok({"ok": changed})
         except Exception as exc:
             log.warning("favorite_reorder: %s", exc)
-            self._json_ok({"ok": False, "error": str(exc)})
+            self._json_ok({"ok": False, "error": _fav_error_text(exc)})
 
     def _handle_build_api(self) -> None:
         """GET /api/build — 이 프로세스의 코드 신선도. 읽기 전용.
@@ -2467,16 +2494,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not isinstance(starred, bool):
                 self._json_ok({"ok": False, "error": "starred must be bool"})
                 return
-            from bot.market_favorites import set_favorite_star, starred_tickers
+            from bot.market_favorites import is_starred, set_favorite_star
             changed = set_favorite_star(ticker, starred)
-            now_on = ticker.upper() in {str(t or "").upper()
-                                        for t in starred_tickers()}
+            # 정본 판정은 덧입히기와 **같은 키**(`_tkey`)로 — 따로 `.upper()` 로
+            # 비교하면 공백 붙은 티커에서 디스크는 ★ 인데 응답은 ☆ 다(독립 리뷰 L4).
+            now_on = is_starred(ticker)
             # 목록에 없는 티커면 `changed=False` 이고 `starred` 도 False —
             # 화면이 '켜졌다' 고 표시하지 않게 정본을 그대로 돌려준다.
             self._json_ok({"ok": True, "changed": changed, "starred": now_on})
         except Exception as exc:
             log.warning("favorite_star: %s", exc)
-            self._json_ok({"ok": False, "error": str(exc)})
+            self._json_ok({"ok": False, "error": _fav_error_text(exc)})
 
     def _handle_search_api(self) -> None:
         """GET /api/search?q=삼성전자 — resolve name → ticker JSON."""

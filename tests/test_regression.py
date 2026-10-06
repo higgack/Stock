@@ -9670,7 +9670,11 @@ class TestDartFeedBackfill:
             "dart_feed_t", "bot/dart_feed.py")
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        m.time.sleep = lambda s: None
+        # ⚠️ `m` 은 사본 모듈이지만 `m.time` 은 **공용 `time` 모듈**이다 — 직접
+        # 대입하면 프로세스 전체의 `time.sleep` 이 영구히 no-op 이 되어, 뒤에
+        # 도는 테스트의 대기 루프가 0초 만에 끝났다(2026-10-06 실측 — 업종맵
+        # 테스트 2건이 전체 실행에서만 빨간불, 실수 #439). monkeypatch 로 되돌린다.
+        monkeypatch.setattr(m.time, "sleep", lambda s: None)
         return m
 
     def test_merge_updates_detail_on_existing(self, tmp_path, monkeypatch):
@@ -10094,7 +10098,11 @@ class TestDartCardFormats:
             "dart_feed_t", "bot/dart_feed.py")
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        m.time.sleep = lambda s: None
+        # ⚠️ `m` 은 사본 모듈이지만 `m.time` 은 **공용 `time` 모듈**이다 — 직접
+        # 대입하면 프로세스 전체의 `time.sleep` 이 영구히 no-op 이 되어, 뒤에
+        # 도는 테스트의 대기 루프가 0초 만에 끝났다(2026-10-06 실측 — 업종맵
+        # 테스트 2건이 전체 실행에서만 빨간불, 실수 #439). monkeypatch 로 되돌린다.
+        monkeypatch.setattr(m.time, "sleep", lambda s: None)
         m._doc_fail_recent = lambda rno: False
         m._doc_fail_mark = lambda rno, hours=0.5: None
         return m
@@ -10324,7 +10332,7 @@ class TestDartFavAlerts:
         import bot.market_favorites as mf
         import bot.dart_feed as df
         monkeypatch.setattr(dfa, "_STATE_FILE", tmp_path / "state.json")
-        monkeypatch.setattr(mf, "get_favorites", lambda: favorites)
+        monkeypatch.setattr(mf, "get_favorites", lambda **kw: favorites)
         monkeypatch.setattr(df, "load_all_archives",
                             lambda days_back=3: archives)
         return dfa
@@ -11951,15 +11959,25 @@ class TestFavoritesFastInfoGuard:
         빈 관심종목을 봤다(2026-09-07 실측: 단독 green · 전체 실행 red)."""
         import time
         import bot.market_favorites as mf
+        # ⚠️ 2026-10-06 재작성(#222, 실수 #436): 옛 판은 `is sentinel` — 캐시
+        # **객체를 통째로** 돌려주는 것을 못박았는데, 바로 그 동작이 갱신 도중의
+        # 삭제를 되돌린 원인이었다(캐시는 갱신이 **시작할 때** 읽은 목록이다).
+        # 지금 계약: 목록은 디스크에서, 값은 캐시에서 — 그리고 이 테스트가 원래
+        # 지키던 것("TTL 안이면 갱신을 안 건다 = 원천 0")은 그대로 잰다.
+        kicks = []
+        monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: kicks.append(1))
+        monkeypatch.setattr(mf, "_load", lambda **kw: [{"ticker": "X", "name": "x"}])
         sentinel = [{"ticker": "X", "current_price": 1}]
         monkeypatch.setattr(mf, "_FAV_CACHE", sentinel)
         monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time())
-        # TTL(3분) 내면 yfinance 안 타고 캐시 그대로 반환
-        assert mf.get_favorites_with_prices() is sentinel
+        # TTL(3분) 내면 갱신을 안 건다 — 값은 캐시 그대로
+        got = mf.get_favorites_with_prices()
+        assert [(r["ticker"], r["current_price"]) for r in got] == [("X", 1)]
+        assert kicks == [], "신선한 캐시인데 갱신을 걸었다(야후 버스트 재발)"
         # TTL 만료 + 빈 관심종목 → 재진입(네트워크 0)
         monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time() - 9999)
         monkeypatch.setattr(mf, "_FAV_CACHE", None)
-        monkeypatch.setattr(mf, "_load", lambda: [])
+        monkeypatch.setattr(mf, "_load", lambda **kw: [])
         assert mf.get_favorites_with_prices() == []
 
     def test_favorites_fast_info_gated_in_source(self):
@@ -12121,7 +12139,7 @@ class TestFavoritesKoreanName:
         mf._FAV_CACHE = None
         mf._FAV_CACHE_TS = 0
         # TW 엔트리에 영문 name_kr 가 이미 영속돼 있는 상태
-        monkeypatch.setattr(mf, "_load", lambda: [{
+        monkeypatch.setattr(mf, "_load", lambda **kw: [{
             "ticker": "2344.TW", "name": "Winbond Electronics Corporation",
             "name_kr": "Winbond Electronics Corporation", "currency": "TWD"}])
         saved = {}
@@ -12143,7 +12161,7 @@ class TestFavoritesKoreanName:
         import bot.market_favorites as mf
         mf._FAV_CACHE = None
         mf._FAV_CACHE_TS = 0
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "005930.KS", "name": "Samsung", "currency": "KRW"}])
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for", lambda t: {
@@ -16118,13 +16136,32 @@ class TestUpperLowerVolume:
         # 짧은 core 오매칭 방지(電子 → 電子兩倍槓桿 으로 잘못 매칭 금지)
         assert _sector_kr("電子") != "전자 2배(레버리지)"
 
-    def test_favorites_endpoint_is_swr(self):
+    def test_favorites_endpoint_is_swr(self, tmp_path, monkeypatch):
         # 사용자 2026-06-16 '관심종목 오래걸려': /api/favorites 가 종목당 yfinance
         # (tk.info) 동기 콜로 블로킹하던 것 → SWR(스테일/콜드 즉시 + 백그라운드 daemon).
         src = open("bot/market_favorites.py", encoding="utf-8").read()
         assert "_kick_fav_refresh" in src and "_compute_favorites_with_prices" in src
         assert "daemon=True, name=\"fav-refresh\"" in src   # 백그라운드 daemon(비차단)
-        assert "return _load()" in src                       # 콜드 — 이름만 즉시
+        # 콜드 — 이름만 즉시. ⚠️ 옛 단언 `"return _load()" in src` 는 이 경로가
+        # 아니라 **`get_favorites` 의 한 줄이 대신 만족**시키고 있었다(#75 — 콜드
+        # 경로는 오래전에 `_cold_rows` 로 바뀌었다). 2026-10-06 그 줄이
+        # `_load(strict=strict)` 가 되자 드러났다(실수 #436 델타 리뷰). 동작으로 잰다.
+        import bot.market_favorites as mf
+        p = tmp_path / "market_favorites.json"
+        p.write_text('[{"ticker": "AAA", "name": "A", "current_price": 9}]',
+                     encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", p)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        monkeypatch.setattr(mf, "_snapshot_load", lambda: (None, 0.0))
+        kicks = []
+        monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: kicks.append(1))
+
+        def _sync_refresh():
+            raise AssertionError("콜드 조회가 갱신을 동기로 돌렸다(블로킹)")
+        monkeypatch.setattr(mf, "_compute_favorites_with_prices", _sync_refresh)
+        rows = mf.get_favorites_with_prices()
+        assert [r["ticker"] for r in rows] == ["AAA"] and kicks == [1], (rows, kicks)
+        assert rows[0].get("current_price") is None   # 담던 날 값은 '현재' 가 아니다
         js = open("bot/dashboard.py", encoding="utf-8").read()
         assert "setTimeout(loadFavs, 5000)" in js            # 콜드 가격 픽업 재폴
         assert "setInterval(function() {{ if (!document.hidden) loadFavs();" in js
@@ -31502,7 +31539,7 @@ class TestSecondSweep20260820:
         rows = [{"ticker": "A", "name": "A", "saved_price": 100,
                  "saved_date": "2026-06-10", "per": 3.7, "current_price": 999,
                  "eps_estimate": 1.0, "market_cap": 5}]
-        monkeypatch.setattr(mf, "_load", lambda: [dict(r) for r in rows])
+        monkeypatch.setattr(mf, "_load", lambda **kw: [dict(r) for r in rows])
         cold = mf._cold_rows()
         assert cold[0]["per"] is None and cold[0]["current_price"] is None
         assert cold[0]["eps_estimate"] is None and cold[0]["market_cap"] is None
@@ -36801,7 +36838,7 @@ class TestWatchlistAndBandNote20260822:
         monkeypatch.setattr(mf, "_FAV_CACHE", None)
         monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: None)
         # 목록(순서·구성)은 **디스크가 정본**이다 — 스냅샷은 휘발성 값만 채운다
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "AAPL", "name": "Apple"},
             {"ticker": "MSFT", "name": "Microsoft"}])
         rows = [{"ticker": "AAPL", "current_price": 300.0, "per": 30.0},
@@ -37635,7 +37672,7 @@ class TestWatchlistKrTrailingPer20260823:
         통째로 태운다."""
         import bot.market_favorites as mf
         self._reset(mf)
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "098070.KQ", "name": "Hantech", "currency": "KRW"}])
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for",
@@ -37653,7 +37690,7 @@ class TestWatchlistKrTrailingPer20260823:
         **진행 중인 중복**을 못 막는다(#113)."""
         import bot.market_favorites as mf
         self._reset(mf)
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": f"09807{i}.KQ", "name": f"n{i}", "currency": "KRW"}
             for i in range(5)])
         monkeypatch.setattr(mf, "_save", lambda x: None)
@@ -37667,7 +37704,7 @@ class TestWatchlistKrTrailingPer20260823:
         """국내 종목이 없으면 KRX 를 부를 이유가 없다."""
         import bot.market_favorites as mf
         self._reset(mf)
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "AAPL", "name": "Apple", "currency": "USD"}])
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for", lambda t: None)
@@ -41714,13 +41751,16 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert len(hits) == 1 and "지연 의심" in hits[0], hits
 
     def test_favorites_line_uses_the_glyph_as_a_verdict(self):
-        """생산부 — 불일치가 없으면 그 줄에 ❌ 가 없어야 한다."""
+        """생산부 — 불일치가 없으면 그 줄에 ❌ 가 없어야 한다.
+
+        2026-10-06 관심종목 섹션이 `_audit_favorites` 로 빠졌다(태워 볼 수 있게,
+        #176 — 실수 #436 델타 리뷰 L4). 재는 대상도 그 함수로 옮긴다."""
         import inspect
         import bot.scripts.board_audit as ba
         # ⚠️ **주석을 지우고 본다** — 이 fix 를 설명하는 주석에 금지 문자열이
         # 들어 있어 검사가 그 주석을 재고 있었다(#59b, 실측으로 발각).
         src = "\n".join(l for l in inspect.getsource(
-            ba._audit_home_surfaces).splitlines()
+            ba._audit_favorites).splitlines()
             if not l.lstrip().startswith("#"))
         i = src.index("검산통과")
         seg = src[max(0, i - 300):i + 300]
@@ -49648,7 +49688,7 @@ class TestNewFavoriteGoesOnTop20260907:
 
         import bot.market_favorites as mf
         saved = {}
-        monkeypatch.setattr(mf, "_load", lambda: list(existing))
+        monkeypatch.setattr(mf, "_load", lambda **kw: list(existing))
         monkeypatch.setattr(mf, "_save", lambda v: saved.setdefault("v", v))
         monkeypatch.setattr(mf, "_resolve_kr_name", lambda *a, **k: None,
                             raising=False)
@@ -49817,8 +49857,12 @@ class TestNewFavoriteGoesOnTop20260907:
 
     def test_sort_cli_names_why_the_list_is_empty(self, tmp_path, monkeypatch,
                                                   capsys):
-        """⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279) — `_load` 가
-        JSON 예외를 삼켜 `[]` 를 주므로 CLI 가 갈래를 이름으로 불러야 한다."""
+        """⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279).
+
+        2026-10-06 계약 갱신(실수 #436 델타 리뷰 L1): 갈래는 이제
+        `_load(strict=True)` 가 대고 CLI 는 그 사유를 옮긴다 — CLI 가 따로 분류하던
+        옛 판은 목록이 아닌 JSON 을 '정상 JSON 인데 비어 있다' 로 찍었다. 처방도
+        갈래가 정한다(내용이 깨졌으면 '고치거나 백업이 있으면 되돌리라')."""
         import bot.market_favorites as mf
         f = tmp_path / "market_favorites.json"
         monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
@@ -49830,7 +49874,8 @@ class TestNewFavoriteGoesOnTop20260907:
         f.write_text('[{"ticker": "A"', encoding="utf-8")
         assert mf._cli_sort_saved(True) == 1          # ③ 깨진 파일
         out = capsys.readouterr().out
-        assert "못 읽는다" in out and "복구" in out, out
+        assert "내용을 읽지 못했습니다" in out and "되돌리세요" in out, out
+        assert "정상 JSON" not in out, out
         assert not list(tmp_path.glob("*backup*"))
 
     def test_sort_cli_reads_back_what_it_wrote(self, tmp_path, monkeypatch,
@@ -60716,6 +60761,14 @@ class TestPalladiumAndResearchPaging20260912:
         스레드가 나갔다(사용자 2026-09-12 '비용 낭비')."""
         import time
         import bot.naver_sector_client as nsc
+        # 앞 테스트의 렌더가 띄운 빌드가 남아 있으면 끝날 때까지 기다린다 — 그
+        # 스레드가 아래 스텁을 부르거나 우리 디렉터리에 기록을 쓰면 계수가
+        # 흔들린다(#311 무엇이 달라져서 그렸나).
+        for _ in range(1500):
+            if not nsc._kr_ind_building:
+                break
+            time.sleep(0.02)
+        assert not nsc._kr_ind_building, "앞 테스트의 빌드가 30초 안에 안 끝났다"
         monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
         calls = []
         monkeypatch.setattr(nsc, "_get2",
@@ -60726,10 +60779,17 @@ class TestPalladiumAndResearchPaging20260912:
         # (독립 리뷰 2026-09-12 · #130 손대입 스텁은 monkeypatch 로).
         monkeypatch.setitem(nsc._KR_IND_FAIL, "reason", "")
         nsc.kr_industry_map()
-        for _ in range(100):
+        # **끝날 때까지** 기다린다(정상이면 ms 안에 빠져나간다). ⚠️ 2026-10-06
+        # 전체 실행에서 이 루프가 0초 만에 끝나 빌드 도중에 계수를 시작했다 —
+        # 원인은 상한이 아니라 앞 테스트가 `time.sleep` 을 프로세스 전체에서
+        # no-op 으로 바꿔 둔 것이었다(실수 #439, 스레드 덤프로 확정: 이 호출이
+        # 4ms). 그 순간의 렌더가 드러낸 제품 경합은 아래 형제 테스트가
+        # 결정적으로 잰다(#438).
+        for _ in range(1500):
             if not nsc._kr_ind_building:
                 break
             time.sleep(0.02)
+        assert not nsc._kr_ind_building, "빌드가 30초 안에 끝나지 않았다"
         first = len(calls)
         assert first >= 1
         for _ in range(20):
@@ -60737,6 +60797,71 @@ class TestPalladiumAndResearchPaging20260912:
         time.sleep(0.2)
         assert len(calls) == first, f"백오프가 없다 — 렌더마다 나간다: {calls}"
         assert nsc._KR_IND_BACKOFF_SEC >= 300     # 리터럴 하한(#66)
+
+    def test_industry_map_backoff_holds_when_a_render_races_the_failing_build(
+            self, tmp_path, monkeypatch):
+        """백오프 판정을 잠금 **밖**에서만 읽으면, 빌드가 실패를 기록하고 플래그를
+        내리는 사이에 끼어든 렌더가 **낡은 판정**(기록 없음)을 들고 잠금에 들어가
+        두 번째 빌드를 띄운다 — 2026-10-06 전체 회귀에서 실측('원문 7자' 빌드 2회
+        · 위 테스트 빨간불). 그 순서를 결정적으로 만든다: 빌드는 원천 호출 안에서
+        멈춰 있고, 렌더가 판정을 읽은 **직후** 빌드를 끝까지 보낸 뒤 렌더를
+        계속시킨다(#128 시간·순서로 재지 말 것 — 사건으로 맞물린다 · #422 확인과
+        행동은 한 잠금 안에서)."""
+        import threading
+        import time
+        import bot.naver_sector_client as nsc
+        # 앞 테스트의 렌더가 띄운 빌드가 남아 있으면 끝날 때까지 기다린다 — 그
+        # 스레드는 우리 스텁을 부를 수 있다(#311 무엇이 달라져서 그렸나).
+        for _ in range(1500):
+            if not nsc._kr_ind_building:
+                break
+            time.sleep(0.02)
+        assert not nsc._kr_ind_building, "앞 테스트의 빌드가 30초 안에 안 끝났다"
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setitem(nsc._KR_IND_FAIL, "reason", "")
+        calls = []
+        in_get = threading.Event()
+        release = threading.Event()
+
+        def _get(u, **k):
+            calls.append(u)
+            in_get.set()
+            release.wait(10)          # 빌드를 원천 호출 안에 붙잡아 둔다
+            return "<html/>"
+        monkeypatch.setattr(nsc, "_get", _get)
+        monkeypatch.setattr(nsc, "_get2", lambda u, **k: (_get(u, **k), ""))
+        real_state = nsc._kr_ind_fail_state
+        main = threading.current_thread()
+        fail_file = tmp_path / nsc._KR_IND_FAIL_FILE
+
+        def _state():
+            got = real_state()        # 이 시점엔 기록이 아직 없다
+            if (threading.current_thread() is main and in_get.is_set()
+                    and not release.is_set()):
+                release.set()         # 빌드를 끝까지 보낸다
+                # 잠금을 쥔 채라면(판정을 잠금 안에서만 읽는 구조) 플래그는 못
+                # 내려가므로 기록이 써지는 것까지만 기다린다 — 어느 구조든
+                # 교착 없이 '판정 뒤에 상태가 바뀌는' 순서를 만든다.
+                held = nsc._kr_ind_lock.locked()
+                for _ in range(1000):
+                    if (fail_file.exists() if held
+                            else not nsc._kr_ind_building):
+                        break
+                    time.sleep(0.005)
+            return got
+        monkeypatch.setattr(nsc, "_kr_ind_fail_state", _state)
+
+        nsc.kr_industry_map()                     # 빌드 1 — 원천 호출 안에서 멈춘다
+        assert in_get.wait(10), "빌드가 원천을 부르지 않았다"
+        nsc.kr_industry_map()                     # 낡은 판정을 읽은 렌더
+        for _ in range(500):                      # 두 번째 빌드가 떴다면 끝까지 본다
+            if not nsc._kr_ind_building:
+                break
+            time.sleep(0.02)
+        assert fail_file.exists(), "빌드가 실패를 기록하지 않았다"
+        assert len(calls) == 1, (
+            "판정과 행동 사이에 빌드가 실패를 기록했는데 두 번째 빌드가 "
+            f"나갔다(백오프 판정을 잠금 안에서 다시 읽지 않음): {calls}")
 
     def test_industry_map_reason_survives_the_process_boundary(self, tmp_path,
                                                                monkeypatch):
@@ -61863,6 +61988,18 @@ toggleStar(btn);
 setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
 """
 
+    @classmethod
+    def _star_src(cls, page: str) -> str:
+        """`toggleStar` 와 그것이 부르는 함수들의 **제품 소스**.
+
+        ⚠️ 2026-10-06 갱신(#222, 실수 #436): 갈래 판정(404/401/거절/네트워크)이
+        `toggleStar` 안에서 **공용** `favPost`·`favReplyError`·`favNetMsg` 로
+        옮겨 갔다 — 삭제·순서 경로가 그 판정 없이 응답을 버리고 있었기 때문이다
+        (#38 같은 판정은 한 곳). 계약은 그대로다: 별표 실패는 갈래를 이름으로 말한다.
+        """
+        return "\n".join(cls._js_fn(page, n) for n in (
+            "toggleStar", "starBtn", "favPost", "favReplyError", "favNetMsg"))
+
     def _run_toggle(self, case: str, tmp_path, src: str | None = None):
         import shutil
         import subprocess
@@ -61872,9 +62009,7 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
             pytest.skip("node 없음")
         if src is None:
             from bot.dashboard import _render_market_page
-            page = _render_market_page({})
-            src = (self._js_fn(page, "toggleStar") + "\n"
-                   + self._js_fn(page, "starBtn"))
+            src = self._star_src(_render_market_page({}))
         f = tmp_path / "t.js"
         f.write_text(self._HARNESS.replace("__SRC__", src)
                      .replace("__CASE__", case), encoding="utf-8")
@@ -61926,9 +62061,7 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         """**뮤테이션**: 상태 분기를 지우면(옛 동작) 404 가 갈래를 잃는다.
         안 잡히면 이 검사가 눈이 먼 것이다(#91)."""
         from bot.dashboard import _render_market_page
-        page = _render_market_page({})
-        src = (self._js_fn(page, "toggleStar") + "\n"
-               + self._js_fn(page, "starBtn"))
+        src = self._star_src(_render_market_page({}))
         # 옛 판의 모양으로 되돌린다 — 상태를 안 보고 곧바로 json() 을 쓴다.
         mutated = re.sub(r"if \(st === 404\).*?\n", "\n", src, count=1, flags=re.S)
         assert mutated != src, "뮤테이션이 그 자리를 못 쳤다(#267)"
