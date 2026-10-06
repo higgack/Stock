@@ -576,6 +576,9 @@ class TestWriteRepliesAreRead:
         ({"status": 403}, "인증이 만료됐습니다"),
         ({"status": 404}, "/api/favorite_remove"),
         ({"status": 500}, "서버가 HTTP 500 로 답했습니다"),
+        # 4xx·5xx 인데 본문이 JSON — `error` 가 없으면 상태가 말한다, 있으면 그 사유
+        ({"status": 502, "body": {"ok": True}}, "서버가 HTTP 502 로 답했습니다"),
+        ({"status": 500, "body": {"ok": False, "error": "boom"}}, "삭제 실패 — boom"),
         ({"net": True}, "서버에 닿지 못했습니다"),
     ])
     def test_each_failure_branch_is_named(self, reply, want):

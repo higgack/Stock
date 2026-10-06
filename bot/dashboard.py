@@ -20045,8 +20045,11 @@ def _render_market_page(data: dict) -> str:
     function favReplyError(st, d, api) {{
       if (st === 404) return '서버가 이 기능의 API(/' + api + ')를 모릅니다(HTTP 404) — 대시보드 프로세스가 이 화면보다 옛 코드일 수 있습니다. 재시작이 필요합니다.';
       if (st === 401 || st === 403) return '인증이 만료됐습니다 — 새로고침 후 다시 로그인하세요.';
-      if (!d) return '서버가 HTTP ' + st + ' 로 답했습니다';
-      return d.error ? String(d.error) : '';
+      if (d && d.error) return String(d.error);
+      /* 4xx·5xx 는 본문이 JSON 이어도 성공이 아니다 — 앞단(프록시 등)이 JSON
+         오류를 주면 본문만 보고 '성공' 으로 읽는다(셀프리뷰, 실수 #436). */
+      if (!d || st >= 400) return '서버가 HTTP ' + st + ' 로 답했습니다';
+      return '';
     }}
     /* 네트워크 오류는 메시지가 브라우저 것이라 우리 말로 감싼다. */
     function favNetMsg(e) {{
