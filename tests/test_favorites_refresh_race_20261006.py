@@ -1,8 +1,9 @@
 """관심종목 ✕(삭제)가 안 먹는다 — 가격 갱신이 지운 종목을 되살렸다(실수 #436).
 
 사용자 2026-10-06: "여기 관심종목을 삭제하고 싶은데 또 갑자기 버튼이 안먹혀...
-왜 이러는거야?" (SFA 행 · 219종목 · 저장일 2026-10-06 · 캡처의 ✕ 는 hover 상태라
-클릭은 버튼에 닿았다).
+왜 이러는거야?" (SFA 행 · 219종목 · 저장일 2026-10-06 · 캡처의 ✕ 가 hover 상태 —
+마우스가 버튼 위에 있었다는 데까지가 캡처의 사실이고, 클릭이 버튼에 닿았다는 것은
+추론이다).
 
 재현한 경로: 가격 갱신(`_compute_favorites_with_prices`)은 **시작할 때** 디스크
 목록을 읽고, 종목마다 바깥 원천을 부른 뒤 **끝날 때** 그 목록을 통째로 `_FAV_CACHE`
@@ -297,6 +298,279 @@ class TestDiskIsCanonicalAtRead:
         assert _refresh_written_keys(mutated) - set(mf._DERIVED_FIELDS) == {"shiny_new"}
 
 
+class TestColdAndKeyWiring:
+    """독립 리뷰 2026-10-06 — 헬퍼만 직접 부르는 테스트가 못 잡은 배선(#20)."""
+
+    def test_cold_path_does_not_serve_saved_day_numbers_as_current(
+            self, monkeypatch, tmp_path):
+        """L1 — 메모리 캐시도 스냅샷도 없는 첫 로드는 **이름만**. 담던 날 디스크에
+        굳은 PER·시총·현재가를 '현재' 로 내보내면 2026-08-20 감사가 잡은 그 사고다
+        (`return list(disk)` 로 되돌리는 변형이 159개 테스트를 통과했다)."""
+        mf, kicks = _mf(monkeypatch, tmp_path,
+                        [{"ticker": "A", "per": 6.289547, "current_price": 100.0,
+                          "market_cap": 7, "saved_price": 90.0}])
+        rows = mf.get_favorites_with_prices()
+        assert [r["ticker"] for r in rows] == ["A"]
+        r = rows[0]
+        assert (r["per"], r["current_price"], r["market_cap"]) == (None, None, None), r
+        assert r["saved_price"] == 90.0          # 의도적 과거값은 남긴다
+        assert kicks == [1], "콜드인데 갱신을 안 건다"
+
+    def test_snapshot_absent_row_matches_like_the_screen(self, monkeypatch, tmp_path):
+        """스냅샷에 없는 행 판정도 화면과 같은 키(`_tkey`) — 디스크 티커가 소문자면
+        옛 비교로는 '받은 행' 으로 보여 빈 칸에 기준시각이 붙는다(생존 변형)."""
+        import time
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "new "}, {"ticker": "A"}])
+        mf._snapshot_save([{"ticker": "A", "current_price": 5.0}], time.time())
+        rows = mf.get_favorites_with_prices()
+        assert "as_of" not in rows[0], rows[0]
+        assert rows[1].get("as_of"), rows[1]
+
+
+    def test_duplicate_add_does_not_call_the_source(self, monkeypatch, tmp_path):
+        """이미 담긴 종목(대소문자·공백만 다름)이면 바깥 원천을 부르기 **전에**
+        멈춘다 — 락 안 재검사만 남기면 정합성은 같아도 중복 클릭마다 야후를 친다
+        (생존 변형 '네트워크 전 중복검사 제거', #61)."""
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "SFA "}])
+        asked = []
+
+        class _Spy(_Tk):
+            def __init__(self, t):
+                asked.append(t)
+                super().__init__(t)
+
+        monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Spy))
+        assert mf.add_favorite("sfa") is None
+        assert asked == [], asked
+
+
+class TestStarKey:
+    """L4 — 별표 응답의 정본 판정이 덧입히기와 같은 키(`_tkey`)."""
+
+    def _post(self, payload):
+        import io
+        import bot.dashboard_server as ds
+
+        class _Fake:
+            def __init__(self, body):
+                self.headers = {"Content-Length": str(len(body))}
+                self.rfile = io.BytesIO(body)
+                self.sent = None
+
+            def _json_ok(self, obj):
+                self.sent = obj
+
+        f = _Fake(json.dumps(payload).encode("utf-8"))
+        ds.DashboardHandler._handle_favorite_star(f)
+        return f.sent
+
+    def test_padded_disk_ticker_reports_the_written_state(self, monkeypatch, tmp_path):
+        """디스크 `"SFA "`(공백 붙음)에 별을 켜면 디스크는 ★ — 응답도 ★ 여야 한다.
+        옛 판(`.upper()` 비교)은 `starred: False` 를 줘 화면이 ☆ 로 되돌렸다."""
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "SFA "}, {"ticker": "AAA"}])
+        out = self._post({"ticker": "SFA", "starred": True})
+        assert out == {"ok": True, "changed": True, "starred": True}, out
+        assert mf.is_starred("sfa") is True and mf.is_starred("AAA") is False
+        # 같은 키로 화면 행에도 ★ 가 덧입혀진다(`_star_map` 의 strip 을 지우는
+        # 변형이 살아남았던 자리)
+        rows, _ = mf.favorites_rows_with_as_of()
+        assert [bool(r.get("starred")) for r in rows] == [True, False], rows
+
+    def test_unknown_ticker_is_not_reported_as_on(self, monkeypatch, tmp_path):
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "AAA", "starred": True}])
+        assert self._post({"ticker": "ZZZ", "starred": True}) == {
+            "ok": True, "changed": False, "starred": False}
+
+
+class TestUnreadableListIsNotEmpty:
+    """L5 — 목록 파일을 **못 읽은 것**은 **빈 것**이 아니다(#82·#43).
+
+    옛 `_load` 는 둘 다 `[]` 로 접어 화면이 '저장한 종목이 없다' 를 그렸고, 그
+    상태에서 담기·삭제·별표를 누르면 빈 목록 위에 써서 **파일을 덮었다**(남은 목록이
+    통째로 사라진다). 이제 쓰기는 멈추고, 화면은 사유를 말하고, 갱신은 캐시를
+    덮지 않는다.
+    """
+    GOOD = [{"ticker": "SFA"}, {"ticker": "AAA"}]
+
+    def _broken(self, monkeypatch, tmp_path, raw=b'[{"ticker": "SFA"}, {"tic'):
+        mf, kicks = _mf(monkeypatch, tmp_path, self.GOOD)
+        mf._FAVORITES_FILE.write_bytes(raw)
+        return mf, kicks
+
+    @pytest.mark.parametrize("raw, frag", [
+        (b'[{"ticker": "SFA"}, {"tic', "JSONDecodeError"),
+        (b'{"ticker": "SFA"}', "목록 모양이 아닙니다(dict)"),
+        (b'["SFA", "AAA"]', "목록 모양이 아닙니다(list)"),
+    ])
+    def test_strict_load_names_the_branch(self, monkeypatch, tmp_path, raw, frag):
+        mf, _k = self._broken(monkeypatch, tmp_path, raw)
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        assert frag in ei.value.reason and "복구" in ei.value.reason, ei.value.reason
+
+    def test_missing_file_is_empty_not_unreadable(self, monkeypatch, tmp_path):
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        mf._FAVORITES_FILE.unlink()
+        assert mf._load(strict=True) == []
+
+    def test_lenient_load_warns_instead_of_silently_emptying(
+            self, monkeypatch, tmp_path, caplog):
+        import logging
+        mf, _k = self._broken(monkeypatch, tmp_path)
+        caplog.set_level(logging.WARNING, logger="bot.market_favorites")
+        assert mf._load() == []
+        assert any("빈 목록으로 읽는다" in r.getMessage() for r in caplog.records), \
+            [r.getMessage() for r in caplog.records]
+
+    def test_os_error_reason_does_not_carry_the_server_path(self, monkeypatch, tmp_path):
+        """화면에 갈 문장엔 사유만 — OSError 의 str 은 서버 경로를 싣는다."""
+        import bot.market_favorites as mf
+        d = tmp_path / "market_favorites.json"
+        d.mkdir()
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", d)
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        assert "IsADirectoryError" in ei.value.reason, ei.value.reason
+        assert str(tmp_path) not in ei.value.reason, ei.value.reason
+
+    def test_writers_refuse_and_leave_the_file_alone(self, monkeypatch, tmp_path):
+        mf, _k = self._broken(monkeypatch, tmp_path)
+        before = mf._FAVORITES_FILE.read_bytes()
+        asked = []
+
+        class _Spy(_Tk):
+            def __init__(self, t):
+                asked.append(t)
+                super().__init__(t)
+
+        monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Spy))
+        monkeypatch.setattr(mf, "_resolve_kr_name", lambda t, fb: fb)
+        for call in (lambda: mf.remove_favorite("SFA"),
+                     lambda: mf.set_favorite_star("SFA", True),
+                     lambda: mf.reorder_favorite("AAA", "top"),
+                     lambda: mf.add_favorite("NEW")):
+            with pytest.raises(mf.FavoritesUnreadable):
+                call()
+        assert mf._FAVORITES_FILE.read_bytes() == before, "못 읽은 목록 위에 썼다"
+        # 담기는 네트워크 **전**에 멈춘다 — 못 쓸 목록을 위해 바깥 원천을 부르는 건
+        # 순손실이다(#61). 락 안 재검사(아래 테스트)만 남기는 변형이 여기서 걸린다.
+        assert asked == [], asked
+
+    def test_add_rechecks_inside_the_lock(self, monkeypatch, tmp_path):
+        """담기는 네트워크 **전**에 한 번, 락 안에서 **다시** 읽는다 — 그 사이 파일이
+        깨지면 두 번째 읽기가 막아야 한다(앞 검사만 strict 면 빈 목록 위에 쓴다)."""
+        mf, _k = _mf(monkeypatch, tmp_path, self.GOOD)
+
+        class _Breaks(_Tk):
+            @property
+            def info(self):
+                mf._FAVORITES_FILE.write_bytes(b"{not json")
+                return {"regularMarketPrice": 1.0, "currency": "USD"}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_Breaks))
+        monkeypatch.setattr(mf, "_resolve_kr_name", lambda t, fb: fb)
+        with pytest.raises(mf.FavoritesUnreadable):
+            mf.add_favorite("NEW")
+        assert mf._FAVORITES_FILE.read_bytes() == b"{not json"
+
+    def test_screen_get_says_why_instead_of_an_empty_list(self, monkeypatch, tmp_path):
+        """신선 캐시가 있어도 — 옛 판은 `[]` 위에 덧입혀 ok:true 빈 목록이었고 화면은
+        '⭐ 저장 버튼을 눌러주세요' 안내를 그렸다(리뷰 재현)."""
+        import io
+        import time
+        import bot.dashboard_server as ds
+        mf, _k = self._broken(monkeypatch, tmp_path)
+        monkeypatch.setattr(mf, "_FAV_CACHE", [{"ticker": "SFA", "current_price": 1}])
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time())
+
+        class _Fake:
+            sent = None
+
+            def _json_ok(self, obj):
+                self.sent = obj
+
+        f = _Fake()
+        ds.DashboardHandler._handle_favorites_get(f)
+        assert f.sent["ok"] is False and f.sent["favorites"] == [], f.sent
+        assert f.sent["error"].startswith("관심종목 파일을 못 읽었습니다"), f.sent
+        assert "FavoritesUnreadable" not in f.sent["error"]   # 사람 문장 그대로
+
+    def test_other_get_failures_are_named_too(self, monkeypatch):
+        import bot.dashboard_server as ds
+        import bot.market_favorites as mf
+
+        def _boom():
+            raise KeyError("ticker")
+        monkeypatch.setattr(mf, "favorites_rows_with_as_of", _boom)
+
+        class _Fake:
+            sent = None
+
+            def _json_ok(self, obj):
+                self.sent = obj
+
+        f = _Fake()
+        ds.DashboardHandler._handle_favorites_get(f)
+        assert f.sent == {"ok": False, "favorites": [], "error": "KeyError: 'ticker'"}
+
+    def test_refresh_does_not_overwrite_cache_or_snapshot(self, monkeypatch, tmp_path):
+        """갱신이 못 읽은 목록을 빈 목록으로 알고 진행하지 않는다 — 감사가 '0종목 ✅'
+        를 찍지 않게 던지고, 캐시·스냅샷은 그대로 둔다."""
+        import time
+        mf, _k = self._broken(monkeypatch, tmp_path)
+        cache = [{"ticker": "SFA", "current_price": 1}]
+        monkeypatch.setattr(mf, "_FAV_CACHE", cache)
+        ts = time.time() - 50
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", ts)
+        mf._snapshot_save(cache, ts)
+        snap_before = mf._snap_path().read_bytes()
+        with pytest.raises(mf.FavoritesUnreadable):
+            mf._compute_favorites_with_prices()
+        assert mf._FAV_CACHE is cache and mf._FAV_CACHE_TS == ts
+        assert mf._snap_path().read_bytes() == snap_before
+
+
+class TestSaveTmpIsPerWrite:
+    """`_save` 의 tmp 이름 — 상수면 두 프로세스(봇의 5분 갱신 · 대시보드의 클릭)가
+    같은 파일을 쓴다(독립 리뷰 (b) 선재 결함)."""
+
+    def test_each_write_uses_its_own_tmp_and_leaves_none(self, monkeypatch, tmp_path):
+        from pathlib import Path as _P
+        import os
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        names = []
+        real = _P.write_text
+
+        def spy(self, *a, **k):
+            if self.suffix == ".tmp":
+                names.append(self.name)
+            return real(self, *a, **k)
+
+        monkeypatch.setattr(_P, "write_text", spy)
+        mf._save([{"ticker": "A"}])
+        mf._save([{"ticker": "B"}])
+        assert len(names) == 2 and len(set(names)) == 2, names
+        assert all(f".{os.getpid()}." in n for n in names), names
+        assert not list(tmp_path.glob("*.tmp")), list(tmp_path.iterdir())
+        assert [f["ticker"] for f in mf._load()] == ["B"]
+
+    def test_failed_replace_cleans_up_and_keeps_the_old_list(self, monkeypatch, tmp_path):
+        from pathlib import Path as _P
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "OLD"}])
+
+        def boom(self, target):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(_P, "replace", boom)
+        with pytest.raises(OSError):
+            mf._save([{"ticker": "NEW"}])
+        monkeypatch.undo()
+        assert not list(tmp_path.glob("*.tmp")), list(tmp_path.iterdir())
+        assert json.loads((tmp_path / "market_favorites.json").read_text("utf-8")) == [
+            {"ticker": "OLD"}]
+
+
 def _refresh_written_keys(src: str) -> set:
     """`_compute_favorites_with_prices` 본문이 `f["X"] = …` 로 쓰는 키 전부(AST)."""
     fn = next(n for n in ast.walk(ast.parse(src))
@@ -345,8 +619,8 @@ class TestRemoveEndpoint:
         assert self._post({"ticker": "SFA"}) == {"ok": True}
         assert self._post({"ticker": "SFA"}) == {"ok": False, "reason": "not_found"}
         msgs = [r.getMessage() for r in caplog.records]
-        assert "favorite_remove: SFA → 삭제" in msgs, msgs
-        assert "favorite_remove: SFA → 목록에 없음" in msgs, msgs
+        assert "favorite_remove: 'SFA' → 삭제" in msgs, msgs
+        assert "favorite_remove: 'SFA' → 목록에 없음" in msgs, msgs
         out = self._post({"ticker": ""})
         assert out["ok"] is False and out.get("error"), out
 
@@ -438,12 +712,17 @@ var document = {
   hidden:false
 };
 var window = {};
-var __calls = [], __alerts = [];
+var __calls = [], __alerts = [], __reqs = [];
 var __replies = JSON.parse(process.argv[2]);
 /* 원천 흉내 — URL 마다 응답 큐(마지막 것은 반복). net=브라우저 네트워크 오류,
    body 가 없으면 JSON 이 아닌 본문(r.json() 이 던진다). */
 function fetch(url, opts){
   __calls.push(url);
+  /* 요청 쪽도 기록한다 — URL 만 보면 본문을 비우거나 메서드를 바꾸는 변형이 통과한다
+     (독립 리뷰 M1: 별표 `starred: !want` 는 서버가 '이미 그 상태' 로 답해 화면이 아무
+     말 없이 그대로 — 이번에 고치려던 '무반응' 이 그대로 CI 를 통과했다). */
+  __reqs.push({url: url, method: (opts && opts.method) || 'GET',
+               body: (opts && opts.body != null) ? JSON.parse(opts.body) : null});
   var q = __replies[url];
   if (!q || !q.length) return Promise.reject(new Error('no reply for ' + url));
   var rep = q.length > 1 ? q.shift() : q[0];
@@ -473,11 +752,12 @@ __els['fav-body'].querySelectorAll = function(sel){
 
 _JS_POST = r"""
 var __btn = {disabled:false, dataset:{ticker:'SFA'}, isConnected:true,
-             getAttribute:function(){return 'false';}};
+             getAttribute:function(){return 'false';},
+             closest:function(){return null;}};
 var __scenario = process.argv[3];
 setImmediate(function(){
   var __initial = __els['fav-body']._t;
-  __calls.length = 0; __alerts.length = 0;
+  __calls.length = 0; __alerts.length = 0; __reqs.length = 0;
   if (__scenario === 'remove') removeFav('SFA', __btn);
   else if (__scenario === 'reorder') reorderFav('SFA', 'top');
   else if (__scenario === 'star') toggleStar(__btn);
@@ -488,7 +768,7 @@ setImmediate(function(){
   }
   var __during = __btn.disabled;
   setImmediate(function(){
-    console.log(JSON.stringify({calls:__calls, alerts:__alerts, during:__during,
+    console.log(JSON.stringify({calls:__calls, reqs:__reqs, alerts:__alerts, during:__during,
       after:__btn.disabled, html:__els['fav-body']._t, initial:__initial}));
   });
 });
@@ -536,6 +816,10 @@ class TestWriteRepliesAreRead:
         out = _run_fav_js({"api/favorites": [_favs(_SFA, _AAA), _favs(_AAA)],
                            "api/favorite_remove": [{"body": {"ok": True}}]}, "remove")
         assert out["calls"] == ["api/favorite_remove", "api/favorites"], out["calls"]
+        # 요청 쪽도 잰다 — URL 만 보면 본문을 비우거나 메서드를 바꾸는 변형이
+        # 통과한다(독립 리뷰 M1, #20·#91b).
+        assert out["reqs"][0] == {"url": "api/favorite_remove", "method": "POST",
+                                  "body": {"ticker": "SFA"}}, out["reqs"]
         assert out["alerts"] == [], out["alerts"]
         assert out["during"] is True, "요청 중 버튼을 안 잠갔다(두 번 눌린다)"
         assert 'data-ticker="SFA"' in out["initial"]
@@ -547,6 +831,9 @@ class TestWriteRepliesAreRead:
         out = _run_fav_js({"api/favorites": [_favs(_SFA, _AAA), _favs(_AAA)],
                            "api/favorite_remove": [{"body": {"ok": True}}]}, "click")
         assert out["calls"] == ["api/favorite_remove", "api/favorites"], out["calls"]
+        assert out["reqs"][0] == {"url": "api/favorite_remove", "method": "POST",
+                                  "body": {"ticker": "SFA"}}, (
+            "클릭이 그 행의 티커를 안 보낸다", out["reqs"])
         assert out["during"] is True, "클릭이 버튼을 안 넘겨 요청 중에 안 잠긴다"
         assert out["alerts"] == []
 
@@ -602,6 +889,8 @@ class TestWriteRepliesAreRead:
                           "reorder")
         assert out["alerts"] == [] and out["calls"] == [
             "api/favorite_reorder", "api/favorites"], out
+        assert out["reqs"][0] == {"url": "api/favorite_reorder", "method": "POST",
+                                  "body": {"ticker": "SFA", "direction": "top"}}, out["reqs"]
         out = _run_fav_js({**base, "api/favorite_reorder": [
             {"body": {"ok": False, "error": "invalid direction"}}]}, "reorder")
         assert out["alerts"] == ["순서 변경 실패 — invalid direction"], out["alerts"]
@@ -619,6 +908,45 @@ class TestWriteRepliesAreRead:
         out = _run_fav_js({"api/favorites": [_favs(_SFA)],
                            "api/favorite_star": [{"body": {"ok": False}}]}, "star")
         assert out["alerts"] == ["중요표시 변경 실패 — 서버가 처리하지 못했다고 답했습니다"]
+
+    def test_star_success_sends_the_wanted_state_and_stays_quiet(self):
+        """성공 경로 — 꺼진 별을 누르면 `starred: true` 를 보낸다. 옛 하네스는
+        URL 만 기록해 `starred: !want` 를 보내는 변형이 통과했다: 서버가 '이미
+        그 상태' 로 답하면 화면은 **아무 말 없이 그대로** — 이번에 고치려던
+        '무반응' 그 자체다(독립 리뷰 M1)."""
+        out = _run_fav_js({"api/favorites": [_favs(_SFA)],
+                           "api/favorite_star": [{"body": {"ok": True, "changed": True,
+                                                           "starred": True}}]}, "star")
+        assert out["reqs"] == [{"url": "api/favorite_star", "method": "POST",
+                                "body": {"ticker": "SFA", "starred": True}}], out["reqs"]
+        assert out["alerts"] == [], out["alerts"]
+        assert out["during"] is True, "요청 중 별 버튼을 안 잠갔다"
+
+    def test_server_reason_is_shown_and_escaped(self):
+        """L5 — 서버가 실어 보낸 사유를 그대로 말한다(#82). 원천 문구가 섞일 수
+        있으니 이스케이프한다."""
+        out = _run_fav_js({"api/favorites": [{"body": {
+            "ok": False, "favorites": [],
+            "error": "관심종목 파일을 못 읽었습니다(JSONDecodeError: <b>x</b>)"}}]},
+            "none")
+        html = out["initial"]
+        assert "관심종목을 불러올 수 없습니다. — 관심종목 파일을 못 읽었습니다" in html, html
+        assert "&lt;b&gt;x&lt;/b&gt;" in html and "<b>x</b>" not in html, html
+        assert "저장 버튼을 눌러주세요" not in html
+
+    def test_get_401_names_the_branch(self):
+        """목록 읽기도 쓰기와 **같은** 판정(`favReplyError`, #38) — 401 은 인증 만료."""
+        out = _run_fav_js({"api/favorites": [{"status": 401, "body": None}]}, "none")
+        assert "인증이 만료됐습니다" in out["initial"], out["initial"]
+
+    def test_get_5xx_with_a_json_body_is_not_drawn_as_a_list(self):
+        """4xx·5xx 는 본문이 JSON(ok:true)이어도 성공이 아니다 — 쓰기의 ≥400 규칙과
+        같다(#38). 상태를 안 보면 앞단이 준 본문을 목록으로 그린다."""
+        out = _run_fav_js({"api/favorites": [{"status": 502,
+                                              "body": {"ok": True, "favorites": [_SFA]}}]},
+                          "none")
+        assert "서버가 HTTP 502 로 답했습니다" in out["initial"], out["initial"]
+        assert 'data-ticker="SFA"' not in out["initial"]
 
     def test_server_side_read_failure_is_not_drawn_as_an_empty_list(self):
         """서버가 목록을 못 읽었다(ok:false)를 '저장한 종목이 없다' 로 그리면

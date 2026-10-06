@@ -2211,8 +2211,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             rows, as_of = favorites_rows_with_as_of()
             self._json_ok({"ok": True, "favorites": rows, "as_of": as_of})
         except Exception as exc:
-            log.warning("favorites_get: %s", exc)
-            self._json_ok({"ok": False, "favorites": []})
+            log.warning("favorites_get: %s: %s", type(exc).__name__, exc)
+            # 사유를 싣는다 — '불러올 수 없다' 한 마디로는 '파일이 깨졌다(복구)' 와
+            # '일시 오류(다시 시도)' 가 안 갈린다(#82). 목록 파일을 못 읽은 경우
+            # (`FavoritesUnreadable`)는 사람 문장(`reason`)을 그대로 싣는다(독립
+            # 리뷰 2026-10-06 L5 — 옛 판은 그걸 빈 목록으로 접어 화면이 '저장한
+            # 종목이 없다' 고 그렸다, #43).
+            why = getattr(exc, "reason", None) or f"{type(exc).__name__}: {exc}"
+            self._json_ok({"ok": False, "favorites": [], "error": str(why)[:300]})
 
     def _handle_favorite_add(self) -> None:
         """POST /api/favorite_add — save a ticker with current price snapshot."""
@@ -2392,7 +2398,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # '목록에 없음' 은 실패가 아니라 **이미 그 상태**다 — 다른 탭·앞선
             # 클릭이 지웠다. `error` 를 안 실어 화면이 다시 읽기만 하게 하고,
             # 다시 읽은 목록에 그 종목이 남아 있으면 그때 화면이 말한다.
-            log.info("favorite_remove: %s → %s", ticker,
+            # `%r` — 이 경로는 티커 모양 검사가 없어 줄바꿈이 섞이면 로그 줄을
+            # 위조할 수 있다(독립 리뷰 L6). 따옴표가 공백·제어문자를 드러낸다.
+            log.info("favorite_remove: %r → %s", ticker,
                      "삭제" if removed else "목록에 없음")
             self._json_ok({"ok": True} if removed
                           else {"ok": False, "reason": "not_found"})
@@ -2475,10 +2483,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not isinstance(starred, bool):
                 self._json_ok({"ok": False, "error": "starred must be bool"})
                 return
-            from bot.market_favorites import set_favorite_star, starred_tickers
+            from bot.market_favorites import is_starred, set_favorite_star
             changed = set_favorite_star(ticker, starred)
-            now_on = ticker.upper() in {str(t or "").upper()
-                                        for t in starred_tickers()}
+            # 정본 판정은 덧입히기와 **같은 키**(`_tkey`)로 — 따로 `.upper()` 로
+            # 비교하면 공백 붙은 티커에서 디스크는 ★ 인데 응답은 ☆ 다(독립 리뷰 L4).
+            now_on = is_starred(ticker)
             # 목록에 없는 티커면 `changed=False` 이고 `starred` 도 False —
             # 화면이 '켜졌다' 고 표시하지 않게 정본을 그대로 돌려준다.
             self._json_ok({"ok": True, "changed": changed, "starred": now_on})

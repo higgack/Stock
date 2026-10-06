@@ -6,8 +6,10 @@ in a simple JSON file. No LLM, no recurring cost — yfinance only.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
+import os
 import threading as _threading
 import time
 from datetime import datetime
@@ -34,28 +36,71 @@ def _tkey(t) -> str:
 
     목록을 고치는 모든 경로(추가·삭제·순서·별표)와 캐시 덧입히기(`overlay_derived`)
     가 **같은** 판정을 쓴다(#38) — 한 경로만 다르게 비교하면 화면엔 보이는데 지울 수
-    없는 행이 생긴다(사용자 2026-10-06 "삭제 버튼이 안 먹혀", 실수 #436).
+    없는 행이 생긴다(사용자 2026-10-06 "또 갑자기 버튼이 안먹혀", 실수 #436).
     """
     return str(t or "").strip().upper()
 
 
-def _load() -> list[dict]:
-    if _FAVORITES_FILE.exists():
-        try:
-            return json.loads(_FAVORITES_FILE.read_text("utf-8"))
-        except Exception:
-            return []
+class FavoritesUnreadable(Exception):
+    """목록 파일이 **있는데 못 읽었다**(깨진 JSON·읽기 오류·목록이 아님).
+
+    '비었다' 와 처방이 정반대다(#82) — 비었으면 담으면 되고, 못 읽으면 파일을
+    복구해야 한다. 옛 `_load` 는 둘 다 `[]` 로 접어서 화면은 '저장한 종목이
+    없다' 를 그렸고(#43), 그 상태에서 담기·삭제·별표를 누르면 **빈 목록 위에 써서
+    파일을 덮었다** — 남아 있던 목록이 통째로 사라진다(독립 리뷰 2026-10-06 L5,
+    실수 #436). `reason` 은 화면에 그대로 싣는 사람 문장이다.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+_TMP_SEQ = itertools.count(1)
+
+
+def _load(*, strict: bool = False) -> list[dict]:
+    """디스크 목록. 파일이 없으면 `[]`(아직 안 담았다 — 정상).
+
+    `strict=True` — 파일이 있는데 못 읽으면 `FavoritesUnreadable`. **쓰는 경로와
+    화면 조회**가 쓴다: 못 읽은 목록을 빈 목록으로 알고 쓰면 파일을 덮고, 빈 목록으로
+    그리면 화면이 거짓말한다.
+    `strict=False`(기본) — 종전처럼 `[]` 지만 **조용히 비우지 않는다**(#12): 경고를
+    남긴다. 진단·알림처럼 목록이 없어도 제 일을 계속하는 읽기 전용 자리용이다.
+    """
+    if not _FAVORITES_FILE.exists():
+        return []
+    try:
+        data = json.loads(_FAVORITES_FILE.read_text("utf-8"))
+    except Exception as exc:                                   # noqa: BLE001
+        # OSError 의 str 은 서버 경로를 싣는다 — 화면에 갈 문장엔 사유만(인증 뒤라도
+        # 경로는 운영 로그로 충분하다).
+        detail = (exc.strerror if isinstance(exc, OSError) and exc.strerror
+                  else str(exc))
+        why = (f"관심종목 파일을 못 읽었습니다({type(exc).__name__}: "
+               f"{str(detail)[:120]})")
+    else:
+        if isinstance(data, list) and all(isinstance(f, dict) for f in data):
+            return data
+        why = (f"관심종목 파일이 목록 모양이 아닙니다"
+               f"({type(data).__name__})")
+    if strict:
+        raise FavoritesUnreadable(
+            why + " — 덮어쓰지 않도록 쓰기를 멈췄습니다. 파일을 백업에서 복구하세요.")
+    log.warning("favorites: %s — 빈 목록으로 읽는다(%s)", why, _FAVORITES_FILE)
     return []
 
 
 def _save(favorites: list[dict], *, invalidate_cache: bool = True) -> None:
     """디스크에 목록을 쓴다. `invalidate_cache=False` 는 **표시 속성 전용**.
 
-    ⚠️ 기본값(True)은 추가/삭제/순서변경용이다 — 안 하면
-    `get_favorites_with_prices` 가 옛 목록(삭제분 포함)을 stale 로 계속 줘서
-    '휴지통/추가가 안 먹는' 것처럼 보인다(사용자 2026-06-16 '휴지통 작동
-    안 함'). 다음 조회가 `_load()`(갱신 디스크) 즉시 반영 + 백그라운드 가격
-    재계산.
+    ⚠️ 기본값(True)은 추가/삭제/순서변경용이다 — 캐시를 비워 다음 조회가 가격
+    갱신을 다시 건다. 화면의 **구성·순서**가 맞는 것은 이제 이 무효화가 아니라
+    읽는 시점의 덧입히기(`overlay_derived`) 덕이다: 옛 판은 이 무효화에 기댔는데
+    (사용자 2026-06-16 '휴지통 작동 안 함'), 진행 중이던 갱신이 끝나며 옛 목록을
+    캐시에 다시 올려 무력화됐다(2026-10-06 재발, 실수 #436). 그래서 무효화는
+    정합성엔 더는 필요 없고, 쓰기마다 전 종목 갱신을 다시 거는 비용만 남았다 —
+    그 비용을 줄이는 것은 별도 과제로 남겼다(독립 리뷰 L7).
 
     ⚠️ 반대로 **별표(중요표시)처럼 목록·순서를 안 바꾸는 속성**에서 이걸
     태우면 별 한 번 누를 때마다 전 종목 가격이 통째로 `—` 가 됐다가 데몬이
@@ -65,9 +110,21 @@ def _save(favorites: list[dict], *, invalidate_cache: bool = True) -> None:
     (#18·#21b 캐시가 fix 를 가리는 실패를 규율이 아니라 구조로 막는다).
     """
     _FAVORITES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _FAVORITES_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(favorites, ensure_ascii=False, indent=2), "utf-8")
-    tmp.replace(_FAVORITES_FILE)
+    # ⚠️ tmp 이름이 상수면 **두 프로세스**(봇의 5분 갱신 · 대시보드의 클릭)가 같은
+    # 파일을 쓴다 — 한쪽의 `replace` 가 ENOENT 로 죽거나 남의 내용을 올린다(독립
+    # 리뷰 2026-10-06 (b)). 프로세스·쓰기마다 갈라 준다(`naver_research_client.
+    # detail_cache_flush` 와 같은 규약 — 스레드 id 는 재사용돼 못 쓴다). 실패하면
+    # 남은 tmp 를 지운다.
+    tmp = _FAVORITES_FILE.with_suffix(f".{os.getpid()}.{next(_TMP_SEQ)}.tmp")
+    try:
+        tmp.write_text(json.dumps(favorites, ensure_ascii=False, indent=2), "utf-8")
+        tmp.replace(_FAVORITES_FILE)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     if invalidate_cache:
         global _FAV_CACHE          # _FAV_CACHE 는 아래에서 정의(런타임 global)
         _FAV_CACHE = None
@@ -254,7 +311,7 @@ def add_favorite(ticker: str) -> Optional[dict]:
     """
     import yfinance as yf
 
-    favorites = _load()
+    favorites = _load(strict=True)
     if any(_tkey(f.get("ticker")) == _tkey(ticker) for f in favorites):
         return None
 
@@ -323,7 +380,7 @@ def add_favorite(ticker: str) -> Optional[dict]:
     # ⚠️ 위 `_load()` 는 **네트워크 전** 스냅샷이라 이미 낡았다 — 락 안에서
     # 다시 읽고 중복도 다시 본다(그 사이 다른 탭이 담았을 수 있다).
     with _DISK_LOCK:
-        favorites = _load()
+        favorites = _load(strict=True)
         if any(_tkey(f.get("ticker")) == _tkey(ticker) for f in favorites):
             return None
         favorites.insert(0, entry)
@@ -340,7 +397,7 @@ def remove_favorite(ticker: str) -> bool:
     if not key:            # 빈 키로 비교하면 티커 없는 행을 통째로 지운다
         return False
     with _DISK_LOCK:
-        favorites = _load()
+        favorites = _load(strict=True)
         before = len(favorites)
         favorites = [f for f in favorites if _tkey(f.get("ticker")) != key]
         if len(favorites) < before:
@@ -429,7 +486,7 @@ def set_favorite_star(ticker: str, starred: bool) -> bool:
     if not key:            # 빈 키는 티커 없는 행에 별을 찍는다
         return False
     with _DISK_LOCK:
-        favorites = _load()
+        favorites = _load(strict=True)
         hit = None
         for f in favorites:
             if _tkey(f.get("ticker")) == key:
@@ -449,6 +506,16 @@ def starred_tickers() -> list:
     return [f.get("ticker") for f in _load() if f.get(_STAR_KEY)]
 
 
+def is_starred(ticker) -> bool:
+    """디스크 정본에서 그 티커의 별표 — 덧입히기(`_star_map`)와 **같은 키**(`_tkey`).
+
+    별표 응답이 따로 `.upper()` 로 비교하면 공백 붙은 티커에서 디스크는 ★ 인데
+    응답은 ☆ 라 화면이 되돌린다(독립 리뷰 2026-10-06 L4 — `_tkey` 독스트링이
+    약속한 '같은 키' 가 응답 한 곳에서 깨져 있었다, #38).
+    """
+    return bool(_star_map().get(_tkey(ticker)))
+
+
 def reorder_favorite(ticker: str, direction: str) -> bool:
     """Move a ticker in the saved order. Persists.
 
@@ -458,7 +525,7 @@ def reorder_favorite(ticker: str, direction: str) -> bool:
     if not key:
         return False
     with _DISK_LOCK:          # load→save 는 한 덩어리(`_DISK_LOCK` 주석)
-        favorites = _load()
+        favorites = _load(strict=True)
         idx = next((i for i, f in enumerate(favorites)
                     if _tkey(f.get("ticker")) == key), None)
         if idx is None:
@@ -587,15 +654,18 @@ def get_favorites_with_prices() -> list[dict]:
     (`overlay_derived`). 옛 판은 신선·스테일 메모리 캐시를 **통째로** 돌려줬는데, 그
     캐시는 갱신이 **시작할 때** 읽은 목록이라 갱신 도중의 삭제·추가·순서 변경을 갱신이
     끝날 때 되돌렸다 — 지운 종목이 되살아나고, 그 뒤 ✕ 는 디스크에 이미 없어 아무 일도
-    안 했다(사용자 2026-10-06 "삭제 버튼이 또 안 먹혀", 실수 #436). 별표를 읽는 시점에
+    안 했다(사용자 2026-10-06 "또 갑자기 버튼이 안먹혀", 실수 #436). 별표를 읽는 시점에
     덧입히는 것(#344)과 같은 구조다 — 규율이 아니라 구조로 막는다(#119).
     """
     import time as _time
     now = _time.time()
-    # 캐시 참조와 그 시각은 **한 번만** 집는다 — 두 번 읽으면 그 사이 백그라운드가
-    # 다시 바인딩해 '신선' 판정과 덧입히는 행이 다른 판을 볼 수 있다(#102a).
+    # 캐시 참조와 시각을 지역 변수로 한 번씩 집는다 — 아래 판정과 덧입히기가 **같은
+    # 행 목록**을 보게. ⚠️ 두 전역은 갱신이 따로 대입하므로 이 읽기도 원자적이진
+    # 않다((새 행, 옛 시각)이 보일 수 있다) — 그 결과는 갱신을 한 번 더 거는 것
+    # (중복은 `_kick_fav_refresh` 가 막는다)뿐이라 무해하다(독립 리뷰 L8a).
     cache, cache_ts = _FAV_CACHE, _FAV_CACHE_TS
-    disk = _load()
+    # 못 읽은 목록을 빈 목록으로 그리지 않는다 — 화면이 사유를 말한다(L5).
+    disk = _load(strict=True)
     if cache is not None:
         rows, missing = overlay_derived(disk, cache)
         # 스테일이거나 **갱신 뒤에 담긴 종목**이 있으면 뒤에서 다시 받는다(비차단·
@@ -614,7 +684,9 @@ def get_favorites_with_prices() -> list[dict]:
         rows, missing = overlay_derived(disk, snap)
         absent = {_tkey(t) for t in missing}
         # 기준시각은 스냅샷 값을 실제로 받은 행에만 — 빈 행에 시각을 붙이면 그
-        # 빈칸이 그 시각에 확인한 '없음' 으로 읽힌다(#43·#165).
+        # 빈칸이 그 시각에 확인한 '없음' 으로 읽힌다(#43·#165). ⚠️ 이건 **payload
+        # 계약**이다 — 지금 화면(renderFavs)은 행별 `as_of` 를 안 읽고 헤더의
+        # `d.as_of` 만 쓴다(독립 리뷰 L8b). 읽는 쪽이 생겨도 거짓이 안 되게 둔다.
         return [r if _tkey(r.get("ticker")) in absent else {**r, "as_of": _as_of}
                 for r in rows]
     return _cold_rows(disk)          # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
@@ -758,7 +830,9 @@ def _compute_favorites_with_prices() -> list[dict]:
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor
 
-    favorites = _load()
+    # 못 읽으면 던진다 — 빈 목록으로 알고 진행하면 감사(`board_audit`)가 '0종목
+    # ✅' 를 찍는다(#54). 캐시·스냅샷은 그대로 남는다(호출부가 경고를 남긴다).
+    favorites = _load(strict=True)
     if not favorites:
         return favorites
     # fast_info 허용? 회로차단 쿨다운/정지 중이면 skip → .info/history 폴백
@@ -1075,9 +1149,9 @@ def _cli_sort_saved(apply_it: bool) -> int:
         return 1
     print(f"\n✅ 정리 완료 · {moved}건 이동 · 백업 {bak}")
     print(f"   되돌리려면: cp {bak} {_FAVORITES_FILE}")
-    print("   ⚠️ 대시보드는 3분 캐시가 만료돼도 **옛 목록을 즉시 주고**"
-          " 뒤에서 갱신한다 — 화면 순서는 다음 백그라운드 갱신(139종목 시세"
-          " 수집)이 끝난 뒤에 바뀐다.")
+    print("   대시보드는 다음 목록 조회(새로고침·60초 폴)에 새 순서를 보여준다 —"
+          " 목록의 구성·순서는 읽는 시점의 디스크에서 오고 캐시는 시세 칸만"
+          " 덧입힌다(실수 #436).")
     return 0
 
 

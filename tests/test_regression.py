@@ -11958,7 +11958,7 @@ class TestFavoritesFastInfoGuard:
         # 지키던 것("TTL 안이면 갱신을 안 건다 = 원천 0")은 그대로 잰다.
         kicks = []
         monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: kicks.append(1))
-        monkeypatch.setattr(mf, "_load", lambda: [{"ticker": "X", "name": "x"}])
+        monkeypatch.setattr(mf, "_load", lambda **kw: [{"ticker": "X", "name": "x"}])
         sentinel = [{"ticker": "X", "current_price": 1}]
         monkeypatch.setattr(mf, "_FAV_CACHE", sentinel)
         monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time())
@@ -11969,7 +11969,7 @@ class TestFavoritesFastInfoGuard:
         # TTL 만료 + 빈 관심종목 → 재진입(네트워크 0)
         monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time() - 9999)
         monkeypatch.setattr(mf, "_FAV_CACHE", None)
-        monkeypatch.setattr(mf, "_load", lambda: [])
+        monkeypatch.setattr(mf, "_load", lambda **kw: [])
         assert mf.get_favorites_with_prices() == []
 
     def test_favorites_fast_info_gated_in_source(self):
@@ -12131,7 +12131,7 @@ class TestFavoritesKoreanName:
         mf._FAV_CACHE = None
         mf._FAV_CACHE_TS = 0
         # TW 엔트리에 영문 name_kr 가 이미 영속돼 있는 상태
-        monkeypatch.setattr(mf, "_load", lambda: [{
+        monkeypatch.setattr(mf, "_load", lambda **kw: [{
             "ticker": "2344.TW", "name": "Winbond Electronics Corporation",
             "name_kr": "Winbond Electronics Corporation", "currency": "TWD"}])
         saved = {}
@@ -12153,7 +12153,7 @@ class TestFavoritesKoreanName:
         import bot.market_favorites as mf
         mf._FAV_CACHE = None
         mf._FAV_CACHE_TS = 0
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "005930.KS", "name": "Samsung", "currency": "KRW"}])
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for", lambda t: {
@@ -31512,7 +31512,7 @@ class TestSecondSweep20260820:
         rows = [{"ticker": "A", "name": "A", "saved_price": 100,
                  "saved_date": "2026-06-10", "per": 3.7, "current_price": 999,
                  "eps_estimate": 1.0, "market_cap": 5}]
-        monkeypatch.setattr(mf, "_load", lambda: [dict(r) for r in rows])
+        monkeypatch.setattr(mf, "_load", lambda **kw: [dict(r) for r in rows])
         cold = mf._cold_rows()
         assert cold[0]["per"] is None and cold[0]["current_price"] is None
         assert cold[0]["eps_estimate"] is None and cold[0]["market_cap"] is None
@@ -36811,7 +36811,7 @@ class TestWatchlistAndBandNote20260822:
         monkeypatch.setattr(mf, "_FAV_CACHE", None)
         monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: None)
         # 목록(순서·구성)은 **디스크가 정본**이다 — 스냅샷은 휘발성 값만 채운다
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "AAPL", "name": "Apple"},
             {"ticker": "MSFT", "name": "Microsoft"}])
         rows = [{"ticker": "AAPL", "current_price": 300.0, "per": 30.0},
@@ -37645,7 +37645,7 @@ class TestWatchlistKrTrailingPer20260823:
         통째로 태운다."""
         import bot.market_favorites as mf
         self._reset(mf)
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "098070.KQ", "name": "Hantech", "currency": "KRW"}])
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for",
@@ -37663,7 +37663,7 @@ class TestWatchlistKrTrailingPer20260823:
         **진행 중인 중복**을 못 막는다(#113)."""
         import bot.market_favorites as mf
         self._reset(mf)
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": f"09807{i}.KQ", "name": f"n{i}", "currency": "KRW"}
             for i in range(5)])
         monkeypatch.setattr(mf, "_save", lambda x: None)
@@ -37677,7 +37677,7 @@ class TestWatchlistKrTrailingPer20260823:
         """국내 종목이 없으면 KRX 를 부를 이유가 없다."""
         import bot.market_favorites as mf
         self._reset(mf)
-        monkeypatch.setattr(mf, "_load", lambda: [
+        monkeypatch.setattr(mf, "_load", lambda **kw: [
             {"ticker": "AAPL", "name": "Apple", "currency": "USD"}])
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for", lambda t: None)
@@ -49658,7 +49658,7 @@ class TestNewFavoriteGoesOnTop20260907:
 
         import bot.market_favorites as mf
         saved = {}
-        monkeypatch.setattr(mf, "_load", lambda: list(existing))
+        monkeypatch.setattr(mf, "_load", lambda **kw: list(existing))
         monkeypatch.setattr(mf, "_save", lambda v: saved.setdefault("v", v))
         monkeypatch.setattr(mf, "_resolve_kr_name", lambda *a, **k: None,
                             raising=False)

@@ -20016,10 +20016,19 @@ def _render_market_page(data: dict) -> str:
        (실수 #436). 서버가 목록을 못 읽었다고 답하면(ok:false) 그건 **빈 목록이
        아니다** — '저장한 종목이 없다' 고 그리면 거짓말이다(#43). */
     function loadFavs() {{
+      var st = 0;
       return fetch('api/favorites')
-        .then(function(r) {{ return r.json(); }})
+        .then(function(r) {{ st = r.status; return r.json(); }})
         .then(function(d) {{
-          if (!d || d.ok === false) throw new Error('favorites api not ok');
+          if (!d || d.ok === false || st >= 400) {{
+            /* 서버가 사유를 실어 보냈으면 그대로 말한다 — '불러올 수 없다' 한
+               마디로는 '목록 파일이 깨졌다(복구)' 와 '일시 오류(다시 시도)' 가 안
+               갈린다(#82 · 독립 리뷰 2026-10-06 L5). 판정은 쓰기와 **같은** 함수
+               (`favReplyError`, #38). */
+            var e = new Error(favReplyError(st, d, 'api/favorites'));
+            e.favServer = true;
+            throw e;
+          }}
           var list = d.favorites || [];
           renderFavs(list);
           /* "이거 최신이야?" 에 화면이 답한다(#43·#304). 우리가 값을 **받아온**
@@ -20029,16 +20038,24 @@ def _render_market_page(data: dict) -> str:
           if (el) el.textContent = a.ts ? ('값 수집 ' + a.ts + ' KST') : '';
           return list;
         }})
-        .catch(function() {{
-          favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>';
+        .catch(function(e) {{
+          var why = (e && e.favServer) ? e.message : '';
+          favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.'
+            + (why ? ' — ' + favEsc(why) : '') + '</div>';
           return null;
         }});
+    }}
+    /* 서버 문장을 HTML 로 싣는다 — 사유엔 원천 예외 문구가 섞일 수 있다. */
+    function favEsc(s) {{
+      return String(s).replace(/[&<>"']/g, function(c) {{
+        return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];
+      }});
     }}
 
     /* ── 쓰기 응답 판정 — 별표·삭제·순서가 **같은** 판정을 쓴다(#38) ──
        옛 삭제·순서 경로는 응답을 버리고 무조건 다시 읽기만 해, 서버가 실패를
-       말해도 화면은 아무 일 없던 것처럼 보였다(사용자 2026-10-06 "삭제 버튼이
-       또 안 먹혀", 실수 #436 · #43·#82). 갈래마다 처방이 다르므로 이름을 댄다:
+       말해도 화면은 아무 일 없던 것처럼 보였다(사용자 2026-10-06 "또 갑자기
+       버튼이 안먹혀", 실수 #436 · #43·#82). 갈래마다 처방이 다르므로 이름을 댄다:
        404=이 API 를 모르는 서버(옛 코드) · 401/403=인증 만료 · 네트워크 ·
        서버가 거절(error). `error` 없는 ok:false 는 **실패가 아니다** — 호출부가
        뜻을 정한다(삭제=이미 없음 · 순서=더 갈 데 없음). */
