@@ -2387,7 +2387,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             from bot.market_favorites import remove_favorite
             removed = remove_favorite(ticker)
-            self._json_ok({"ok": removed})
+            # ⚠️ 삭제 경로가 로그를 한 줄도 안 남겨 "✕ 가 안 먹는다" 에 무엇이
+            # 일어났는지 잴 재료가 없었다(사용자 2026-10-06, 실수 #436 · #82).
+            # '목록에 없음' 은 실패가 아니라 **이미 그 상태**다 — 다른 탭·앞선
+            # 클릭이 지웠다. `error` 를 안 실어 화면이 다시 읽기만 하게 하고,
+            # 다시 읽은 목록에 그 종목이 남아 있으면 그때 화면이 말한다.
+            log.info("favorite_remove: %s → %s", ticker,
+                     "삭제" if removed else "목록에 없음")
+            self._json_ok({"ok": True} if removed
+                          else {"ok": False, "reason": "not_found"})
         except Exception as exc:
             log.warning("favorite_remove: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})

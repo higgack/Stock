@@ -11951,11 +11951,21 @@ class TestFavoritesFastInfoGuard:
         빈 관심종목을 봤다(2026-09-07 실측: 단독 green · 전체 실행 red)."""
         import time
         import bot.market_favorites as mf
+        # ⚠️ 2026-10-06 재작성(#222, 실수 #436): 옛 판은 `is sentinel` — 캐시
+        # **객체를 통째로** 돌려주는 것을 못박았는데, 바로 그 동작이 갱신 도중의
+        # 삭제를 되돌린 원인이었다(캐시는 갱신이 **시작할 때** 읽은 목록이다).
+        # 지금 계약: 목록은 디스크에서, 값은 캐시에서 — 그리고 이 테스트가 원래
+        # 지키던 것("TTL 안이면 갱신을 안 건다 = 원천 0")은 그대로 잰다.
+        kicks = []
+        monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: kicks.append(1))
+        monkeypatch.setattr(mf, "_load", lambda: [{"ticker": "X", "name": "x"}])
         sentinel = [{"ticker": "X", "current_price": 1}]
         monkeypatch.setattr(mf, "_FAV_CACHE", sentinel)
         monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time())
-        # TTL(3분) 내면 yfinance 안 타고 캐시 그대로 반환
-        assert mf.get_favorites_with_prices() is sentinel
+        # TTL(3분) 내면 갱신을 안 건다 — 값은 캐시 그대로
+        got = mf.get_favorites_with_prices()
+        assert [(r["ticker"], r["current_price"]) for r in got] == [("X", 1)]
+        assert kicks == [], "신선한 캐시인데 갱신을 걸었다(야후 버스트 재발)"
         # TTL 만료 + 빈 관심종목 → 재진입(네트워크 0)
         monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time() - 9999)
         monkeypatch.setattr(mf, "_FAV_CACHE", None)
@@ -61863,6 +61873,18 @@ toggleStar(btn);
 setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
 """
 
+    @classmethod
+    def _star_src(cls, page: str) -> str:
+        """`toggleStar` 와 그것이 부르는 함수들의 **제품 소스**.
+
+        ⚠️ 2026-10-06 갱신(#222, 실수 #436): 갈래 판정(404/401/거절/네트워크)이
+        `toggleStar` 안에서 **공용** `favPost`·`favReplyError`·`favNetMsg` 로
+        옮겨 갔다 — 삭제·순서 경로가 그 판정 없이 응답을 버리고 있었기 때문이다
+        (#38 같은 판정은 한 곳). 계약은 그대로다: 별표 실패는 갈래를 이름으로 말한다.
+        """
+        return "\n".join(cls._js_fn(page, n) for n in (
+            "toggleStar", "starBtn", "favPost", "favReplyError", "favNetMsg"))
+
     def _run_toggle(self, case: str, tmp_path, src: str | None = None):
         import shutil
         import subprocess
@@ -61872,9 +61894,7 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
             pytest.skip("node 없음")
         if src is None:
             from bot.dashboard import _render_market_page
-            page = _render_market_page({})
-            src = (self._js_fn(page, "toggleStar") + "\n"
-                   + self._js_fn(page, "starBtn"))
+            src = self._star_src(_render_market_page({}))
         f = tmp_path / "t.js"
         f.write_text(self._HARNESS.replace("__SRC__", src)
                      .replace("__CASE__", case), encoding="utf-8")
@@ -61926,9 +61946,7 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         """**뮤테이션**: 상태 분기를 지우면(옛 동작) 404 가 갈래를 잃는다.
         안 잡히면 이 검사가 눈이 먼 것이다(#91)."""
         from bot.dashboard import _render_market_page
-        page = _render_market_page({})
-        src = (self._js_fn(page, "toggleStar") + "\n"
-               + self._js_fn(page, "starBtn"))
+        src = self._star_src(_render_market_page({}))
         # 옛 판의 모양으로 되돌린다 — 상태를 안 보고 곧바로 json() 을 쓴다.
         mutated = re.sub(r"if \(st === 404\).*?\n", "\n", src, count=1, flags=re.S)
         assert mutated != src, "뮤테이션이 그 자리를 못 쳤다(#267)"

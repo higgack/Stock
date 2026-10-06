@@ -29,6 +29,16 @@ def _future_or_none(d_str):
     return None
 
 
+def _tkey(t) -> str:
+    """티커 동일성 키 — 대소문자·앞뒤 공백 무시.
+
+    목록을 고치는 모든 경로(추가·삭제·순서·별표)와 캐시 덧입히기(`overlay_derived`)
+    가 **같은** 판정을 쓴다(#38) — 한 경로만 다르게 비교하면 화면엔 보이는데 지울 수
+    없는 행이 생긴다(사용자 2026-10-06 "삭제 버튼이 안 먹혀", 실수 #436).
+    """
+    return str(t or "").strip().upper()
+
+
 def _load() -> list[dict]:
     if _FAVORITES_FILE.exists():
         try:
@@ -245,7 +255,7 @@ def add_favorite(ticker: str) -> Optional[dict]:
     import yfinance as yf
 
     favorites = _load()
-    if any(f["ticker"].upper() == ticker.upper() for f in favorites):
+    if any(_tkey(f.get("ticker")) == _tkey(ticker) for f in favorites):
         return None
 
     try:
@@ -314,7 +324,7 @@ def add_favorite(ticker: str) -> Optional[dict]:
     # 다시 읽고 중복도 다시 본다(그 사이 다른 탭이 담았을 수 있다).
     with _DISK_LOCK:
         favorites = _load()
-        if any(f["ticker"].upper() == ticker.upper() for f in favorites):
+        if any(_tkey(f.get("ticker")) == _tkey(ticker) for f in favorites):
             return None
         favorites.insert(0, entry)
         _save(favorites)
@@ -326,11 +336,13 @@ def remove_favorite(ticker: str) -> bool:
 
     load→save 는 `_DISK_LOCK` 안에서 — 락은 전원이 참여할 때만 상호배제다.
     """
+    key = _tkey(ticker)
+    if not key:            # 빈 키로 비교하면 티커 없는 행을 통째로 지운다
+        return False
     with _DISK_LOCK:
         favorites = _load()
         before = len(favorites)
-        favorites = [f for f in favorites
-                     if f["ticker"].upper() != ticker.upper()]
+        favorites = [f for f in favorites if _tkey(f.get("ticker")) != key]
         if len(favorites) < before:
             _save(favorites)
             return True
@@ -386,8 +398,7 @@ _DISK_LOCK = _threading.Lock()
 
 def _star_map() -> dict:
     """디스크 정본의 {티커(대문자): 별표} — 순수-ish(읽기 전용)."""
-    return {str(f.get("ticker") or "").upper(): bool(f.get(_STAR_KEY))
-            for f in _load()}
+    return {_tkey(f.get("ticker")): bool(f.get(_STAR_KEY)) for f in _load()}
 
 
 def apply_stars(rows: list, stars: dict) -> list:
@@ -397,7 +408,7 @@ def apply_stars(rows: list, stars: dict) -> list:
     별표를 굽게 되고, 그러면 (b)의 요점이 사라진다.
     목록에 없는 티커(스냅샷에만 남은 행)는 False — 지어내지 않는다(#165).
     """
-    return [{**r, _STAR_KEY: bool(stars.get(str(r.get("ticker") or "").upper()))}
+    return [{**r, _STAR_KEY: bool(stars.get(_tkey(r.get("ticker"))))}
             for r in rows or []]
 
 
@@ -414,11 +425,14 @@ def set_favorite_star(ticker: str, starred: bool) -> bool:
     (#295 "바뀔 게 없으면 아무것도 쓰지 않는 것이 가장 강한 방어").
     """
     want = bool(starred)
+    key = _tkey(ticker)
+    if not key:            # 빈 키는 티커 없는 행에 별을 찍는다
+        return False
     with _DISK_LOCK:
         favorites = _load()
         hit = None
         for f in favorites:
-            if str(f.get("ticker") or "").upper() == str(ticker or "").upper():
+            if _tkey(f.get("ticker")) == key:
                 hit = f
                 break
         if hit is None:
@@ -440,10 +454,13 @@ def reorder_favorite(ticker: str, direction: str) -> bool:
 
     direction: 'up'/'down' (한 칸) | 'top'/'bottom' (맨 위/아래 — 사용자 2026-06-17
     '하나씩 올리면 끝까지 한참'). Returns True if order changed."""
+    key = _tkey(ticker)
+    if not key:
+        return False
     with _DISK_LOCK:          # load→save 는 한 덩어리(`_DISK_LOCK` 주석)
         favorites = _load()
         idx = next((i for i, f in enumerate(favorites)
-                    if f.get("ticker", "").upper() == ticker.upper()), None)
+                    if _tkey(f.get("ticker")) == key), None)
         if idx is None:
             return False
         if direction == "up" and idx > 0:
@@ -563,37 +580,44 @@ def get_favorites_with_prices() -> list[dict]:
     엔드포인트(/api/favorites)가 종목당 yfinance(tk.info EPS/PER·fast_info·history)를
     동기로 때려 '불러오는 중…'이 오래 걸리던 것 해소: 신선 캐시 즉시 / 스테일·콜드 시
     **백그라운드 daemon 갱신 + 즉시 반환**(스테일 있으면 스테일, 없으면 이름만 —
-    위젯 폴이 곧 가격 채움). 가격 캐시 3분 + fast_info 회로차단 게이트 유지."""
-    global _FAV_CACHE, _FAV_CACHE_TS
+    위젯 폴이 곧 가격 채움). 가격 캐시 3분 + fast_info 회로차단 게이트 유지.
+
+    ⚠️ 목록의 **구성·순서**는 어느 층에서 값을 받든 **지금 디스크**에서 온다 — 캐시
+    층(메모리 3분 · 디스크 스냅샷 6시간)은 같은 티커의 **파생값만** 덧입힌다
+    (`overlay_derived`). 옛 판은 신선·스테일 메모리 캐시를 **통째로** 돌려줬는데, 그
+    캐시는 갱신이 **시작할 때** 읽은 목록이라 갱신 도중의 삭제·추가·순서 변경을 갱신이
+    끝날 때 되돌렸다 — 지운 종목이 되살아나고, 그 뒤 ✕ 는 디스크에 이미 없어 아무 일도
+    안 했다(사용자 2026-10-06 "삭제 버튼이 또 안 먹혀", 실수 #436). 별표를 읽는 시점에
+    덧입히는 것(#344)과 같은 구조다 — 규율이 아니라 구조로 막는다(#119).
+    """
     import time as _time
     now = _time.time()
-    if _FAV_CACHE is not None and (now - _FAV_CACHE_TS) < _FAV_TTL:
-        return _FAV_CACHE
-    _kick_fav_refresh()              # 스테일/콜드 → 백그라운드 full 갱신(비차단)
-    if _FAV_CACHE is not None:
-        return _FAV_CACHE           # 스테일 즉시(곧 daemon 이 갱신)
+    # 캐시 참조와 그 시각은 **한 번만** 집는다 — 두 번 읽으면 그 사이 백그라운드가
+    # 다시 바인딩해 '신선' 판정과 덧입히는 행이 다른 판을 볼 수 있다(#102a).
+    cache, cache_ts = _FAV_CACHE, _FAV_CACHE_TS
+    disk = _load()
+    if cache is not None:
+        rows, missing = overlay_derived(disk, cache)
+        # 스테일이거나 **갱신 뒤에 담긴 종목**이 있으면 뒤에서 다시 받는다(비차단·
+        # 중복 방지는 `_kick_fav_refresh` 가 한다). 담은 종목이 다음 TTL 까지 값 없이
+        # 머물지 않게 — 담은 직후 다시 받는 것은 옛 판(`_save` 가 캐시를 비움)과 같다.
+        if missing or (now - cache_ts) >= _FAV_TTL:
+            _kick_fav_refresh()
+        return rows
+    _kick_fav_refresh()              # 콜드 → 백그라운드 full 갱신(비차단)
     # 재시작 직후엔 메모리 캐시가 없다 — 마지막 성공분을 기준시각과 함께 낸다.
-    cold = _cold_rows()
     snap, ts = _snapshot_load()
     if snap:
-        # ⚠️ 스냅샷을 통째로 내보내면 **지운 종목이 되살아나고** 순서도 옛것이
-        # 된다. 목록(순서·구성)은 항상 디스크가 정본이고, 스냅샷은 거기에
-        # **휘발성 값만** 채워 넣는다.
         import datetime as _dt
         _as_of = _dt.datetime.fromtimestamp(
             ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d %H:%M")
-        by_t = {r.get("ticker"): r for r in snap}
-        out = []
-        for f in cold:
-            prev = by_t.get(f.get("ticker"))
-            if not prev:
-                out.append(f)
-                continue
-            out.append({**f,
-                        **{k: prev[k] for k in _VOLATILE_FIELDS if k in prev},
-                        "as_of": _as_of})
-        return out
-    return cold                     # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
+        rows, missing = overlay_derived(disk, snap)
+        absent = {_tkey(t) for t in missing}
+        # 기준시각은 스냅샷 값을 실제로 받은 행에만 — 빈 행에 시각을 붙이면 그
+        # 빈칸이 그 시각에 확인한 '없음' 으로 읽힌다(#43·#165).
+        return [r if _tkey(r.get("ticker")) in absent else {**r, "as_of": _as_of}
+                for r in rows]
+    return _cold_rows(disk)          # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
 
 
 # 종목 추가 시점에 디스크로 굳는 **휘발성 파생값**. 콜드 로드에서 그대로
@@ -613,11 +637,52 @@ _VOLATILE_FIELDS = ("current_price", "per", "eps_estimate", "market_cap",
                     "yf_ticker")
 
 
-def _cold_rows() -> list[dict]:
+# 가격 갱신(`_compute_favorites_with_prices`)이 **만드는** 칸 — 캐시 층이 디스크
+# 목록에 덧입히는 것은 이것뿐이다. 목록의 구성·순서·저장 시점 값(`saved_*`)·별표는
+# 언제나 디스크가 정본이다(실수 #436). `next_earnings` 는 담던 날 디스크에도 굳지만
+# 갱신이 미래 일정으로 고치고, `name_kr` 은 갱신이 해석한다(빈 값이면 디스크 것을
+# 남긴다). ⚠️ 갱신이 새 칸을 만들면 **여기에 같이** 적을 것 — 안 적으면 화면에서
+# 그 칸만 조용히 빈다. 회귀가 갱신 본문의 `f["…"] =` 전수와 대조한다(#24).
+_DERIVED_FIELDS = _VOLATILE_FIELDS + ("next_earnings", "name_kr")
+
+
+def _cold_row(f: dict) -> dict:
+    """한 행의 휘발성 파생값을 지운 **새** dict — 낡은 숫자를 '현재'로 내보내지
+    않는다(입력은 손대지 않는다)."""
+    return {**f, **{k: None for k in _VOLATILE_FIELDS if k in f}}
+
+
+def _cold_rows(rows: "list | None" = None) -> list[dict]:
     """디스크 원본에서 휘발성 파생값을 지운 사본 — 낡은 숫자를 '현재'로
     내보내지 않는다. 빈칸은 다음 폴에서 daemon 이 채운다."""
-    return [{**f, **{k: None for k in _VOLATILE_FIELDS if k in f}}
-            for f in _load()]
+    return [_cold_row(f) for f in (_load() if rows is None else rows)]
+
+
+def overlay_derived(disk: list, rows) -> tuple[list, list]:
+    """(디스크 목록에 캐시 행의 파생값만 덧입힌 **새** 리스트, 캐시에 없던 티커).
+
+    순수 함수. 결과의 **구성·순서**는 `disk` 그대로다 — 캐시에만 있는 행(갱신 도중에
+    지운 종목)은 버리고, 캐시에 없는 행(갱신이 디스크를 읽은 뒤 담은 종목)은 콜드 행
+    규약대로 휘발성 칸을 비운다(담던 날의 숫자를 '현재'로 내보내지 않는다, #43).
+    짝이 있는 행도 디스크 행의 휘발성 칸을 먼저 비운 뒤 캐시 값을 얹는다 — 지웠다가
+    다시 담은 종목이면 디스크엔 새 `saved_*`, 캐시엔 옛 행이 있어서다.
+    입력은 손대지 않는다 — 캐시가 들고 있는 dict 를 고치면 디스크 값이 캐시에
+    구워진다(#344 덧입히기의 요점).
+    """
+    by: dict = {}
+    for r in rows or []:
+        by.setdefault(_tkey(r.get("ticker")), r)
+    out, missing = [], []
+    for d in disk or []:
+        r = by.get(_tkey(d.get("ticker")))
+        if r is None:
+            missing.append(d.get("ticker"))
+            out.append(_cold_row(d))
+            continue
+        out.append({**_cold_row(d),
+                    **{k: r[k] for k in _DERIVED_FIELDS
+                       if k in r and (k != "name_kr" or r[k])}})
+    return out, missing
 
 
 def _kick_fav_refresh() -> None:

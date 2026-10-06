@@ -19902,7 +19902,7 @@ def _render_market_page(data: dict) -> str:
         b.addEventListener('click', function() {{ toggleStar(b); }});
       }});
       favBody.querySelectorAll('.fav-del').forEach(function(b) {{
-        b.addEventListener('click', function() {{ removeFav(b.dataset.ticker); }});
+        b.addEventListener('click', function() {{ removeFav(b.dataset.ticker, b); }});
       }});
       favBody.querySelectorAll('.fav-up').forEach(function(b) {{
         b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'up'); }});
@@ -20012,18 +20012,63 @@ def _render_market_page(data: dict) -> str:
       applyFavFilter();   /* 새 순서로 페이지네이션 재적용 */
     }}
 
+    /* 다시 읽은 목록을 **돌려준다** — 삭제가 정말 반영됐는지 호출부가 대조한다
+       (실수 #436). 서버가 목록을 못 읽었다고 답하면(ok:false) 그건 **빈 목록이
+       아니다** — '저장한 종목이 없다' 고 그리면 거짓말이다(#43). */
     function loadFavs() {{
-      fetch('api/favorites')
+      return fetch('api/favorites')
         .then(function(r) {{ return r.json(); }})
         .then(function(d) {{
-          renderFavs(d.favorites || []);
+          if (!d || d.ok === false) throw new Error('favorites api not ok');
+          var list = d.favorites || [];
+          renderFavs(list);
           /* "이거 최신이야?" 에 화면이 답한다(#43·#304). 우리가 값을 **받아온**
              시각이지 거래소가 그 가격을 찍은 시각이 아니다 — 라벨이 그렇게 말한다. */
           var el = document.getElementById('fav-ts');
           var a = d.as_of || {{}};
           if (el) el.textContent = a.ts ? ('값 수집 ' + a.ts + ' KST') : '';
+          return list;
         }})
-        .catch(function() {{ favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>'; }});
+        .catch(function() {{
+          favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>';
+          return null;
+        }});
+    }}
+
+    /* ── 쓰기 응답 판정 — 별표·삭제·순서가 **같은** 판정을 쓴다(#38) ──
+       옛 삭제·순서 경로는 응답을 버리고 무조건 다시 읽기만 해, 서버가 실패를
+       말해도 화면은 아무 일 없던 것처럼 보였다(사용자 2026-10-06 "삭제 버튼이
+       또 안 먹혀", 실수 #436 · #43·#82). 갈래마다 처방이 다르므로 이름을 댄다:
+       404=이 API 를 모르는 서버(옛 코드) · 401/403=인증 만료 · 네트워크 ·
+       서버가 거절(error). `error` 없는 ok:false 는 **실패가 아니다** — 호출부가
+       뜻을 정한다(삭제=이미 없음 · 순서=더 갈 데 없음). */
+    function favReplyError(st, d, api) {{
+      if (st === 404) return '서버가 이 기능의 API(/' + api + ')를 모릅니다(HTTP 404) — 대시보드 프로세스가 이 화면보다 옛 코드일 수 있습니다. 재시작이 필요합니다.';
+      if (st === 401 || st === 403) return '인증이 만료됐습니다 — 새로고침 후 다시 로그인하세요.';
+      if (!d) return '서버가 HTTP ' + st + ' 로 답했습니다';
+      return d.error ? String(d.error) : '';
+    }}
+    /* 네트워크 오류는 메시지가 브라우저 것이라 우리 말로 감싼다. */
+    function favNetMsg(e) {{
+      var m = (e && e.message) || '';
+      if (!m || /Failed to fetch|NetworkError|Load failed/i.test(m)) {{
+        m = '서버에 닿지 못했습니다(네트워크·서버 중단).';
+      }}
+      return m;
+    }}
+    function favPost(api, payload) {{
+      var st = 0;
+      return fetch(api, {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify(payload)
+      }})
+        .then(function(r) {{ st = r.status; return r.json().catch(function() {{ return null; }}); }})
+        .then(function(d) {{
+          var why = favReplyError(st, d, api);
+          if (why) throw new Error(why);
+          return d;
+        }});
     }}
 
     /* ⚠️ 토글 뒤 `loadFavs()` 를 부르지 않는다 — 재렌더는 정렬·페이지를
@@ -20038,18 +20083,12 @@ def _render_market_page(data: dict) -> str:
          (#82): 404=서버가 옛 코드(이 라우트가 없다) · 401/403=인증 만료 ·
          네트워크 · 서버가 거절(ok:false). 2026-09-12 사용자가 본 '중요표시
          변경 실패' 는 **404** 였다(새 HTML 은 봇 프로세스가 굽고 API 는 옛
-         대시보드 프로세스가 답했다, #11). 상태를 잡아 이름을 댄다. */
-      var st = 0;
-      fetch('api/favorite_star', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{ticker: ticker, starred: want}})
-      }})
-        .then(function(r) {{ st = r.status; return r.json().catch(function() {{ return null; }}); }})
+         대시보드 프로세스가 답했다, #11). 상태를 잡아 이름을 대는 판정은
+         `favPost`·`favReplyError` 가 별표·삭제·순서에 **같이** 쓴다(#38 —
+         2026-10-06 삭제·순서는 그 판정 없이 응답을 버리고 있었다, 실수 #436). */
+      favPost('api/favorite_star', {{ticker: ticker, starred: want}})
         .then(function(d) {{
-          if (st === 404) throw new Error('서버가 옛 코드입니다 — 이 기능의 API(/api/favorite_star)가 없습니다. 대시보드 프로세스 재시작이 필요합니다.');
-          if (st === 401 || st === 403) throw new Error('인증이 만료됐습니다 — 새로고침 후 다시 로그인하세요.');
-          if (!d || !d.ok) throw new Error((d && d.error) || ('서버가 HTTP ' + st + ' 로 답했습니다'));
+          if (!d.ok) throw new Error('서버가 처리하지 못했다고 답했습니다');
           var on = !!d.starred;
           /* ⚠️ 60초 폴이 그 사이 재렌더했으면 `btn` 은 **떨어져 나간 노드**다 —
              `outerHTML=` 은 아무 일도 안 하고, 새 버튼을 찾아 리스너를 또
@@ -20079,34 +20118,39 @@ def _render_market_page(data: dict) -> str:
         .catch(function(e) {{
           btn.disabled = false;
           /* 사유를 그대로 보여준다 — '실패' 만 적으면 사용자가 원인을 짐작한다
-             (#82·#43 침묵·뭉뚱그림이 최악). 네트워크 오류는 메시지가
-             브라우저 것이라 우리 말로 감싼다. */
-          var m = (e && e.message) || '';
-          if (!m || /Failed to fetch|NetworkError|Load failed/i.test(m)) {{
-            m = '서버에 닿지 못했습니다(네트워크·서버 중단).';
-          }}
-          alert('중요표시 변경 실패 — ' + m);
+             (#82·#43 침묵·뭉뚱그림이 최악). */
+          alert('중요표시 변경 실패 — ' + favNetMsg(e));
         }});
     }}
 
-    function removeFav(ticker) {{
-      fetch('api/favorite_remove', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{ticker: ticker}})
-      }})
-        .then(function() {{ loadFavs(); }})
-        .catch(function() {{ alert('삭제 실패'); }});
+    /* ✕ — 응답을 **읽는다**(실수 #436). `error` 없는 ok:false 는 '이미 목록에
+       없다'(다른 탭·앞선 클릭)라 실패가 아니다 — 다시 읽기만 한다. 다시 읽은
+       목록에 그 종목이 **그대로 있으면** 말한다 — 서버는 지웠다는데 화면에
+       남는 것이 사용자가 본 바로 그 '무반응' 이다(#43). 요청 중엔 버튼을 잠가
+       두 번 눌리지 않게 한다. */
+    function removeFav(ticker, btn) {{
+      if (btn) btn.disabled = true;
+      var key = String(ticker || '').trim().toUpperCase();
+      favPost('api/favorite_remove', {{ticker: ticker}})
+        .then(function() {{ return loadFavs(); }})
+        .then(function(list) {{
+          var still = (list || []).some(function(f) {{
+            return String(f.ticker || '').trim().toUpperCase() === key;
+          }});
+          if (still) throw new Error('서버에 삭제를 요청했지만 다시 읽은 목록에 그대로 있습니다(서버 목록과 화면이 어긋남).');
+        }})
+        .catch(function(e) {{
+          if (btn) btn.disabled = false;
+          alert('삭제 실패 — ' + favNetMsg(e));
+        }});
     }}
 
+    /* 순서 — `error` 없는 ok:false 는 '더 갈 데가 없다'(맨 위에서 ⤒)라 실패가
+       아니다. 서버가 거절한 것만 말한다. */
     function reorderFav(ticker, direction) {{
-      fetch('api/favorite_reorder', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{ticker: ticker, direction: direction}})
-      }})
+      favPost('api/favorite_reorder', {{ticker: ticker, direction: direction}})
         .then(function() {{ loadFavs(); }})
-        .catch(function() {{ alert('순서 변경 실패'); }});
+        .catch(function(e) {{ alert('순서 변경 실패 — ' + favNetMsg(e)); }});
     }}
 
 
