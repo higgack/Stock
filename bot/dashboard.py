@@ -20018,14 +20018,21 @@ def _render_market_page(data: dict) -> str:
     function loadFavs() {{
       var st = 0;
       return fetch('api/favorites')
-        .then(function(r) {{ st = r.status; return r.json(); }})
+        /* 본문이 JSON 이 아니어도(실서버 401 은 text/plain, 404 는 HTML) 상태로
+           판정하게 null 로 받는다 — 쓰기(`favPost`)와 같은 파싱이다. 옛 판은
+           여기서 던져 공용 판정을 아예 안 탔다(델타 리뷰 M2). */
+        .then(function(r) {{ st = r.status; return r.json().catch(function() {{ return null; }}); }})
         .then(function(d) {{
           if (!d || d.ok === false || st >= 400) {{
             /* 서버가 사유를 실어 보냈으면 그대로 말한다 — '불러올 수 없다' 한
-               마디로는 '목록 파일이 깨졌다(복구)' 와 '일시 오류(다시 시도)' 가 안
+               마디로는 '목록 파일이 깨졌다(고침)' 와 '일시 오류(다시 시도)' 가 안
                갈린다(#82 · 독립 리뷰 2026-10-06 L5). 판정은 쓰기와 **같은** 함수
-               (`favReplyError`, #38). */
-            var e = new Error(favReplyError(st, d, 'api/favorites'));
+               (`favReplyError`, #38) — 단 404 는 다르게 말한다: 쓰기의 404 처방
+               ('옛 코드라 재시작')은 새 API 가 옛 프로세스에 없던 사건에서 왔고,
+               목록 API 는 오래된 라우트라 그 원인을 모른다(#165 재지 않은 처방 금지). */
+            var e = new Error(st === 404
+              ? '서버가 목록 API(/api/favorites)에 HTTP 404 로 답했습니다.'
+              : favReplyError(st, d, 'api/favorites'));
             e.favServer = true;
             throw e;
           }}
@@ -20042,6 +20049,8 @@ def _render_market_page(data: dict) -> str:
           var why = (e && e.favServer) ? e.message : '';
           favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.'
             + (why ? ' — ' + favEsc(why) : '') + '</div>';
+          /* 옛 개수를 남기면 오류 문장 옆에 '219종목' 이 그대로 보인다(델타 리뷰 L7). */
+          if (favCnt) favCnt.textContent = '';
           return null;
         }});
     }}
@@ -20065,7 +20074,10 @@ def _render_market_page(data: dict) -> str:
       if (d && d.error) return String(d.error);
       /* 4xx·5xx 는 본문이 JSON 이어도 성공이 아니다 — 앞단(프록시 등)이 JSON
          오류를 주면 본문만 보고 '성공' 으로 읽는다(셀프리뷰, 실수 #436). */
-      if (!d || st >= 400) return '서버가 HTTP ' + st + ' 로 답했습니다';
+      if (st >= 400) return '서버가 HTTP ' + st + ' 로 답했습니다';
+      /* 200 인데 JSON 이 아니다(앞단의 로그인·오류 페이지 등) — 'HTTP 200 으로
+         답했다' 고 적으면 성공처럼 읽힌다(#34). */
+      if (!d) return '서버 응답을 읽지 못했습니다(JSON 아님 · HTTP ' + st + ')';
       return '';
     }}
     /* 네트워크 오류는 메시지가 브라우저 것이라 우리 말로 감싼다. */

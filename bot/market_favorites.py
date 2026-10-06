@@ -42,13 +42,14 @@ def _tkey(t) -> str:
 
 
 class FavoritesUnreadable(Exception):
-    """목록 파일이 **있는데 못 읽었다**(깨진 JSON·읽기 오류·목록이 아님).
+    """목록 파일이 **있는데 못 읽었다**(깨진 JSON·열기 오류·목록이 아님).
 
     '비었다' 와 처방이 정반대다(#82) — 비었으면 담으면 되고, 못 읽으면 파일을
-    복구해야 한다. 옛 `_load` 는 둘 다 `[]` 로 접어서 화면은 '저장한 종목이
-    없다' 를 그렸고(#43), 그 상태에서 담기·삭제·별표를 누르면 **빈 목록 위에 써서
-    파일을 덮었다** — 남아 있던 목록이 통째로 사라진다(독립 리뷰 2026-10-06 L5,
-    실수 #436). `reason` 은 화면에 그대로 싣는 사람 문장이다.
+    고쳐야 한다. 옛 `_load` 는 둘 다 `[]` 로 접었다(독립 리뷰 2026-10-06 L5, 실수
+    #436): 화면은 '저장한 종목이 없다' 를 그렸고(#43), **담기**는 빈 목록 위에 써서
+    남은 목록을 통째로 덮었으며, 삭제·별표·순서는 바꿀 행을 못 찾아 **조용한
+    no-op** 이었다 — 사용자가 본 '✕ 무반응' 과 같은 증상이다(그 경로였는지는 재지
+    않았다 — 델타 리뷰 L2). `reason` 은 화면에 그대로 싣는 사람 문장이다.
     """
 
     def __init__(self, reason: str):
@@ -56,37 +57,87 @@ class FavoritesUnreadable(Exception):
         self.reason = reason
 
 
+def error_text(exc: BaseException) -> str:
+    """관심종목 경로의 오류를 사람 문장으로 — 대시보드 API 다섯(조회·담기·삭제·
+    순서·별표)과 DART 공시 알림이 **같이 쓴다**(#38).
+
+    사유를 꺼내는 규칙이 자리마다 갈려 있었다(독립 델타 리뷰 2026-10-06 M3·L3):
+    조회는 `reason` 을, 쓰기는 `str(exc)` 를 실었고, `_save` 의 OSError 는 tmp
+    파일의 **서버 경로**까지 화면 alert 로 나갔다. 못 읽은 목록은 사람 문장
+    (`reason`) 그대로, OSError 는 `종류: 사유` 만, 그 밖은 `종류: 내용`. 판정은
+    이름이 아니라 `isinstance` — `.reason` 덕타이핑은 UnicodeDecodeError·URLError
+    의 `.reason` 까지 집는다.
+    """
+    if isinstance(exc, FavoritesUnreadable):
+        return exc.reason
+    if isinstance(exc, OSError) and exc.strerror:
+        return f"{type(exc).__name__}: {exc.strerror}"         # 경로는 싣지 않는다
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
 _TMP_SEQ = itertools.count(1)
+
+
+# 사유 끝에 붙는 처방 — 갈래마다 다르다(#82). 내용이 깨진 갈래는 파일을 고쳐야
+# 하지만, 열지 못한 갈래(권한·경로)는 데이터가 멀쩡할 수 있어 '되돌리라' 고 하면
+# 최근 변경을 잃는 처방이 된다(델타 리뷰 L6 · #319 이행 불가능한 처방 금지). 이
+# 파일엔 자동 백업이 없다 — CLI 정리 백업(`market_favorites.backup-*.json`)뿐이다.
+_FIX_CONTENT = (" — 덮어쓰지 않도록 쓰기를 멈췄습니다. market_favorites.json 을"
+                " 고치거나 백업이 있으면 되돌리세요.")
+_FIX_ACCESS = (" — 데이터는 그대로일 수 있습니다. 쓰기를 멈췄으니 파일 권한·경로를"
+               " 먼저 확인하세요.")
 
 
 def _load(*, strict: bool = False) -> list[dict]:
     """디스크 목록. 파일이 없으면 `[]`(아직 안 담았다 — 정상).
 
     `strict=True` — 파일이 있는데 못 읽으면 `FavoritesUnreadable`. **쓰는 경로와
-    화면 조회**가 쓴다: 못 읽은 목록을 빈 목록으로 알고 쓰면 파일을 덮고, 빈 목록으로
-    그리면 화면이 거짓말한다.
+    화면 조회, 그리고 목록으로 상태를 고치는 소비자**(DART 공시 알림이 관심종목
+    코드를 상태에 적는다)가 쓴다: 못 읽은 목록을 빈 목록으로 알고 쓰면 파일·상태를
+    덮고, 빈 목록으로 그리면 화면이 거짓말한다.
     `strict=False`(기본) — 종전처럼 `[]` 지만 **조용히 비우지 않는다**(#12): 경고를
-    남긴다. 진단·알림처럼 목록이 없어도 제 일을 계속하는 읽기 전용 자리용이다.
+    남긴다. 빈 목록이면 아무것도 쓰지 않는 자리(진단 프로브·name_kr 백필·CLI 의
+    되읽기 확인)용이다 — 처음엔 '알림' 도 여기 넣었는데 DART 알림은 빈 목록으로
+    상태를 고쳐 그 사이 공시를 삼켰다(델타 리뷰 M1).
     """
-    if not _FAVORITES_FILE.exists():
-        return []
     try:
-        data = json.loads(_FAVORITES_FILE.read_text("utf-8"))
+        # BOM 이 붙은 파일(편집기 저장)도 받는다 — 우리 writer 는 BOM 을 안 쓴다.
+        raw = _FAVORITES_FILE.read_text("utf-8-sig")
+    except FileNotFoundError:
+        return []
+    except UnicodeDecodeError as exc:
+        # UTF-8 이 아닌 바이트는 **내용**이 깨진 것이다 — 아래 열기 갈래로 보내면
+        # '권한·경로를 먼저' 라는 틀린 처방이 붙는다(배포전 셀프리뷰, #82).
+        why = (f"관심종목 파일 내용을 읽지 못했습니다({type(exc).__name__}: "
+               f"{str(exc)[:120]})" + _FIX_CONTENT)
     except Exception as exc:                                   # noqa: BLE001
         # OSError 의 str 은 서버 경로를 싣는다 — 화면에 갈 문장엔 사유만(인증 뒤라도
-        # 경로는 운영 로그로 충분하다).
+        # 경로는 운영 로그로 충분하다). 그리고 `exists()` 를 먼저 묻지 않는다 —
+        # 디렉터리 권한(EACCES)이면 `exists()` 가 원시 PermissionError 를 던져
+        # 이 판정을 건너뛰었다(델타 리뷰 L3b).
         detail = (exc.strerror if isinstance(exc, OSError) and exc.strerror
                   else str(exc))
-        why = (f"관심종목 파일을 못 읽었습니다({type(exc).__name__}: "
-               f"{str(detail)[:120]})")
+        why = (f"관심종목 파일을 열지 못했습니다({type(exc).__name__}: "
+               f"{str(detail)[:120]})" + _FIX_ACCESS)
     else:
-        if isinstance(data, list) and all(isinstance(f, dict) for f in data):
-            return data
-        why = (f"관심종목 파일이 목록 모양이 아닙니다"
-               f"({type(data).__name__})")
+        try:
+            data = json.loads(raw)
+        except Exception as exc:                               # noqa: BLE001
+            why = (f"관심종목 파일 내용을 읽지 못했습니다({type(exc).__name__}: "
+                   f"{str(exc)[:120]})" + _FIX_CONTENT)
+        else:
+            if not isinstance(data, list):
+                why = (f"관심종목 파일이 목록이 아닙니다({type(data).__name__})"
+                       + _FIX_CONTENT)
+            else:
+                bad = next((i for i, f in enumerate(data)
+                            if not isinstance(f, dict)), None)
+                if bad is None:
+                    return data
+                why = (f"관심종목 목록에 종목이 아닌 항목이 섞여 있습니다"
+                       f"({bad + 1}번째: {type(data[bad]).__name__})" + _FIX_CONTENT)
     if strict:
-        raise FavoritesUnreadable(
-            why + " — 덮어쓰지 않도록 쓰기를 멈췄습니다. 파일을 백업에서 복구하세요.")
+        raise FavoritesUnreadable(why)
     log.warning("favorites: %s — 빈 목록으로 읽는다(%s)", why, _FAVORITES_FILE)
     return []
 
@@ -406,9 +457,10 @@ def remove_favorite(ticker: str) -> bool:
     return False
 
 
-def get_favorites() -> list[dict]:
-    """Return all saved favorites."""
-    return _load()
+def get_favorites(*, strict: bool = False) -> list[dict]:
+    """Return all saved favorites. `strict=True` 면 못 읽은 목록을 빈 목록으로
+    접지 않고 `FavoritesUnreadable` 을 던진다(`_load` 독스트링)."""
+    return _load(strict=strict)
 
 
 def sort_by_saved(favorites: list[dict]) -> list[dict]:
@@ -487,16 +539,17 @@ def set_favorite_star(ticker: str, starred: bool) -> bool:
         return False
     with _DISK_LOCK:
         favorites = _load(strict=True)
-        hit = None
-        for f in favorites:
-            if _tkey(f.get("ticker")) == key:
-                hit = f
-                break
-        if hit is None:
+        # 같은 키의 행 **전부**를 고친다(`remove_favorite` 가 전부 지우는 것과 같은
+        # 규약) — 첫 행만 고치면 읽는 쪽(`_star_map`·`is_starred`)이 다른 행을 보고
+        # ☆ 를 답해 별표가 영영 안 먹는다(델타 리뷰 L5 — 락 안 재검사가 들어오기
+        # 전의 동시 담기로 중복 행이 남아 있을 수 있다).
+        hits = [f for f in favorites if _tkey(f.get("ticker")) == key]
+        if not hits:
             return False
-        if bool(hit.get(_STAR_KEY)) == want:
+        if all(bool(f.get(_STAR_KEY)) == want for f in hits):
             return False
-        hit[_STAR_KEY] = want
+        for f in hits:
+            f[_STAR_KEY] = want
         _save(favorites, invalidate_cache=False)
     return True
 
@@ -1074,22 +1127,18 @@ def _cli_sort_saved(apply_it: bool) -> int:
     import shutil
     from datetime import datetime as _dt
 
-    cur = _load()
+    # ⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279). 못 읽는 갈래는
+    # `_load(strict=True)` 가 이름을 대 준다 — 여기서 분류기를 따로 두면 `_load`
+    # 에 갈래가 늘 때 갈라진다(델타 리뷰 L1: 목록이 아닌 JSON 을 '정상 JSON 인데
+    # 비어 있다' 로 찍었다, #38).
+    try:
+        cur = _load(strict=True)
+    except FavoritesUnreadable as exc:
+        print(f"❌ {exc.reason}\n   경로: {_FAVORITES_FILE}")
+        return 1
     if not cur:
-        # ⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279) — `_load` 가
-        # JSON 예외를 삼켜 `[]` 를 주므로 여기서 갈래를 이름으로 부른다.
-        why = "파일이 없다 — 관심종목을 한 번도 안 담았다"
-        try:
-            if _FAVORITES_FILE.exists():
-                raw = _FAVORITES_FILE.read_text("utf-8")
-                try:
-                    json.loads(raw)
-                    why = f"파일은 정상 JSON 인데 목록이 비어 있다({len(raw)}바이트)"
-                except Exception as exc:                       # noqa: BLE001
-                    why = (f"파일을 못 읽는다 — {type(exc).__name__}: {exc}"
-                           f" ({len(raw)}바이트). 백업에서 복구할 것")
-        except Exception as exc:                               # noqa: BLE001
-            why = f"파일 접근 실패 — {type(exc).__name__}: {exc}"
+        why = ("파일이 없다 — 관심종목을 한 번도 안 담았다"
+               if not _FAVORITES_FILE.exists() else "목록이 비어 있다(정상 JSON)")
         print(f"❌ 관심종목이 0건이다 — {why}\n   경로: {_FAVORITES_FILE}")
         return 1
     new = sort_by_saved(cur)

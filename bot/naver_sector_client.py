@@ -277,6 +277,16 @@ def _kr_ind_fail_state() -> tuple[float, str]:
     return at, why or (_KR_IND_FAIL.get("reason") or "")
 
 
+def _kr_ind_backing_off() -> bool:
+    """직전 빌드가 실패했고 아직 백오프 창 안인가 — 킥 판정 두 곳의 단일 출처(#38).
+
+    사유가 **있을 때만** 막는다 — 성공 기록(`reason=""`)에도 시각이 찍히므로
+    시각만 보면 정상 빌드까지 백오프가 잡아먹는다(독립 리뷰).
+    """
+    _at, _why = _kr_ind_fail_state()
+    return bool(_why and _at and (time.time() - _at) < _KR_IND_BACKOFF_SEC)
+
+
 def kr_industry_fail_reason() -> str:
     """직전 업종맵 빌드가 0건이었던 사유("" = 사유 없음).
 
@@ -363,14 +373,16 @@ def kr_industry_map() -> dict:
     # `fp.exists()` 가 영원히 거짓 — 그래서 렌더마다 죽은 URL 로 스레드가
     # 나갔다(사용자 2026-09-12). 실패 뒤에는 **백오프**를 둔다(#72 차단기와
     # 같은 처방 · #25 늘 도는 재시도는 아무것도 안 재는 것과 같다).
-    _at, _why = _kr_ind_fail_state()
-    # 사유가 **있을 때만** 막는다 — 성공 기록(`reason=""`)에도 시각이 찍히므로
-    # 시각만 보면 정상 빌드까지 백오프가 잡아먹는다(독립 리뷰).
-    if _why and _at and (time.time() - _at) < _KR_IND_BACKOFF_SEC:
+    if _kr_ind_backing_off():
         return raw or {}
     global _kr_ind_building
     with _kr_ind_lock:
-        if not _kr_ind_building:
+        # ⚠️ 판정을 **잠금 안에서 다시** 읽는다. 위 판정과 이 잠금 사이에 빌드가
+        # 실패를 기록하고 플래그를 내리면, 낡은 판정(기록 없음)을 든 렌더가 두
+        # 번째 빌드를 띄운다(2026-10-06 전체 회귀 실측 — '원문 7자' 빌드 2회,
+        # 실수 #438 · #422 확인과 행동은 한 잠금 안에서). 빌드는 기록을 쓴 **뒤에**
+        # 이 잠금 안에서 플래그를 내리므로, 내려간 플래그를 본 쪽은 기록도 본다.
+        if not _kr_ind_building and not _kr_ind_backing_off():
             _kr_ind_building = True
             threading.Thread(target=_build_kr_industry_map, daemon=True,
                              name="kr-industry-map").start()

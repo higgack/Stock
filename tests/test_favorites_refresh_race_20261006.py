@@ -398,15 +398,101 @@ class TestUnreadableListIsNotEmpty:
         return mf, kicks
 
     @pytest.mark.parametrize("raw, frag", [
-        (b'[{"ticker": "SFA"}, {"tic', "JSONDecodeError"),
-        (b'{"ticker": "SFA"}', "목록 모양이 아닙니다(dict)"),
-        (b'["SFA", "AAA"]', "목록 모양이 아닙니다(list)"),
+        (b'[{"ticker": "SFA"}, {"tic', "내용을 읽지 못했습니다(JSONDecodeError"),
+        (b'{"ticker": "SFA"}', "목록이 아닙니다(dict)"),
+        # 목록인데 종목이 아닌 항목 — 옛 문구 '목록 모양이 아닙니다(list)' 는
+        # 목록을 두고 목록이 아니라고 말했다(델타 리뷰). 몇 번째인지 댄다.
+        (b'["SFA", "AAA"]', "종목이 아닌 항목이 섞여 있습니다(1번째: str)"),
+        (b'[{"ticker": "A"}, "B"]', "종목이 아닌 항목이 섞여 있습니다(2번째: str)"),
     ])
     def test_strict_load_names_the_branch(self, monkeypatch, tmp_path, raw, frag):
+        """내용이 깨진 갈래는 '고치거나 되돌리라' — 처방은 갈래가 정한다(#82)."""
         mf, _k = self._broken(monkeypatch, tmp_path, raw)
         with pytest.raises(mf.FavoritesUnreadable) as ei:
             mf._load(strict=True)
-        assert frag in ei.value.reason and "복구" in ei.value.reason, ei.value.reason
+        r = ei.value.reason
+        assert frag in r, r
+        assert "쓰기를 멈췄습니다" in r and "고치거나 백업이 있으면 되돌리세요" in r, r
+
+    @pytest.mark.parametrize("raw, frag", [
+        (b'[{"ticker": "SFA"}, {"tic', "JSONDecodeError"),
+        (b'{"ticker": "SFA"}', "목록이 아닙니다(dict)"),
+        (b'[{"ticker": "A"}, "B"]', "2번째: str"),
+    ])
+    def test_lenient_warning_carries_the_reason(self, monkeypatch, tmp_path, caplog,
+                                                raw, frag):
+        """너그러운 읽기도 **어느 갈래인지** 경고에 적는다 — '빈 목록으로 읽는다'
+        한 마디로는 무엇을 고칠지 모른다(#82). 그 경고는 화면 문장과 같은 사유다
+        (갈래가 늘 때 두 곳이 갈라지지 않게, #38)."""
+        import logging
+        mf, _k = self._broken(monkeypatch, tmp_path, raw)
+        caplog.set_level(logging.WARNING, logger="bot.market_favorites")
+        assert mf._load() == []
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(frag in m and ei.value.reason in m for m in msgs), msgs
+
+    def test_bom_file_is_read(self, monkeypatch, tmp_path):
+        """편집기가 붙인 BOM 은 '못 읽음' 이 아니다 — 그걸 깨진 파일로 보면 멀쩡한
+        목록이 쓰기를 막는다(델타 리뷰). 우리 writer 는 BOM 을 안 쓴다."""
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        mf._FAVORITES_FILE.write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(self.GOOD).encode("utf-8"))
+        assert mf._load(strict=True) == self.GOOD
+        assert mf.remove_favorite("AAA") is True        # 쓰기도 막히지 않는다
+        assert mf._load(strict=True) == [{"ticker": "SFA"}]
+
+    def test_undecodable_bytes_are_a_content_problem(self, monkeypatch, tmp_path):
+        """UTF-8 이 아닌 바이트는 **내용**이 깨진 것이다 — `read_text` 가 던지는
+        UnicodeDecodeError 를 열기 갈래로 보내면 '데이터는 그대로일 수 있다 —
+        권한·경로를 먼저' 라는 **틀린 처방**이 붙는다(배포전 셀프리뷰, #82 · #292
+        틀린 라벨은 라벨이 없는 것보다 나쁘다). 쓰기는 막히고 파일은 그대로다."""
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        raw = b'[{"ticker": "SF\xff"}]'
+        mf._FAVORITES_FILE.write_bytes(raw)
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        r = ei.value.reason
+        assert r.startswith("관심종목 파일 내용을 읽지 못했습니다(UnicodeDecodeError"), r
+        assert "되돌리세요" in r and "권한·경로" not in r, r
+        assert mf._load() == []                         # 관대한 읽기는 빈 목록
+        with pytest.raises(mf.FavoritesUnreadable):
+            mf.remove_favorite("SFA")
+        assert mf._FAVORITES_FILE.read_bytes() == raw   # 한 바이트도 안 바뀐다
+
+    def test_permission_denied_is_unreadable_with_its_own_prescription(
+            self, monkeypatch, tmp_path):
+        """디렉터리 권한(EACCES)이면 `exists()` 조차 원시 PermissionError 를 던진다
+        — 옛 판은 `exists()` 를 먼저 물어 이 판정을 건너뛰었다(델타 리뷰 L3b).
+        처방도 다르다: 데이터는 멀쩡할 수 있어 '되돌리라' 는 최근 변경을 잃는
+        처방이다(L6) — 권한·경로를 말한다. 그리고 서버 경로는 안 싣는다."""
+        import errno
+        import os
+        from pathlib import Path as _P
+        mf, _k = _mf(monkeypatch, tmp_path, self.GOOD)
+        target = mf._FAVORITES_FILE
+        real_exists, real_read = _P.exists, _P.read_text
+
+        def _denied(path):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+
+        def _exists(self, *a, **k):
+            return _denied(self) if self == target else real_exists(self, *a, **k)
+
+        def _read(self, *a, **k):
+            return _denied(self) if self == target else real_read(self, *a, **k)
+
+        monkeypatch.setattr(_P, "exists", _exists)
+        monkeypatch.setattr(_P, "read_text", _read)
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        r = ei.value.reason
+        assert r.startswith("관심종목 파일을 열지 못했습니다(PermissionError: "), r
+        assert "권한·경로" in r and "되돌리세요" not in r, r
+        assert str(tmp_path) not in r, r
+        # 너그러운 자리(읽기 전용 소비자)는 던지지 않는다
+        assert mf._load() == [] and mf.starred_tickers() == []
 
     def test_missing_file_is_empty_not_unreadable(self, monkeypatch, tmp_path):
         mf, _k = _mf(monkeypatch, tmp_path, [])
@@ -430,7 +516,7 @@ class TestUnreadableListIsNotEmpty:
         monkeypatch.setattr(mf, "_FAVORITES_FILE", d)
         with pytest.raises(mf.FavoritesUnreadable) as ei:
             mf._load(strict=True)
-        assert "IsADirectoryError" in ei.value.reason, ei.value.reason
+        assert "열지 못했습니다(IsADirectoryError" in ei.value.reason, ei.value.reason
         assert str(tmp_path) not in ei.value.reason, ei.value.reason
 
     def test_writers_refuse_and_leave_the_file_alone(self, monkeypatch, tmp_path):
@@ -493,8 +579,11 @@ class TestUnreadableListIsNotEmpty:
         f = _Fake()
         ds.DashboardHandler._handle_favorites_get(f)
         assert f.sent["ok"] is False and f.sent["favorites"] == [], f.sent
-        assert f.sent["error"].startswith("관심종목 파일을 못 읽었습니다"), f.sent
-        assert "FavoritesUnreadable" not in f.sent["error"]   # 사람 문장 그대로
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        # 화면 문장 = 목록 읽기의 사유 그대로(사람 문장 — 클래스 이름 없이)
+        assert f.sent["error"] == ei.value.reason, f.sent
+        assert f.sent["error"].startswith("관심종목 파일 내용을 읽지 못했습니다"), f.sent
 
     def test_other_get_failures_are_named_too(self, monkeypatch):
         import bot.dashboard_server as ds
@@ -628,7 +717,8 @@ class TestRemoveEndpoint:
             raise OSError("disk full")
         monkeypatch.setattr(mf, "remove_favorite", _boom)
         out = self._post({"ticker": "AAA"})
-        assert out == {"ok": False, "error": "disk full"}, out
+        # 사유 문장 규칙은 `error_text` 한 곳 — 종류와 내용(조회와 같다, #38)
+        assert out == {"ok": False, "error": "OSError: disk full"}, out
 
     def test_concurrent_adds_of_one_ticker_store_it_once(self, monkeypatch, tmp_path):
         """두 탭이 같은 종목을 **동시에** 담아도 한 줄 — 네트워크 전 검사만으론
@@ -757,10 +847,12 @@ var __btn = {disabled:false, dataset:{ticker:'SFA'}, isConnected:true,
 var __scenario = process.argv[3];
 setImmediate(function(){
   var __initial = __els['fav-body']._t;
+  var __cntInitial = __els['fav-cnt']._t;
   __calls.length = 0; __alerts.length = 0; __reqs.length = 0;
   if (__scenario === 'remove') removeFav('SFA', __btn);
   else if (__scenario === 'reorder') reorderFav('SFA', 'top');
   else if (__scenario === 'star') toggleStar(__btn);
+  else if (__scenario === 'reload') loadFavs();
   else if (__scenario === 'click') {
     /* 사용자가 SFA 행의 ✕ 를 누른다 — 리스너가 버튼을 넘겨야 잠긴다 */
     __btn = __btns['SFA'];
@@ -769,7 +861,8 @@ setImmediate(function(){
   var __during = __btn.disabled;
   setImmediate(function(){
     console.log(JSON.stringify({calls:__calls, reqs:__reqs, alerts:__alerts, during:__during,
-      after:__btn.disabled, html:__els['fav-body']._t, initial:__initial}));
+      after:__btn.disabled, html:__els['fav-body']._t, initial:__initial,
+      cnt_initial:__cntInitial, cnt:__els['fav-cnt']._t}));
   });
 });
 """
@@ -927,17 +1020,61 @@ class TestWriteRepliesAreRead:
         있으니 이스케이프한다."""
         out = _run_fav_js({"api/favorites": [{"body": {
             "ok": False, "favorites": [],
-            "error": "관심종목 파일을 못 읽었습니다(JSONDecodeError: <b>x</b>)"}}]},
+            "error": "관심종목 파일 내용을 읽지 못했습니다(JSONDecodeError: <b>x</b>)"}}]},
             "none")
         html = out["initial"]
-        assert "관심종목을 불러올 수 없습니다. — 관심종목 파일을 못 읽었습니다" in html, html
+        assert ("관심종목을 불러올 수 없습니다. — 관심종목 파일 내용을 읽지 못했습니다"
+                in html), html
         assert "&lt;b&gt;x&lt;/b&gt;" in html and "<b>x</b>" not in html, html
         assert "저장 버튼을 눌러주세요" not in html
 
-    def test_get_401_names_the_branch(self):
+    @pytest.mark.parametrize("reply", [
+        # 실서버 401 은 text/plain(Basic Auth 거절) — 본문이 JSON 이 아니다. 옛 판은
+        # 여기서 `r.json()` 이 던져 공용 판정을 아예 안 탔고 '불러올 수 없습니다'
+        # 한 마디였다(델타 리뷰 M2). 하네스가 실물 모양을 내야 그 경로를 잰다(#155).
+        {"status": 401},
+        {"status": 401, "body": None},
+    ])
+    def test_get_401_names_the_branch(self, reply):
         """목록 읽기도 쓰기와 **같은** 판정(`favReplyError`, #38) — 401 은 인증 만료."""
-        out = _run_fav_js({"api/favorites": [{"status": 401, "body": None}]}, "none")
+        out = _run_fav_js({"api/favorites": [reply]}, "none")
         assert "인증이 만료됐습니다" in out["initial"], out["initial"]
+
+    def test_get_404_names_the_api_without_a_guessed_prescription(self):
+        """목록 API 의 404 는 쓰기의 404 처방('옛 코드라 재시작')을 빌리지 않는다 —
+        그 처방은 새 API 가 옛 프로세스에 없던 사건에서 왔고, 목록 API 는 오래된
+        라우트라 원인을 모른다(#165 재지 않은 처방 금지). 본문 없는 HTML 404 모양."""
+        out = _run_fav_js({"api/favorites": [{"status": 404}]}, "none")
+        html = out["initial"]
+        assert "서버가 목록 API(/api/favorites)에 HTTP 404 로 답했습니다." in html, html
+        assert "재시작" not in html and "옛 코드" not in html, html
+
+    def test_get_200_that_is_not_json_is_named(self):
+        """200 인데 JSON 이 아니다(앞단의 로그인·오류 페이지) — 'HTTP 200 으로
+        답했다' 는 성공처럼 읽힌다(#34). 쓰기도 같은 판정이다(#38)."""
+        out = _run_fav_js({"api/favorites": [{"status": 200}]}, "none")
+        assert "서버 응답을 읽지 못했습니다(JSON 아님 · HTTP 200)" in out["initial"], \
+            out["initial"]
+        out = _run_fav_js({"api/favorites": [_favs(_SFA)],
+                           "api/favorite_remove": [{"status": 200}]}, "remove")
+        assert out["alerts"] == [
+            "삭제 실패 — 서버 응답을 읽지 못했습니다(JSON 아님 · HTTP 200)"], out["alerts"]
+
+    def test_get_network_failure_names_no_server_reason(self):
+        """네트워크 오류는 서버가 한 말이 없다 — 브라우저 메시지를 서버 사유처럼
+        싣지 않는다(서버 사유는 `favServer` 표시가 있을 때만)."""
+        out = _run_fav_js({"api/favorites": [{"net": True}]}, "none")
+        assert out["initial"] == (
+            '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>'), out["initial"]
+
+    def test_failed_reload_clears_the_old_count(self):
+        """다시 읽기가 실패하면 옛 개수를 지운다 — 남기면 오류 문장 옆에 '2종목' 이
+        그대로 보인다(델타 리뷰 L7)."""
+        out = _run_fav_js({"api/favorites": [_favs(_SFA, _AAA),
+                                             {"status": 500, "body": None}]}, "reload")
+        assert out["cnt_initial"] == "2종목", out
+        assert "서버가 HTTP 500 로 답했습니다" in out["html"], out["html"]
+        assert out["cnt"] == "", out
 
     def test_get_5xx_with_a_json_body_is_not_drawn_as_a_list(self):
         """4xx·5xx 는 본문이 JSON(ok:true)이어도 성공이 아니다 — 쓰기의 ≥400 규칙과
@@ -958,3 +1095,295 @@ class TestWriteRepliesAreRead:
         # 반대 증거 — 진짜 빈 목록은 여전히 안내를 그린다(#25)
         out = _run_fav_js({"api/favorites": [_favs()]}, "none")
         assert "저장 버튼을 눌러주세요" in out["initial"], out["initial"]
+
+
+# ── 델타 독립 리뷰(54b1f8c..60248b6) 반영분 ──────────────────────────────
+def _handler(name, payload):
+    """관심종목 API 핸들러 하나를 가짜 요청으로 태운다(형제 `_post` 와 같은 모양)."""
+    import io
+    import bot.dashboard_server as ds
+
+    class _Fake:
+        def __init__(self, body):
+            self.headers = {"Content-Length": str(len(body))}
+            self.rfile = io.BytesIO(body)
+            self.sent = None
+
+        def _json_ok(self, obj):
+            self.sent = obj
+
+    f = _Fake(json.dumps(payload).encode("utf-8"))
+    getattr(ds.DashboardHandler, name)(f)
+    return f.sent
+
+
+class TestErrorTextIsOneRule:
+    """M3·L3 — 오류 문장 규칙이 자리마다 갈려 있었다(#38): 조회는 `reason`, 쓰기는
+    `str(exc)` 를 실었고, `_save` 의 OSError 는 tmp 파일의 **서버 경로**까지 화면
+    alert 로 나갔다. 이제 `market_favorites.error_text` 한 곳이 정하고 API 다섯과
+    DART 공시 알림이 그것을 쓴다."""
+
+    def test_error_text_branches(self):
+        import errno
+        import os
+        import bot.market_favorites as mf
+        assert mf.error_text(mf.FavoritesUnreadable("사람 문장")) == "사람 문장"
+        e = PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                            "/srv/x/market_favorites.123.4.tmp")
+        assert mf.error_text(e) == f"PermissionError: {os.strerror(errno.EACCES)}"
+        assert mf.error_text(OSError("disk full")) == "OSError: disk full"  # strerror 없음
+        assert mf.error_text(KeyError("ticker")) == "KeyError: 'ticker'"
+        assert len(mf.error_text(ValueError("x" * 1000))) == 300
+        # `.reason` 덕타이핑 금지 — UnicodeDecodeError 의 reason 은 사람 문장이 아니다
+        ude = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        assert mf.error_text(ude).startswith("UnicodeDecodeError: "), mf.error_text(ude)
+
+    def test_handler_text_survives_a_missing_module(self, monkeypatch):
+        """규칙 모듈을 못 부르면(ImportError) 종류와 내용만 — 판정이 죽어 원시 예외가
+        핸들러 밖으로 새면 화면은 응답조차 못 받는다."""
+        import bot.dashboard_server as ds
+        monkeypatch.setitem(sys.modules, "bot.market_favorites", None)
+        assert ds._fav_error_text(KeyError("x")) == "KeyError: 'x'"
+
+    @pytest.mark.parametrize("name, payload", [
+        ("_handle_favorite_remove", {"ticker": "SFA"}),
+        ("_handle_favorite_star", {"ticker": "SFA", "starred": True}),
+        ("_handle_favorite_reorder", {"ticker": "AAA", "direction": "top"}),
+        ("_handle_favorite_add", {"ticker": "NEW"}),
+    ])
+    def test_writes_on_an_unreadable_list_say_why_and_leave_the_file(
+            self, monkeypatch, tmp_path, name, payload):
+        """못 읽은 목록 위의 쓰기 — 화면 alert 가 **조회와 같은 사유**를 말하고 파일은
+        그대로다. 옛 쓰기 응답은 `str(exc)` 라 조회와 문장이 갈렸다(델타 리뷰 M3)."""
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "SFA"}, {"ticker": "AAA"}])
+        mf._FAVORITES_FILE.write_bytes(b'[{"ticker": "SFA"}, {"tic')
+        before = mf._FAVORITES_FILE.read_bytes()
+        monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Tk))
+        monkeypatch.setattr(mf, "_resolve_kr_name", lambda t, fb: fb)
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        out = _handler(name, payload)
+        assert out == {"ok": False, "error": ei.value.reason}, out
+        assert mf._FAVORITES_FILE.read_bytes() == before
+
+    def test_save_failure_reaches_the_screen_without_the_server_path(
+            self, monkeypatch, tmp_path):
+        """진짜 쓰기 실패(디스크 가득) — `_save` 가 던진 OSError 는 tmp 의 서버 경로를
+        싣는다. 화면엔 종류와 사유만 간다(인증 뒤라도 경로는 운영 로그로 충분하다)."""
+        import errno
+        import os
+        from pathlib import Path as _P
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "SFA"}, {"ticker": "AAA"}])
+        before = mf._FAVORITES_FILE.read_bytes()
+        real = _P.write_text
+
+        def _full(self, *a, **k):
+            if self.suffix == ".tmp":
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), str(self))
+            return real(self, *a, **k)
+
+        monkeypatch.setattr(_P, "write_text", _full)
+        out = _handler("_handle_favorite_remove", {"ticker": "SFA"})
+        assert out == {"ok": False,
+                       "error": f"OSError: {os.strerror(errno.ENOSPC)}"}, out
+        assert str(tmp_path) not in out["error"]
+        assert mf._FAVORITES_FILE.read_bytes() == before
+
+
+class TestStarReachesEveryDuplicateRow:
+    """L5 — 같은 키의 행이 둘이면 **전부** 고친다(`remove_favorite` 가 전부 지우는
+    것과 같은 규약). 첫 행만 고치면 읽는 쪽(`_star_map` — 뒤 행이 이긴다)이 ☆ 를
+    답해 화면이 되돌리고, 별표가 영영 안 먹는다(락 안 재검사 전의 동시 담기가
+    남긴 중복 행)."""
+
+    def test_star_and_unstar_reach_both_rows(self, monkeypatch, tmp_path):
+        mf, _k = _mf(monkeypatch, tmp_path,
+                     [{"ticker": "SFA"}, {"ticker": "AAA"}, {"ticker": "sfa "}])
+        assert _handler("_handle_favorite_star", {"ticker": "SFA", "starred": True}) == {
+            "ok": True, "changed": True, "starred": True}
+        disk = mf._load(strict=True)
+        assert [bool(f.get("starred")) for f in disk] == [True, False, True], disk
+        assert _handler("_handle_favorite_star", {"ticker": "SFA", "starred": False}) == {
+            "ok": True, "changed": True, "starred": False}
+        assert not any(f.get("starred") for f in mf._load(strict=True))
+
+    def test_unchanged_only_when_every_row_already_agrees(self, monkeypatch, tmp_path):
+        mf, _k = _mf(monkeypatch, tmp_path,
+                     [{"ticker": "SFA", "starred": True}, {"ticker": "SFA"}])
+        assert mf.set_favorite_star("SFA", True) is True       # 한 행이 아직 ☆
+        before = mf._FAVORITES_FILE.read_bytes()
+        assert mf.set_favorite_star("SFA", True) is False      # 이제 전부 ★ — 안 쓴다
+        assert mf._FAVORITES_FILE.read_bytes() == before
+
+
+class TestCliNamesTheBranch:
+    """L1 — 정리 CLI 가 목록이 아닌 JSON 을 '정상 JSON 인데 비어 있다' 로 찍었다.
+    갈래는 `_load(strict=True)` 가 대고 CLI 는 그걸 옮긴다(분류기를 따로 두면
+    `_load` 에 갈래가 늘 때 갈라진다, #38)."""
+
+    @pytest.mark.parametrize("raw, frag", [
+        (b'{"ticker": "SFA"}', "목록이 아닙니다(dict)"),
+        (b'[{"tic', "JSONDecodeError"),
+        (b'[{"ticker": "A"}, 1]', "2번째: int"),
+    ])
+    def test_unreadable(self, monkeypatch, tmp_path, capsys, raw, frag):
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        mf._FAVORITES_FILE.write_bytes(raw)
+        assert mf._cli_sort_saved(True) == 1
+        out = capsys.readouterr().out
+        assert out.startswith("❌ ") and frag in out and "정상 JSON" not in out, out
+        assert mf._FAVORITES_FILE.read_bytes() == raw          # 쓰지 않았다
+        assert not list(tmp_path.glob("market_favorites.backup-*")), "백업까지 만들었다"
+
+    def test_empty_and_missing_are_named_apart(self, monkeypatch, tmp_path, capsys):
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        assert mf._cli_sort_saved(False) == 1
+        assert "목록이 비어 있다(정상 JSON)" in capsys.readouterr().out
+        mf._FAVORITES_FILE.unlink()
+        assert mf._cli_sort_saved(False) == 1
+        assert "파일이 없다" in capsys.readouterr().out
+
+
+class TestAuditCountsAnUnreadableList:
+    """L4 — 감사가 목록 파일을 못 읽음을 ❌ 로 찍어야 일일 결산이 말한다(sweep 은 ❌
+    줄만 센다). 옛 줄 '조회 실패 …' 는 결산에 안 실려 무음이었다(#303). 줄은 혼자서
+    무엇인지 말한다(#356)."""
+
+    def test_unreadable_list_is_one_finding(self, monkeypatch, tmp_path, capsys):
+        import bot.scripts.board_audit as ba
+        from bot import audit_sweep
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        _stub_sources(monkeypatch, mf)
+        mf._FAVORITES_FILE.write_bytes(b'{"ticker": "SFA"}')
+        ba._audit_favorites()
+        out = capsys.readouterr().out
+        hits = audit_sweep._findings(out)
+        assert len(hits) == 1, (hits, out)
+        assert "관심종목 —" in hits[0] and "목록이 아닙니다(dict)" in hits[0], hits
+
+    def test_other_failures_stay_a_plain_line(self, monkeypatch, tmp_path, capsys):
+        """반대 증거 — 일시 오류까지 ❌ 로 올리면 못 고칠 ❌ 가 매일 온다(#260)."""
+        import bot.scripts.board_audit as ba
+        from bot import audit_sweep
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+
+        def _boom():
+            raise KeyError("ticker")
+        monkeypatch.setattr(mf, "_compute_favorites_with_prices", _boom)
+        ba._audit_favorites()
+        out = capsys.readouterr().out
+        assert "조회 실패 KeyError" in out and audit_sweep._findings(out) == [], out
+
+
+class TestDartAlertsSkipAnUnreadableList:
+    """M1 — DART 공시 알림은 관심종목 목록으로 **상태를 고친다**(`codes`). 옛 판은
+    못 읽은 목록을 빈 집합으로 접어 `codes` 를 [] 로 덮었고, 파일이 돌아오면 전
+    종목을 '새로 담긴 종목' seed 로 삼아 **그 사이 공시를 영영 안 보냈다**."""
+
+    def _setup(self, monkeypatch, tmp_path, archives):
+        import bot.dart_fav_alerts as dfa
+        import bot.dart_feed as df
+        mf, _k = _mf(monkeypatch, tmp_path, [{"ticker": "005930.KS"}])
+        monkeypatch.setattr(dfa, "_STATE_FILE", tmp_path / "state.json")
+        monkeypatch.setattr(dfa, "_FAV_WARNED", {})
+        monkeypatch.setattr(dfa, "_LAST_FAV_ERROR", "")
+        monkeypatch.setattr(df, "load_all_archives", lambda days_back=3: archives)
+        return dfa, mf
+
+    @staticmethod
+    def _item(rno, td):
+        return {"rcept_no": rno, "stock_code": "005930", "corp_name": "삼성전자",
+                "report_nm": rno, "category": "실적", "url": "#", "date": td}
+
+    @staticmethod
+    def _today():
+        from datetime import datetime, timedelta, timezone
+        return datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+
+    def test_unreadable_polls_leave_state_and_recovery_still_alerts(
+            self, monkeypatch, tmp_path, caplog):
+        import logging
+        td = self._today()
+        archives = {"d": [self._item("R1", td)]}
+        dfa, mf = self._setup(monkeypatch, tmp_path, archives)
+        assert dfa.enable(123)["codes"] == 1
+        good = mf._FAVORITES_FILE.read_bytes()
+        state_before = (tmp_path / "state.json").read_bytes()
+        mf._FAVORITES_FILE.write_bytes(b'[{"ticker": "005930.KS"}, {"tic')
+        caplog.set_level(logging.WARNING, logger="bot.dart_fav_alerts")
+        archives["d"].append(self._item("R2", td))           # 못 읽는 동안 온 공시
+        assert dfa.poll_new() == ([], 123)
+        assert dfa.poll_new() == ([], 123)
+        assert (tmp_path / "state.json").read_bytes() == state_before, \
+            "못 읽은 폴이 상태를 고쳤다"
+        warns = [r.getMessage() for r in caplog.records
+                 if "이번 폴을 건너뛴다" in r.getMessage()]
+        assert len(warns) == 1, warns                          # 같은 사유는 한 번만
+        mf._FAVORITES_FILE.write_bytes(good)                   # 돌아오면 그 사이 공시를
+        items, chat = dfa.poll_new()                           # 보낸다(옛 판은 seed 로
+        assert [i["rcept_no"] for i in items] == ["R2"] and chat == 123, items  # 삼켰다)
+
+    def test_enable_on_an_unreadable_list_does_not_turn_on(self, monkeypatch, tmp_path):
+        dfa, mf = self._setup(monkeypatch, tmp_path, {})
+        mf._FAVORITES_FILE.write_bytes(b'{"ticker": "005930.KS"}')
+        with pytest.raises(mf.FavoritesUnreadable) as ei:
+            mf._load(strict=True)
+        # 사유는 화면(대시보드 API)과 같은 문장 — 클래스 이름이 앞에 붙지 않는다(#38)
+        assert dfa.enable(123) == {"codes": 0, "seeded": 0, "error": ei.value.reason}
+        assert not (tmp_path / "state.json").exists(), "켜지 않았는데 상태를 썼다"
+        st = dfa.status()
+        assert st["enabled"] is False and st["codes"] is None, st
+        assert st["codes_error"] == ei.value.reason, st
+
+    def test_status_keeps_the_chat_id_and_unknown_is_not_zero(self, monkeypatch, tmp_path):
+        """결산·보고서가 `status()` 로 chat_id 를 꺼낸다 — 못 읽은 목록이 수신자를
+        지우면 감사 알림까지 끊긴다. 개수는 0 이 아니라 '모름'(None)이다(#82)."""
+        dfa, mf = self._setup(monkeypatch, tmp_path, {})
+        dfa.enable(123)
+        mf._FAVORITES_FILE.write_bytes(b'{"tic')
+        st = dfa.status()
+        assert st["chat_id"] == 123 and st["enabled"] is True, st
+        assert st["codes"] is None and "JSONDecodeError" in st["codes_error"], st
+        mf._FAVORITES_FILE.write_bytes(b"[]")                  # 반대 증거: 진짜 0
+        st = dfa.status()
+        assert st["codes"] == 0 and st["codes_error"] == "", st
+
+
+class TestDartAlertCommandSaysWhy:
+    """/dart_alert — 못 읽은 목록을 '0개 대상으로 켰다'·'대상 0개' 로 적으면
+    거짓말이다(#43). 제품 경로 그대로(가짜 update 만) 태운다."""
+
+    def _run(self, monkeypatch, args):
+        import asyncio
+        pytest.importorskip("telegram")
+        # 봇 모듈은 import 시점에 토큰을 요구한다(형제 테스트와 같은 처리)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        import bot.telegram_bot as tb
+        sent = []
+
+        class _Msg:
+            async def reply_text(self, text, **kw):
+                sent.append(text)
+
+        upd = types.SimpleNamespace(effective_message=_Msg(),
+                                    effective_chat=types.SimpleNamespace(id=123))
+        asyncio.run(tb.cmd_dart_alert(upd, types.SimpleNamespace(args=args)))
+        return sent
+
+    def test_on_and_status_name_the_reason(self, monkeypatch, tmp_path):
+        import bot.dart_fav_alerts as dfa
+        mf, _k = _mf(monkeypatch, tmp_path, [])
+        monkeypatch.setattr(dfa, "_STATE_FILE", tmp_path / "state.json")
+        monkeypatch.setattr(dfa, "_FAV_WARNED", {})
+        mf._FAVORITES_FILE.write_bytes(b'{"ticker": "005930.KS"}')
+        sent = self._run(monkeypatch, ["on"])
+        assert len(sent) == 1, sent
+        assert sent[0].startswith("📋 관심종목 공시 알림을 켜지 못했습니다 — "
+                                  "관심종목 파일이 목록이 아닙니다(dict)"), sent
+        assert "ON" not in sent[0] and not (tmp_path / "state.json").exists()
+        sent = self._run(monkeypatch, [])
+        assert ("대상: KR 관심종목 확인 불가 — 관심종목 파일이 목록이 아닙니다(dict)"
+                in sent[0]), sent
+        mf._FAVORITES_FILE.write_bytes(b"[]")                  # 반대 증거: 진짜 0
+        sent = self._run(monkeypatch, [])
+        assert "대상: KR 관심종목 0개" in sent[0], sent

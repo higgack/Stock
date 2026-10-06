@@ -9670,7 +9670,11 @@ class TestDartFeedBackfill:
             "dart_feed_t", "bot/dart_feed.py")
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        m.time.sleep = lambda s: None
+        # ⚠️ `m` 은 사본 모듈이지만 `m.time` 은 **공용 `time` 모듈**이다 — 직접
+        # 대입하면 프로세스 전체의 `time.sleep` 이 영구히 no-op 이 되어, 뒤에
+        # 도는 테스트의 대기 루프가 0초 만에 끝났다(2026-10-06 실측 — 업종맵
+        # 테스트 2건이 전체 실행에서만 빨간불, 실수 #439). monkeypatch 로 되돌린다.
+        monkeypatch.setattr(m.time, "sleep", lambda s: None)
         return m
 
     def test_merge_updates_detail_on_existing(self, tmp_path, monkeypatch):
@@ -10094,7 +10098,11 @@ class TestDartCardFormats:
             "dart_feed_t", "bot/dart_feed.py")
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        m.time.sleep = lambda s: None
+        # ⚠️ `m` 은 사본 모듈이지만 `m.time` 은 **공용 `time` 모듈**이다 — 직접
+        # 대입하면 프로세스 전체의 `time.sleep` 이 영구히 no-op 이 되어, 뒤에
+        # 도는 테스트의 대기 루프가 0초 만에 끝났다(2026-10-06 실측 — 업종맵
+        # 테스트 2건이 전체 실행에서만 빨간불, 실수 #439). monkeypatch 로 되돌린다.
+        monkeypatch.setattr(m.time, "sleep", lambda s: None)
         m._doc_fail_recent = lambda rno: False
         m._doc_fail_mark = lambda rno, hours=0.5: None
         return m
@@ -10324,7 +10332,7 @@ class TestDartFavAlerts:
         import bot.market_favorites as mf
         import bot.dart_feed as df
         monkeypatch.setattr(dfa, "_STATE_FILE", tmp_path / "state.json")
-        monkeypatch.setattr(mf, "get_favorites", lambda: favorites)
+        monkeypatch.setattr(mf, "get_favorites", lambda **kw: favorites)
         monkeypatch.setattr(df, "load_all_archives",
                             lambda days_back=3: archives)
         return dfa
@@ -16128,13 +16136,32 @@ class TestUpperLowerVolume:
         # 짧은 core 오매칭 방지(電子 → 電子兩倍槓桿 으로 잘못 매칭 금지)
         assert _sector_kr("電子") != "전자 2배(레버리지)"
 
-    def test_favorites_endpoint_is_swr(self):
+    def test_favorites_endpoint_is_swr(self, tmp_path, monkeypatch):
         # 사용자 2026-06-16 '관심종목 오래걸려': /api/favorites 가 종목당 yfinance
         # (tk.info) 동기 콜로 블로킹하던 것 → SWR(스테일/콜드 즉시 + 백그라운드 daemon).
         src = open("bot/market_favorites.py", encoding="utf-8").read()
         assert "_kick_fav_refresh" in src and "_compute_favorites_with_prices" in src
         assert "daemon=True, name=\"fav-refresh\"" in src   # 백그라운드 daemon(비차단)
-        assert "return _load()" in src                       # 콜드 — 이름만 즉시
+        # 콜드 — 이름만 즉시. ⚠️ 옛 단언 `"return _load()" in src` 는 이 경로가
+        # 아니라 **`get_favorites` 의 한 줄이 대신 만족**시키고 있었다(#75 — 콜드
+        # 경로는 오래전에 `_cold_rows` 로 바뀌었다). 2026-10-06 그 줄이
+        # `_load(strict=strict)` 가 되자 드러났다(실수 #436 델타 리뷰). 동작으로 잰다.
+        import bot.market_favorites as mf
+        p = tmp_path / "market_favorites.json"
+        p.write_text('[{"ticker": "AAA", "name": "A", "current_price": 9}]',
+                     encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", p)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        monkeypatch.setattr(mf, "_snapshot_load", lambda: (None, 0.0))
+        kicks = []
+        monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: kicks.append(1))
+
+        def _sync_refresh():
+            raise AssertionError("콜드 조회가 갱신을 동기로 돌렸다(블로킹)")
+        monkeypatch.setattr(mf, "_compute_favorites_with_prices", _sync_refresh)
+        rows = mf.get_favorites_with_prices()
+        assert [r["ticker"] for r in rows] == ["AAA"] and kicks == [1], (rows, kicks)
+        assert rows[0].get("current_price") is None   # 담던 날 값은 '현재' 가 아니다
         js = open("bot/dashboard.py", encoding="utf-8").read()
         assert "setTimeout(loadFavs, 5000)" in js            # 콜드 가격 픽업 재폴
         assert "setInterval(function() {{ if (!document.hidden) loadFavs();" in js
@@ -41724,13 +41751,16 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert len(hits) == 1 and "지연 의심" in hits[0], hits
 
     def test_favorites_line_uses_the_glyph_as_a_verdict(self):
-        """생산부 — 불일치가 없으면 그 줄에 ❌ 가 없어야 한다."""
+        """생산부 — 불일치가 없으면 그 줄에 ❌ 가 없어야 한다.
+
+        2026-10-06 관심종목 섹션이 `_audit_favorites` 로 빠졌다(태워 볼 수 있게,
+        #176 — 실수 #436 델타 리뷰 L4). 재는 대상도 그 함수로 옮긴다."""
         import inspect
         import bot.scripts.board_audit as ba
         # ⚠️ **주석을 지우고 본다** — 이 fix 를 설명하는 주석에 금지 문자열이
         # 들어 있어 검사가 그 주석을 재고 있었다(#59b, 실측으로 발각).
         src = "\n".join(l for l in inspect.getsource(
-            ba._audit_home_surfaces).splitlines()
+            ba._audit_favorites).splitlines()
             if not l.lstrip().startswith("#"))
         i = src.index("검산통과")
         seg = src[max(0, i - 300):i + 300]
@@ -49827,8 +49857,12 @@ class TestNewFavoriteGoesOnTop20260907:
 
     def test_sort_cli_names_why_the_list_is_empty(self, tmp_path, monkeypatch,
                                                   capsys):
-        """⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279) — `_load` 가
-        JSON 예외를 삼켜 `[]` 를 주므로 CLI 가 갈래를 이름으로 불러야 한다."""
+        """⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279).
+
+        2026-10-06 계약 갱신(실수 #436 델타 리뷰 L1): 갈래는 이제
+        `_load(strict=True)` 가 대고 CLI 는 그 사유를 옮긴다 — CLI 가 따로 분류하던
+        옛 판은 목록이 아닌 JSON 을 '정상 JSON 인데 비어 있다' 로 찍었다. 처방도
+        갈래가 정한다(내용이 깨졌으면 '고치거나 백업이 있으면 되돌리라')."""
         import bot.market_favorites as mf
         f = tmp_path / "market_favorites.json"
         monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
@@ -49840,7 +49874,8 @@ class TestNewFavoriteGoesOnTop20260907:
         f.write_text('[{"ticker": "A"', encoding="utf-8")
         assert mf._cli_sort_saved(True) == 1          # ③ 깨진 파일
         out = capsys.readouterr().out
-        assert "못 읽는다" in out and "복구" in out, out
+        assert "내용을 읽지 못했습니다" in out and "되돌리세요" in out, out
+        assert "정상 JSON" not in out, out
         assert not list(tmp_path.glob("*backup*"))
 
     def test_sort_cli_reads_back_what_it_wrote(self, tmp_path, monkeypatch,
@@ -60726,6 +60761,14 @@ class TestPalladiumAndResearchPaging20260912:
         스레드가 나갔다(사용자 2026-09-12 '비용 낭비')."""
         import time
         import bot.naver_sector_client as nsc
+        # 앞 테스트의 렌더가 띄운 빌드가 남아 있으면 끝날 때까지 기다린다 — 그
+        # 스레드가 아래 스텁을 부르거나 우리 디렉터리에 기록을 쓰면 계수가
+        # 흔들린다(#311 무엇이 달라져서 그렸나).
+        for _ in range(1500):
+            if not nsc._kr_ind_building:
+                break
+            time.sleep(0.02)
+        assert not nsc._kr_ind_building, "앞 테스트의 빌드가 30초 안에 안 끝났다"
         monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
         calls = []
         monkeypatch.setattr(nsc, "_get2",
@@ -60736,10 +60779,17 @@ class TestPalladiumAndResearchPaging20260912:
         # (독립 리뷰 2026-09-12 · #130 손대입 스텁은 monkeypatch 로).
         monkeypatch.setitem(nsc._KR_IND_FAIL, "reason", "")
         nsc.kr_industry_map()
-        for _ in range(100):
+        # **끝날 때까지** 기다린다(정상이면 ms 안에 빠져나간다). ⚠️ 2026-10-06
+        # 전체 실행에서 이 루프가 0초 만에 끝나 빌드 도중에 계수를 시작했다 —
+        # 원인은 상한이 아니라 앞 테스트가 `time.sleep` 을 프로세스 전체에서
+        # no-op 으로 바꿔 둔 것이었다(실수 #439, 스레드 덤프로 확정: 이 호출이
+        # 4ms). 그 순간의 렌더가 드러낸 제품 경합은 아래 형제 테스트가
+        # 결정적으로 잰다(#438).
+        for _ in range(1500):
             if not nsc._kr_ind_building:
                 break
             time.sleep(0.02)
+        assert not nsc._kr_ind_building, "빌드가 30초 안에 끝나지 않았다"
         first = len(calls)
         assert first >= 1
         for _ in range(20):
@@ -60747,6 +60797,71 @@ class TestPalladiumAndResearchPaging20260912:
         time.sleep(0.2)
         assert len(calls) == first, f"백오프가 없다 — 렌더마다 나간다: {calls}"
         assert nsc._KR_IND_BACKOFF_SEC >= 300     # 리터럴 하한(#66)
+
+    def test_industry_map_backoff_holds_when_a_render_races_the_failing_build(
+            self, tmp_path, monkeypatch):
+        """백오프 판정을 잠금 **밖**에서만 읽으면, 빌드가 실패를 기록하고 플래그를
+        내리는 사이에 끼어든 렌더가 **낡은 판정**(기록 없음)을 들고 잠금에 들어가
+        두 번째 빌드를 띄운다 — 2026-10-06 전체 회귀에서 실측('원문 7자' 빌드 2회
+        · 위 테스트 빨간불). 그 순서를 결정적으로 만든다: 빌드는 원천 호출 안에서
+        멈춰 있고, 렌더가 판정을 읽은 **직후** 빌드를 끝까지 보낸 뒤 렌더를
+        계속시킨다(#128 시간·순서로 재지 말 것 — 사건으로 맞물린다 · #422 확인과
+        행동은 한 잠금 안에서)."""
+        import threading
+        import time
+        import bot.naver_sector_client as nsc
+        # 앞 테스트의 렌더가 띄운 빌드가 남아 있으면 끝날 때까지 기다린다 — 그
+        # 스레드는 우리 스텁을 부를 수 있다(#311 무엇이 달라져서 그렸나).
+        for _ in range(1500):
+            if not nsc._kr_ind_building:
+                break
+            time.sleep(0.02)
+        assert not nsc._kr_ind_building, "앞 테스트의 빌드가 30초 안에 안 끝났다"
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setitem(nsc._KR_IND_FAIL, "reason", "")
+        calls = []
+        in_get = threading.Event()
+        release = threading.Event()
+
+        def _get(u, **k):
+            calls.append(u)
+            in_get.set()
+            release.wait(10)          # 빌드를 원천 호출 안에 붙잡아 둔다
+            return "<html/>"
+        monkeypatch.setattr(nsc, "_get", _get)
+        monkeypatch.setattr(nsc, "_get2", lambda u, **k: (_get(u, **k), ""))
+        real_state = nsc._kr_ind_fail_state
+        main = threading.current_thread()
+        fail_file = tmp_path / nsc._KR_IND_FAIL_FILE
+
+        def _state():
+            got = real_state()        # 이 시점엔 기록이 아직 없다
+            if (threading.current_thread() is main and in_get.is_set()
+                    and not release.is_set()):
+                release.set()         # 빌드를 끝까지 보낸다
+                # 잠금을 쥔 채라면(판정을 잠금 안에서만 읽는 구조) 플래그는 못
+                # 내려가므로 기록이 써지는 것까지만 기다린다 — 어느 구조든
+                # 교착 없이 '판정 뒤에 상태가 바뀌는' 순서를 만든다.
+                held = nsc._kr_ind_lock.locked()
+                for _ in range(1000):
+                    if (fail_file.exists() if held
+                            else not nsc._kr_ind_building):
+                        break
+                    time.sleep(0.005)
+            return got
+        monkeypatch.setattr(nsc, "_kr_ind_fail_state", _state)
+
+        nsc.kr_industry_map()                     # 빌드 1 — 원천 호출 안에서 멈춘다
+        assert in_get.wait(10), "빌드가 원천을 부르지 않았다"
+        nsc.kr_industry_map()                     # 낡은 판정을 읽은 렌더
+        for _ in range(500):                      # 두 번째 빌드가 떴다면 끝까지 본다
+            if not nsc._kr_ind_building:
+                break
+            time.sleep(0.02)
+        assert fail_file.exists(), "빌드가 실패를 기록하지 않았다"
+        assert len(calls) == 1, (
+            "판정과 행동 사이에 빌드가 실패를 기록했는데 두 번째 빌드가 "
+            f"나갔다(백오프 판정을 잠금 안에서 다시 읽지 않음): {calls}")
 
     def test_industry_map_reason_survives_the_process_boundary(self, tmp_path,
                                                                monkeypatch):
