@@ -16318,7 +16318,9 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
                 '데이터 수집 실패 — 다음 주기(3시간)에 자동 재시도합니다. '
                 'journal 의 bot.marketcap WARNING 참조.</td></tr>')
         _fetched = _html.escape(str(d.get("fetched_at") or "—"))
-        _stale_note = (' · <span style="color:#f5a623">⚠️ 최신 수집 실패 — '
+        # 색은 팔레트 `--pending` — 리터럴 #f5a623 은 라이트 바탕 대비 1.91:1(AA
+        # 미달, #355). 같은 감사가 보는 DART 헤더와 같은 처방(#440 반영분 리뷰, #38).
+        _stale_note = (' · <span style="color:var(--pending)">⚠️ 최신 수집 실패 — '
                        '마지막 성공분</span>' if (d.get("stale") and rows) else "")
         tabs.append(f"""
   <div class="js-mc-tab" data-axis="{key}" style="display:{'block' if key == 'marketcap' else 'none'}">
@@ -16334,7 +16336,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
         f'rel="noopener">{_html.escape(lbl)} ↗</a>'
         for lbl, slug in _MARKETCAP_EXTERNAL)
     fetched = _html.escape(str(any_fetched or "—"))
-    stale_badge = (' <span style="color:#f5a623">⚠️ 일부 축 최신 수집 실패</span>'
+    stale_badge = (' <span style="color:var(--pending)">⚠️ 일부 축 최신 수집 실패</span>'
                    if any_stale else "")
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -16773,7 +16775,73 @@ def _equity_noise_impl(it: dict) -> bool:
     return True
 
 
-def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[str, str]]:
+def _dart_lag_html(asof: str | None, now: "datetime.datetime") -> str:
+    """DART 헤더의 '⚠️ 지연' 배지(HTML). 지연이 아니거나 판정할 수 없으면 "".
+
+    기준 = 지금 시각에 공시가 **이미 있어야 하는** 마지막 KR 거래일이다.
+    - 오늘이 거래일이고 정규장 마감 전 → **직전** 거래일. 오늘 세션은 진행
+      중이고, 자정 직후엔 접수 자체가 아직 없다.
+    - 그 밖(정규장 마감 뒤 · 휴장일) → 오늘 이하 마지막 거래일.
+    최신 접수일(`asof`)이 기준보다 앞이면 지연이다.
+
+    ⚠️ 왜(사용자 2026-10-08 "다트공시에 지연은 무슨뜻이야?", 실수 #440):
+    옛 판은 기준을 **오늘 이하 마지막 거래일**로만 잡아, 거래일마다 자정부터
+    그날 첫 공시가 수집될 때까지 이 배지를 붙였다. 00:50 화면이 정확히 그것
+    이었다 — 매일 뜨는 배지는 아무것도 안 잰다(#25·#260). 바로 위 주석이
+    "오늘 = 미완결은 경고가 아니다" 라고 의도를 적어 두고도, 오늘치가 **0건**
+    인 경우가 그 의도 밖으로 샜다.
+    ⚠️ 경계로 쓰는 정규장 마감(`kr_session.regular_close`, KRX 15:30)은 DART
+    접수 시각을 **잰 값이 아니다** — 정규장이 끝날 때까지 공시가 한 건도 없는
+    거래일은 사실상 없다는 넉넉한 경계다(재지 않은 접수 시각을 단정하지 않는다,
+    #165). 그 대가로 '오늘 오전부터 수집이 죽은 것' 은 마감 뒤에야 뜬다.
+    ⚠️ 무엇이 늦었는지는 **보이는 줄**에 적는다 — 옛 판은 '⚠️ 지연' 만 보이고
+    사유는 툴팁(`title=`)에만 있어 사용자가 물어야 했다(#228).
+    ⚠️ **못 보는 축**(#274): 날짜만 재므로 '그날 일부만 받고 수집이 죽은 것'은
+    못 잡는다(최신 접수일이 그날이면 정상으로 보인다).
+    """
+    if not asof:
+        return ""
+    try:
+        from bot import kr_session as _ks
+        from bot.market_calendar import last_session_on_or_before
+        if now.tzinfo is not None:         # 날짜·시각 판정은 KST 로(규칙 10a)
+            now = now.astimezone(_ks.KST)
+        today = now.strftime("%Y-%m-%d")
+        # 기준은 감사(`dart_mcap_audit` 창 결측)와 **같은 함수**에서 — 둘이 각자
+        # 계산하면 한쪽만 고쳐진다(#38·#147, 독립 리뷰가 잡았다).
+        ref = _ks.last_closed_session(now)
+        if not ref:
+            return ""                      # 달력이 없으면 판정 불가 — 단정 안 함
+        if asof >= ref:
+            return ""
+        ch, cm = _ks.regular_close("KRX")
+        close = f"{ch:02d}:{cm:02d}"
+        if ref == today:
+            seen = f"⚠️ 지연 — 오늘({ref}) 정규장 마감({close}) 뒤인데 오늘 공시가 아직 없음"
+            why = "오늘 거래일의 정규장이 끝났는데 오늘 접수분이 한 건도 없습니다"
+        elif last_session_on_or_before("KR", today) == today:
+            seen = f"⚠️ 지연 — 거래일 {ref} 공시가 아직 없음"
+            why = (f"공시가 이미 있어야 할 마지막 거래일({ref})의 공시가 없습니다 "
+                   f"— 오늘 거래일은 정규장 마감({close}) 전까지 진행 중으로 봐 "
+                   "기준에서 뺍니다")
+        else:
+            # 휴장일 — '정규장 마감 전' 은 오늘에 해당하지 않는다. 그 사유를 적으면
+            # 툴팁이 사실과 다른 말을 한다(독립 리뷰).
+            seen = f"⚠️ 지연 — 거래일 {ref} 공시가 아직 없음"
+            why = (f"오늘({today})은 거래일이 아닙니다 — 공시가 이미 있어야 할 "
+                   f"마지막 거래일({ref})의 공시가 없습니다")
+        # 색은 페이지 팔레트의 `--pending` — 리터럴 #f5a623 은 라이트 배경
+        # 대비 1.91:1 이라 AA 미달이었다(#355).
+        return (f' <span style="color:var(--pending)" title="{_html.escape(why)}">'
+                f"{_html.escape(seen)}</span>")
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("dart lag badge 판정 실패: %s", exc)
+        return ""
+
+
+def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
+                           now: "datetime.datetime | None" = None
+                           ) -> tuple[str, dict[str, str]]:
     import html as _html
     from datetime import datetime as _dt
 
@@ -16964,29 +17032,25 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     # 기준시각 = **데이터의 as-of**(최신 접수일), 렌더시각이 아니다(규칙 10b).
     # 렌더는 1분마다 도는데 수집이 죽으면 시각만 새것이고 데이터는 옛것이라
     # 화면이 "이거 최신이야?"에 답을 못 한다(실수 #43) — 최신 접수일과 그 날
-    # 건수를 싣고, 마지막 KR 거래일보다 뒤처지면 ⚠️ 지연을 붙인다. 오늘치가
-    # 계속 들어오는 중인 건 정상이므로 '오늘 = 미완결'은 경고가 아니다.
-    _dart_now = datetime.datetime.now(
+    # 건수를 싣고, 공시가 이미 있어야 할 거래일보다 뒤처지면 ⚠️ 지연을 붙인다.
+    # 오늘치가 계속 들어오는 중인 건 정상이므로 '오늘 = 미완결'은 경고가
+    # 아니다 — 오늘치가 **0건**인 정규장 마감 전도 그렇다(`_dart_lag_html`, #440).
+    _dart_now = now or datetime.datetime.now(
         datetime.timezone(datetime.timedelta(hours=9)))
+    if _dart_now.tzinfo is not None:   # '페이지 생성' 도 KST 로 찍는다(규칙 10a)
+        _dart_now = _dart_now.astimezone(
+            datetime.timezone(datetime.timedelta(hours=9)))
     _dart_rendered = _dart_now.strftime("%Y-%m-%d %H:%M")
     _dart_asof = max(_vis) if _vis else "—"
     _dart_asof_n = len(_vis.get(_dart_asof) or [])
-    _dart_lag = ""
-    try:
-        from bot.market_calendar import last_session_on_or_before
-        _kr_last = last_session_on_or_before("KR", _dart_now.strftime("%Y-%m-%d"))
-        if _vis and _kr_last and _dart_asof < _kr_last:
-            _dart_lag = (f' <span style="color:#f5a623" title="마지막 거래일 '
-                         f'{_kr_last} 공시가 아직 없습니다">⚠️ 지연</span>')
-    except Exception:
-        pass
+    _dart_lag = _dart_lag_html(_dart_asof if _vis else None, _dart_now)
     # 키가 없으면 새 공시를 **아예** 못 받는다 — '⚠️ 지연' 만 붙이면 원천이 늦는
     # 것처럼 읽힌다(#82). 판정은 수집기와 같은 키 경로(`_dart_api_key`)로(#35).
     try:
         from bot.dart_feed import _dart_api_key
         if not _dart_api_key():
             from bot.dart_client import keyless_reason
-            _dart_lag += (' <span style="color:#f5a623">⚠️ '
+            _dart_lag += (' <span style="color:var(--pending)">⚠️ '
                           + _html.escape(keyless_reason("새 공시를"))
                           + ' — 아래는 저장분</span>')
     except Exception:

@@ -55945,7 +55945,7 @@ class TestTradeInboxPopulationSplit20260910:
     (`Deactivated successfully` · 전 패스 status=0/SUCCESS)였고 ingest 계정도
     **한 줄도 안 흘리고** 있었다 — 실측 `7,499(main) + 387(형제 DB) = 7,886(grouped)`.
 
-    원인: `inbox.jsonl` 은 관세청 BeOn + 나쁜양파 15종 **공용**인데 `store.db` 는
+    원인: `inbox.jsonl` 은 관세청 BeOn + 나쁜양파 전 소스 **공용**인데 `store.db` 는
     관세청 전용이라, 줄 수를 그냥 세면 나쁜양파 트래픽이 늘 '안 들어간 줄' 로 잡혀
     판정이 영영 `ingest` 다(#45 총계와 소계가 다른 모집단). 갈래는 ingest 가 실제로
     쓰는 게이트(`parser.parse_caption`)로 갈라야 하고(#35), 진짜 상태는
@@ -56039,7 +56039,11 @@ class TestTradeInboxPopulationSplit20260910:
         self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))   # 스텁 배선
         td._why_header(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
         out = capsys.readouterr().out
-        assert "← 전 소스(관세청+나쁜양파 15종 공용)" in out
+        # 2026-10-08(#222): 소스 수는 리터럴('15종')이 아니라 레지스트리에서 센다 —
+        # 리터럴은 17·18종이 된 뒤에도 '15종' 을 찍고 있었다(독립 리뷰, #24·#55).
+        from trade.badonion_sources import SOURCES
+        assert f"← 전 소스(관세청+나쁜양파 {len(SOURCES)}종 공용)" in out
+        assert "15종" not in out or len(SOURCES) == 15
         assert "그중 관세청 캡션" in out and "store.db 후보는 이것뿐" in out
         # 2026-09-10(#222): 미적재 계수가 식별자 기준으로 바뀌며 라벨이 자랐다 —
         # 계약은 '어느 모집단으로 판정했는지 밝힌다' 이지 그 문자열이 아니다(#200).
@@ -56280,7 +56284,7 @@ class TestTradeWholeInboxSilence20260910:
     **한 화면의 두 줄이 다른 말**을 했다(#34 라벨에 기준을 박을 것).
 
     그리고 더 중요한 사실이 그 출력에 있었는데 아무도 안 짚었다 — `trade.bot` 한
-    프로세스가 관세청 BeOn + 나쁜양파 15종을 **같은 채널로** 받아 inbox 에 쓰므로,
+    프로세스가 관세청 BeOn + 나쁜양파 전 소스를 **같은 채널로** 받아 inbox 에 쓰므로,
     16개 소스가 13일째 전부 조용한 건 원천 채널이 아니라 **중계 경로** 신호다.
     ⑦ 은 그 중계 리스너 둘을 아예 안 묻고 있었다(#316 스코프를 추측하지 말 것)."""
 
@@ -56307,6 +56311,9 @@ class TestTradeWholeInboxSilence20260910:
         quiet = inbox_silence_notes({"inbox_newest": "2026-08-28T06:36:00+00:00"},
                                     today=date(2026, 9, 10))
         assert len(quiet) == 1 and "13일째" in quiet[0] and "중계 리스너" in quiet[0]
+        # 소스 수는 레지스트리에서 센다(2026-10-08 — 리터럴 '15종' 이 18종 시절에도 찍혔다)
+        from trade.badonion_sources import SOURCES
+        assert f"나쁜양파({len(SOURCES)}종)가" in quiet[0], quiet[0]
         # 16:36 UTC 는 KST 로 **다음 날** 01:36 이다. 옛 판은 앞 10자(= UTC 날)를 써서
         # 이 값도 13일째·마지막 08-28 이라 했다 — 이 테스트가 그 옛 동작을 못박고 있어
         # 전체 회귀에서만 빨간불이었다(#222 계약이 바뀌면 다시 쓴다).

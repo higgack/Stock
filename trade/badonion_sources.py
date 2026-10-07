@@ -46,6 +46,7 @@ from trade import tw_monthly_revenue as _twr
 from trade import tw_stock_exports as _tws
 from trade import us_imports as _us
 from trade import us_ppi as _uppi
+from trade import us_stock_exports as _uss
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,17 @@ SOURCES: tuple[Source, ...] = (
            "kr_stock_import.db", "kr_stock_import.html",
            "🏢 한국 수입 데이터(회사별·나쁜양파)",
            country="한국", basis="company", flow="import", grammars=("amount",)),
+    # 미국 **수출** 종목별(사용자 2026-10-08 "수출입대시보드에 미국수출종목은
+    # 없는데 나쁜 양파에 이것도 떴어"). 한국 회사별 금액판과 같은 문법(`N월 수출
+    # 미국` / `▶️ 회사 — 품목` / `$…M (YoY) (MoM)`)이라 엔진(`kr_company_flow`)을
+    # 나라만 바꿔 쓴다 — 받는 파서가 없어 관련성 필터에서 조용히 드랍되던 것
+    # (#441 · #83·#261·#330·#332·#370 계열). 마커가 `수입 미국`(us)·`미국 PPI`(uppi)
+    # 와 겹치지 않으므로 금액판 형제(krs·kri) 뒤에 둔다.
+    Source("uss", "미국 수출(종목별)", _uss.parse_us_stock_export,
+           _uss.open_us_stock_db, _uss.ingest, _uss.regenerate,
+           "us_stock.db", "us_stock.html",
+           "🦅 미국 수출 데이터(종목별·나쁜양파)",
+           country="미국", basis="company", flow="export", grammars=("amount",)),
     # 일본도 품목(jp2)과 **종목** 두 갈래다. 종목판은 jp2 파서가 회사 헤더를
     # 못 읽어 관련성 필터에서 통째로 드랍되고 있었다(2026-08-16 실측 8건).
     Source("jps", "일본 수출(종목별)", _jps.parse_jp_stock_export,

@@ -11,8 +11,8 @@
 단정하지 말 것. 그래서 표마다 출처를 적는다).
 
 휴장일은 여기서 판정하지 않는다 — 주말만 거른다. 거래일 판정은 이미
-`bot.market`/`exchange_calendars` 가 하므로 여기에 두 번째 달력을 두지
-않는다(#38).
+`bot.market_calendar`(exchange_calendars) 가 하므로 여기에 두 번째 달력을
+두지 않는다(#38) — 거래일이 필요한 `last_closed_session` 은 그 달력에 묻는다.
 """
 from __future__ import annotations
 
@@ -72,6 +72,43 @@ def phase(venue: str, now: datetime | None = None) -> tuple[str, str]:
         if _in(span, t.hour, t.minute):
             return (span[4], span[5])
     return ("closed", "휴장")
+
+
+def regular_close(venue: str = "KRX") -> tuple[int, int]:
+    """그 거래소 **정규장 종료** (시, 분) — 표에서 파생한다(리터럴로 적으면
+    이 표와 갈라진다, #38). 쓰는 곳: DART 헤더의 '⚠️ 지연' 판정이 "오늘
+    거래일의 공시를 언제부터 요구하나" 의 경계로 쓴다(실수 #440)."""
+    for _sh, _sm, eh, em, key, _lb in _table(venue):
+        if key == "regular":
+            return (eh, em)
+    raise ValueError(f"{venue!r} 표에 정규장 구간이 없다")
+
+
+def last_closed_session(now: datetime | None = None,
+                        venue: str = "KRX") -> str | None:
+    """정규장이 **끝난** 마지막 KR 거래일(`YYYY-MM-DD`) — 그날 공시가 '이미
+    있어야 하는' 기준일. 오늘이 거래일이고 정규장 마감 전이면 직전 거래일,
+    그 밖(마감 뒤 · 휴장일)엔 오늘 이하 마지막 거래일. 달력이 없으면 None
+    (판정 불가 — 단정하지 않는다, #54).
+
+    쓰는 곳 둘 — DART 헤더 '⚠️ 지연' 배지와 그 감사(`dart_mcap_audit` 의 창
+    결측 거래일)가 **같은 기준**을 쓰게 여기 한 곳에 둔다. 실수 #440 은 화면만
+    고쳐 감사가 같은 자정 거짓 경보를 계속 낼 뻔했다(독립 리뷰, #38·#147).
+    시각은 KST 로 판정한다(규칙 10a — aware 는 변환, naive 는 KST 로 본다)."""
+    # 호출 시점에 모듈 속성으로 찾는다 — 테스트가 달력을 갈아끼운다.
+    from bot import market_calendar as _mc
+    t = now or now_kst()
+    if t.tzinfo is not None:
+        t = t.astimezone(KST)
+    today = t.date().isoformat()
+    ref = _mc.last_session_on_or_before("KR", today)
+    if not ref:
+        return None
+    ch, cm = regular_close(venue)
+    if ref == today and (t.hour, t.minute) < (ch, cm):
+        return _mc.last_session_on_or_before(
+            "KR", (t.date() - timedelta(days=1)).isoformat())
+    return ref
 
 
 def in_after_market(venue: str, now: datetime | None = None) -> bool:

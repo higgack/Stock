@@ -3088,3 +3088,68 @@ L4 대시보드 최대주주 블록의 `else` 로그가 도달 불가 · L5 스�
 못 보는 축:
 - 표준 모듈 **속성** 교체를 잡는 구조 가드는 없다 — #397 의 `sys.modules` 가드는 모듈 객체 교체만 본다. 세션 기준선과 테스트 뒤를 identity 로 비교하는 가드를 재 보면(로드된 표준 모듈 200개 · 호출 가능 속성 4,195개 · 비교 0.5ms/테스트) 비용은 싸지만, pytest 가 **단계마다** 갈아 끼우는 훅(`threading.excepthook`·`sys.unraisablehook`·`warnings` 의 표시 함수)이 teardown 시점엔 기준선과 달라 단순 비교는 오탐이다 — 후속 과제로 남겼다.
 - 다른 공용 모듈 속성(`requests.get` 등)을 직접 대입하는 테스트는 이번에 훑은 범위(`tests/`·`bot/tests`·`trade/tests` 의 `X.time|os|threading|socket|…|requests.Y =` 직접 대입)에선 전부 `finally` 로 되돌리고 있었다 — 그 밖의 모양(`setattr(mod, name, …)` 동적 대입 등)은 훑지 않았다.
+
+## #440 — DART 헤더 '⚠️ 지연': 거래일 자정~첫 공시 사이 매일 뜨던 거짓 경보 · 사유를 보이는 줄로 · 감사도 같은 기준 (`tests/test_dart_lag_badge_20261008.py` 35 · 2026-10-08)
+
+사용자 2026-10-08 00:50 화면이 `최신 공시 2026-10-07(286건) ⚠️ 지연` 이었다. 옛 판(`_render_dart_feed_page` 인라인)은 기준을 '오늘 이하 마지막 KR 거래일' 로만 잡아, 거래일(목) 00:50 에 아직 한 건도 없는 목요일 공시를 요구했다 — 거래일마다 자정부터 그날 첫 공시가 수집될 때까지 뜬다(#25·#260). 고치기 전에 옛 코드를 같은 시각·같은 데이터로 태워 그 줄이 그대로 재현됨을 확인했다(스크래치, 시계 주입). 판정은 순수 함수 `_dart_lag_html(asof, now)` 로 빼고 렌더가 `now=` 를 받게 했다(#176). 같은 경로를 태우는 일일 감사(`dart_mcap_audit` ⑦)도 같이 바뀐다(#35) — 그 줄의 설명 문구만 새 기준으로 고쳤다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 거래일 00:50(최신 = 전 거래일)은 지연이 아니다 — 사용자 화면 그대로 | ✅ 자동 | `test_dawn_on_a_trading_day_is_not_a_lag` |
+| 정규장 마감 **전**엔 직전 거래일까지면 충분 · 마감 **시각부터** 오늘을 요구한다(15:29 / 15:30 경계) | ✅ 자동 | `test_before_close_the_previous_session_is_enough` · `test_after_close_today_is_required_and_said_visibly` |
+| 무엇이 늦었는지를 **보이는 글자**가 말한다(툴팁을 걷어내고 잰다, #228) — 마감 뒤엔 `오늘(날짜) 정규장 마감(시각)`, 그 밖엔 `거래일 날짜` | ✅ 자동 | 위 둘 · `test_a_missing_completed_session_is_named` |
+| 휴장일·주말을 건너도 기준은 마지막 거래일(월 08:00 ← 목, 한글날 금 정오 ← 목) | ✅ 자동 | `test_monday_dawn_after_a_holiday_and_weekend` · `test_on_a_holiday_the_last_session_is_the_reference` |
+| 달력이 없으면 판정 불가 — 배지를 붙이지 않는다(#54) · 빈 아카이브엔 배지 없음 | ✅ 자동 | `test_no_calendar_means_no_claim` · `test_no_items_at_all_draws_no_badge` |
+| UTC 시각이 들어와도 KST 날짜·시각으로 판정(규칙 10a) | ✅ 자동 | `test_a_utc_clock_is_judged_in_kst` |
+| 마감 경계는 `kr_session` 표에서 온다(`regular_close`) — 대시보드에 리터럴 금지(#38) | ✅ 자동 | `test_the_close_boundary_comes_from_the_session_table` · `test_regular_close_reads_each_venue_table` |
+
+뮤테이션 5종 전부 발화(녹색 백업 + md5 복원): 진행 중 갈래 제거(6 실패) · 경계 리터럴(1) · 사유를 툴팁에만(5) · KST 정규화 제거(1) · `<` → `<=`(2).
+
+**독립 리뷰 반영(같은 날)** — 일일 감사 `dart_mcap_audit` 의 '창 결측 거래일' 이 옛 규칙(결측일 중 거래일 전부)을 따로 들고 있어, 화면만 고치면 거래일 자정~첫 공시 사이 결산에 같은 거짓 ❌ 가 남았다(#38·#147). 기준일을 `kr_session.last_closed_session(now, venue)` 한 곳으로 옮겨 배지와 감사가 같이 부르고, 감사는 같은 시각(`_now()`)을 렌더에도 넘긴다. 같이: 휴장일 툴팁이 '오늘 거래일은 마감 전까지 진행 중' 이라 적던 거짓 · 배지·키 없음 줄의 리터럴 `#f5a623`(라이트 대비 1.91:1, #355) → `var(--pending)` · '페이지 생성' 이 UTC 시각을 그대로 찍던 것(10a).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 기준일 표: 00:50·15:29 → 직전 거래일 · 15:30·16:00 → 오늘 · 휴장일·토·월 새벽 → 마지막 거래일 | ✅ 자동 | `test_last_closed_session`(7) |
+| 시각은 KST 로(UTC aware 변환 · naive 는 KST — **호스트를 UTC 로 고정**하고 naive 08:00 을 잰다, 15:30 표본은 UTC 로 읽어도 휴일이라 같은 답이 나와 눈이 멀었다) · 경계는 **그 거래소** 표(NXT 15:20) · 달력 없으면 None | ✅ 자동 | `test_last_closed_session_reads_the_clock_in_kst` · `test_a_naive_clock_is_kst_even_on_a_utc_host` · `…_uses_the_venue_table` · `…_without_a_calendar_claims_nothing` |
+| 툴팁 사유가 갈래마다 사실: 거래일 마감 전(진행 중) · 휴장일('거래일이 아닙니다', '진행 중' 금지) · 마감 뒤 | ✅ 자동 | `test_tooltip_on_a_trading_day_names_the_session_in_progress` · `…_on_a_holiday_does_not_claim_a_session_in_progress` · `…_after_close_says_today_ended` |
+| 배지·키 없음 줄은 `var(--pending)`(리터럴 금지) · 그 토큰은 팔레트 블록마다 글자가 실제로 놓이는 `--bg` 와 `--card` 둘 다 대비 AA 이상 · 같은 감사가 보는 Market cap 의 '최신 수집 실패' 두 줄도 같은 토큰 | ✅ 자동 | `test_badge_colour_is_the_palette_token_that_passes_aa` · `test_marketcap_stale_warnings_use_the_same_token` |
+| '페이지 생성' 도 KST | ✅ 자동 | `test_page_stamp_is_written_in_kst` |
+| 감사 창 판정: 마감 전 오늘은 '아직 요구하지 않는 거래일' · 마감 뒤엔 결측 · 지난 구멍은 그대로 · 휴일 제외(비거래일 수를 **정확히** 센다 — `>=` 로 재면 구멍을 비거래일로 세는 변형이 통과했다) · 달력 없으면 안 가른다 · 판정이 터지면 '캘린더 미설치' 가 아니라 예외 유형을 적는다(#82) | ✅ 자동 | `test_audit_does_not_require_today_before_close` · `…_requires_today_after_close` · `…_still_names_a_past_hole_and_skips_holidays` · `…_without_a_calendar_does_not_split` · `test_audit_names_a_judgement_failure_instead_of_blaming_the_install` |
+| 배선: `audit_dart()` 를 통째로 태워 창 줄과 배지 줄이 **같은 시각**으로 같은 결론(실제 오늘과 안 겹치는 2027-03 으로) | ✅ 자동 | `test_audit_window_line_and_badge_line_agree`(08시·16시) |
+| 달력 스텁은 한국 시장을 물을 때만 답한다 | ✅ 자동 | `_last_session` 의 단언 |
+
+뮤테이션 12종 전부 발화(녹색 백업 + md5 복원): 마감 전 갈래 제거(14) · 헬퍼 KST 정규화 제거(1) · venue 무시(1) · 배지가 자체 기준 계산(8) · 휴장일 툴팁 갈래 제거(1) · 배지 색 리터럴(1) · 키 없음 색 리터럴(1) · 페이지 생성 KST 제거(1) · 감사 렌더에 now 안 넘김(1) · 감사가 진행 중 거래일을 결측으로(2) · 감사 자체 기준(2) · 감사 실제 시계(2). 반영분 리뷰 뒤 6종 더(전부 발화): 구멍을 비거래일로 셈(1) · naive 를 호스트 로컬로(1) · 판정 실패 미기록(1) · 판정 실패 갈래 제거(1) · Market cap 리터럴 둘(각 1).
+
+못 보는 축:
+- 마감(15:30)은 DART 접수 시각을 **잰 값이 아니다** — 정규장이 끝날 때까지 공시가 한 건도 없는 거래일은 사실상 없다는 넉넉한 경계다(#165). 그 대가로 '오늘 오전부터 수집이 죽은 것' 은 마감 뒤에야 뜬다.
+- 날짜만 잰다 — '그날 일부만 받고 수집이 죽은 것' 은 못 잡는다(최신 접수일이 그날이면 정상으로 보인다). 수집기 생존 도장(`feed_health`)은 DART 피드에 없다(이번 범위 밖).
+- 감사 창 판정은 30일 창의 **파일 유무**만 본다 — 파일은 있는데 그날 일부만 받은 구멍은 이 줄도 못 본다(위와 같은 축).
+- '그날 공시 0건' 은 **보이는**(노이즈컷 통과) 카드 기준이다 — 원본은 있는데 전부 숨겨진 날도 0건으로 센다.
+
+## #441 — 미국 수출(종목별·나쁜양파): 받는 파서가 없던 여덟 번째 조용한 유실 · 엔진의 나라 리터럴과 KRX 전용 신원 규칙을 `Flow` 로 (`trade/tests/test_us_stock_exports.py` 27 · `trade/tests/test_badonion_sources.py` 순서 핀·캡션 픽스처 · 2026-10-08)
+
+사용자 2026-10-08 캡처: `🇺🇸 8월 수출 미국` / `▶️ Everpure, Inc. — FlashBlade 데이터 저장시스템, FlashArray 올플래시 스토리지` / `26년08월: $489.9M (+173.9% YoY) (-7.0% MoM)` + 최근 추이 + `#P`. 한국 회사별 금액판(#370)과 같은 문법인데 받는 파서가 없어 관련성 필터에서 **조용히** 드랍됐다(#83·#261·#330·#332·#370 계열). 엔진(`kr_company_flow`)을 나라만 바꿔 쓰려 하자 엔진이 화면 문구에 '한국' 을, 카드 딥링크에 KRX 이름 대조(`kr_codes`)를 박고 있었다 — `Flow.unit`(회사/종목)·`Flow.link`(`kr_name`/`hashtag`, 기본값 없음 · 모르는 값은 `ValueError`)로 올렸다. 미국은 캡션의 해시태그 심볼(`#P` = Everpure 의 NYSE 심볼 — Pure Storage 가 이름을 바꾸고 2026-04-17 부터 PSTG → P)을 **렌더 때 원문에서** 다시 읽는다(#270 — 규칙을 고치면 받은 행이 따라온다). 새 소스 `uss` 는 레지스트리 한 줄이고 nav·관련성 필터·ingest·형제 링크·NEW 배지가 전부 거기서 파생된다(미국이 3페이지가 되어 nav 에서 일본 다음으로 오른다 — 사용자 2026-08-20 규약의 결과).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 봇 평문(`post.caption`)·리스너 마크다운(`**`·`[글](url)`) 두 모양이 같은 행으로 파싱되고, 그 캡션을 받는 소스는 `uss` **하나** | ✅ 자동 | `test_both_wire_shapes_parse_to_the_same_rows` · `test_only_this_source_claims_it` · `test_each_caption_claimed_by_exactly_one_parser`(레지스트리) |
+| 이웃 캡션(`수출 한국`·`수입 미국`)은 안 받는다 · 대시 없는 ▶️(품목판)는 거절 · 금액만 필수(YoY·MoM 선택) | ✅ 자동 | `test_neighbouring_captions_are_not_claimed` · `test_an_item_board_without_a_company_dash_is_refused` · `test_amount_is_required_but_yoy_mom_are_not` |
+| 해시태그 심볼: 한 종류일 때만 · 대문자 · URL 조각·한글 태그·긴 토큰은 심볼이 아니다 · 둘째 회사 구간의 심볼을 첫 회사에 달지 않는다 | ✅ 자동 | `HashtagSymbolTests` 4건 |
+| 출처 판정(독립 리뷰): 태그 앞이 공백·태그뿐인 줄만(라벨 줄 `관련기업: #NTAP` · 값 줄 끝 태그는 거절) · 이름 태그(`#Pure Storage`·`#AIR LIQUIDE`)는 심볼이 아니다 · 숫자 태그 거절 · 글자에 붙은 태그(`#AAPL#MSFT`·`#P,`)는 잘라 읽지 않는다 · **받은 태그가 있는 줄에 다른 라틴 태그가 있으면 목록 — 고르지 않는다**(후보를 빼기만 하면 `#NTAP, #DELL, #HPE` 가 HPE 로 줄었다 — 반영분 리뷰 실측) · 문장 끝 마침표는 심볼이 아니다(`#P.` → P, `#BRK.B` 는 그대로) · 판정은 줄당 한 번 훑는다(**선형** — 붙은 태그 26개 줄과 받히는 태그 20,000개 줄을 둘 다 1초 안에 잰다. 첫 판의 정규식은 `#a`×22 에 0.43초로 지수, 둘째 판은 태그마다 앞부분을 다시 갈라 태그 16,000개 11.9초였다) · 실측 모양(`#P` 한 줄 · `#P 🔗 …`)은 받는다 | ✅ 자동 | `ProvenanceTests` 9건 |
+| 심볼이 없으면 이름을 넘겨 NOAH 별칭표가 푸는 이름만 링크(경계 `_alias_hit` 스텁) + 반대 증거(모르는 이름은 평문) | ✅ 자동 | `test_without_a_symbol_the_noah_alias_name_still_links` |
+| 금액판 Flow 의 나라 = 그 소스의 나라 · 형제 링크는 같은 나라 페이지(레지스트리 전수, 하한 3) | ✅ 자동 | `test_every_amount_flow_says_the_country_of_its_source_and_sibling` |
+| trade `--why`·침묵 관찰 줄의 나쁜양파 소스 수는 레지스트리에서 센다(리터럴 '15종' 이 18종 시절에도 찍혔다) | ✅ 자동 | `test_why_prints_both_populations` · `test_whole_inbox_silence_is_reported_separately`(`tests/test_regression.py`) |
+| 렌더: 카드 제목이 `../lookup/P` · 부제·빈 페이지·꼬리말이 `미국`·`종목` 으로 말하고 `한국` 이 한 글자도 없다 · 형제 링크 `us.html` | ✅ 자동 | `test_ingest_then_render_links_the_symbol_and_says_the_country` · `test_empty_page_still_renders_in_its_own_words` |
+| 심볼이 없거나 원문의 첫 회사가 그 행의 회사가 아니면 **평문**(지어내지 않는다, #165) | ✅ 자동 | `test_no_symbol_means_no_link` · `test_a_symbol_from_another_company_raw_text_is_not_used` |
+| 해시태그 흐름은 KRX 목록을 **묻지 않는다** + 반대 증거: 한국 수입은 여전히 KRX 이름 대조로 건다 | ✅ 자동 | `test_the_hashtag_flow_never_asks_the_krx_master` |
+| 엔진에 나라 리터럴이 없다 — 합성 나라(`가상국`)로 빈·찬 페이지를 태운다 · 모르는 `link` 값은 즉시 실패 | ✅ 자동 | `test_the_engine_carries_no_country_literal` · `test_an_unknown_link_rule_fails_loudly` |
+| ingest 폴백 순서 핀에 `uss`(kri 뒤) · 전 소스 계약(빈 DB 렌더의 as-of 꼬리말 · nav↔h1 이모지 · 축 선언)이 새 소스까지 전수 | ✅ 자동 | `test_order_is_the_ingest_fallback_contract` · `TestSiblingAsofAndFace20260820` · `TestNavOrderRule20260820` |
+
+뮤테이션 전부 발화(녹색 백업 + md5 복원): 라벨 줄 가드 제거(2) · 이름 태그 가드 제거(1) · 판정을 옛 정규식으로 되돌림(지수 역추적 — 6.9초 뒤 실패, 1) · 태그마다 앞부분 재분할(41초 걸려 실패, 1) · 같은 줄 목록 거부권 제거(3) · 마침표 떼기 제거(1) · 붙은 태그를 잘라 읽음(2) · 별칭용 이름 안 넘김(1) · 형제를 남의 나라 페이지로(2) · 소스 수 리터럴(2) · 침묵 줄 리터럴·조사(각 2·1).
+
+백필: 코드 변경 없음 — 레지스트리에 소스를 더하면 관련성 필터 지문(레지스트리·`us_stock_exports`·엔진 폐포)이 바뀌어 다음 동기화(6시간 타이머)가 최근 40일을 한 번 훑어 회수한다(#403 · 상한 100유닛). 사용자가 말한 '이틀' 은 그 창 안이다.
+
+못 보는 축:
+- 픽스처는 **스크린샷 재구성**이다 — 실물 바이트(특히 해시태그 줄·링크 모양)는 배포 뒤 첫 실물로 대조할 것(#155·#334). 해시태그가 둘 이상이거나 없으면 링크가 없다(평문).
+- 해시태그가 ▶️ 회사의 심볼이라는 것은 첫 캡션 한 장(`#P` = Everpure 의 NYSE 심볼, 회사 보도자료로 확인)의 모양에 기댄다 — 라벨 줄·이름 태그는 출처 판정이 거르지만, **홀로 선 테마 태그**(`#AI` 한 줄)는 심볼과 모양이 같아 못 가른다(그때 심볼이 하나뿐이면 테마가 링크가 된다).
+- 미국 품목(HS) 기준 **수출** 페이지는 없다 — 대시 없는 `수출 미국` 캡션은 여전히 드랍되고 `backfill_badonion --show-irrelevant` 에 남는다(#332).

@@ -38,6 +38,8 @@ FLOW = _f.Flow(key="import", marker="수입", amount="수입액",
                table="kr_stock_imports",
                title="🏢 한국 수입 데이터(회사별)",
                country="한국",
+               unit="회사",
+               link="kr_name",
                sibling="kr_stock.html",
                sibling_label="한국 수출 데이터(종목별)")
 

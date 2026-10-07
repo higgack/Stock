@@ -19,7 +19,8 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-AUDIT_VER = 3   # 3 = 파일 날짜 계약을 date 필드로 정정·축간 시차 허용
+AUDIT_VER = 4   # 4 = 창 결측 거래일 기준을 화면 지연 배지와 같은 함수로(#440)
+                # 3 = 파일 날짜 계약을 date 필드로 정정·축간 시차 허용
 _KST = timezone(timedelta(hours=9))
 
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
@@ -34,6 +35,51 @@ def _p(s: str = "") -> None:
 
 def _mark(ok: bool, warn: bool = False) -> str:
     return _WARN if warn else (_OK if ok else _NG)
+
+
+def _now() -> datetime:
+    """감사의 시계(KST) — 테스트가 갈아끼운다. 창·지연 배지·미래 날짜가 모두
+    이 한 시각으로 잰다(한 실행 안에서 '오늘' 이 둘이면 갈라진다, #249)."""
+    return datetime.now(_KST)
+
+
+def _window_gaps(by_date: dict, now: datetime, days: int = 30) -> dict:
+    """창(오늘 포함 `days` 일) 안에서 파일이 없는 날을 갈래로 나눈다.
+
+    - `miss_sess`: 공시가 **이미 있어야 했던** 거래일인데 없음 — 수집 구멍.
+    - `pending` : 거래일이지만 아직 요구하지 않는 날(오늘, 정규장 마감 전).
+    - `nonsess` : 비거래일(주말·휴일) — 없는 게 정상.
+    - `known`   : 거래일 달력으로 판정했나. False 면 갈래를 나누지 않는다(#54).
+    - `error`   : 판정 중 예외(`유형: 메시지`). 달력이 없는 것(None)과 판정이 터진
+                  것은 처방이 다르다 — 터진 것을 '캘린더 미설치' 로 적으면 멀쩡한
+                  설치를 고치러 간다(#82, 반영분 독립 리뷰).
+
+    기준일은 화면의 '⚠️ 지연' 배지와 **같은 함수**(`kr_session.last_closed_session`)
+    에서 온다. 옛 판은 결측일 중 거래일을 전부 세어, 거래일 자정~첫 공시 사이에
+    오늘을 '창 결측 거래일' ❌ 로 찍었다 — 화면 배지(#440)만 고치고 감사를 두면
+    같은 거짓 경보가 결산에 남는다(독립 리뷰, #38·#147)."""
+    from bot import kr_session as _ks
+    from bot.market_calendar import last_session_on_or_before
+    if now.tzinfo is not None:
+        now = now.astimezone(_KST)
+    today = now.date()
+    win = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    missing = [x for x in win if x not in by_date]
+    out = {"known": False, "ref": None, "missing": missing,
+           "miss_sess": [], "pending": [], "nonsess": 0, "error": ""}
+    try:
+        ref = _ks.last_closed_session(now)
+        if ref is None:
+            return out
+        sess = [x for x in missing if last_session_on_or_before("KR", x) == x]
+    except Exception as exc:                                   # noqa: BLE001
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    out.update(known=True, ref=ref,
+               miss_sess=[x for x in sess if x <= ref],
+               pending=[x for x in sess if x > ref],
+               nonsess=len(missing) - len(sess))
+    return out
 
 
 # ── DART ────────────────────────────────────────────────────────────────────
@@ -55,21 +101,22 @@ def audit_dart() -> None:
     _p(f"[데이터] 파일 {len(dates)}일 · {dates[0]} ~ {dates[-1]} · 원본 {raw_total}건 "
        f"({time.time() - t0:.1f}s)")
 
-    # 창(30일) 안에 파일이 없는 날 — 수집 구멍
-    today = datetime.now(_KST).date()
-    win = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
-    missing = [x for x in win if x not in by_date]
-    # 주말·휴일은 공시가 없는 게 정상이다 — 거래일만 지적해야 경보가 의미를
-    # 갖는다(휴일까지 세면 매번 ⚠️ 라 아무도 안 본다).
-    try:
-        from bot.market_calendar import last_session_on_or_before
-        miss_sess = [x for x in missing if last_session_on_or_before("KR", x) == x]
-        _known = last_session_on_or_before("KR", today.isoformat()) is not None
-    except Exception:
-        miss_sess, _known = [], False
-    if _known:
+    # 창(30일) 안에 파일이 없는 날 — 수집 구멍. 주말·휴일은 공시가 없는 게
+    # 정상이고(휴일까지 세면 매번 ⚠️ 라 아무도 안 본다), 오늘은 정규장 마감 전엔
+    # 아직 요구하지 않는다 — 화면 지연 배지와 같은 기준(`_window_gaps`, #440).
+    now = _now()
+    today = now.date()
+    gaps = _window_gaps(by_date, now)
+    missing, miss_sess = gaps["missing"], gaps["miss_sess"]
+    if gaps["known"]:
+        _pend = (f" · 아직 요구하지 않는 거래일 {len(gaps['pending'])}일 "
+                 f"{gaps['pending']}(정규장 마감 전)" if gaps["pending"] else "")
         _p(f"{_mark(not miss_sess)} 창 결측 **거래일** {len(miss_sess)}일 "
-           f"{miss_sess} (비거래일 결측 {len(missing) - len(miss_sess)}일은 정상)")
+           f"{miss_sess} (기준 {gaps['ref']} · 비거래일 결측 {gaps['nonsess']}일은 "
+           f"정상){_pend}")
+    elif gaps["error"]:
+        _p(f"{_WARN} 창 결측일 {len(missing)}일 {missing} "
+           f"— 거래일 판정 실패({gaps['error']})라 주말·휴일 구분 불가")
     else:
         _p(f"{_WARN} 창 결측일 {len(missing)}일 {missing} "
            "— 거래일 캘린더 미설치라 주말·휴일 구분 불가(pip install exchange_calendars)")
@@ -146,7 +193,8 @@ def audit_dart() -> None:
 
     # ⑤ 렌더 — 화면 숫자를 HTML 에서 되읽어 실제 카드 수와 대조
     t1 = time.time()
-    html, frags = d._render_dart_feed_page(by_date)
+    # 화면도 **같은 시각**으로 그린다 — 지연 배지와 위 창 판정이 한 시계를 본다.
+    html, frags = d._render_dart_feed_page(by_date, now=now)
     _p(f"[렌더] html {len(html):,}자 · 프래그먼트 {len(frags)}개 ({time.time() - t1:.1f}s)")
 
     def _cards_by_date(text: str) -> Counter:
@@ -250,7 +298,8 @@ def audit_dart() -> None:
     _htxt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", hdr.group(0))).strip() if hdr else ""
     _p(f"{_mark('최신 공시' in _htxt)} 기준(데이터 as-of 표기): {_htxt or '(없음)'}")
     _p(f"{_mark('⚠️ 지연' not in (hdr.group(0) if hdr else ''))} 지연 배지 미표시"
-       " (표시되면 마지막 KR 거래일 공시가 아직 없다는 뜻)")
+       " (표시되면 공시가 이미 있어야 할 거래일의 공시가 없다는 뜻 — 정규장 마감"
+       " 전엔 직전 거래일, 뒤엔 오늘. 무엇이 늦었는지는 위 기준 줄이 말한다)")
     _p(f"       아카이브 최신 접수일 {dates[-1]} · 최신일 카드 {cards.get(dates[-1], 0)}장")
     fs = _fullscan_age()
     _p(f"       마지막 풀스캔 마커 {fs}")
@@ -451,7 +500,7 @@ def audit_marketcap() -> None:
 
 def main() -> None:
     _p(f"=== dart_mcap_audit v{AUDIT_VER} · "
-       f"{datetime.now(_KST).strftime('%Y-%m-%d %H:%M:%S')} KST · "
+       f"{_now().strftime('%Y-%m-%d %H:%M:%S')} KST · "
        f"python {sys.version.split()[0]} ===")
     try:
         audit_dart()
