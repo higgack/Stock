@@ -16773,7 +16773,69 @@ def _equity_noise_impl(it: dict) -> bool:
     return True
 
 
-def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[str, str]]:
+def _dart_lag_html(asof: str | None, now: "datetime.datetime") -> str:
+    """DART 헤더의 '⚠️ 지연' 배지(HTML). 지연이 아니거나 판정할 수 없으면 "".
+
+    기준 = 지금 시각에 공시가 **이미 있어야 하는** 마지막 KR 거래일이다.
+    - 오늘이 거래일이고 정규장 마감 전 → **직전** 거래일. 오늘 세션은 진행
+      중이고, 자정 직후엔 접수 자체가 아직 없다.
+    - 그 밖(정규장 마감 뒤 · 휴장일) → 오늘 이하 마지막 거래일.
+    최신 접수일(`asof`)이 기준보다 앞이면 지연이다.
+
+    ⚠️ 왜(사용자 2026-10-08 "다트공시에 지연은 무슨뜻이야?", 실수 #440):
+    옛 판은 기준을 **오늘 이하 마지막 거래일**로만 잡아, 거래일마다 자정부터
+    그날 첫 공시가 수집될 때까지 이 배지를 붙였다. 00:50 화면이 정확히 그것
+    이었다 — 매일 뜨는 배지는 아무것도 안 잰다(#25·#260). 바로 위 주석이
+    "오늘 = 미완결은 경고가 아니다" 라고 의도를 적어 두고도, 오늘치가 **0건**
+    인 경우가 그 의도 밖으로 샜다.
+    ⚠️ 경계로 쓰는 정규장 마감(`kr_session.regular_close`, KRX 15:30)은 DART
+    접수 시각을 **잰 값이 아니다** — 정규장이 끝날 때까지 공시가 한 건도 없는
+    거래일은 사실상 없다는 넉넉한 경계다(재지 않은 접수 시각을 단정하지 않는다,
+    #165). 그 대가로 '오늘 오전부터 수집이 죽은 것' 은 마감 뒤에야 뜬다.
+    ⚠️ 무엇이 늦었는지는 **보이는 줄**에 적는다 — 옛 판은 '⚠️ 지연' 만 보이고
+    사유는 툴팁(`title=`)에만 있어 사용자가 물어야 했다(#228).
+    ⚠️ **못 보는 축**(#274): 날짜만 재므로 '그날 일부만 받고 수집이 죽은 것'은
+    못 잡는다(최신 접수일이 그날이면 정상으로 보인다).
+    """
+    if not asof:
+        return ""
+    try:
+        from bot.kr_session import regular_close
+        from bot.market_calendar import last_session_on_or_before
+        if now.tzinfo is not None:         # 날짜·시각 판정은 KST 로(규칙 10a)
+            now = now.astimezone(datetime.timezone(datetime.timedelta(hours=9)))
+        today = now.strftime("%Y-%m-%d")
+        ref = last_session_on_or_before("KR", today)
+        if not ref:
+            return ""                      # 달력이 없으면 판정 불가 — 단정 안 함
+        ch, cm = regular_close("KRX")
+        close = f"{ch:02d}:{cm:02d}"
+        if ref == today and (now.hour, now.minute) < (ch, cm):
+            prev = last_session_on_or_before(
+                "KR", (now.date() - datetime.timedelta(days=1)).isoformat())
+            if not prev:
+                return ""
+            ref = prev
+        if asof >= ref:
+            return ""
+        if ref == today:
+            seen = f"⚠️ 지연 — 오늘({ref}) 정규장 마감({close}) 뒤인데 오늘 공시가 아직 없음"
+            why = "오늘 거래일의 정규장이 끝났는데 오늘 접수분이 한 건도 없습니다"
+        else:
+            seen = f"⚠️ 지연 — 거래일 {ref} 공시가 아직 없음"
+            why = (f"공시가 이미 있어야 할 마지막 거래일({ref})의 공시가 없습니다 "
+                   f"— 오늘 거래일은 정규장 마감({close}) 전까지 진행 중으로 봐 "
+                   "기준에서 뺍니다")
+        return (f' <span style="color:#f5a623" title="{_html.escape(why)}">'
+                f"{_html.escape(seen)}</span>")
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("dart lag badge 판정 실패: %s", exc)
+        return ""
+
+
+def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
+                           now: "datetime.datetime | None" = None
+                           ) -> tuple[str, dict[str, str]]:
     import html as _html
     from datetime import datetime as _dt
 
@@ -16964,22 +17026,15 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     # 기준시각 = **데이터의 as-of**(최신 접수일), 렌더시각이 아니다(규칙 10b).
     # 렌더는 1분마다 도는데 수집이 죽으면 시각만 새것이고 데이터는 옛것이라
     # 화면이 "이거 최신이야?"에 답을 못 한다(실수 #43) — 최신 접수일과 그 날
-    # 건수를 싣고, 마지막 KR 거래일보다 뒤처지면 ⚠️ 지연을 붙인다. 오늘치가
-    # 계속 들어오는 중인 건 정상이므로 '오늘 = 미완결'은 경고가 아니다.
-    _dart_now = datetime.datetime.now(
+    # 건수를 싣고, 공시가 이미 있어야 할 거래일보다 뒤처지면 ⚠️ 지연을 붙인다.
+    # 오늘치가 계속 들어오는 중인 건 정상이므로 '오늘 = 미완결'은 경고가
+    # 아니다 — 오늘치가 **0건**인 정규장 마감 전도 그렇다(`_dart_lag_html`, #440).
+    _dart_now = now or datetime.datetime.now(
         datetime.timezone(datetime.timedelta(hours=9)))
     _dart_rendered = _dart_now.strftime("%Y-%m-%d %H:%M")
     _dart_asof = max(_vis) if _vis else "—"
     _dart_asof_n = len(_vis.get(_dart_asof) or [])
-    _dart_lag = ""
-    try:
-        from bot.market_calendar import last_session_on_or_before
-        _kr_last = last_session_on_or_before("KR", _dart_now.strftime("%Y-%m-%d"))
-        if _vis and _kr_last and _dart_asof < _kr_last:
-            _dart_lag = (f' <span style="color:#f5a623" title="마지막 거래일 '
-                         f'{_kr_last} 공시가 아직 없습니다">⚠️ 지연</span>')
-    except Exception:
-        pass
+    _dart_lag = _dart_lag_html(_dart_asof if _vis else None, _dart_now)
     # 키가 없으면 새 공시를 **아예** 못 받는다 — '⚠️ 지연' 만 붙이면 원천이 늦는
     # 것처럼 읽힌다(#82). 판정은 수집기와 같은 키 경로(`_dart_api_key`)로(#35).
     try:

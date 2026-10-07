@@ -250,7 +250,8 @@ def audit_dart() -> None:
     _htxt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", hdr.group(0))).strip() if hdr else ""
     _p(f"{_mark('최신 공시' in _htxt)} 기준(데이터 as-of 표기): {_htxt or '(없음)'}")
     _p(f"{_mark('⚠️ 지연' not in (hdr.group(0) if hdr else ''))} 지연 배지 미표시"
-       " (표시되면 마지막 KR 거래일 공시가 아직 없다는 뜻)")
+       " (표시되면 공시가 이미 있어야 할 거래일의 공시가 없다는 뜻 — 정규장 마감"
+       " 전엔 직전 거래일, 뒤엔 오늘. 무엇이 늦었는지는 위 기준 줄이 말한다)")
     _p(f"       아카이브 최신 접수일 {dates[-1]} · 최신일 카드 {cards.get(dates[-1], 0)}장")
     fs = _fullscan_age()
     _p(f"       마지막 풀스캔 마커 {fs}")

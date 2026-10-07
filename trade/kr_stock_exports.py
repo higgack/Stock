@@ -47,7 +47,9 @@ from trade.archive_template import card_html
 EXPORT_FLOW = _flow.Flow(key="export", marker="수출", amount="수출액",
                          table="kr_stock_exports",
                          title="🏢 한국 수출 데이터(종목별)",
-                         country="한국")
+                         country="한국",
+                         # 렌더는 이 모듈이 하므로 아래 둘은 엔진의 필수 축일 뿐이다.
+                         unit="종목", link="kr_name")
 
 # 6자리 종목코드가 없는 금액판은 **회사명**을 PK 로 쓴다. 접두를 붙여 진짜
 # 코드와 섞이지 않게 하고, 화면은 접두가 붙은 키를 코드로 찍지 않는다.
@@ -149,7 +151,10 @@ def parse_kr_stock_export(caption: str) -> dict | None:
 
 
 def parse_kr_stock_flow(caption: str) -> dict | None:
-    """새 금액판 캡션 → {stock_name, item, months[]} 또는 None."""
+    """새 금액판 캡션 → {stock_name, item, months[], symbol} 또는 None.
+
+    `symbol`(해시태그 심볼)은 이 보드가 쓰지 않는다 — 한국 회사는 KRX 이름
+    대조로 딥링크를 건다(`Flow.link="kr_name"`, #400)."""
     return _flow.parse(caption, EXPORT_FLOW)
 
 

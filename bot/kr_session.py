@@ -74,6 +74,16 @@ def phase(venue: str, now: datetime | None = None) -> tuple[str, str]:
     return ("closed", "휴장")
 
 
+def regular_close(venue: str = "KRX") -> tuple[int, int]:
+    """그 거래소 **정규장 종료** (시, 분) — 표에서 파생한다(리터럴로 적으면
+    이 표와 갈라진다, #38). 쓰는 곳: DART 헤더의 '⚠️ 지연' 판정이 "오늘
+    거래일의 공시를 언제부터 요구하나" 의 경계로 쓴다(실수 #440)."""
+    for _sh, _sm, eh, em, key, _lb in _table(venue):
+        if key == "regular":
+            return (eh, em)
+    raise ValueError(f"{venue!r} 표에 정규장 구간이 없다")
+
+
 def in_after_market(venue: str, now: datetime | None = None) -> bool:
     """그 거래소의 **애프터마켓 체결 창** 안인가. 'after_close'(장 끝난 뒤
     표시만 유지되는 구간)는 False — 체결이 없으므로 재수집할 이유가 없다."""
