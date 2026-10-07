@@ -16800,33 +16800,37 @@ def _dart_lag_html(asof: str | None, now: "datetime.datetime") -> str:
     if not asof:
         return ""
     try:
-        from bot.kr_session import regular_close
+        from bot import kr_session as _ks
         from bot.market_calendar import last_session_on_or_before
         if now.tzinfo is not None:         # 날짜·시각 판정은 KST 로(규칙 10a)
-            now = now.astimezone(datetime.timezone(datetime.timedelta(hours=9)))
+            now = now.astimezone(_ks.KST)
         today = now.strftime("%Y-%m-%d")
-        ref = last_session_on_or_before("KR", today)
+        # 기준은 감사(`dart_mcap_audit` 창 결측)와 **같은 함수**에서 — 둘이 각자
+        # 계산하면 한쪽만 고쳐진다(#38·#147, 독립 리뷰가 잡았다).
+        ref = _ks.last_closed_session(now)
         if not ref:
             return ""                      # 달력이 없으면 판정 불가 — 단정 안 함
-        ch, cm = regular_close("KRX")
-        close = f"{ch:02d}:{cm:02d}"
-        if ref == today and (now.hour, now.minute) < (ch, cm):
-            prev = last_session_on_or_before(
-                "KR", (now.date() - datetime.timedelta(days=1)).isoformat())
-            if not prev:
-                return ""
-            ref = prev
         if asof >= ref:
             return ""
+        ch, cm = _ks.regular_close("KRX")
+        close = f"{ch:02d}:{cm:02d}"
         if ref == today:
             seen = f"⚠️ 지연 — 오늘({ref}) 정규장 마감({close}) 뒤인데 오늘 공시가 아직 없음"
             why = "오늘 거래일의 정규장이 끝났는데 오늘 접수분이 한 건도 없습니다"
-        else:
+        elif last_session_on_or_before("KR", today) == today:
             seen = f"⚠️ 지연 — 거래일 {ref} 공시가 아직 없음"
             why = (f"공시가 이미 있어야 할 마지막 거래일({ref})의 공시가 없습니다 "
                    f"— 오늘 거래일은 정규장 마감({close}) 전까지 진행 중으로 봐 "
                    "기준에서 뺍니다")
-        return (f' <span style="color:#f5a623" title="{_html.escape(why)}">'
+        else:
+            # 휴장일 — '정규장 마감 전' 은 오늘에 해당하지 않는다. 그 사유를 적으면
+            # 툴팁이 사실과 다른 말을 한다(독립 리뷰).
+            seen = f"⚠️ 지연 — 거래일 {ref} 공시가 아직 없음"
+            why = (f"오늘({today})은 거래일이 아닙니다 — 공시가 이미 있어야 할 "
+                   f"마지막 거래일({ref})의 공시가 없습니다")
+        # 색은 페이지 팔레트의 `--pending` — 리터럴 #f5a623 은 라이트 배경
+        # 대비 1.91:1 이라 AA 미달이었다(#355).
+        return (f' <span style="color:var(--pending)" title="{_html.escape(why)}">'
                 f"{_html.escape(seen)}</span>")
     except Exception as exc:                                   # noqa: BLE001
         log.debug("dart lag badge 판정 실패: %s", exc)
@@ -17031,6 +17035,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     # 아니다 — 오늘치가 **0건**인 정규장 마감 전도 그렇다(`_dart_lag_html`, #440).
     _dart_now = now or datetime.datetime.now(
         datetime.timezone(datetime.timedelta(hours=9)))
+    if _dart_now.tzinfo is not None:   # '페이지 생성' 도 KST 로 찍는다(규칙 10a)
+        _dart_now = _dart_now.astimezone(
+            datetime.timezone(datetime.timedelta(hours=9)))
     _dart_rendered = _dart_now.strftime("%Y-%m-%d %H:%M")
     _dart_asof = max(_vis) if _vis else "—"
     _dart_asof_n = len(_vis.get(_dart_asof) or [])
@@ -17041,7 +17048,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
         from bot.dart_feed import _dart_api_key
         if not _dart_api_key():
             from bot.dart_client import keyless_reason
-            _dart_lag += (' <span style="color:#f5a623">⚠️ '
+            _dart_lag += (' <span style="color:var(--pending)">⚠️ '
                           + _html.escape(keyless_reason("새 공시를"))
                           + ' — 아래는 저장분</span>')
     except Exception:

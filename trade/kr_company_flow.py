@@ -119,16 +119,43 @@ _RE_MONTHLINE = re.compile(
 # 사용자 캡처: Everpure, Inc. → `#P`). 같은 채널의 품목판도 `관련기업: #APTV …` 처럼
 # 심볼을 해시태그로 적는다(us_imports·mx_exports 파서가 이미 읽는다).
 # ⚠️ 앞이 **줄 시작이나 공백**일 때만 — 링크 URL 의 조각(`…/map#P`)을 심볼로
-# 읽으면 남의 회사 화면이 열린다. 뒤에 심볼 글자가 더 이어지면 잘라 읽지 않는다.
-_RE_HASHTAG = re.compile(r"(?<!\S)#([A-Za-z][A-Za-z0-9.\-]{0,9})(?![A-Za-z0-9.\-])")
+# 읽으면 남의 회사 화면이 열린다. 뒤도 **공백이나 줄 끝**이어야 한다 — 글자에 붙은
+# 태그(`#AAPL#MSFT` · `#P,` · 긴 토큰)를 잘라 읽지 않는다(실측 모양은 `#P` 한 줄).
+_RE_HASHTAG = re.compile(r"(?<!\S)#([A-Za-z][A-Za-z0-9.\-]{0,9})(?!\S)")
+# 출처 판정(독립 리뷰): 해시태그가 **그 회사의 심볼**이라는 근거는 캡션의 모양
+# 뿐이다. 실측 모양(`#P` 가 홀로 한 줄)에서 벗어난 둘은 받지 않는다 —
+# (1) 라벨 줄(`관련기업: #NTAP …`) 의 태그는 **다른 회사들**의 목록일 수 있다:
+#     그 줄의 태그 앞은 공백·태그뿐이어야 한다(`_tags_only`).
+# (2) 이름 태그(`#Pure Storage` · `#AIR LIQUIDE`)는 심볼이 아니다: 태그 바로 뒤에
+#     공백 + 라틴 글자가 이어지면 이름의 첫 낱말로 본다.
+_RE_NAME_TAIL = re.compile(r"[^\S\n]+[A-Za-z]")
+
+
+def _tags_only(prefix: str) -> bool:
+    """태그 앞이 공백·`#…` 토큰뿐인가. ⚠️ 정규식(`(공백* #비공백+)* 공백*`)으로 쓰면
+    `#a#a#a… foo` 같은 줄에서 쪼개는 방법이 2^n 이라 **지수 역추적**이다(실측:
+    `#a`×14 0.002초 → ×22 0.43초, 두 개마다 약 4배 — 남이 쓴 캡션 한 줄이 관련성
+    필터·ingest 경로를 멈출 수 있다, #71). 공백으로 가른 토큰을 보면 선형이다."""
+    return all(tok.startswith("#") for tok in prefix.split())
 
 
 def hashtag_symbol(seg: str) -> str | None:
     """구간 안의 해시태그 심볼 — **정확히 한 종류**일 때만 돌려준다.
 
     둘 이상이면 어느 것이 ▶️ 회사의 심볼인지 캡션이 말하지 않으므로 고르지 않는다
-    (#165 — 재지 않은 귀속을 단정하지 않는다. 틀린 링크보다 평문이 낫다, #144)."""
-    syms = {m.group(1).upper() for m in _RE_HASHTAG.finditer(seg or "")}
+    (#165 — 재지 않은 귀속을 단정하지 않는다. 틀린 링크보다 평문이 낫다, #144).
+    라벨 줄의 태그와 이름 태그는 후보에서 뺀다(위 `_tags_only`·`_RE_NAME_TAIL`).
+    ⚠️ **못 보는 축**(#274): 홀로 선 테마 태그(`#AI` 한 줄)는 심볼과 모양이 같아
+    가를 수 없다 — 그때 심볼이 하나뿐이면 테마가 링크가 된다(오늘 실측 캡션엔
+    없다). 심볼 태그와 같이 오면 둘 이상이라 평문이 된다."""
+    syms: set[str] = set()
+    for line in (seg or "").splitlines():
+        for m in _RE_HASHTAG.finditer(line):
+            if not _tags_only(line[:m.start()]):
+                continue                    # (1) 라벨 줄의 태그
+            if _RE_NAME_TAIL.match(line, m.end()):
+                continue                    # (2) 이름 태그
+            syms.add(m.group(1).upper())
     return syms.pop() if len(syms) == 1 else None
 
 

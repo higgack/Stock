@@ -79,7 +79,7 @@ def verdict(facts: dict, today: date) -> dict:
     단정할 재료가 없으면 `unknown` 이고 왜 모르는지 적는다(#54·#165).
 
     `inbox_newest`·`inbox_lines_after_db` 는 **store.db 와 같은 모집단**(관세청
-    캡션)이어야 한다 — inbox.jsonl 은 나쁜양파 15종과 공용이라 전 소스로 세면
+    캡션)이어야 한다 — inbox.jsonl 은 나쁜양파 전 소스와 공용이라 전 소스로 세면
     판정이 영영 `ingest` 다(#45, 2026-09-10 VM 실측). 선택 facts 둘이 그 사실을
     문구에 싣는다: `inbox_scope`(모집단 이름) · `inbox_present`(파일에 줄이 있나)
     · `inbox_total_lines`. 없으면 옛 호출부와 같은 문구를 쓴다(#222)."""

@@ -2877,7 +2877,8 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     cnt = Counter(_ln.kst_day(a.get("posted_at"))[:7] for a in allrows)
     f["month_counts"] = [(ym, cnt[ym]) for ym in sorted(cnt)[-4:]]
 
-    # ⚠️ inbox.jsonl 은 **전 소스 공용**이다(관세청 BeOn + 나쁜양파 15종). 반면
+    # ⚠️ inbox.jsonl 은 **전 소스 공용**이다(관세청 BeOn + 나쁜양파 레지스트리 전
+    # 소스 — 개수는 `badonion_sources.SOURCES` 가 정한다). 반면
     # store.db 는 관세청 전용이라, 줄 수를 그냥 세면 나쁜양파 트래픽이 늘 '안
     # 들어간 줄' 로 잡혀 판정이 영영 `ingest` 가 된다 — 2026-09-10 VM 실측이
     # 그랬다(438줄 중 관세청 0줄, 나머지는 사이클당 387건이 형제 DB 로 정상
@@ -3028,11 +3029,23 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
 
 
 # inbox 전체가 조용한 것은 **관세청 채널이 조용한 것과 다른 사실**이다 —
-# 한 리스너가 16개 소스(관세청 BeOn + 나쁜양파 15종)를 같은 채널로 받아 적으므로,
+# 관세청 BeOn 과 나쁜양파 레지스트리 전 소스가 같은 채널로 와 한 파일에 적히므로,
 # 전부가 동시에 멈추면 원천 채널이 아니라 그 앞 중계 경로를 봐야 한다.
 # 며칠까지를 '정상 정적' 으로 볼지는 재지 않았으므로 문턱은 넉넉하게 두고
 # 단정하지 않는다(#165) — 사실만 적고 어디를 볼지 가리킨다(#82).
 _INBOX_SILENT_DAYS = 3
+
+
+def _badonion_label() -> str:
+    """나쁜양파 소스 수 라벨 — 레지스트리(`badonion_sources.SOURCES`)에서 센다.
+    리터럴('15종')로 적어 두면 소스가 늘 때마다 거짓이 된다 — 실제로 17·18종이
+    된 뒤에도 '15종' 이 찍히고 있었다(#24·#55, 2026-10-08 독립 리뷰). 못 세면
+    수를 지어내지 않는다(#54)."""
+    try:
+        from trade.badonion_sources import SOURCES
+        return f"{len(SOURCES)}종"
+    except Exception:                                          # noqa: BLE001
+        return "전 소스"
 
 
 def inbox_silence_notes(f: dict, today=None) -> list[str]:
@@ -3050,8 +3063,8 @@ def inbox_silence_notes(f: dict, today=None) -> list[str]:
     if age < _INBOX_SILENT_DAYS:
         return []
     return [f"↪ inbox 전체가 {age}일째 조용하다(마지막 {newest}) — 이 파일은 관세청 "
-            "BeOn + 나쁜양파 15종이 **공용**이라 전부 동시에 멈추는 건 흔치 않다. "
-            "위 ⑦ 의 중계 리스너(beon·badonion) 상태를 먼저 볼 것"]
+            f"BeOn + 나쁜양파 {_badonion_label()}이 **공용**이라 전부 동시에 멈추는 건 "
+            "흔치 않다. 위 ⑦ 의 중계 리스너(beon·badonion) 상태를 먼저 볼 것"]
 
 
 def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
@@ -3086,7 +3099,7 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
     P("④ inbox.jsonl(리스너 → 인제스트 사이)")
     if f["inbox_exists"]:
         P(f"   {f['inbox']}: {f['n_lines']}줄 · 최신 {kst_stamp(f['inbox_newest']) or '없음'} · "
-          f"DB 최신 이후 {f['after_db']}줄  ← 전 소스(관세청+나쁜양파 15종 공용)")
+          f"DB 최신 이후 {f['after_db']}줄  ← 전 소스(관세청+나쁜양파 {_badonion_label()} 공용)")
         if f["parse_ok"]:
             P(f"   그중 관세청 캡션: 최신 {kst_stamp(f['kr_newest']) or '없음'} · "
               f"DB 최신 이후 {f['kr_after']}줄(시각 기준)  ← store.db 후보는 이것뿐"

@@ -91,7 +91,12 @@ class ParseTests(unittest.TestCase):
 class HashtagSymbolTests(unittest.TestCase):
     def test_one_symbol_is_taken_and_uppercased(self):
         self.assertEqual(kcf.hashtag_symbol("…\n#pstg\n"), "PSTG")
-        self.assertEqual(kcf.hashtag_symbol("a #P b #P"), "P")       # 같은 심볼 반복은 하나
+        # 같은 심볼 반복은 하나. ⚠️ 2026-10-08(#222): 옛 판은 `a #P b #P` 처럼 글
+        # 사이에 낀 태그도 받았는데, 그 모양은 라벨 줄·이름 태그와 구별되지 않아
+        # 출처 판정(아래 `ProvenanceTests`)이 받지 않는다 — 계약은 '같은 심볼 반복은
+        # 하나' 이지 그 줄 모양이 아니다.
+        self.assertEqual(kcf.hashtag_symbol("#P\n…\n#P"), "P")
+        self.assertEqual(kcf.hashtag_symbol("#P #p"), "P")
 
     def test_two_different_symbols_are_not_guessed(self):
         """어느 것이 ▶️ 회사의 심볼인지 캡션이 말하지 않으면 고르지 않는다(#165)."""
@@ -110,6 +115,58 @@ class HashtagSymbolTests(unittest.TestCase):
         p = uss.parse_us_stock_export(two)
         self.assertEqual(p["stock_name"], "Everpure, Inc.")
         self.assertIsNone(p["symbol"])
+
+
+class ProvenanceTests(unittest.TestCase):
+    """해시태그가 **그 회사의 심볼**이라는 근거는 캡션의 모양뿐이다(독립 리뷰
+    2026-10-08). 실측 모양(`#P` 가 홀로 한 줄)에서 벗어난 둘은 받지 않는다 —
+    틀린 링크보다 평문이 낫다(#144·#165)."""
+
+    def test_the_observed_shape_is_taken(self):
+        self.assertEqual(kcf.hashtag_symbol("#P"), "P")
+        self.assertEqual(kcf.hashtag_symbol("#P 🔗 맵핑에서 보기"), "P")
+        self.assertEqual(uss.parse_us_stock_export(PLAIN)["symbol"], "P")
+
+    def test_a_label_line_lists_other_companies(self):
+        """`관련기업: #NTAP` — 품목판이 쓰는 라벨 줄. 그 태그는 ▶️ 회사의 심볼이
+        아니라 다른 회사들의 목록일 수 있다."""
+        self.assertIsNone(kcf.hashtag_symbol("관련기업: #NTAP"))
+        cap = PLAIN.replace("#P\n", "관련기업: #NTAP\n")
+        self.assertIsNone(uss.parse_us_stock_export(cap)["symbol"])
+
+    def test_a_name_tag_is_not_a_symbol(self):
+        self.assertIsNone(kcf.hashtag_symbol("#Pure Storage"))
+        self.assertIsNone(kcf.hashtag_symbol("#LIN #APD #AIR LIQUIDE"))
+        # 이름 태그만 빠지고 남은 하나가 심볼이면 그건 받는다(반대 증거, #25)
+        self.assertEqual(kcf.hashtag_symbol("#P\n#Pure Storage"), "P")
+
+    def test_numeric_tags_are_not_us_symbols(self):
+        self.assertIsNone(kcf.hashtag_symbol("#2330"))
+
+    def test_a_pathological_tag_line_is_judged_in_linear_time(self):
+        """첫 판의 출처 판정 정규식은 `#a#a…#a foo #P` 에서 지수 역추적이었다
+        (`#a`×22 에 0.43초, 두 개마다 ~4배 — 배포전 셀프리뷰 실측). 남이 쓴 캡션
+        한 줄이 관련성 필터를 멈추면 안 된다(#71). 선형이면 즉시 끝난다 — n=26 은
+        옛 정규식으로 수 초(실패로 드러난다), 더 크면 테스트가 **멈춘다**."""
+        import time
+        line = "#a" * 26 + " foo #P"
+        t0 = time.perf_counter()
+        self.assertIsNone(kcf.hashtag_symbol(line))     # 라벨 줄 모양이라 거절
+        self.assertLess(time.perf_counter() - t0, 1.0)
+        # 글자에 붙은 태그(`#a#a…`)는 태그가 아니다 — 다음 줄의 `#P` 만 남는다.
+        self.assertEqual(kcf.hashtag_symbol("#a" * 5000 + "\n#P"), "P")
+
+    def test_glued_tags_are_not_cut_into_symbols(self):
+        """`#AAPL#MSFT` 를 `AAPL` 로 잘라 읽으면 붙어 있던 다른 심볼을 버린 것이다 —
+        뒤가 공백·줄 끝일 때만 태그다(실측 `#P` 는 줄 끝)."""
+        self.assertIsNone(kcf.hashtag_symbol("#AAPL#MSFT"))
+        self.assertIsNone(kcf.hashtag_symbol("#P,"))
+        self.assertEqual(kcf.hashtag_symbol("#P\t"), "P")
+
+    def test_a_tag_glued_to_a_value_line_is_not_taken(self):
+        """값 줄 끝에 붙은 태그는 그 줄이 라벨 줄과 같은 모양이라 받지 않는다 —
+        실측 캡션엔 없는 모양이고, 못 받으면 평문일 뿐이다(#144)."""
+        self.assertIsNone(kcf.hashtag_symbol("26년08월: $1.0M #P"))
 
 
 class StoreAndRenderTests(unittest.TestCase):
@@ -148,6 +205,22 @@ class StoreAndRenderTests(unittest.TestCase):
         self.assertEqual(kcf.card_href(row, uss.FLOW), "")
         self.assertEqual(kcf.card_href({"company": "Everpure, Inc.", "raw_text": PLAIN},
                                        uss.FLOW), "../lookup/P")
+
+    def test_without_a_symbol_the_noah_alias_name_still_links(self):
+        """심볼이 없으면 이름을 넘긴다 — NOAH 영문 별칭표가 푸는 이름만 질의가
+        된다(`lookup_query` 규칙 4). 이름을 안 넘기면 그 경로가 통째로 죽는다(독립
+        리뷰 생존 뮤테이션). 별칭표는 경계(`_alias_hit`)에서 정한다(#399)."""
+        orig = sl._alias_hit
+        sl._alias_hit = lambda n: n == "Zyxcorp"
+        try:
+            cap = PLAIN.replace("Everpure, Inc.", "Zyxcorp").replace("#P\n", "")
+            row = {"company": "Zyxcorp", "raw_text": cap}
+            self.assertEqual(kcf.card_href(row, uss.FLOW), "../lookup/Zyxcorp")
+            # 반대 증거 — 별칭표가 모르는 이름은 평문
+            other = {"company": "Unknownco", "raw_text": cap.replace("Zyxcorp", "Unknownco")}
+            self.assertEqual(kcf.card_href(other, uss.FLOW), "")
+        finally:
+            sl._alias_hit = orig
 
     def test_no_symbol_means_no_link(self):
         with tempfile.TemporaryDirectory() as td:
@@ -188,6 +261,28 @@ class StoreAndRenderTests(unittest.TestCase):
 
 
 class FlowContractTests(unittest.TestCase):
+    def test_every_amount_flow_says_the_country_of_its_source_and_sibling(self):
+        """금액판 Flow 의 나라는 그 소스의 나라와 같고, 형제 링크는 **같은 나라**의
+        페이지를 가리킨다 — 형제를 남의 나라 페이지로 바꾼 변형이 살아남았다(독립
+        리뷰). 소스는 레지스트리 전수에서 고른다(이름 열거 금지, #24)."""
+        import importlib
+        checked = 0
+        for src in srcs.SOURCES:
+            if "amount" not in src.grammars:
+                continue
+            mod = importlib.import_module(src.parse.__module__)
+            flows = [v for v in vars(mod).values() if isinstance(v, kcf.Flow)]
+            self.assertTrue(flows, f"{src.key}: 모듈에 Flow 가 없다")
+            for fl in flows:
+                checked += 1
+                self.assertEqual(fl.country, src.country, (src.key, fl.table))
+                if fl.sibling:
+                    owners = [o for o in srcs.SOURCES if o.html_file == fl.sibling]
+                    self.assertEqual(len(owners), 1, (src.key, fl.sibling))
+                    self.assertEqual(owners[0].country, fl.country,
+                                     (src.key, fl.sibling, owners[0].key))
+        self.assertGreaterEqual(checked, 3)        # krs·kri·uss — 줄면 빨간불(#54)
+
     def test_an_unknown_link_rule_fails_loudly(self):
         with self.assertRaises(ValueError):
             kcf.Flow(key="export", marker="수출", amount="수출액", table="t",
