@@ -123,20 +123,42 @@ _RE_MONTHLINE = re.compile(
 # 태그(`#AAPL#MSFT` · `#P,` · 긴 토큰)를 잘라 읽지 않는다(실측 모양은 `#P` 한 줄).
 _RE_HASHTAG = re.compile(r"(?<!\S)#([A-Za-z][A-Za-z0-9.\-]{0,9})(?!\S)")
 # 출처 판정(독립 리뷰): 해시태그가 **그 회사의 심볼**이라는 근거는 캡션의 모양
-# 뿐이다. 실측 모양(`#P` 가 홀로 한 줄)에서 벗어난 둘은 받지 않는다 —
+# 뿐이다. 실측 모양(`#P` 가 홀로 한 줄)에서 벗어난 셋은 받지 않는다 —
 # (1) 라벨 줄(`관련기업: #NTAP …`) 의 태그는 **다른 회사들**의 목록일 수 있다:
-#     그 줄의 태그 앞은 공백·태그뿐이어야 한다(`_tags_only`).
+#     그 줄의 태그 앞은 공백·태그뿐이어야 한다(`_tag_head_end`).
 # (2) 이름 태그(`#Pure Storage` · `#AIR LIQUIDE`)는 심볼이 아니다: 태그 바로 뒤에
 #     공백 + 라틴 글자가 이어지면 이름의 첫 낱말로 본다.
+# (3) 받은 태그가 있는 줄에 **다른 라틴 태그**가 하나라도 있으면(`#P, #PSTG` ·
+#     `#NTAP, #DELL, #HPE` · `#AAPL#MSFT #NVDA`) 그 줄은 목록이다 — 고르지 않는다.
+#     (1)·(2)·붙은 태그를 **후보에서 빼기만** 하면 목록이 '하나 남은 태그' 로
+#     줄어 엉뚱한 심볼이 된다(반영분 독립 리뷰가 실측: Everpure 카드가 HPE 로).
+#     거르는 것은 후보이고, 경쟁자는 거르지 않는다.
 _RE_NAME_TAIL = re.compile(r"[^\S\n]+[A-Za-z]")
+# 경쟁자 판정용 — 글자에 붙거나 구두점이 붙은 태그(`#P,` · `#AAPL#…`)까지 본다.
+# URL 조각(`…/map#P` · `?c=1#QQ`)은 앞 글자로 거른다.
+_RE_TAGLIKE = re.compile(r"(?<![\w/?=&%#])#([A-Za-z][A-Za-z0-9.\-]*)")
+_RE_TOKEN = re.compile(r"\S+")
 
 
-def _tags_only(prefix: str) -> bool:
-    """태그 앞이 공백·`#…` 토큰뿐인가. ⚠️ 정규식(`(공백* #비공백+)* 공백*`)으로 쓰면
-    `#a#a#a… foo` 같은 줄에서 쪼개는 방법이 2^n 이라 **지수 역추적**이다(실측:
-    `#a`×14 0.002초 → ×22 0.43초, 두 개마다 약 4배 — 남이 쓴 캡션 한 줄이 관련성
-    필터·ingest 경로를 멈출 수 있다, #71). 공백으로 가른 토큰을 보면 선형이다."""
-    return all(tok.startswith("#") for tok in prefix.split())
+def _tag_head_end(line: str) -> int:
+    """줄 머리의 '공백·`#…` 토큰' 구간이 끝나는 위치(첫 비-태그 토큰의 시작,
+    없으면 줄 끝). 이 앞의 태그만 라벨 줄이 아니다.
+
+    ⚠️ 한 번만 훑는다. 첫 판은 정규식(`(공백* #비공백+)* 공백*`)으로 재서
+    `#a#a#a… foo` 줄에서 **지수 역추적**이었고(셀프리뷰 실측: `#a`×14 0.002초 →
+    ×22 0.43초, 두 개마다 ~4배, #71), 그다음 판은 태그마다 앞부분을 다시 갈라
+    태그 수 × 줄 길이였다(반영분 리뷰 실측: 태그 16,000개 11.9초). 여기선 줄당
+    한 번이다."""
+    for t in _RE_TOKEN.finditer(line):
+        if not t.group(0).startswith("#"):
+            return t.start()
+    return len(line)
+
+
+def _sym(raw: str) -> str:
+    """태그 글자 → 심볼. 문장 끝 마침표·대시는 떼고(`#P.` → P) 가운데 점은
+    둔다(`#BRK.B`)."""
+    return raw.upper().rstrip(".-")
 
 
 def hashtag_symbol(seg: str) -> str | None:
@@ -144,18 +166,26 @@ def hashtag_symbol(seg: str) -> str | None:
 
     둘 이상이면 어느 것이 ▶️ 회사의 심볼인지 캡션이 말하지 않으므로 고르지 않는다
     (#165 — 재지 않은 귀속을 단정하지 않는다. 틀린 링크보다 평문이 낫다, #144).
-    라벨 줄의 태그와 이름 태그는 후보에서 뺀다(위 `_tags_only`·`_RE_NAME_TAIL`).
+    라벨 줄의 태그와 이름 태그는 후보가 아니고, 후보가 있는 줄에 다른 라틴 태그가
+    있으면 그 줄은 목록이라 None 이다(위 (1)~(3)).
     ⚠️ **못 보는 축**(#274): 홀로 선 테마 태그(`#AI` 한 줄)는 심볼과 모양이 같아
     가를 수 없다 — 그때 심볼이 하나뿐이면 테마가 링크가 된다(오늘 실측 캡션엔
     없다). 심볼 태그와 같이 오면 둘 이상이라 평문이 된다."""
     syms: set[str] = set()
     for line in (seg or "").splitlines():
+        head = _tag_head_end(line)
+        acc: set[str] = set()
         for m in _RE_HASHTAG.finditer(line):
-            if not _tags_only(line[:m.start()]):
+            if m.start() >= head:
                 continue                    # (1) 라벨 줄의 태그
             if _RE_NAME_TAIL.match(line, m.end()):
                 continue                    # (2) 이름 태그
-            syms.add(m.group(1).upper())
+            acc.add(_sym(m.group(1)))
+        if not acc:
+            continue
+        if {_sym(t) for t in _RE_TAGLIKE.findall(line)} - acc:
+            return None                     # (3) 같은 줄의 다른 태그 — 목록이다
+        syms |= acc
     return syms.pop() if len(syms) == 1 else None
 
 

@@ -50,6 +50,9 @@ def _window_gaps(by_date: dict, now: datetime, days: int = 30) -> dict:
     - `pending` : 거래일이지만 아직 요구하지 않는 날(오늘, 정규장 마감 전).
     - `nonsess` : 비거래일(주말·휴일) — 없는 게 정상.
     - `known`   : 거래일 달력으로 판정했나. False 면 갈래를 나누지 않는다(#54).
+    - `error`   : 판정 중 예외(`유형: 메시지`). 달력이 없는 것(None)과 판정이 터진
+                  것은 처방이 다르다 — 터진 것을 '캘린더 미설치' 로 적으면 멀쩡한
+                  설치를 고치러 간다(#82, 반영분 독립 리뷰).
 
     기준일은 화면의 '⚠️ 지연' 배지와 **같은 함수**(`kr_session.last_closed_session`)
     에서 온다. 옛 판은 결측일 중 거래일을 전부 세어, 거래일 자정~첫 공시 사이에
@@ -63,13 +66,14 @@ def _window_gaps(by_date: dict, now: datetime, days: int = 30) -> dict:
     win = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     missing = [x for x in win if x not in by_date]
     out = {"known": False, "ref": None, "missing": missing,
-           "miss_sess": [], "pending": [], "nonsess": 0}
+           "miss_sess": [], "pending": [], "nonsess": 0, "error": ""}
     try:
         ref = _ks.last_closed_session(now)
         if ref is None:
             return out
         sess = [x for x in missing if last_session_on_or_before("KR", x) == x]
-    except Exception:
+    except Exception as exc:                                   # noqa: BLE001
+        out["error"] = f"{type(exc).__name__}: {exc}"
         return out
     out.update(known=True, ref=ref,
                miss_sess=[x for x in sess if x <= ref],
@@ -110,6 +114,9 @@ def audit_dart() -> None:
         _p(f"{_mark(not miss_sess)} 창 결측 **거래일** {len(miss_sess)}일 "
            f"{miss_sess} (기준 {gaps['ref']} · 비거래일 결측 {gaps['nonsess']}일은 "
            f"정상){_pend}")
+    elif gaps["error"]:
+        _p(f"{_WARN} 창 결측일 {len(missing)}일 {missing} "
+           f"— 거래일 판정 실패({gaps['error']})라 주말·휴일 구분 불가")
     else:
         _p(f"{_WARN} 창 결측일 {len(missing)}일 {missing} "
            "— 거래일 캘린더 미설치라 주말·휴일 구분 불가(pip install exchange_calendars)")

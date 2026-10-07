@@ -3040,7 +3040,8 @@ def _badonion_label() -> str:
     """나쁜양파 소스 수 라벨 — 레지스트리(`badonion_sources.SOURCES`)에서 센다.
     리터럴('15종')로 적어 두면 소스가 늘 때마다 거짓이 된다 — 실제로 17·18종이
     된 뒤에도 '15종' 이 찍히고 있었다(#24·#55, 2026-10-08 독립 리뷰). 못 세면
-    수를 지어내지 않는다(#54)."""
+    수를 지어내지 않는다(#54). 조사가 라벨에 붙지 않게 쓰는 쪽이 괄호로 감싼다
+    ('18종이'·'전 소스이' — 폴백에서 조사가 틀린다, 반영분 리뷰)."""
     try:
         from trade.badonion_sources import SOURCES
         return f"{len(SOURCES)}종"
@@ -3063,7 +3064,7 @@ def inbox_silence_notes(f: dict, today=None) -> list[str]:
     if age < _INBOX_SILENT_DAYS:
         return []
     return [f"↪ inbox 전체가 {age}일째 조용하다(마지막 {newest}) — 이 파일은 관세청 "
-            f"BeOn + 나쁜양파 {_badonion_label()}이 **공용**이라 전부 동시에 멈추는 건 "
+            f"BeOn + 나쁜양파({_badonion_label()})가 **공용**이라 전부 동시에 멈추는 건 "
             "흔치 않다. 위 ⑦ 의 중계 리스너(beon·badonion) 상태를 먼저 볼 것"]
 
 

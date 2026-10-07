@@ -191,11 +191,32 @@ def test_badge_colour_is_the_palette_token_that_passes_aa(cal, monkeypatch):
     assert "#f5a623" not in hdr, hdr
     assert hdr.count("color:var(--pending)") == 2, hdr      # 지연 + 키 없음
     blocks = dict(cc.palette_blocks(d._SCREENER_CSS))
+    # 헤더 `p.sub` 는 페이지 바탕(`--bg`) 위에 놓인다 — 카드 바탕만 재면 실제로
+    # 글자가 놓이는 면을 안 잰다(반영분 리뷰). 둘 다 잰다.
     for sel, pal in cc.palette_blocks(d._SCREENER_CSS):
-        if "--pending" in pal and "--card" in pal:
-            r = cc.contrast_ratio(pal["--pending"], pal["--card"])
-            assert r is not None and r >= 4.5, (sel, r)
-    assert any("--pending" in pal for pal in blocks.values())
+        for surf in ("--bg", "--card"):
+            if "--pending" not in pal or surf not in pal:
+                continue
+            r = cc.contrast_ratio(pal["--pending"], pal[surf])
+            assert r is not None and r >= 4.5, (sel, surf, r)
+    # 토큰이 실제로 정의돼 있어야 위 루프가 무언가를 잰다(대조 0건은 통과가 아니다, #54)
+    assert sum("--pending" in pal and "--bg" in pal for pal in blocks.values()) >= 2
+
+
+def test_marketcap_stale_warnings_use_the_same_token():
+    """같은 감사(`dart_mcap_audit`)가 보는 Market cap 페이지의 '최신 수집 실패' 두 줄도
+    같은 리터럴(1.91:1)이었다 — 같은 팔레트(`_SCREENER_CSS`)의 토큰으로(#38, 반영분 리뷰)."""
+    from bot.marketcap_client import EMBED_AXES
+    row = {"name": "Acme", "ticker": "ACME", "metric": "$1T", "price": "$1",
+           "country": "USA"}
+    data = {k: {"rows": [row], "stale": True, "fetched_at": "2026-10-08 00:00"}
+            for k, *_ in EMBED_AXES}
+    page = d._render_marketcap_page(data)
+    spans = re.findall(r'<span style="([^"]*)">⚠️ (?:최신 수집 실패|일부 축 최신 수집 실패)',
+                       page)
+    assert len(spans) == len(EMBED_AXES) + 1, spans          # 축마다 1 + 페이지 1
+    assert set(spans) == {"color:var(--pending)"}, set(spans)
+    assert d._SCREENER_CSS in page            # 토큰(`--pending`)을 정의하는 번들을 싣는다
 
 
 # ── 기준일 단일 출처 `last_closed_session` ───────────────────────────────────
@@ -219,6 +240,28 @@ def test_last_closed_session_reads_the_clock_in_kst(cal):
     assert ks.last_closed_session(dt.datetime(2026, 10, 8, 6, 30, tzinfo=utc)) == "2026-10-08"
     # naive 는 KST 로 본다(규칙 10a — 서버 로컬타임에 기대지 않는다)
     assert ks.last_closed_session(dt.datetime(2026, 10, 8, 15, 30)) == "2026-10-08"
+
+
+def test_a_naive_clock_is_kst_even_on_a_utc_host(cal):
+    """호스트 시간대를 UTC 로 고정하고 잰다 — naive 를 `astimezone` 으로 넘기면
+    **호스트 로컬**로 읽어 08:00 이 17:00 KST(마감 뒤)가 된다. 위 15:30 표본은
+    UTC 로 읽어도 휴일(10-09) 00:30 이라 같은 답이 나와 그 변형을 못 잡았다(반영분
+    리뷰). POSIX 문자열로 걸고 바뀐 오프셋을 재서 확인한다(#424)."""
+    import os
+    import time
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC0"
+    time.tzset()
+    try:
+        assert time.timezone == 0 and time.altzone == 0, (time.timezone, time.altzone)
+        assert ks.last_closed_session(dt.datetime(2026, 10, 8, 8, 0)) == "2026-10-07"
+        assert ks.last_closed_session(dt.datetime(2026, 10, 8, 16, 0)) == "2026-10-08"
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
 
 
 def test_last_closed_session_uses_the_venue_table(cal):
@@ -262,13 +305,32 @@ def test_audit_still_names_a_past_hole_and_skips_holidays(cal):
     by = _window(dt.date(2026, 10, 9), skip={"2026-10-06"})
     g = audit._window_gaps(by, _kst(2026, 10, 9, 12, 0))     # 한글날
     assert g["miss_sess"] == ["2026-10-06"] and g["pending"] == [], g
-    assert "2026-10-09" in g["missing"] and g["nonsess"] >= 9, g   # 휴일 + 주말
+    # 휴일 1(10-09) + 주말 8 — 정확히 센다. `>=` 로 재면 진짜 구멍(10-06)까지
+    # 비거래일로 세는 변형이 통과한다(반영분 리뷰 생존 뮤테이션, 감사가 찍는 수다).
+    assert "2026-10-09" in g["missing"] and g["nonsess"] == 9, g
 
 
 def test_audit_without_a_calendar_does_not_split(monkeypatch):
     monkeypatch.setattr(mcal, "last_session_on_or_before", lambda *_a: None)
     g = audit._window_gaps({}, _kst(2026, 10, 8, 16, 0))
     assert g["known"] is False and g["miss_sess"] == [] and len(g["missing"]) == 30
+    assert g["error"] == ""                 # 달력이 없는 것은 판정 실패가 아니다
+
+
+def test_audit_names_a_judgement_failure_instead_of_blaming_the_install(
+        cal, monkeypatch, capsys):
+    """판정이 터진 것을 '캘린더 미설치(pip install…)' 로 적으면 멀쩡한 설치를 고치러
+    간다(#82, 반영분 리뷰) — 예외 유형을 그대로 적는다."""
+    def _boom(*_a, **_k):
+        raise ValueError("표에 정규장 구간이 없다")
+    monkeypatch.setattr(ks, "last_closed_session", _boom)
+    g = audit._window_gaps({}, _kst(2026, 10, 8, 16, 0))
+    assert g["known"] is False and g["error"].startswith("ValueError"), g
+    lines = _run_audit(monkeypatch, capsys, _window(dt.date(2026, 10, 8)),
+                       _kst(2026, 10, 8, 16, 0))
+    win = [ln for ln in lines if "창 결측일" in ln]
+    assert len(win) == 1 and "거래일 판정 실패(ValueError" in win[0], lines
+    assert "pip install" not in win[0], win[0]
 
 
 def _run_audit(monkeypatch, capsys, by, now) -> list[str]:

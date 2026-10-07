@@ -119,8 +119,8 @@ class HashtagSymbolTests(unittest.TestCase):
 
 class ProvenanceTests(unittest.TestCase):
     """해시태그가 **그 회사의 심볼**이라는 근거는 캡션의 모양뿐이다(독립 리뷰
-    2026-10-08). 실측 모양(`#P` 가 홀로 한 줄)에서 벗어난 둘은 받지 않는다 —
-    틀린 링크보다 평문이 낫다(#144·#165)."""
+    2026-10-08). 실측 모양(`#P` 가 홀로 한 줄)에서 벗어난 것 — 라벨 줄 · 이름 태그 ·
+    여러 태그가 든 줄(목록) — 은 받지 않는다. 틀린 링크보다 평문이 낫다(#144·#165)."""
 
     def test_the_observed_shape_is_taken(self):
         self.assertEqual(kcf.hashtag_symbol("#P"), "P")
@@ -137,8 +137,10 @@ class ProvenanceTests(unittest.TestCase):
     def test_a_name_tag_is_not_a_symbol(self):
         self.assertIsNone(kcf.hashtag_symbol("#Pure Storage"))
         self.assertIsNone(kcf.hashtag_symbol("#LIN #APD #AIR LIQUIDE"))
-        # 이름 태그만 빠지고 남은 하나가 심볼이면 그건 받는다(반대 증거, #25)
+        # 이름 태그가 **다른 줄**이면 남은 하나가 심볼이다(반대 증거, #25)
         self.assertEqual(kcf.hashtag_symbol("#P\n#Pure Storage"), "P")
+        # 같은 줄이면 목록이다 — 이름 태그를 빼고 남은 하나를 고르지 않는다
+        self.assertIsNone(kcf.hashtag_symbol("#P #Pure Storage"))
 
     def test_numeric_tags_are_not_us_symbols(self):
         self.assertIsNone(kcf.hashtag_symbol("#2330"))
@@ -147,14 +149,43 @@ class ProvenanceTests(unittest.TestCase):
         """첫 판의 출처 판정 정규식은 `#a#a…#a foo #P` 에서 지수 역추적이었다
         (`#a`×22 에 0.43초, 두 개마다 ~4배 — 배포전 셀프리뷰 실측). 남이 쓴 캡션
         한 줄이 관련성 필터를 멈추면 안 된다(#71). 선형이면 즉시 끝난다 — n=26 은
-        옛 정규식으로 수 초(실패로 드러난다), 더 크면 테스트가 **멈춘다**."""
+        옛 정규식으로 수 초(실패로 드러난다), 더 크면 테스트가 **멈춘다**.
+        그다음 판은 태그마다 줄 앞부분을 다시 갈라 태그 수 × 줄 길이였다(반영분
+        리뷰 실측: 태그 16,000개 11.9초) — 둘째 줄이 **태그가 실제로 받히는**
+        경로로 그걸 잰다(붙은 태그만 쓰면 매치가 0개라 그 경로를 안 탄다)."""
         import time
         line = "#a" * 26 + " foo #P"
         t0 = time.perf_counter()
         self.assertIsNone(kcf.hashtag_symbol(line))     # 라벨 줄 모양이라 거절
         self.assertLess(time.perf_counter() - t0, 1.0)
+        many = "#a " * 20000 + "foo #P"
+        t0 = time.perf_counter()
+        self.assertIsNone(kcf.hashtag_symbol(many))     # 같은 줄에 다른 태그 — 목록
+        self.assertEqual(kcf.hashtag_symbol("#a " * 20000), "A")   # 같은 심볼 반복은 하나
+        self.assertLess(time.perf_counter() - t0, 1.0)
         # 글자에 붙은 태그(`#a#a…`)는 태그가 아니다 — 다음 줄의 `#P` 만 남는다.
         self.assertEqual(kcf.hashtag_symbol("#a" * 5000 + "\n#P"), "P")
+
+    def test_a_line_with_several_tags_is_a_list_not_a_symbol(self):
+        """후보를 **빼기만** 하면 목록이 '하나 남은 태그' 로 줄어 엉뚱한 심볼이 된다 —
+        반영분 리뷰 실측: `#NTAP, #DELL, #HPE` 에서 Everpure 카드가 HPE 로 걸렸다.
+        받은 태그가 있는 줄에 다른 라틴 태그가 있으면 고르지 않는다."""
+        for line in ("#P, #PSTG", "#NTAP, #DELL, #HPE", "#P · #PSTG",
+                     "#AAPL#MSFT #NVDA", "#P #AI", "#NTAP / #P"):
+            self.assertIsNone(kcf.hashtag_symbol(line), line)
+        # 끝에서 끝까지 — 카드가 남의 심볼로 걸리지 않는다
+        cap = PLAIN.replace("#P\n", "#NTAP, #DELL, #HPE\n")
+        self.assertIsNone(uss.parse_us_stock_export(cap)["symbol"])
+        self.assertEqual(kcf.card_href({"company": "Everpure, Inc.", "raw_text": cap},
+                                       uss.FLOW), "")
+        # 반대 증거 — 경쟁자가 아닌 것: URL 조각 · 한글 태그 · 같은 심볼 반복
+        self.assertEqual(kcf.hashtag_symbol("#P [링크](https://x.y/a?c=1#QQ)"), "P")
+        self.assertEqual(kcf.hashtag_symbol("#P #한국"), "P")
+        self.assertEqual(kcf.hashtag_symbol("#P #p"), "P")
+
+    def test_a_sentence_dot_is_not_part_of_the_symbol(self):
+        self.assertEqual(kcf.hashtag_symbol("#P."), "P")
+        self.assertEqual(kcf.hashtag_symbol("#BRK.B"), "BRK.B")   # 가운데 점은 심볼의 일부
 
     def test_glued_tags_are_not_cut_into_symbols(self):
         """`#AAPL#MSFT` 를 `AAPL` 로 잘라 읽으면 붙어 있던 다른 심볼을 버린 것이다 —

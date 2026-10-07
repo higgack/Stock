@@ -16318,7 +16318,9 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
                 '데이터 수집 실패 — 다음 주기(3시간)에 자동 재시도합니다. '
                 'journal 의 bot.marketcap WARNING 참조.</td></tr>')
         _fetched = _html.escape(str(d.get("fetched_at") or "—"))
-        _stale_note = (' · <span style="color:#f5a623">⚠️ 최신 수집 실패 — '
+        # 색은 팔레트 `--pending` — 리터럴 #f5a623 은 라이트 바탕 대비 1.91:1(AA
+        # 미달, #355). 같은 감사가 보는 DART 헤더와 같은 처방(#440 반영분 리뷰, #38).
+        _stale_note = (' · <span style="color:var(--pending)">⚠️ 최신 수집 실패 — '
                        '마지막 성공분</span>' if (d.get("stale") and rows) else "")
         tabs.append(f"""
   <div class="js-mc-tab" data-axis="{key}" style="display:{'block' if key == 'marketcap' else 'none'}">
@@ -16334,7 +16336,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
         f'rel="noopener">{_html.escape(lbl)} ↗</a>'
         for lbl, slug in _MARKETCAP_EXTERNAL)
     fetched = _html.escape(str(any_fetched or "—"))
-    stale_badge = (' <span style="color:#f5a623">⚠️ 일부 축 최신 수집 실패</span>'
+    stale_badge = (' <span style="color:var(--pending)">⚠️ 일부 축 최신 수집 실패</span>'
                    if any_stale else "")
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""

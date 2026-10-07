@@ -56313,7 +56313,7 @@ class TestTradeWholeInboxSilence20260910:
         assert len(quiet) == 1 and "13일째" in quiet[0] and "중계 리스너" in quiet[0]
         # 소스 수는 레지스트리에서 센다(2026-10-08 — 리터럴 '15종' 이 18종 시절에도 찍혔다)
         from trade.badonion_sources import SOURCES
-        assert f"나쁜양파 {len(SOURCES)}종이" in quiet[0], quiet[0]
+        assert f"나쁜양파({len(SOURCES)}종)가" in quiet[0], quiet[0]
         # 16:36 UTC 는 KST 로 **다음 날** 01:36 이다. 옛 판은 앞 10자(= UTC 날)를 써서
         # 이 값도 13일째·마지막 08-28 이라 했다 — 이 테스트가 그 옛 동작을 못박고 있어
         # 전체 회귀에서만 빨간불이었다(#222 계약이 바뀌면 다시 쓴다).
