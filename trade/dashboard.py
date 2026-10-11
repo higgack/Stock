@@ -110,6 +110,7 @@ def render_html(
     customs_rows = _load_customs_summary(customs_db_path, hs_map_path)
     industry_html = _load_industry_html(customs_db_path)
     heatmap_html = _load_heatmap_html(customs_db_path)
+    customs_header = _load_customs_header(customs_db_path)
     # ⚠️ heatmap_html 인자 누락 = 2026-06-12 12:52 이후 5분 refresh 전부
     # NameError 크래시 → index.html 동결 (순서/잠정/히트맵 전부 미표시의
     # 최종 진범). _build_html 파라미터 누락 회귀는 render 스모크가 가드.
@@ -171,6 +172,7 @@ def render_html(
         # 만들 때 쓰는 `args.db.parent / db_file` 과 같은 자리.
         links_dir=Path(db_path).parent,
         now=now,
+        customs_header=customs_header,
     )
 
 
@@ -319,6 +321,41 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         logging.getLogger("trade-dashboard").warning(
             "industry/provisional render failed (산업트렌드·잠정 속보 탭 숨김): %s: %s",
             type(exc).__name__, exc)
+        return ""
+
+
+def _load_customs_header(customs_db_path: Path | str | None) -> str:
+    """헤더 '📊 현재 잠정 X · 확정 Y' 를 관세청 기준으로 서버가 그린다(사용자
+    2026-10-12 — 텔레그램 채널이 07-22 뒤로 발표를 안 싣는다). 잠정 창은 🟢 잠정 속보
+    박스와 **같은 계산**(저장 시계열에서 `latest_signal` 재산출 — 박스와 헤더가 다른
+    旬을 말하면 한쪽이 틀려 보인다, #38·#45). 산업트렌드 패널은 lazy 조각이라 JS 가
+    DOM 에서 읽을 수 없어 서버가 직접 그린다. 실패·데이터 없음 → '' (JS 가 채널
+    폴백을 쓰고 '(채널 발표 기준)' 이라 밝힌다, #43). 렌더는 API 를 부르지 않는다."""
+    try:
+        from trade import customs, customs_provisional, industry_archive
+        db = customs_db_path if customs_db_path is not None else customs.DEFAULT_DB
+        if not Path(db).exists():
+            return ""
+        with customs.session(db) as conn:
+            signals = customs_provisional.load_signals(conn)
+            rows = customs_provisional.load_rows(conn)
+            fetched = customs_provisional.load_fetched_at(conn)
+            latest_ym = industry_archive.latest_stored_ym(conn)
+        for kind, kind_rows in rows.items():
+            try:
+                sig = customs_provisional.latest_signal(
+                    kind_rows, customs_provisional.LABELS.get(kind, ()))
+            except Exception:
+                sig = None
+            if sig:
+                signals[kind] = sig
+        ref = (signals.get("exp_item") or signals.get("imp_item")
+               or signals.get("exp_cnty") or signals.get("imp_cnty"))
+        return customs_provisional.header_status_html(ref, latest_ym, fetched)
+    except Exception as exc:
+        import logging
+        logging.getLogger("trade-dashboard").warning(
+            "customs header failed (채널 폴백): %s: %s", type(exc).__name__, exc)
         return ""
 
 
@@ -728,6 +765,7 @@ def _build_html(
     history_out: Path | str | None = None,
     links_dir: Path | str | None = None,
     now: datetime | None = None,
+    customs_header: str = "",
 ) -> str:
     # industry_src(있을 때) = 산업트렌드를 별도 파일로 빼고 탭 열 때 lazy fetch
     # (초기 11MB→~3MB, 사용자 2026-06-16). industry_html 인라인과 양립 — src 우선.
@@ -823,8 +861,12 @@ def _build_html(
         # server-rendered backlog line. All hidden via :empty when empty
         # so first paint stays clean and the backlog disappears the
         # moment the operator adds a RULE that empties eval_misses.
-        f'<div class="meta meta-status" id="meta-status"></div>'
-        f'<div class="meta meta-next" id="meta-next"></div>'
+        # 관세청 기준 줄(customs_header)이 있으면 서버가 채우고 JS 는 건드리지 않는다
+        # (data-src='customs'). 없으면 비워 두고 JS 가 채널 폴백을 그린다.
+        + (f'<div class="meta meta-status" id="meta-status" data-src="customs">'
+           f'{customs_header}</div>' if customs_header else
+           '<div class="meta meta-status" id="meta-status"></div>')
+        + f'<div class="meta meta-next" id="meta-next"></div>'
         f'<div class="meta meta-today" id="meta-today"></div>'
         f'<div class="meta meta-backlog">{backlog_inner}</div>'
         f'<div class="meta meta-cost">{_cost_line_html()}</div>'
@@ -2269,6 +2311,10 @@ function buildIndustriesView(filtered){
 function renderHeaderMeta(){
   const st=currentDataStatus();
   const ms=document.getElementById('meta-status');
+  // 서버가 관세청 기준 줄을 그렸으면(data-src='customs') 채널 줄로 덮지 않는다
+  // (사용자 2026-10-12 — 채널이 07-22 뒤로 발표를 안 싣는다). 아래는 관세청
+  // 데이터가 없을 때의 채널 폴백이다.
+  const fromCustoms=ms&&ms.dataset&&ms.dataset.src==='customs';
   const sp=[];
   if(st.prelim)sp.push('잠정 <strong>'+esc(latestPeriodStr(st.prelim))+'</strong>');
   if(st.final)sp.push('확정 <strong>'+esc(latestPeriodStr(st.final))+'</strong>');
@@ -2295,7 +2341,7 @@ function renderHeaderMeta(){
     warn=' <span class="hdr-warn">⚠️ 채널 알림 미수신 — OpenAPI 잠정은 '
       +esc(box.dataset.provLabel||pend)+'까지 나와 있습니다</span>';
   }
-  ms.innerHTML=sp.length?'📊 현재 '+sp.join(' · ')
+  if(!fromCustoms)ms.innerHTML=sp.length?'📊 현재 '+sp.join(' · ')
     +' <span style="opacity:.6;font-size:.88em">(채널 발표 기준)</span>'+warn:'';
   const next=nextAnnouncement();
   const mn=document.getElementById('meta-next');

@@ -401,7 +401,9 @@ def audit_header_branch(store_db: Path, data_dir: Path) -> list[str]:
     from trade.dashboard import header_facts
     bad: list[str] = []
     _p("\n" + "=" * 72)
-    _p("⑦ 헤더 갈래 (채널 알림 ↔ OpenAPI · trade.dashboard --why 와 같은 판정)")
+    # 2026-10-12 부터 헤더는 관세청(OpenAPI 잠정·월간 확정) 기준이다 — 이 축은 **채널
+    # 알림 경로**(카드 피드)를 잰다. 채널 줄은 관세청 데이터가 없을 때의 폴백뿐이다.
+    _p("⑦ 채널 알림 경로 (헤더는 관세청 기준 · 채널은 폴백 · trade.dashboard --why 와 같은 판정)")
     _p("=" * 72)
     f = header_facts(store_db, data_dir)
     v = f.get("verdict") or {}

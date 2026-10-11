@@ -525,6 +525,60 @@ def prov_period_end(ym: str, decile: str) -> str:
     return ""
 
 
+_WINDOW_KO = {"D1": "1-10일", "D2": "1-20일", "FULL": "전체"}
+
+
+def confirmed_ym(latest_ym: str, today=None) -> str:
+    """관세청 월간 저장분의 최신월 → **확정** 월('YYYY-MM'). 최신월이 아직 '잠정'
+    (익월 15일 전)이면 그 전월이 확정이다. 판정은 산업트렌드 라벨과 같은 달력
+    (`industry._month_status_label`, KST) — 두 표면이 같은 달을 다르게 부르지
+    않게 단일 출처에서 파생한다(#38). 못 읽으면 ''."""
+    from trade.industry import _month_status_label, _prev_month
+    try:
+        int(latest_ym[:4]), int(latest_ym[5:7])
+    except (TypeError, ValueError, IndexError):
+        return ""
+    if _month_status_label(latest_ym, today).startswith("확정"):
+        return latest_ym[:7]
+    return _prev_month(latest_ym[:7])
+
+
+def header_status_html(ref: Optional[dict], latest_ym: Optional[str],
+                       fetched_at: Optional[datetime], *, today=None,
+                       now: Optional[datetime] = None) -> str:
+    """헤더 '📊 현재 잠정 X · 확정 Y' 를 **관세청** 기준으로(사용자 2026-10-12
+    "발표기준을 채널에서 관세청으로 바꿔줘 — 채널이 더 이상 업데이트를 안 한다").
+
+    잠정 = OpenAPI 순별 잠정의 최신 창(🟢 잠정 속보 박스와 같은 `ref`) ·
+    확정 = 관세청 월간 저장분의 확정월(`confirmed_ym`). 기준시각은 **우리가 받아온
+    시각**이고(#304) 발표 시각이 아니다(#165). 둘 다 없으면 '' → 호출부가 채널
+    폴백을 쓴다."""
+    import html as _h
+    parts: list[str] = []
+    if ref and ref.get("ym"):
+        ym = str(ref["ym"])
+        win = _WINDOW_KO.get(str(ref.get("decile") or ""))
+        try:
+            m = int(ym[5:7])
+        except ValueError:
+            m = 0
+        if m and win:
+            parts.append(f"잠정 <strong>{m}월 {_h.escape(win)}</strong>")
+    fin = confirmed_ym(latest_ym or "", today) if latest_ym else ""
+    if fin:
+        parts.append(f"확정 <strong>{int(fin[5:7])}월 전체</strong>")
+    if not parts:
+        return ""
+    note, stale = prov_fetch_note(fetched_at, now=now) if (ref and ref.get("ym")) \
+        else ("", False)
+    tail = "관세청 기준" + (f" · 잠정 {note}" if note and not stale else "")
+    warn = (f" <span class='hdr-warn'>⚠️ 잠정 {_h.escape(note)}</span>"
+            if stale and note else "")
+    return ("📊 현재 " + " · ".join(parts)
+            + f" <span style='opacity:.6;font-size:.88em'>({_h.escape(tail)})</span>"
+            + warn)
+
+
 def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
     """최신월의 '가장 진행된 누적창'을 잡고, 작년 동월·동순 YoY를 붙인다.
 
@@ -1203,10 +1257,11 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "",
         # 출처 명시 (사용자 2026-06-21 '채널은 1-20일인데 카드는 1-10일') — 이 박스는
         # 관세청 공개 OpenAPI(data.go.kr 순별 잠정 4종) 기준. 텔레그램 수출입 속보
         # 채널은 더 빠른 관세청 경로(보도자료·무역통계)를 relay 해 같은 旬을 1~2일
-        # 먼저 싣는다 → 상단 '현재 잠정'(채널)과 이 박스 旬이 잠시 다를 수 있음.
+        # 먼저 싣는다. 2026-10-12 부터 상단 '현재 잠정' 도 이 박스와 같은 OpenAPI 창을
+        # 쓰므로(헤더 관세청 기준 — 채널이 07-22 뒤로 발표를 안 싣는다) 둘은 같은 旬이다.
         "<div class='ind-prov-src'>📡 출처: 관세청 공개 OpenAPI(data.go.kr 순별 잠정) "
-        "· 상단 속보(텔레그램 채널)보다 1~2일 늦게 공개될 수 있어 旬(1-10/1-20)이 "
-        "일시적으로 다를 수 있음 — OpenAPI 갱신 시 자동 반영</div>"
+        "· 관세청 보도자료보다 1~2일 늦게 공개될 수 있음 — OpenAPI 갱신 시 자동 반영 "
+        "· 상단 '현재 잠정' 도 이 창 기준</div>"
         f"{fetch_line}"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
