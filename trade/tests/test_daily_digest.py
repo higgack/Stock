@@ -71,6 +71,40 @@ class DigestComposeTests(unittest.TestCase):
         self.assertEqual(second, [])
         self.assertEqual(third, ["새거"])
 
+    def test_one_or_two_probe_timeouts_are_left_out(self):
+        """사용자 2026-10-11 "1~2회 타임아웃은 결산에서 빼줘" — 그날 다른
+        일이 없으면 결산 자체가 무음, 다른 일이 있으면 오류 줄만 빠진다."""
+        for n in (1, 2):
+            c = {"probe_fail": n, "probe_fail_kinds": {"타임아웃": n}}
+            self.assertIsNone(dg.compose("2026-10-09", 0, c, False, None), n)
+            b = dg.compose("2026-10-09", 5, c, False, None)
+            self.assertIn("포워드 5건", b)
+            self.assertNotIn("probe 오류", b)
+            self.assertNotIn("❌", b)
+
+    def test_probe_errors_that_still_speak(self):
+        """빼는 건 '전부 타임아웃 · 2회 이하' 뿐 — 경계 밖은 그대로 싣는다."""
+        cases = {
+            "3회는 남긴다": {"probe_fail": 3, "probe_fail_kinds": {"타임아웃": 3}},
+            "요청한도 섞임": {"probe_fail": 2,
+                         "probe_fail_kinds": {"타임아웃": 1, "요청한도": 1}},
+            "인증·키 1회": {"probe_fail": 1, "probe_fail_kinds": {"인증·키": 1}},
+            "갈래미상(적립 고장 신호)": {"probe_fail": 1},
+            "갈래 일부 미상": {"probe_fail": 2, "probe_fail_kinds": {"타임아웃": 1}},
+        }
+        for why, c in cases.items():
+            b = dg.compose("2026-10-09", 0, c, False, None)
+            self.assertIsNotNone(b, why)
+            self.assertIn("probe 오류", b, why)
+
+    def test_quiet_probe_does_not_hide_other_errors(self):
+        """probe 줄만 빠지고 스캔 실패·부분 스캔은 그대로 실린다."""
+        b = dg.compose("2026-10-09", 0,
+                       {"probe_fail": 1, "probe_fail_kinds": {"타임아웃": 1},
+                        "scan_partial": 1}, False, None)
+        self.assertIn("부분 스캔 1회", b)
+        self.assertNotIn("probe 오류", b)
+
     def test_error_alerts_wired_in_scan(self):
         from trade.scripts import scan_customs as sc
         src = Path(sc.__file__).read_text(encoding="utf-8")

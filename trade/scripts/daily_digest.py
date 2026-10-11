@@ -3,7 +3,8 @@
 00:03 KST 에 어제(KST) 하루를 결산:
   📨 BeOn 포워드 N건 (store.db ingested_at 기준)
   📦 관세청: 스윕 n회 · 데이터 갱신 m회 · 신규 급증 k건 (run_ledger)
-  ❌ 오류: probe/스캔 실패·부분 스캔 횟수 (있을 때만)
+  ❌ 오류: probe/스캔 실패·부분 스캔 횟수 (있을 때만 — 단 probe 가
+     타임아웃만 1~2회인 날은 뺀다, QUIET_PROBE_TIMEOUTS)
   ⛔ 시스템: BeOn 리스너 비활성 / 대시보드 렌더 정체 (지금 상태 점검)
   🔍 신규 미매칭 품목 후보: 레퍼런스북 어디에도 안 붙는 새 알림 회사
      (별칭 추가 대상 — seen-set 으로 신규분만, 사용자 2026-06-19)
@@ -167,6 +168,25 @@ def err_breakdown(n: int, kinds: dict | None, top: int = 3) -> str:
     return f"{n}회(" + " · ".join(parts) + ")"
 
 
+# 결산에서 뺄 '일시적 타임아웃' 상한(사용자 2026-10-11 "1~2회 타임아웃은
+# 결산에서 빼줘"). probe 는 5분마다(하루 ~288회) 돌고 실패 시 그 회차만
+# 건너뛰며, 정기 4회/일 풀스윕이 안전망이라 하루 1~2회 타임아웃은 손쓸 게
+# 없다 — 늘 뜨는 줄은 진짜 오류를 가린다(#25·#260).
+# ⚠️ **전부 타임아웃일 때만** 뺀다. 갈래가 섞였거나(요청한도·인증·키는
+# 처방이 다르다, #82) 갈래를 모르면(적립 고장 신호) 그대로 싣는다.
+QUIET_PROBE_TIMEOUTS = 2
+
+
+def is_quiet_probe_noise(counts: dict) -> bool:
+    """그날 probe 오류가 '타임아웃만 1~QUIET_PROBE_TIMEOUTS회' 인가. 순수."""
+    n = int(counts.get("probe_fail", 0) or 0)
+    if not 0 < n <= QUIET_PROBE_TIMEOUTS:
+        return False
+    kinds = {k: int(v) for k, v in (counts.get("probe_fail_kinds") or {}).items()
+             if isinstance(v, (int, float)) and int(v) > 0}
+    return set(kinds) == {"타임아웃"} and kinds["타임아웃"] == n
+
+
 def compose(date_key: str, fwd: int, counts: dict,
             listener_down: bool, stale_min: int | None,
             new_unmatched: list[str] | None = None) -> str | None:
@@ -188,6 +208,8 @@ def compose(date_key: str, fwd: int, counts: dict,
                          ("scan_fail", "스캔 전체실패"),
                          ("scan_partial", "부분 스캔")):
         n = counts.get(field, 0)
+        if field == "probe_fail" and is_quiet_probe_noise(counts):
+            continue   # 일시적 타임아웃 1~2회 — 결산에서 뺀다(위 상수 참조)
         if n:
             errs.append(f"{label} "
                         + err_breakdown(n, counts.get(f"{field}_kinds")))
