@@ -415,7 +415,7 @@ def audit_header_branch(store_db: Path, data_dir: Path) -> list[str]:
     if remedy:
         _p(f"   처방: {remedy}")
     if mark == _NG:
-        bad.append(f"헤더 채널 경로 {branch}: {v.get('reason', '')} — {remedy}")
+        bad.append(f"채널 알림 경로 {branch}: {v.get('reason', '')} — {remedy}")
     return bad
 
 

@@ -1743,7 +1743,7 @@ function latestPeriodStr(a){
 }
 
 // Find the latest (by period_end) preliminary and final alert among the
-// currently-latest revisions so the header can show "현재 잠정: X · 확정: Y".
+// currently-latest revisions — 채널 폴백 줄용(관세청 기준 줄이 없을 때만 헤더에 실린다).
 function currentDataStatus(){
   let latestPrelim=null,latestFinal=null;
   ALERTS.forEach(a=>{
@@ -3115,7 +3115,9 @@ def inbox_silence_notes(f: dict, today=None) -> list[str]:
 
 
 def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
-    """`--why` — 헤더 입력(채널 알림)과 OpenAPI 를 나란히 놓고 갈래를 판정한다.
+    """`--why` — 채널 알림 경로와 OpenAPI 를 나란히 놓고 갈래를 판정한다.
+    2026-10-12 부터 헤더는 관세청 기준(`_load_customs_header`)이고 채널 줄은 관세청
+    데이터가 없을 때의 폴백이다 — 이 진단은 그 채널 경로(카드 피드)를 잰다.
     사실은 `header_facts`(감사와 공유)가 모으고 여기선 찍기만 한다."""
     import sys
     from trade import customs_provisional as cp
@@ -3214,8 +3216,8 @@ def main() -> int:
     )
     ap.add_argument(
         "--why", action="store_true",
-        help="헤더('현재 잠정 X · 확정 Y')가 왜 그 값인지 — 채널 알림 경로(inbox → "
-             "DB)와 OpenAPI 를 나란히 놓고 갈래(리스너/채널/인제스트/파서)를 판정. "
+        help="채널 알림 경로(inbox → DB)와 OpenAPI 를 나란히 놓고 갈래(리스너/채널/"
+             "인제스트/파서)를 판정 — 헤더는 관세청 기준이고 채널은 폴백. "
              "읽기 전용, 렌더 안 함.",
     )
     ap.add_argument(

@@ -529,18 +529,32 @@ _WINDOW_KO = {"D1": "1-10일", "D2": "1-20일", "FULL": "전체"}
 
 
 def confirmed_ym(latest_ym: str, today=None) -> str:
-    """관세청 월간 저장분의 최신월 → **확정** 월('YYYY-MM'). 최신월이 아직 '잠정'
-    (익월 15일 전)이면 그 전월이 확정이다. 판정은 산업트렌드 라벨과 같은 달력
-    (`industry._month_status_label`, KST) — 두 표면이 같은 달을 다르게 부르지
-    않게 단일 출처에서 파생한다(#38). 못 읽으면 ''."""
+    """관세청 월간 저장분의 최신월 → **확정** 월('YYYY-MM'). 최신월에서 한 달씩
+    거슬러 올라가며 달력상 '확정'(익월 15일 경과)인 첫 달을 고른다 — 저장분에 당월
+    부분 행이 들어와 최신월이 두 달 앞서도 확정을 앞당기지 않는다(독립 리뷰: 10/11 에
+    최신월 10월이면 '9월 확정' 이 나흘 일렀다). 판정은 산업트렌드 라벨과 같은 달력
+    (`industry._month_status_label`, KST) — 단일 출처(#38). 못 읽으면 ''."""
     from trade.industry import _month_status_label, _prev_month
     try:
         int(latest_ym[:4]), int(latest_ym[5:7])
     except (TypeError, ValueError, IndexError):
         return ""
-    if _month_status_label(latest_ym, today).startswith("확정"):
-        return latest_ym[:7]
-    return _prev_month(latest_ym[:7])
+    ym = latest_ym[:7]
+    for _ in range(4):
+        if _month_status_label(ym, today).startswith("확정"):
+            return ym
+        ym = _prev_month(ym)
+    return ""
+
+
+def expected_confirmed_ym(today=None, grace_days: int = 2) -> str:
+    """달력상 지금쯤 **확정돼 있어야 할** 월 — 오늘(KST)에서 grace_days 를 뺀 날 기준
+    (15일 발표 뒤 월간 수집이 따라잡을 여유, 실측 아님 #165). 헤더의 확정 월이 이보다
+    낡았으면 월간 수집이 멈춘 것이라 ⚠️ 로 말한다(#52 조용한 것과 죽은 것)."""
+    if today is None:
+        today = datetime.now(_KST).date()
+    d = today - timedelta(days=grace_days)
+    return confirmed_ym(f"{d.year:04d}-{d.month:02d}", d)
 
 
 def header_status_html(ref: Optional[dict], latest_ym: Optional[str],
@@ -572,8 +586,14 @@ def header_status_html(ref: Optional[dict], latest_ym: Optional[str],
     note, stale = prov_fetch_note(fetched_at, now=now) if (ref and ref.get("ym")) \
         else ("", False)
     tail = "관세청 기준" + (f" · 잠정 {note}" if note and not stale else "")
-    warn = (f" <span class='hdr-warn'>⚠️ 잠정 {_h.escape(note)}</span>"
-            if stale and note else "")
+    warns: list[str] = []
+    if stale and note:
+        warns.append(f"잠정 {note}")          # note 가 이미 ⚠️ 를 품는다
+    exp_fin = expected_confirmed_ym(today)
+    if fin and exp_fin and fin < exp_fin:
+        warns.append(f"⚠️ 확정 {fin} — 관세청 달력상 {exp_fin} 까지 확정됐어야 함"
+                     " (월간 수집 industry_report 확인)")
+    warn = "".join(f" <span class='hdr-warn'>{_h.escape(w)}</span>" for w in warns)
     return ("📊 현재 " + " · ".join(parts)
             + f" <span style='opacity:.6;font-size:.88em'>({_h.escape(tail)})</span>"
             + warn)

@@ -80,3 +80,30 @@ def test_render_without_customs_db_keeps_channel_fallback(tmp_path):
     store.open_db(db).close()
     html = td.render_html(db, customs_db_path=tmp_path / "none.db")
     assert '<div class="meta meta-status" id="meta-status"></div>' in html
+
+
+def test_confirmed_month_never_runs_ahead_of_the_calendar():
+    """독립 리뷰 Medium — 저장분에 당월 부분 행이 들어와 최신월이 '10월' 이어도
+    10/11 엔 9월이 아직 확정 전이다(9월분은 10/15 확정)."""
+    assert cp.confirmed_ym("2026-10", date(2026, 10, 11)) == "2026-08"
+    assert cp.confirmed_ym("2026-10", date(2026, 10, 15)) == "2026-09"
+    assert cp.expected_confirmed_ym(date(2026, 10, 16)) == "2026-08"   # 여유 2일
+    assert cp.expected_confirmed_ym(date(2026, 10, 17)) == "2026-09"
+
+
+def test_header_warns_when_monthly_confirmed_stalls():
+    """확정 월이 달력보다 낡으면(월간 수집 정지) 말한다 — 채널 줄이 82일 동안 말없이
+    낡았던 그 실패를 관세청 줄에서 되풀이하지 않는다(#52)."""
+    now = datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)
+    h = cp.header_status_html(_ref(), "2026-07", now, today=date(2026, 10, 12), now=now)
+    assert "확정 <strong>7월 전체</strong>" in h
+    assert "hdr-warn" in h and "2026-08 까지 확정됐어야" in h
+    ok = cp.header_status_html(_ref(), "2026-09", now, today=date(2026, 10, 12), now=now)
+    assert "hdr-warn" not in ok
+
+
+def test_stale_fetch_warning_has_a_single_sign():
+    now = datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)
+    h = cp.header_status_html(_ref(), "2026-09", now - timedelta(days=3),
+                              today=date(2026, 10, 12), now=now)
+    assert h.count("⚠️") == 1

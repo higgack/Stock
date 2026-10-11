@@ -9,6 +9,10 @@ inbox.jsonl → store.db)에서, 카드는 **OpenAPI** 에서 오므로 채널 �
   ingest        — inbox 엔 새 줄이 있는데 DB 최신이 그보다 옛날(인제스트·타이머)
   parser        — inbox 엔 있고 eval_misses 에 최근 드랍이 쌓임(서식 변경, #261)
 판정은 여기서 하고 `trade.dashboard --why` 는 사실을 모아 넘기기만 한다(#41).
+
+⚠️ 2026-10-12 부터 헤더는 **관세청 기준**(`trade.dashboard._load_customs_header` —
+OpenAPI 잠정 창 + 월간 확정월)이고, 채널 줄은 관세청 데이터가 없을 때의 폴백이다
+(사용자 "채널이 더 이상 업데이트를 안 한다"). 여기 판정은 채널 알림 경로를 잰다.
 """
 from __future__ import annotations
 
