@@ -80,7 +80,8 @@ MAX_PER_SIDE = 3                   # Pros·Cons 각각 줄 상한
 LINE_CHARS = 90                    # 한 줄 글자 상한(넘으면 자른다 — 프롬프트는 70자를 요구)
 TICK_TIMEOUT_SEC = 1800            # 봇 주기 태스크의 기다림 상한
 STALE_TICK_MIN = 45                # 집계 시각이 지났는데 마지막 주기가 이보다 오래면 '봇 주기 멈춤'
-BEAT_SEC = 60                      # 긴 수집·정리 중 '주기가 살아 있다' 를 남기는 간격(아래 판정이 그걸 본다)
+BEAT_SEC = 60                      # 긴 수집 중 '주기가 살아 있다' 를 남기는 간격(아래 판정이 그걸 본다)
+ALT_PACE = 0.25                    # 같은 종목을 구글에 두 번째로 물을 때 사이 쉬는 초(`alt_query`)
 SRC_FAIL_SHARE = 0.25              # 원천을 못 받은 종목이 보유의 이 비율 이상이면 장애(❌)
 SRC_MARKET_MIN = 3                 # 한 시장 종목이 이 수 이상인데 전부 실패·전부 0건이면 장애(❌)
 _MODEL = "gemini-2.5-flash-lite"   # 주어진 문장에서 근거를 골라 요약하는 일 — 판단 티어가 아니다
@@ -516,6 +517,15 @@ def _fetch_naver(query: str) -> tuple[list | None, str]:
     return items, ""
 
 
+def alt_query(stock: dict) -> str:
+    """DART 한글명으로 찾는 국내 종목의 두 번째 검색어(영문 이름) — 같은 검색어면 ''(두 번 묻지 않는다). 해외
+    종목은 `search_name` 이 `ko` 를 안 쓰므로 두 검색어가 같아 저절로 ''."""
+    if not stock.get("ko"):
+        return ""
+    alt = search_name({k: v for k, v in stock.items() if k != "ko"})
+    return alt if alt and alt != search_name(stock) else ""
+
+
 def fetch_stock_news(stock: dict) -> tuple[list[dict], str, str]:
     """(항목들, 실제로 답한 원천 이름, 실패·대체 사유) — 원천이 0건이면 ([], 원천, '').
 
@@ -534,11 +544,16 @@ def fetch_stock_news(stock: dict) -> tuple[list[dict], str, str]:
             if g is None:
                 return [], "", f"{why} · {gwhy}"
             items, used = g, "google"
-        alt = search_name({k: v for k, v in stock.items() if k != "ko"}) if stock.get("ko") else ""
-        if alt and alt != q:
+        alt = alt_query(stock)
+        if alt:
             # DART 한글명으로 찾은 종목은 영문 이름으로도 한 번 더(같은 원천) — '케이티' 로만 찾으면 'KT'
             # 기사를 거의 다 놓친다. 합친 뒤 최근 순(수집이 종목당 상한에서 끊는다).
-            more, _ = _fetch_naver(alt) if used == "naver" else _fetch_google(alt, "KR")
+            if used == "google":
+                time.sleep(ALT_PACE)                 # 구글은 몰아 치면 막힌다(수집의 `pace` 와 같은 이유)
+            more, awhy = _fetch_naver(alt) if used == "naver" else _fetch_google(alt, "KR")
+            if more is None:
+                # 1순위는 받았으니 그 종목을 실패로 세지 않되 조용히 넘기지도 않는다(#43).
+                log.warning("holdings_news: %s 영문 이름 %r 검색 실패: %s", stock.get("key"), alt, awhy)
             if more:
                 links = {x.get("link") for x in items if x.get("link")}
                 items = items + [x for x in more if not x.get("link") or x.get("link") not in links]
@@ -1023,10 +1038,29 @@ def _bodies_path(date: str) -> Path:
 
 
 def _save_bodies(rec: dict) -> None:
-    keep = {s["key"]: {it["k"]: it["_body"] for it in s.get("items") or [] if it.get("_body") and it.get("k")}
-            for s in rec.get("stocks") or [] if s.get("status") == "pending"}
-    keep = {k: v for k, v in keep.items() if v}
+    keep: dict = {}
+    lost = []
+    for s in rec.get("stocks") or []:
+        if s.get("status") != "pending":
+            continue
+        got = {it["k"]: it["_body"] for it in s.get("items") or [] if it.get("_body") and it.get("k")}
+        if got:
+            keep[s["key"]] = got
+        elif any(it.get("body_chars") for it in s.get("items") or []):
+            lost.append(s["key"])        # 본문이 있었는데 메모리엔 없다(다시 읽은 기록) — 파일의 것을 지우지 않는다
     p = _bodies_path(rec["date"])
+    if lost:
+        try:
+            old = json.loads(p.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            old = {}
+        except Exception as exc:                               # noqa: BLE001
+            # 못 읽은 파일을 덮어쓰거나 지우면 멀쩡한 본문을 잃는다(반영분 리뷰) — 이번엔 손대지 않는다.
+            log.warning("holdings_news: 본문 사이드카 %s 를 못 읽어 이번엔 갱신하지 않음: %s", p.name, exc)
+            return
+        for k in lost:
+            if isinstance(old, dict) and isinstance(old.get(k), dict) and old[k]:
+                keep[k] = old[k]
     try:
         if keep:
             _atomic_write(p, json.dumps(keep, ensure_ascii=False))
@@ -1176,10 +1210,6 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
                 st["last_tick"] = (now if fixed else _now()).isoformat(timespec="seconds")
                 _save_state(st)
 
-            def progress(r: dict) -> None:
-                save_record(r)
-                beat()
-
             date = now.date().isoformat()
             recs = load_records(limit=3)
             rec = next((r for r in recs if r["date"] == date), None)
@@ -1188,6 +1218,10 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
                     tg_prune(now)
                 except Exception as exc:                       # noqa: BLE001
                     log.warning("holdings_news: 수신함 정리 실패: %s", exc)
+                # 지난 주기의 실패 사유는 지금 다시 모으기 시작한 순간 낡는다 — 남겨 두면 판정이 사유를 먼저 봐
+                # 정상 수집 내내 '오늘 집계 못 함' 이다(반영분 리뷰). 실패하면 `tick_and_render` 가 다시 적는다.
+                st["reason"] = ""
+                _save_state(st)
                 rec = collect(now, records=recs, fetch=fetch, body=body, pace=pace, beat=beat)
                 if rec is None:
                     st["reason"] = "자산 대시보드에 보유 종목이 없음(portfolio.json)"
@@ -1203,7 +1237,7 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
             for r in todo:
                 if not any(s.get("status") == "pending" for s in r.get("stocks") or []):
                     continue
-                d = analyze(r, llm=llm, max_calls=MAX_LLM_CALLS - res["calls"], on_progress=progress)
+                d = analyze(r, llm=llm, max_calls=MAX_LLM_CALLS - res["calls"], on_progress=save_record)
                 save_record(r)
                 for k in ("calls", "analyzed", "failed"):
                     res[k] += d[k]
@@ -1712,10 +1746,11 @@ def render_page(records: list[dict], state: dict | None = None,
 평가금액이 큰 종목부터 보여 줍니다. ETF(국내는 자산 기록이 ETF 로 알아본 상품, 미국은 거래소 목록의 ETF
 표시)와 티커를 못 찾은 상품은 '회사' 뉴스로 가를 수 없어 빼고, 그 이름을 날짜 칸 맨 아래에 적습니다(일본·홍콩·
 대만 ETF 는 가를 목록이 없어 회사로 셉니다).<br>
-<b>뉴스</b> — 종목마다 최대 {MAX_NEWS_PER_STOCK}건입니다(원천이 최신순으로 주는 10건 안에서 — 기사가
-많은 날은 최근 것만 담깁니다). 국내는 네이버 뉴스 검색(키가 없으면 구글 뉴스)으로 이름을 찾되, 제목·요약에
+<b>뉴스</b> — 종목마다 최대 {MAX_NEWS_PER_STOCK}건입니다(원천이 최신순으로 주는 10건 안에서 — 두 이름으로
+찾는 종목은 두 검색 결과를 합쳐서 — 기사가 많은 날은 최근 것만 담깁니다). 국내는 네이버 뉴스 검색(키가 없으면 구글 뉴스)으로 이름을 찾되, 제목·요약에
 그 이름이 <b>낱말로</b> 나온 기사만 남깁니다(이름이 짧거나 흔하면 다른 회사 기사가 섞일 수 있어 AI 가 한 번 더
-거릅니다). 자산 기록 이름이 영문인 국내 종목(NAVER·HYBE 등)은 DART 의 한글 이름으로 검색합니다. 해외는
+거릅니다). 자산 기록 이름이 영문인 국내 종목(NAVER·HYBE 등)은 DART 의 한글 이름과 영문 이름 둘 다로
+검색합니다(DART 한글명이 '케이티' 같은 음역이면 기사는 영문으로 씁니다). 해외는
 Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴스로 한 번 더 찾습니다. 같은 기사가 전날 기록에
 이미 있으면 다시 싣지 않습니다. 네이버가 호스팅한 기사는 본문 앞부분({BODY_CHARS}자까지)을 읽어 AI 에 같이
 넘기지만, 화면에는 원문 링크와 원천이 준 요약만 싣습니다.<br>
@@ -1860,6 +1895,7 @@ def probe(tickers: list[str] | None = None, out=print) -> int:
         out(f"── {s['name']} ({s['key']}) · 검색어 {search_name(s)!r}"
             + (f"(DART 한글명 {s['ko']!r})" if s.get("ko") else
                " · ⚠️ 영문 이름인데 DART 한글명을 못 얻음" if "ko" in s else "")
+            + (f" + 영문 {alt_query(s)!r}" if alt_query(s) else "")
             + f" · 원천 {used or '없음'}"
             + (f" · 실패 {why_}" if why_ else "") + f" · {len(items)}건")
         for it in items[:3]:

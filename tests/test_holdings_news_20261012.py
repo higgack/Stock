@@ -2163,3 +2163,105 @@ def test_rejection_after_a_transient_error_drops_the_retry_promise(hn):
     hn.analyze(rec, llm=_llm(None, pt=0, ot=0, why="AI 호출 실패(400)", kind="rejected"))
     s = rec["stocks"][0]
     assert s["retry"] is False and "Pros/Cons 대기 — AI 호출 실패(400)</div>" in hn._card(s)
+
+
+# ── 반영분 리뷰 2차(2026-10-13) ───────────────────────────────────────────────
+def test_beat_uses_the_live_clock_when_the_tick_is_not_pinned(hn, portfolio, monkeypatch):
+    """심박은 **지금** 시각을 남겨야 한다 — 주기 시작 시각을 되쓰면 45분 넘는 수집이 그대로 '멈춤' 이다. 다른 테스트는
+    전부 `now` 를 고정해 그 갈래를 한 번도 안 탔다(리뷰 뮤테이션 생존)."""
+    import itertools
+    clock = (_t("2026-10-12T07:15") + timedelta(minutes=i) for i in itertools.count())
+    monkeypatch.setattr(hn, "_now", lambda n=None: n if n is not None else next(clock))
+    monkeypatch.setattr(hn, "BEAT_SEC", 0)
+    seen = []
+
+    def fetch(st):
+        seen.append(hn.load_state()["last_tick"])
+        return _news_for_all(st)
+    hn.tick(None, llm=_llm(_answer_all), fetch=fetch, body=lambda l: "", pace=0)
+    assert len(seen) == 2 and "2026-10-12T07:15:00+09:00" < seen[0] < seen[1]
+
+
+def test_collect_start_clears_a_stale_failure_reason(hn, portfolio):
+    """어제 주기 실패 사유가 남아 있으면 판정이 그걸 먼저 봐 정상 수집 내내 '오늘 집계 못 함' 이다."""
+    hn._save_state({"reason": "주기 실패(RuntimeError: x)"})
+    during = []
+
+    def fetch(st):
+        during.append(hn.status_verdict([], _t("2026-10-12T07:20"), hn.load_state())[0])
+        return _news_for_all(st)
+    hn.tick(_t(_NOW), llm=_llm(_answer_all), fetch=fetch, body=lambda l: "", pace=0)
+    assert during == ["wait", "wait"] and hn.load_state()["reason"] == ""
+
+
+def test_no_key_after_a_transient_error_drops_the_retry_promise(hn):
+    rec = _rec(_stock("KR:A", 1))
+    hn.analyze(rec, llm=_llm(None, pt=0, ot=0, why="AI 일시 오류(503)", kind="transient"))
+    hn.analyze(rec, llm=_llm(None, why="no_key"))
+    s = rec["stocks"][0]
+    assert s["retry"] is False and "다음 주기에 다시" not in hn._card(s)
+
+
+def test_rejected_stock_never_claims_its_body_was_read(hn):
+    s = _stock("KR:A", 1)
+    s["items"][0].update(k="https://p/KR:A/1", _body="본문", body_chars=2)
+    rec = _rec(s)
+    bad = _llm(None, pt=0, ot=0, why="AI 호출 실패(400)", kind="rejected")
+    for _ in range(hn.MAX_ANALYZE_TRIES):
+        hn.analyze(rec, llm=bad)
+    assert s["status"] == "failed" and "body_used" not in s["items"][0]
+    assert "AI 가 읽음" not in hn._card(s)
+
+
+@pytest.mark.parametrize("name, titled", [("ABCD", "Abcd"), ("ABC", None)])
+def test_title_case_alias_starts_at_four_letters(hn, name, titled):
+    als = hn.aliases({"name": name, "market": "KR", "ticker": "000001"})
+    assert [a for a, k in als if k == "name"] == [name] + ([titled] if titled else [])
+
+
+def test_second_name_failure_is_logged_and_google_is_paced(hn, monkeypatch, caplog):
+    slept = []
+    monkeypatch.setattr(hn.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(hn, "_fetch_naver", lambda q: (None, "네이버 키 없음"))
+    monkeypatch.setattr(hn, "_fetch_google", lambda q, mk: (
+        [_it("케이티 a", "2026-10-12T05:00:00+09:00", link="https://n/a")], "") if q == "케이티" else (None, "구글 뉴스 실패(로그 참조)"))
+    kt = {"key": "KR:030200", "market": "KR", "ticker": "030200", "name": "KT", "ko": "케이티"}
+    with caplog.at_level("WARNING", logger="bot.holdings_news"):
+        items, used, why = hn.fetch_stock_news(kt)
+    assert [x["link"] for x in items] == ["https://n/a"] and used == "google"   # 1순위 결과로 간다
+    assert slept == [hn.ALT_PACE]
+    assert any("KR:030200 영문 이름 'KT' 검색 실패: 구글 뉴스 실패(로그 참조)" in r.getMessage() for r in caplog.records)
+    assert hn.alt_query({"market": "US", "name": "KT", "ko": "케이티"}) == ""
+    assert hn.alt_query({"market": "KR", "name": "케이티", "ko": "케이티"}) == ""
+
+
+def test_probe_names_the_second_query(hn, monkeypatch):
+    import bot.dart_client as dc
+    import bot.portfolio as pf
+    monkeypatch.setattr(pf, "load", lambda: _model(_h("KT", "030200", "KR")))
+    monkeypatch.setattr(dc, "get_dart", lambda: types.SimpleNamespace(news_search_name=lambda c: "케이티"))
+    monkeypatch.setattr(hn, "fetch_stock_news", lambda s: ([], "naver", ""))
+    out = []
+    hn.probe(None, out=out.append)
+    assert any("검색어 '케이티'(DART 한글명 '케이티') + 영문 'KT'" in ln for ln in out)
+
+
+def test_sidecar_survives_a_save_of_a_reloaded_record(hn, caplog):
+    """다시 읽은 기록(본문이 메모리에 없다)을 붙이기 전에 저장해도 사이드카의 본문을 지우지 않는다 · 사이드카를 못
+    읽으면 이번엔 덮지 않는다."""
+    s = _stock("KR:A", 1)
+    s["items"][0].update(k="https://p/1", _body="본문 원래", body_chars=5)
+    hn.save_record({"date": "2026-10-12", "stocks": [s]})
+    side = hn._bodies_path("2026-10-12")
+    reloaded = hn.load_records()[0]
+    assert "_body" not in reloaded["stocks"][0]["items"][0]
+    hn.save_record(reloaded)
+    assert json.loads(side.read_text(encoding="utf-8")) == {"KR:A": {"https://p/1": "본문 원래"}}
+    side.write_bytes(b"\xff\xfe broken")
+    with caplog.at_level("WARNING", logger="bot.holdings_news"):
+        hn.save_record(reloaded)
+    assert side.read_bytes() == b"\xff\xfe broken"
+    assert any("못 읽어 이번엔 갱신하지 않음" in r.getMessage() for r in caplog.records)
+    reloaded["stocks"][0]["status"] = "ok"                              # 다 정리되면 지운다
+    hn.save_record(reloaded)
+    assert not side.exists()

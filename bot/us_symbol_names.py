@@ -225,13 +225,17 @@ def us_etf_symbols(*, cache_only: bool = False) -> set:
     except Exception as exc:
         log.warning("us_etf_symbols: unavailable: %s", exc)
     if ok == len(_URLS) and len(out) > 100:
+        tmp = _ETF_CACHE_FILE.with_name(f".{_ETF_CACHE_FILE.name}.{os.getpid()}.tmp")
         try:
             _ETF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = _ETF_CACHE_FILE.with_name(f".{_ETF_CACHE_FILE.name}.{os.getpid()}.tmp")
             tmp.write_text(json.dumps(sorted(out)), encoding="utf-8")
             os.replace(tmp, _ETF_CACHE_FILE)         # 원자 교체 — 반쯤 쓴 파일을 읽지 않게(#379)
         except Exception as exc:
             log.warning("us_etf_symbols: 캐시 쓰기 실패: %s", exc)
+            try:
+                tmp.unlink(missing_ok=True)          # 반쯤 쓴 임시 파일을 남기지 않는다
+            except OSError:
+                pass
         return out
     try:
         stale = set(json.loads(_ETF_CACHE_FILE.read_text("utf-8")))
