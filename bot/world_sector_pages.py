@@ -965,8 +965,12 @@ def stocks_payloads(now: datetime, memo: dict | None = None) -> dict:
                 meta.append(f"보유 목록 갱신 실패({h['error']}) — {eh.retry_note(h, now)}")
             if not h:
                 meta.append("보유 목록을 아직 받지 않음")
+            # 옛 판 코드의 사유를 '지금 실패' 처럼 표 본문에 적지 않는다 — 머리줄과 같은 한 마디를 붙인다(#38).
+            pnote = eh.prior_note(h, now)
             empty = ((h.get("error") or "보유 목록을 아직 받지 않았습니다") if not h.get("rows")
                      else "해당 종목 없음")
+            if pnote and not h.get("rows"):
+                empty += f" ({pnote})"
             nodays = (f"{empty} · 아직 받은 하루치가 없습니다" if not h.get("rows")
                       else "보유 목록은 있지만 아직 받은 하루치가 없습니다")
             tables = []

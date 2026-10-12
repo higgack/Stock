@@ -86,6 +86,7 @@ def test_open_day_question_goes_to_the_calendar_and_unknown_means_no_send(monkey
     monkeypatch.setattr(mc, "is_trading_day", lambda m, d: asked.append((m, d)) or None)
     rec, why = al.alert_target([_rec("2026-10-12")], {}, _at(2026, 10, 13, 8, 5))
     assert rec is None and "달력" in why and asked == [("KR", "2026-10-13")]
+    assert "범위 밖" in why, "달력이 있어도 범위 밖·오류면 '모름' 이다 — '달력이 없어' 로 단정하지 않는다"
     monkeypatch.setattr(mc, "is_trading_day", lambda m, d: False)
     assert al.alert_target([_rec("2026-10-12")], {}, _at(2026, 10, 13, 8, 5))[0] is None
     monkeypatch.setattr(mc, "is_trading_day", lambda m, d: True)

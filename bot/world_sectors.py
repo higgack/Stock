@@ -1279,8 +1279,8 @@ def why(now: datetime | None = None) -> int:
             for t in eh.etfs(m):
                 h = eh.load(t) or {}
                 if h.get("error"):
-                    tag = " — 이전 판 코드의 기록(다음 주기에 다시 묻는다)" if eh.prior_failure(h) else ""
-                    print(f"   {t}: {h['error']}{tag}")
+                    note = eh.prior_note(h, now)
+                    print(f"   {t}: {h['error']}" + (f" — {note}" if note else ""))
     except Exception as exc:                                   # noqa: BLE001
         print(f"③ ETF 보유 목록: 판정 불가({type(exc).__name__}: {exc})")
         kinds.setdefault("h_error", []).extend(m for m in HOLD_MARKETS if m not in judged)
