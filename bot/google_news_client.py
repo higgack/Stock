@@ -137,6 +137,7 @@ def fetch_news(
         link = (item.findtext("link") or "").strip()
         pub_raw = (item.findtext("pubDate") or "").strip()
         pub_date_str = ""
+        pub_ts = ""
         if pub_raw:
             try:
                 pub_dt = datetime.strptime(pub_raw, "%a, %d %b %Y %H:%M:%S %Z")
@@ -144,6 +145,7 @@ def fetch_news(
                 if pub_dt < cutoff:
                     continue
                 pub_date_str = pub_dt.strftime("%Y-%m-%d")
+                pub_ts = pub_dt.isoformat()     # 시각까지(보유종목 News 의 하루 창)
             except Exception:
                 pass
         title, publisher = _strip_source_suffix(title_raw)
@@ -153,6 +155,7 @@ def fetch_news(
             publisher = src_el.text.strip()
         out.append({
             "date": pub_date_str,
+            "ts": pub_ts,
             "title": title,
             "source": publisher,
             "link": link,

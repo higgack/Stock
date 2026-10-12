@@ -1098,7 +1098,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
  http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
 ━━━━━━━━━
 <b>【대시보드】</b> 위 <b>Main</b> 이 단일 entry — 나머지는 전부 Main nav 에서 이동
- 🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·★중요표시+중요만 필터·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·거래량상위·장전/장후·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
+ 🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·★중요표시+중요만 필터·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·거래량상위·장전/장후·NXT) · 🗞️보유종목 News(매일 07:10 · 보유 종목 뉴스·텔레그램 → AI Pros/Cons) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
  📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 🔋Bollinger(볼린저 상단 돌파 종목수 · 5일선 추이 · 에너지 국면) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
  🌐 <b>국가별</b>(한·미·일·대·중 · TradingView 업종 · 매일 장 마감 3시간 뒤) — 섹터혼합(2국 이상 겹치는 업종의 시장 대비 %p·이긴 날·판정) · 🗺️심리지도(업종×요일 6갈래·칸 누르면 종목) · 📑섹터종목(한·미 Breadth 섹터 ETF 상위 15종목)
  🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 🏦Daily 기관매수(시총 대비 기관 순매수 TOP10 · 매 거래일 20:30 · 개장일 08:00 채널 알림) · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
@@ -1513,13 +1513,18 @@ def _build_usage_report() -> str:
     month_cost_quarterly = sum(
         r.get("cost_usd", 0) for r in calls
         if r.get("subsystem") == "quarterly_infographic")
+    # 보유종목 News Pros/Cons(subsystem='holdings_news', 사용자 2026-10-12) — 대시보드 비용카드의
+    # '보유종목 News' 버킷과 동시갱신(CLAUDE.md 비용합산 규칙).
+    month_cost_holdings_news = sum(
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "holdings_news")
     today_cost_analysis = (today_cost - today_cost_screener - today_cost_daily_byte
                            - sum(r.get("cost_usd", 0) for r in today_calls
                                  if r.get("subsystem") in ("cheongyak", "realestate",
-                                                           "blog", "quarterly_infographic")))
+                                                           "blog", "quarterly_infographic",
+                                                           "holdings_news")))
     month_cost_analysis = (month_cost - month_cost_screener - month_cost_daily_byte
                            - month_cost_realestate - month_cost_blog
-                           - month_cost_quarterly)
+                           - month_cost_quarterly - month_cost_holdings_news)
 
     # Standard View 비용 reader 제거 (2026-06-12) — SV 폐기(#148, 타이머
     # 전부 disable)로 신규 비용 0. 6월 초 trailing 분은 총합에서 제외
@@ -1614,6 +1619,7 @@ def _build_usage_report() -> str:
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
         f"  • 부동산:            {krw(month_cost_realestate)}  ← /realestate_cost",
         f"  • 블로그:            {krw(month_cost_blog)}",
+        f"  • 보유종목 News:     {krw(month_cost_holdings_news)}",
         f"  • 관계후보(kg):      {krw(kg_month_usd)}",
         f"  • 한국 수출입:       {krw(tr_month_usd)}",
         "",
@@ -4323,6 +4329,36 @@ async def _periodic_daily_inst() -> None:
 _WORLD_SECTORS_TICK_SEC = 900
 
 
+_HOLDINGS_NEWS_TICK_SEC = 900
+
+
+async def _periodic_holdings_news() -> None:
+    """🗞️ 보유종목 News(사용자 2026-10-12) — 첫 바퀴는 페이지부터(네트워크 0 — nav 링크가 배포 즉시
+    404 가 되지 않게, 실수 #11). 수집·AI 정리는 to_thread(이벤트루프 차단 시 getUpdates 침묵 →
+    watchdog 오탐, 실수 #2), 기다림엔 `wait_for` 상한. 매일 07:10 KST 이후 한 번 모으고, AI 정리가
+    한 주기 상한을 넘으면 다음 주기에 이어서 한다(`holdings_news.tick`)."""
+    try:
+        from bot.holdings_news import regenerate as _regen_hn
+        await asyncio.to_thread(_regen_hn)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("holdings news initial render failed")
+    await asyncio.sleep(150)
+    while True:
+        try:
+            from bot.holdings_news import TICK_TIMEOUT_SEC as _hn_cap
+            from bot.holdings_news import tick_and_render as _hn_tick
+            await asyncio.wait_for(asyncio.to_thread(_hn_tick), timeout=_hn_cap)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            log.warning("holdings news tick: %s초 안에 안 끝남 — 다음 주기로", _hn_cap)
+        except Exception:
+            log.exception("holdings news tick failed")
+        await asyncio.sleep(_HOLDINGS_NEWS_TICK_SEC)
+
+
 async def _periodic_world_sectors() -> None:
     """첫 바퀴는 페이지부터(네트워크 0 — nav 링크가 배포 즉시 404 가 되지 않게, 실수 #11).
     수집·렌더는 to_thread(이벤트루프 차단 → getUpdates 침묵 → watchdog 오탐, 실수 #2),
@@ -4973,6 +5009,7 @@ async def _on_startup(application) -> None:
     application._fred_boards_task = asyncio.create_task(_periodic_fred_boards())
     application._daily_inst_task = asyncio.create_task(_periodic_daily_inst())
     application._world_sectors_task = asyncio.create_task(_periodic_world_sectors())
+    application._holdings_news_task = asyncio.create_task(_periodic_holdings_news())
     application._backlog_review_task = asyncio.create_task(
         _periodic_backlog_review(application))
     application._marketcap_task = asyncio.create_task(_periodic_marketcap())

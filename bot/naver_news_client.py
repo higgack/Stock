@@ -187,16 +187,23 @@ def fetch_news(query: str, days_back: int = 28, max_items: int = 10) -> Optional
             break
         # pubDate format: "Mon, 15 May 2026 14:23:00 +0900"
         pub_date_str = ""
+        pub_ts = ""
         try:
             pub_dt = datetime.strptime(it["pubDate"], "%a, %d %b %Y %H:%M:%S %z")
             if pub_dt.replace(tzinfo=None) < cutoff:
                 continue
             pub_date_str = pub_dt.strftime("%Y-%m-%d")
+            # 시각까지 — 하루 창으로 거르는 보유종목 News 가 쓴다(날짜만이면 창 경계가 하루 단위로 뭉개진다).
+            pub_ts = pub_dt.isoformat()
         except Exception:
             pass
         link = it.get("originallink") or it.get("link") or ""
         out.append({
             "date": pub_date_str,
+            "ts": pub_ts,
+            # 네이버가 호스팅한 사본(n.news.naver.com) — 원문 사이트마다 구조가 달라 본문을 읽을 땐 이쪽이
+            # 한 가지 구조다(보유종목 News). 원문 링크가 따로 없으면 둘이 같다.
+            "naver_link": it.get("link") or "",
             "title": _decode_html(it.get("title", "")),
             "source": _source_label(link),
             "link": link,

@@ -422,6 +422,22 @@ def _daily_inst_line(records=None, state=None, now=None) -> str:
     return f"   {mark} 기록 {n_real}거래일 · {text}"
 
 
+def _holdings_news_line(records=None, state=None, now=None) -> str:
+    """🗞️ 보유종목 News 판정 한 줄 — **화면과 같은 함수**(`holdings_news.status_verdict`)로 저장된
+    기록만 읽는다(감사가 원천·AI 를 다시 부르면 비용과 자기 장애를 만든다, #321). 갈래 → 글자:
+    ok ✅ · wait ⚠️(오늘 집계 시각 전·집계 중) · pending ⚠️(Pros/Cons 대기 — AI 키 없음 포함, 키는
+    사람이 넣는다) · fail ❌(집계 못 함·봇 주기 멈춤·원천 전멸·AI 정리 실패) · none ❓(보유 종목 없음)."""
+    try:
+        from bot import holdings_news as hn
+        recs = hn.load_records() if records is None else records
+        st = hn.load_state() if state is None else state
+        kind, line = hn.status_verdict(recs, now, st)
+    except Exception as exc:                                   # noqa: BLE001
+        return f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"
+    mark = {"ok": "✅", "wait": "⚠️", "pending": "⚠️", "fail": "❌"}.get(kind, "❓")
+    return f"   {mark} 기록 {len(recs)}일 · {line}"
+
+
 def _world_sectors_lines(state=None, now=None) -> list[str]:
     """국가별 섹터 3보드 — 나라마다 한 줄, **화면 상태 줄과 같은 함수**(`market_verdict`)로
     저장된 상태만 읽는다(원천을 다시 부르지 않는다, #321). 원천이 아직 그 세션을 안 실은
@@ -625,6 +641,10 @@ def main() -> int:
         _p("")
         _p("── 🏦 Daily 기관매수 — 기준일")
         _p(_daily_inst_line())
+
+        _p("")
+        _p("── 🗞️ 보유종목 News — 오늘 집계·Pros/Cons")
+        _p(_holdings_news_line())
 
         _p("")
         _p("── 🌐 국가별 섹터(섹터혼합·심리지도·섹터종목) — 나라별 수집")
