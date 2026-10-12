@@ -25,7 +25,7 @@ _WD = "월화수목금토일"
 _GEN = "\x00GEN\x00"     # 생성 시각 자리 — 내용 비교에서 빼려고 마지막에 채운다
 CURRENCY = {"KR": "원", "US": "달러", "JP": "엔", "TW": "대만달러", "CN_A": "위안"}
 RENDER_DAYS = 10          # 섹터혼합 — 최근 10기준일만 싣는다(그 앞은 기록 보관만)
-STOCK_MARKETS = ("KR", "US")   # 섹터종목 — Breadth 전략 섹터 ETF 가 있는 나라(사용자 지정)
+STOCK_MARKETS = ws.HOLD_MARKETS   # 섹터종목 — Breadth 전략 섹터 ETF 가 있는 나라(단일 출처 #38)
 
 SENT_HELP = {
     "hot_up": "거래가 몰리며 시장보다 강했다",
@@ -325,11 +325,16 @@ def _head(title: str) -> str:
             f'</head><body><div class="wrap">')
 
 
+# 세 보드 뒤에 시장 흐름 보드를 사용자가 정한 순서로(사용자 2026-10-12: 유동성 → 시장타이밍 →
+# Breadth전략 → Bollinger)
 _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · <a href="index.html">🦉 종목분석</a> · '
         '<a href="sector_mix.html">🌐 국가별 섹터혼합</a> · '
         '<a href="sentiment_map.html">🗺️ 국가별 심리지도</a> · '
         '<a href="sector_stocks.html">📑 국가별 섹터종목</a> · '
-        '<a href="breadth_strategy.html">🧭 Breadth전략</a></div>')
+        '<a href="liquidity.html">💧 유동성</a> · '
+        '<a href="market_timing.html">🚦 시장타이밍</a> · '
+        '<a href="breadth_strategy.html">🧭 Breadth전략</a> · '
+        '<a href="bollinger.html">🔋 Bollinger</a></div>')
 
 
 def _foot(name: str) -> str:
@@ -887,12 +892,20 @@ _HANGUL = re.compile("[가-힣]")
 
 
 def display_name(tv_name: str | None, hold_name: str | None) -> str:
-    """종목 이름 — 한글 이름이 있으면 그것(한국어 화면 · 국내 ETF 구성종목은 KRX 한글명을 준다),
-    없으면 원천(TradingView) 이름, 그것도 없으면 보유 목록의 이름. 나라를 묻지 않는다."""
-    for nm in (tv_name, hold_name):
+    """종목 이름 — 한글 이름이 있으면 그것, 없으면 원천(TradingView) 이름, 그것도 없으면 보유 목록의
+    이름. 둘 다 한글이면 **보유 목록(KRX 약칭)이 먼저** — TradingView 국내 이름은 법인 정식명
+    (`삼성전자보통주`·`에스케이하이닉스보통주`, 2026-10-12 VM `--probe` 실측)이라 KRX 약칭(`삼성전자`)이
+    화면에 맞다(REFERENCE 가 적은 우선순위 그대로). 나라를 묻지 않는다."""
+    for nm in (hold_name, tv_name):
         if nm and _HANGUL.search(str(nm)):
-            return str(nm)
+            return _plain(str(nm))
     return str(tv_name or hold_name or "")
+
+
+def _plain(nm: str) -> str:
+    """'삼성전자보통주' → '삼성전자' — 보유 목록에 없는 종목은 TradingView 법인 정식명만 있어
+    꼬리 '보통주' 를 떼야 화면 이름이 된다(그 밖의 글자는 원천 그대로)."""
+    return nm[:-3] if nm.endswith("보통주") and len(nm) > 3 else nm
 
 
 def _holding_rows(h: dict, st: dict | None) -> list[dict]:

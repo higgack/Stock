@@ -577,15 +577,205 @@ def test_ssga_holdings_parse_finds_the_header_and_drops_cash():
         eh.parse_ssga_xlsx(_ssga_xlsx(rows, weight="Percent"))
 
 
-def test_kr_pdf_parse_ranks_by_weight_or_value_and_drops_non_stock_rows():
+def _shrink_dimension(data: bytes, ref: str) -> bytes:
+    """엑셀의 '사용 범위'(dimension) 만 바꾼 사본 — 그 값이 틀린 파일을 흉내 낸다."""
+    import re as _re
+    import zipfile
+    zin = zipfile.ZipFile(io.BytesIO(data))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zout:
+        for it in zin.infolist():
+            b = zin.read(it.filename)
+            if it.filename.startswith("xl/worksheets/sheet"):
+                b, n = _re.subn(rb'<dimension ref="[^"]+"/>', f'<dimension ref="{ref}"/>'.encode(), b)
+                assert n == 1
+            zout.writestr(it, b)
+    return buf.getvalue()
+
+
+def test_ssga_rows_with_a_dash_sector_are_holdings_not_cash():
+    """2026-10-12 미국 11개 ETF 가 전부 '엑셀에 보유 종목 행이 없음' — 섹터 칸 '-' 를 현금으로 읽어
+    전 행을 버리는 필터가 그 증상을 낸다(원인 후보 하나, VM `--probe` 가 확정). 현금은 티커로 가른다."""
+    rows = [[f"Co{i}", f"T{i}", "x", "y", 20 - i, "-", 1, "USD"] for i in range(18)]
+    rows.append(["US DOLLAR", "-", "x", "y", 50.0, "-", 1, "USD"])
+    rows.append(["CASH", "CASH_USD", "x", "y", 40.0, "-", 1, "USD"])
+    top, _ = eh.parse_ssga_xlsx(_ssga_xlsx(rows))
+    assert len(top) == 15 and top[0]["code"] == "T0"
+    assert all(t["code"] not in ("-", "CASH_USD") for t in top), "티커 '-'·CASH_ 는 여전히 현금"
+
+
+def test_ssga_weight_written_as_text_with_percent_or_comma_is_read():
+    rows = [["A", "AAA", "x", "y", "14.48%", "IT", 1, "USD"],
+            ["B", "BBB", "x", "y", "1,203.5", "IT", 1, "USD"],
+            ["C", "CCC", "x", "y", " 3.1 ", "IT", 1, "USD"],
+            ["D", "DDD", "x", "y", "n/a", "IT", 1, "USD"]]
+    top, _ = eh.parse_ssga_xlsx(_ssga_xlsx(rows))
+    assert [(t["code"], t["weight"]) for t in top] == [("BBB", 1203.5), ("AAA", 14.48), ("CCC", 3.1)]
+
+
+def test_ssga_reads_past_a_wrong_used_range():
+    """읽기 전용 모드는 파일이 적은 사용 범위만 읽는다 — 머리행까지만 적힌 파일은 보유 0행이 된다
+    (같은 증상의 다른 원인 후보). 다시 재서 끝까지 읽고, 진단은 그 갈래를 말한다."""
+    rows = [[f"Co{i}", f"T{i}", "x", "y", 20 - i, "IT", 1, "USD"] for i in range(5)]
+    data = _shrink_dimension(_ssga_xlsx(rows), "A1:H5")
+    top, _ = eh.parse_ssga_xlsx(data)
+    assert [t["code"] for t in top] == [f"T{i}" for i in range(5)]
+    r = eh.scan_ssga_xlsx(data)
+    assert r["declared_rows"] == 5 and r["rows"] > 5
+
+
+def test_ssga_zero_rows_says_why():
+    """0행이면 '없음' 이 아니라 읽은 행 수와 버린 갈래를 사유로(#82) — 화면 ETF 칸에 실린다."""
+    rows = [[f"Co{i}", "-", "x", "y", 20 - i, "IT", 1, "USD"] for i in range(3)]
+    rows += [[f"M{i}", f"M{i}", "x", "y", "?", "IT", 1, "USD"] for i in range(2)]
+    rows += [["CASH", "CASH_USD", "x", "y", 1.0, "IT", 1, "USD"],
+             ["FUT", "ESZ6", "x", "y", 1.0, "Unassigned", 1, "USD"]]
+    with pytest.raises(eh.HoldingsError) as ei:
+        eh.parse_ssga_xlsx(_ssga_xlsx(rows))
+    why = ei.value.reason
+    assert "읽은 행 7" in why and "티커 없음 3" in why and "비중 못 읽음 2" in why
+    assert "현금(티커 CASH_·섹터 Unassigned) 2" in why
+
+
+class _GetSess:
+    def __init__(self, bodies):
+        self.bodies, self.urls = bodies, []
+
+    def get(self, url, **k):
+        self.urls.append(url)
+        body = self.bodies[len(self.urls) - 1]
+
+        class R:
+            status_code, content = (200, body) if isinstance(body, bytes) else (body, b"")
+        return R()
+
+
+def test_probe_reads_only_and_says_which_branch(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    good = _ssga_xlsx([[f"Co{i}", f"T{i}", "x", "y", 20 - i, "-", 1, "USD"] for i in range(4)])
+    short = _shrink_dimension(good, "A1:H5")
+    s = _GetSess([good, short, 503])
+    lines = []
+    rc = eh.probe(["xlk", "XLB", "XLE"], session=s, out=lines.append)
+    assert rc == 1 and [u.rsplit("-", 1)[-1] for u in s.urls] == ["xlk.xlsx", "xlb.xlsx", "xle.xlsx"]
+    txt = "\n".join(lines)
+    assert "상위: T0 20.00 · T1 19.00 · T2 18.00" in txt
+    assert txt.count("⚠️ 파일이 적은 사용 범위") == 1 and "사용 범위 5행" in txt, "XLB 만 범위가 틀렸다"
+    assert "❌ XLE 받기 실패" in txt and lines[-1] == "❌ 2/3개 ETF 보유 목록을 읽음"
+    assert "── XLK ·" in txt, "티커는 대문자로 찍는다"
+    assert not (tmp_path / "h").exists(), "진단이 보유 캐시를 썼다"
+    lines.clear()
+    assert eh.probe(["XLK"], session=_GetSess([good]), out=lines.append) == 0
+    assert lines[-1] == "✅ 1/1개 ETF 보유 목록을 읽음"
+
+
+def test_probe_counts_a_zero_row_file_as_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    cash_only = _ssga_xlsx([["US DOLLAR", "-", "x", "y", 99.0, "-", 1, "USD"]])
+    lines = []
+    assert eh.probe(["XLU"], session=_GetSess([cash_only]), out=lines.append) == 1
+    assert "❌ XLU 보유 0행" in lines and lines[-1] == "❌ 0/1개 ETF 보유 목록을 읽음"
+
+
+def test_ssga_boolean_weight_cell_is_not_a_weight():
+    rows = [["A", "AAA", "x", "y", True, "IT", 1, "USD"], ["B", "BBB", "x", "y", 3.0, "IT", 1, "USD"]]
+    assert [t["code"] for t in eh.parse_ssga_xlsx(_ssga_xlsx(rows))[0]] == ["BBB"]
+
+
+def test_ssga_double_dash_ticker_and_empty_name(caplog):
+    rows = [["A", "--", "x", "y", 9.0, "IT", 1, "USD"], ["", "BBB", "x", "y", 3.0, "IT", 1, "USD"]]
+    top, _ = eh.parse_ssga_xlsx(_ssga_xlsx(rows))
+    assert top == [{"code": "BBB", "name": "BBB", "weight": 3.0}], "이름이 비면 티커로"
+    import logging
+    with caplog.at_level(logging.WARNING, logger="bot.etf_holdings"):
+        with pytest.raises(eh.HoldingsError):
+            eh.parse_ssga_xlsx(_ssga_xlsx([["A", "--", "x", "y", 9.0, "IT", 1, "USD"]]))
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "SSGA 보유 0행" in msg and "'--'" in msg, "0행이면 머리행·첫 행을 로그에(VM 에서 원인을 본다)"
+
+
+def test_probe_prints_the_first_raw_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    data = _ssga_xlsx([["Apple Inc", "AAPL", "x", "y", 9.0, "-", 1, "USD"]])
+    lines = []
+    eh.probe(["XLK"], session=_GetSess([data]), out=lines.append)
+    assert any("첫 행 원문: ['Apple Inc', 'AAPL'" in ln for ln in lines)
+    assert not any("⚠️ 파일이 적은 사용 범위" in ln for ln in lines), "범위가 맞는 파일엔 경고 없음"
+
+
+def test_probe_cli_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr(eh, "probe", lambda t=None, **k: seen.append(t) or 0)
+    assert eh.main(["--probe"]) == 0 and eh.main(["--probe", "XLK"]) == 0
+    assert seen == [None, ["XLK"]]
+    assert eh.main([]) == 2
+
+
+def _kr_pdf(codes, names, amounts):
     import pandas as pd
-    df = pd.DataFrame({"구성종목명": ["삼성전자", "원화현금", "SK하이닉스", "한미반도체"],
-                       "금액": [500.0, 900.0, 300.0, 200.0], "비중": [0.0, 0.0, 0.0, 0.0]},
-                      index=["005930", "KRD010010001", "000660", "042700"])
-    top = eh.parse_kr_pdf(df)
+    return pd.DataFrame({"구성종목명": names, "금액": amounts, "비중": [0.0] * len(codes)},
+                        index=codes)
+
+
+def test_kr_pdf_parse_ranks_by_weight_or_value_and_drops_non_stock_rows():
+    """pykrx 는 KRX 가 ISIN 으로 준 코드를 `[3:9]` 로 자른다 — 원화예금 `KRD010010001` 은
+    **`010010`** 으로 와 '6자리 숫자' 규칙을 통과한다(옛 픽스처는 자르기 전 모양이라 이걸 못 봤다,
+    #155). 종목인지는 KRX 상장 목록으로 가른다."""
+    import pandas as pd
+    df = _kr_pdf(["005930", "010010", "000660", "042700", "101V30"],
+                 ["삼성전자", "원화예금", "SK하이닉스", "한미반도체", "코스피200 F 202612"],
+                 [500.0, 900.0, 300.0, 200.0, 50.0])
+    listed = frozenset({"005930", "000660", "042700"})
+    drops: dict = {}
+    top = eh.parse_kr_pdf(df, listed=listed, drops=drops)
     assert [t["code"] for t in top] == ["005930", "000660", "042700"]
     assert top[0]["weight"] == pytest.approx(50.0), "비중이 0 으로 오면 금액으로 다시 만든다"
+    assert drops["not_listed"] == 2
+    # 상장 목록을 못 구했을 때 — 코드 모양 + 이름으로 물러선다(잘린 현금 코드는 이름이 거른다)
+    drops = {}
+    top = eh.parse_kr_pdf(df, drops=drops)
+    assert [t["code"] for t in top] == ["005930", "000660", "042700"]
+    assert drops == {"not_listed": 0, "code_shape": 1, "cash_name": 1}
     assert eh.parse_kr_pdf(pd.DataFrame()) == []
+
+
+def test_kr_listed_prefers_the_daily_inst_cache_then_asks_krx_once(monkeypatch):
+    from bot import daily_inst as di
+    monkeypatch.setattr(eh, "_LISTED", {})
+    cache = {"2026-10-08": {"005930": 1.0, "000660": 2.0}}
+    monkeypatch.setattr(di, "_mcap_cached", lambda d: cache.get(d))
+    calls = []
+    monkeypatch.setattr(di, "fetch_mcap", lambda d: calls.append(d) or (None, "응답이 비었다", "empty"))
+    got, src = eh.kr_listed("2026-10-12", now=0)
+    assert got == {"005930", "000660"} and "2026-10-08" in src and calls == [], "7일 안 캐시 — 네트워크 0"
+    got, src = eh.kr_listed("2026-10-20", now=0)        # 10-13~10-20 캐시 없음 → KRX 1콜
+    assert got is None and calls == ["2026-10-20"] and "응답이 비었다" in src
+    eh.kr_listed("2026-10-20", now=60)
+    assert calls == ["2026-10-20"], "못 구한 결과는 잠시 기억한다(ETF 13개가 13번 두드리지 않게)"
+    monkeypatch.setattr(di, "fetch_mcap", lambda d: calls.append(d) or ({"005930": 1.0}, "", "ok"))
+    got, src = eh.kr_listed("2026-10-20", now=eh._LISTED_FAIL_SEC + 1)
+    assert got == {"005930"} and calls[-1] == "2026-10-20" and "KRX 2026-10-20" in src, "영구히 굳지 않는다"
+
+
+def test_fetch_kr_zero_rows_says_why(monkeypatch):
+    import sys
+    import types
+    import bot.pykrx_client as pk
+    monkeypatch.setattr(pk, "krx_login_ready", lambda: True)
+    df = _kr_pdf(["010010", "101V30"], ["원화예금", "코스피200 F"], [1.0, 1.0])
+    fake = types.ModuleType("pykrx")
+    fake.stock = types.SimpleNamespace(get_etf_portfolio_deposit_file=lambda c, d: df)
+    monkeypatch.setitem(sys.modules, "pykrx", fake)
+    monkeypatch.setattr(eh, "kr_listed", lambda d: (frozenset({"005930"}), "시가총액 목록 2종목"))
+    with pytest.raises(eh.HoldingsError) as ei:
+        eh.fetch_kr("091160.KS", "2026-10-12")
+    why = ei.value.reason
+    assert "구성종목 2행 중 종목이 없음" in why and "KRX 상장 목록에 없음(현금·선물·채권 등) 2" in why
+    assert "대조: 시가총액 목록 2종목" in why
+    fake.stock = types.SimpleNamespace(get_etf_portfolio_deposit_file=lambda c, d: df.iloc[0:0])
+    with pytest.raises(eh.HoldingsError) as ei:
+        eh.fetch_kr("091160.KS", "2026-10-12")
+    assert "빈 표" in ei.value.reason, "원천이 빈 표를 준 것과 우리가 다 버린 것은 다른 사실(#82)"
 
 
 def test_holdings_refresh_once_a_day_and_keep_the_last_list_on_failure(tmp_path, monkeypatch):
@@ -776,6 +966,9 @@ def test_holdings_failure_shows_retry_on_the_page(store):
 
 @pytest.mark.parametrize("tv_name, hold, want", [
     ("Samsung Electronics Co., Ltd.", "삼성전자", "삼성전자"),
+    ("삼성전자보통주", "삼성전자", "삼성전자"),            # VM 실측: 원천은 법인 정식명 — KRX 약칭이 먼저
+    ("에스케이하이닉스보통주", None, "에스케이하이닉스"),   # 보유 목록 밖 종목 — 꼬리 '보통주' 만 뗀다
+    ("보통주", None, "보통주"),
     ("오리온", "ORION", "오리온"),
     ("NVIDIA Corporation", "NVIDIA CORP", "NVIDIA Corporation"),
     (None, "애플", "애플"),
@@ -923,6 +1116,7 @@ def test_exception_before_the_source_call_still_backs_off(store, monkeypatch):
     ws.tick(t)
     ms = ws.load_state()["markets"]["KR"]
     assert ms["kind"] == "error" and ms["date"] == "2026-10-12" and ms["n"] == 1
+    monkeypatch.setattr(ws, "window_end", real)          # 판정 줄도 같은 달력을 쓴다
     assert ws.market_verdict("KR", ws.load_state(), t)[0] == "fail"
 
 
@@ -1438,3 +1632,119 @@ def test_regenerate_memo_holds_only_the_sector_stock_markets(tmp_path, monkeypat
         fx.simulate(fake, _at(2026, 10, 6, 0), 6)
         wp.regenerate(_at(2026, 10, 12, 9, 0))
     assert seen["keys"] == set(wp.STOCK_MARKETS)
+
+
+# ── 2026-10-12 VM 실측 뒤(사용자 nav 순서 · --why 거짓 ✅) ───────────────────────────
+def test_why_does_not_claim_fresh_before_anything_was_collected(store, capsys):
+    """VM 실측: 상태 파일도 없고 다섯 나라가 전부 ⏳ 인데 마지막 줄이 '✅ 다섯 나라 다 최신' 이었다."""
+    rc = ws.why(_at(2026, 10, 12, 16, 43))
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    # 첫날(수집 시작 전 놓친 세션) — ⚠️ 로 말하고 기다릴 것과 볼 것을 같이 적는다
+    assert rc == 0 and "✅" not in last and last.startswith("판정: ⚠️ 확인할 것 — 창 놓침"), last
+    assert "보유 목록 아직 안 물음 KR·US" in last and "수집 대기" in last, last
+
+
+def test_why_says_all_received_only_when_every_market_and_holding_is_ok(store, capsys):
+    fx.simulate(store, _at(2026, 9, 28, 0), 15)
+    now = _at(2026, 10, 13, 9, 30)
+    store.now = now
+    ws.tick(now)
+    ws._refresh_holdings(now)
+    assert ws.why(now) == 0
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last == "판정: ✅ 다섯 나라 다 받음 · 보유 목록 이상 없음", last
+
+
+@pytest.mark.parametrize("kinds, bad, want", [
+    ({"ok": list(ws.MARKETS), "h_ok": ["KR", "US"]}, 0, "✅"),
+    ({"ok": list(ws.MARKETS), "h_none": ["KR", "US"]}, 0, "⏳"),
+    ({"ok": ["KR"], "wait": ["US", "JP", "TW", "CN_A"], "h_ok": ["KR", "US"]}, 0, "⏳"),
+    ({"ok": list(ws.MARKETS)[:4], "holiday": ["CN_A"], "h_ok": ["KR", "US"]}, 0, "⚠️"),
+    ({"fail": ["KR"]}, 1, "❌"),
+    ({"ok": ["KR", "US"], "h_ok": ["KR", "US"]}, 0, "⏳"),     # 두 나라만 받음
+    ({"ok": list(ws.MARKETS)}, 0, "⏳"),                        # 보유 목록 판정이 아예 없음
+    ({"ok": list(ws.MARKETS), "h_ok": ["KR"]}, 0, "⏳"),        # 보유 목록 하나만
+])
+def test_why_summary_branches(kinds, bad, want):
+    line = ws.why_summary(kinds, bad)
+    assert line.startswith(want), line
+    if want == "⏳":
+        for k, ms in kinds.items():
+            if k not in ("ok", "h_ok"):
+                assert "·".join(ms) in line, (k, line)
+
+
+def test_why_summary_never_says_no_failure_next_to_a_failure():
+    """'실패는 없음' 옆에 '갱신 실패' 를 적으면 스스로 모순이다(독립 리뷰 L7) — 사람이 볼 것은 ⚠️."""
+    line = ws.why_summary({"ok": list(ws.MARKETS), "h_ok": ["KR"], "h_stale": ["US"]}, 0)
+    assert line.startswith("⚠️ 확인할 것 — ") and "보유 목록 오늘 갱신 실패" in line
+    assert "실패는 없음" not in line
+    line = ws.why_summary({"ok": ["KR"], "wait": ["US"], "h_none": ["KR", "US"]}, 0)
+    assert line == "⏳ 아직 다 받지 않음 — 수집 대기 US · 보유 목록 아직 안 물음 KR·US"
+
+
+def test_why_names_only_the_unjudged_holdings_market_on_error(store, monkeypatch, capsys):
+    calls = []
+
+    def verdict(m, now):
+        calls.append(m)
+        if len(calls) > 1:
+            raise RuntimeError("x")
+        return "ok", "fine"
+    monkeypatch.setattr(eh, "holdings_verdict", verdict)
+    ws.why(_at(2026, 10, 12, 18, 40))
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    seg = last.split("보유 목록 판정 불가 ")[1].split(" · ")[0]
+    assert seg == ws.HOLD_MARKETS[1], "이미 판정한 나라까지 '판정 불가' 로 적었다"
+
+
+def test_verdict_survives_a_calendar_that_raises(store, monkeypatch):
+    """창 끝 추론이 던져도 상태 줄·재생성·`--why` 가 죽지 않는다(독립 리뷰 M2)."""
+    def boom(m, d):
+        raise RuntimeError("calendar")
+    monkeypatch.setattr(ws, "window_end", boom)
+    kind, line = ws.market_verdict("KR", ws.load_state(), _at(2026, 10, 12, 18, 40))
+    assert kind in ("wait", "none", "fail", "stale", "ok"), (kind, line)
+
+
+def test_verdict_infers_the_miss_exactly_at_the_window_end(store):
+    now = _at(2026, 10, 12, 18, 40)
+    due = ws.due_session("KR", now)
+    end = ws.window_end("KR", due)
+    assert end is not None
+    kind, _ = ws.market_verdict("KR", ws.load_state(), end.astimezone(K))
+    assert kind != "wait", "창 끝 시각엔 이미 놓침"
+
+
+
+def test_a_session_past_its_window_is_not_reported_as_waiting(store):
+    """창이 지난 세션을 '다음 주기에 받는다(⏳)' 고 적으면 거짓 약속이다 — 다음 주기에 기록될
+    판정을 지금 말한다(VM 실측 16:43: KR 10-08 은 07:30 에 창이 닫혔다)."""
+    kind, line = ws.market_verdict("KR", ws.load_state(), _at(2026, 10, 12, 16, 43))
+    assert kind == "missed" and "수집을 시작하기 전" in line, (kind, line)
+    store.now = _at(2026, 10, 8, 18, 40)
+    ws.tick(store.now)                                    # 받은 적이 생기면 그 뒤 놓침은 우리 실패
+    kind, _ = ws.market_verdict("KR", ws.load_state(), _at(2026, 10, 13, 8, 0))
+    assert kind == "missed_fail"
+    kind, _ = ws.market_verdict("US", ws.load_state(), _at(2026, 10, 12, 16, 43))
+    assert kind == "wait", "미국 10-09 는 아직 창 안(프리마켓 04:00 ET = 17:00 KST 전)"
+
+
+def test_new_board_nav_runs_into_the_market_flow_boards_in_the_users_order():
+    hrefs = re.findall(r'href="([^"]+)"', wp._NAV)
+    assert hrefs == ["market.html", "index.html", "sector_mix.html", "sentiment_map.html",
+                     "sector_stocks.html", "liquidity.html", "market_timing.html",
+                     "breadth_strategy.html", "bollinger.html"]
+
+
+def test_hub_nav_order_follows_the_user():
+    from bot.dashboard import _render_market_page
+    html = _render_market_page({})
+    nav = html[html.index('<div class="nav">'):]
+    nav = nav[:nav.index("</div>")]
+    hrefs = re.findall(r'href="([^"]+)"', nav)
+    want = ["bollinger.html", "sector_mix.html", "sentiment_map.html", "sector_stocks.html",
+            "marketcap.html", "econ_calendar.html", "daily_inst.html", "daily_byte.html",
+            "reddit_insider.html", "blog.html", "trade/", "realestate.html"]
+    got = [h for h in hrefs if h in want]
+    assert got == want, got

@@ -15,6 +15,9 @@ pykrx>=1.2.8
 # VM 에 NanumGothic 필요: `sudo apt install -y fonts-nanum` (없으면 인포그래픽
 # 만 skip, 텍스트 브리프는 정상 push).
 matplotlib>=3.8.0
+# openpyxl — 미국 SPDR 섹터 ETF 일일 보유 엑셀 파서(bot/etf_holdings.py, 「국가별
+# 섹터종목」). akshare 의 transitive dep 이기도 하나 직접 import 하므로 명시.
+openpyxl>=3.1
 # akshare — CN A-share + HK market data (공告·港股통 flow·ST·LPR·CPI·PMI).
 # CN/HK-only; key-less scraper. Heavy dep (~200MB, ~50 transitive packages).
 # Lazy-imported inside bot/akshare_client.py — non-CN analyses unaffected.

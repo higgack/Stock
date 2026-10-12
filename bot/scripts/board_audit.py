@@ -441,7 +441,7 @@ def _world_sectors_lines(state=None, now=None) -> list[str]:
     try:
         from bot import etf_holdings as eh
         now_ = ws._now(now)
-        for m in ("KR", "US"):
+        for m in ws.HOLD_MARKETS:
             kind, line = eh.holdings_verdict(m, now_)
             out.append(f"   {ws.VERDICT_MARK.get(kind, '❓')} {m} 섹터 ETF 보유 목록 — {line}")
     except Exception as exc:                                   # noqa: BLE001
