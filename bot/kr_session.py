@@ -95,6 +95,35 @@ def last_closed_session(now: datetime | None = None,
     결측 거래일)가 **같은 기준**을 쓰게 여기 한 곳에 둔다. 실수 #440 은 화면만
     고쳐 감사가 같은 자정 거짓 경보를 계속 낼 뻔했다(독립 리뷰, #38·#147).
     시각은 KST 로 판정한다(규칙 10a — aware 는 변환, naive 는 KST 로 본다)."""
+    return _last_session_past(now, regular_close(venue))
+
+
+def day_end(venue: str = "KRX") -> tuple[int, int]:
+    """그 거래소의 **그날 마지막 체결 창(애프터마켓) 종료** (시, 분) — 표에서
+    파생한다(#38). 쓰는 곳: Daily 기관매수가 "그날 투자자별 집계를 언제부터
+    요구하나" 의 경계(`last_settled_session`)."""
+    for _sh, _sm, eh, em, key, _lb in _table(venue):
+        if key == "after":
+            return (eh, em)
+    raise ValueError(f"{venue!r} 표에 애프터마켓 구간이 없다")
+
+
+def last_settled_session(now: datetime | None = None, venue: str = "KRX",
+                         margin_min: int = 30) -> str | None:
+    """그날의 체결이 **전부 끝난**(마지막 체결 창 종료 + `margin_min`) 마지막 KR
+    거래일. `last_closed_session` 과 같은 규칙이되 경계가 정규장 마감이 아니라
+    애프터마켓 종료다 — 2026 개편으로 KRX 에도 애프터마켓(16:00~20:00)이 생겨,
+    그 체결이 투자자별 집계에 들어가는지 **재지 않았으므로**(#165) 들어가도
+    틀리지 않는 쪽(늦은 경계)을 쓴다. 여유(`margin_min`)도 잰 값이 아니다.
+    달력이 없으면 None(판정 불가, #54)."""
+    eh, em = day_end(venue)
+    total = eh * 60 + em + int(margin_min)
+    return _last_session_past(now, (total // 60, total % 60))
+
+
+def _last_session_past(now: datetime | None, boundary: tuple[int, int]) -> str | None:
+    """오늘이 거래일이고 `boundary`(시, 분) 전이면 직전 거래일, 그 밖엔 오늘 이하
+    마지막 거래일. 두 공개 함수가 같은 규칙을 쓰게 한 곳에 둔다(#38)."""
     # 호출 시점에 모듈 속성으로 찾는다 — 테스트가 달력을 갈아끼운다.
     from bot import market_calendar as _mc
     t = now or now_kst()
@@ -104,8 +133,7 @@ def last_closed_session(now: datetime | None = None,
     ref = _mc.last_session_on_or_before("KR", today)
     if not ref:
         return None
-    ch, cm = regular_close(venue)
-    if ref == today and (t.hour, t.minute) < (ch, cm):
+    if ref == today and (t.hour, t.minute) < tuple(boundary):
         return _mc.last_session_on_or_before(
             "KR", (t.date() - timedelta(days=1)).isoformat())
     return ref

@@ -1100,7 +1100,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 <b>【대시보드】</b> 위 <b>Main</b> 이 단일 entry — 나머지는 전부 Main nav 에서 이동
  🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·★중요표시+중요만 필터·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·거래량상위·장전/장후·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
  📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 🔋Bollinger(볼린저 상단 돌파 종목수 · 5일선 추이 · 에너지 국면) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
- 🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
+ 🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 🏦Daily 기관매수(시총 대비 기관 순매수 TOP10 · 매 거래일 20:30) · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
  ★📝⏰ <b>카드 도구</b>(카드형 보드 공통 · 차트보드 제외) — 카드마다 ★중요·📝메모·⏰알람(서버 저장 → 모바일↔PC 동기화). 검색창 옆 필터로 표시한 것만 보기. ⏰=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 발송, ✅확인 시 종료·미확인 시 다음날 재발송
 
 <b>【종목 상세 탭】</b>
@@ -4267,6 +4267,44 @@ async def _periodic_fred_boards() -> None:
             log.exception("econ calendar regen failed")
 
 
+# Daily 기관매수(사용자 2026-10-12) — 15분마다 깨어 "받아야 할 거래일 기록이
+# 있나"만 본다. 상태 없는 스케줄이라 재시작해도 기준점이 안 밀리고, 봇이 멈췄던
+# 날도 다음 주기가 메운다(`daily_inst.tick` 이 최근 10거래일을 채운다). 실패는
+# 모듈이 백오프(15분→최대 3시간)로 스스로 늦추므로 여기서 주기를 바꾸지 않는다.
+_DAILY_INST_TICK_SEC = 900
+
+
+async def _periodic_daily_inst() -> None:
+    """첫 바퀴는 페이지부터 — nav 링크는 배포 즉시 살아나므로 렌더(네트워크 0)를
+    먼저 해 두지 않으면 수집이 끝날 때까지 404 다(실수 #11). 수집·렌더는
+    to_thread(이벤트루프 차단 시 getUpdates 침묵 → watchdog 오탐, 실수 #2).
+
+    pykrx 요청엔 timeout 이 없어 KRX 가 응답 없이 멈추면 그 스레드는 안 돌아온다 —
+    `wait_for` 로 기다림에 상한을 두고 다음 주기로 넘어간다. 멈춘 스레드가 잠금을 쥐고
+    있는 동안 다음 주기는 수집을 건너뛰고 재생성만 해 화면이 '수집이 끝나지 않음' 을
+    말한다(`daily_inst.tick_and_render`, 독립 리뷰 2026-10-12)."""
+    try:
+        from bot.daily_inst import regenerate as _regen_di
+        await asyncio.to_thread(_regen_di)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("daily inst initial render failed")
+    await asyncio.sleep(90)
+    while True:
+        try:
+            from bot.daily_inst import TICK_TIMEOUT_SEC as _di_cap
+            from bot.daily_inst import tick_and_render as _di_tick
+            await asyncio.wait_for(asyncio.to_thread(_di_tick), timeout=_di_cap)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            log.warning("daily inst tick: %s초 안에 안 끝남(느리거나 멈춤) — 다음 주기로", _di_cap)
+        except Exception:
+            log.exception("daily inst tick failed")
+        await asyncio.sleep(_DAILY_INST_TICK_SEC)
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -4889,6 +4927,7 @@ async def _on_startup(application) -> None:
     # 스프레드·커브) 당일 반영. 자정 regen 과 별개, 첫 사이클은 6h 후(startup
     # 스레드가 방금 생성). to_thread(네트워크 ~120콜, 이벤트루프 차단 금지).
     application._fred_boards_task = asyncio.create_task(_periodic_fred_boards())
+    application._daily_inst_task = asyncio.create_task(_periodic_daily_inst())
     application._backlog_review_task = asyncio.create_task(
         _periodic_backlog_review(application))
     application._marketcap_task = asyncio.create_task(_periodic_marketcap())

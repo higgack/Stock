@@ -45238,6 +45238,32 @@ def _breadth_html(data: dict) -> str:
         _bs._SIGNAL_DIR = old
 
 
+def _daily_inst_html() -> str:
+    """🏦 Daily 기관매수 — 행·재확인 메타·'판정 불가' 사유·'N개뿐' 줄이 **전부
+    그려지는** 기록 둘로(빈 기록은 껍데기만 그려 표 클래스를 못 본다, #91c)."""
+    from datetime import datetime as _dt
+
+    from bot import daily_inst as _di
+    sess = ["2026-10-01", "2026-10-02", "2026-10-06", "2026-10-07", "2026-10-08"]
+    day = {"005930.KS": ["삼성<전자>", 5e10], "000660.KS": ["SK하이닉스", 2e9],
+           "222222.KQ": ["코닥B", 1e8]}
+    prev = {"005930.KS": ["삼성<전자>", 4e10], "000660.KS": ["SK하이닉스", -1e9],
+            "222222.KQ": ["코닥B", 1e8]}
+    nbd = {d: dict(prev) for d in sess[:-1]}
+    nbd[sess[-1]] = day
+    mcap = {"005930": 4e14, "000660": 1e14, "222222": 3e11}
+    r1 = _di.build_record(sess[-1], sess, nbd, mcap,
+                          collected_at="2026-10-08T20:35:00+09:00")
+    r1["recheck"] = {"at": "2026-10-09T07:02:00+09:00", "changed": 1,
+                     "compared": 3, "max_abs_won": 120000000}
+    r0 = _di.build_record(sess[0], sess, {sess[0]: prev}, mcap,
+                          collected_at="2026-10-08T21:00:00+09:00")
+    stub = _di.nodata_record("2026-09-30", "KRX 가 그날 기관 순매수를 주지 않음",
+                             "2026-10-08T21:00:00+09:00")
+    return _di.render_page([stub, r0, r1], {"reason": "KRX 응답 없음"},
+                           _dt(2026, 10, 12, 21, 40, tzinfo=_di._KST))
+
+
 def _bollinger_html() -> str:
     """🔋 Bollinger 페이지 — 카드·차트·표·잠정 줄·부분 스캔·인용문이 **전부
     그려지는** 픽스처로. 빈 payload 는 껍데기만 그려 각주·표 클래스를 한 번도
@@ -45367,6 +45393,7 @@ def _render_all_pages():
         # 하므로(아래 `_PAGE_MODULES_NOT_COVERED` 대조) 다르게 적으면
         # 하드코딩 목록을 또 늘려야 한다(#24).
         ("bollinger_board", _bollinger_html()),
+        ("daily_inst", _daily_inst_html()),
         ("breadth_strategy", _breadth_html({"KR": {
             "market": "KR", "regime": "RECOVERY", "state": "CASH",
             "targets": [], "index_w": 0.0, "total_w": 0.0, "cash_w": 1.0,

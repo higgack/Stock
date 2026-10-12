@@ -401,6 +401,27 @@ def _audit_home_surfaces(show_all):
         _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
 
+def _daily_inst_line(records=None, state=None, now=None) -> str:
+    """Daily 기관매수 판정 한 줄 — **화면과 같은 함수**(`status_verdict`)를 쓰고
+    저장된 기록만 읽는다(감사가 KRX 를 다시 받으면 자기가 만든 장애를 보고한다,
+    #321). 갈래 → 판정 글자: ok ✅ · wait ⚠️(집계 대기 — 원천이 아직) · degraded ⚠️
+    (최신이지만 지난 날 하나가 실패해 늦추는 중이거나 수집이 멈춤) · behind/none ❌
+    (받아야 할 거래일 기록이 없다 — KRX 가 휴장으로 답한 날은 이미 뺐다) · unknown ❓
+    (판정 불가). 기준은 '자료 없음' 카드를 뺀 마지막 기록이다. 순수 함수라 값으로 잰다(#41)."""
+    try:
+        from bot import daily_inst as di
+        recs = di.load_records() if records is None else records
+        st = di.load_state() if state is None else state
+        kind, line = di.status_verdict(di.latest_real(recs), now, st)
+    except Exception as exc:                                   # noqa: BLE001
+        return f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"
+    mark = {"ok": "✅", "wait": "⚠️", "degraded": "⚠️", "behind": "❌",
+            "none": "❌"}.get(kind, "❓")
+    text = line.lstrip("✅⏳⚠️❓ ").strip()
+    n_real = sum(1 for r in recs if not r.get("nodata"))
+    return f"   {mark} 기록 {n_real}거래일 · {text}"
+
+
 def _vol_card_line(key: str, rec: dict) -> str:
     """변동성 카드 한 줄 — **순수 함수**라 회귀가 값으로 잰다(#176·#41).
 
@@ -573,6 +594,10 @@ def main() -> int:
                 _p("   ❌ 완결 기준일이 하나도 없다 — 보드가 통째로 비어 있다")
         except Exception as exc:                               # noqa: BLE001
             _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+        _p("")
+        _p("── 🏦 Daily 기관매수 — 기준일")
+        _p(_daily_inst_line())
 
         _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")
