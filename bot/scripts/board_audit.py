@@ -422,6 +422,22 @@ def _daily_inst_line(records=None, state=None, now=None) -> str:
     return f"   {mark} 기록 {n_real}거래일 · {text}"
 
 
+def _world_sectors_lines(state=None, now=None) -> list[str]:
+    """국가별 섹터 3보드 — 나라마다 한 줄, **화면 상태 줄과 같은 함수**(`market_verdict`)로
+    저장된 상태만 읽는다(원천을 다시 부르지 않는다, #321). 원천이 아직 그 세션을 안 실은
+    것·창을 놓친 것은 ⚠️(우리가 지금 고칠 수 없다, #260), 수집 실패는 ❌."""
+    try:
+        from bot import world_sectors as ws
+        st = ws.load_state() if state is None else state
+        out = []
+        for m in ws.MARKETS:
+            kind, line = ws.market_verdict(m, st, now)
+            out.append(f"   {ws.VERDICT_MARK.get(kind, '❓')} {m} {line}")
+        return out
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"]
+
+
 def _vol_card_line(key: str, rec: dict) -> str:
     """변동성 카드 한 줄 — **순수 함수**라 회귀가 값으로 잰다(#176·#41).
 
@@ -598,6 +614,11 @@ def main() -> int:
         _p("")
         _p("── 🏦 Daily 기관매수 — 기준일")
         _p(_daily_inst_line())
+
+        _p("")
+        _p("── 🌐 국가별 섹터(섹터혼합·심리지도·섹터종목) — 나라별 수집")
+        for _ln in _world_sectors_lines():
+            _p(_ln)
 
         _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")

@@ -1468,6 +1468,49 @@ ApeRAG/AKB)는 인프라·라이선스 부담으로 skip, OpenKB vectorless RAG 
     (DART·관세청·naver·FRED)는 비용 아님. **kg 비용 변경 시: kind 태그→집계 6곳 동기
     (_compute_stats/_render_stats_panel/cmd_usage/blog카드/dart카드/trade cost.py).**
 
+## 국가별 섹터 3보드 — 섹터혼합 · 심리지도 · 섹터종목 (2026-10-12)
+
+사용자 요청: 블로그(richyun0108/224438901868, 사용자 캡처로 정독 — 샌드박스는 블로그 접근 불가)의
+3국 비교를 **한·미·일·대·중 5국**으로. 세 페이지 모두 Daily, 대시보드 nav(Daily 기관매수 뒤).
+
+**원천 = TradingView 스캐너**(`bot/tv_scanner.py`, 키 없음 · 비공식 · 15분 지연). 다섯 나라가
+**같은 FactSet 섹터·업종 분류(영문 키 동일)**라 나라 사이 업종을 한 행에 맞출 수 있다 — 이게 이
+원천을 고른 이유다(나라별 원천 분류는 서로 안 맞는다). `options.lang="ko"` 로 `sector.tr`·
+`industry.tr` 한국어 이름을 받는다. 보통주(+ADR/DR, 블로그 규약) · `is_primary` · 미국은
+NYSE/NASDAQ/AMEX 만(OTC 제외). 원천이 모르는 선택 열은 400 이 열 이름을 지목하면 빼고 한 번 더
+묻는다. ⚠️ 샌드박스에선 원천에 못 닿아 **실측 안 함** — VM 에서
+`cd ~/stock && .venv/bin/python -m bot.world_sectors --probe`(아무것도 안 쓴다)로 잴 것.
+
+**수집**(`bot/world_sectors.py`, 봇 15분 주기 태스크 `_periodic_world_sectors` — 세 페이지 재계산은
+받음·실패·보유 목록·상태 줄이 바뀌었거나 60분이 지났을 때만, `maybe_regenerate`):
+- 시장마다 "받을 세션" = exchange_calendars 의 장 마감 + 3시간(`READY_MIN`) ~ 다음 세션 개장 전.
+  원천은 '지금' 값만 주므로 창을 놓치면 그 세션은 **다시 받을 수 없다**(`missed`, 화면이 말한다).
+- 같은 세션 값이 직전 저장분과 90% 넘게 같으면 '원천이 아직 안 실음'(`stale`)으로 거부.
+  실패는 30·60·120·180분 백오프. 저장 = `~/.tradingagents/world_sectors/snap/{M}/{날짜}.json.gz`
+  (45일) + `.agg.json`(업종 합계 · 120일 · 이게 '저장됨' 표식). 섹터혼합 기록 = `records/`(180일,
+  다섯 나라가 받음/휴장/못 받음으로 확정된 날만 굳힌다).
+
+**정의**(각 페이지 ℹ️ 가이드가 같은 문장으로 밝힌다 — 블로그에 없는 부분은 우리가 정했다):
+- 업종 등락 = 전일 시총 가중(지수 방식) · 상대 = 업종 − 시장(%p) · 주간 = 각자 복리 후 뺀다.
+- 이긴 날 = 업종이 시장보다 강했던 날 수. 업종은 그 나라에 `MIN_N=3`종목 이상일 때만 '있다'.
+- 섹터혼합: **2국 이상** 있는 업종만. 판정 = 주간 ±1.0%p · 하루 ±0.5%p → N국 공통 강세/약세 ·
+  K국 강세/약세 · 엇갈림 · 뚜렷하지 않음(기본 숨김).
+- 심리지도: 업종×요일, 6갈래 = 상대 등락(하루 ±1%p · 주간 ±2%p) × 상대 거래대금(1.1x · 1.05x).
+  상대 거래대금 = (업종 거래대금 ÷ 직전 20세션 평균) ÷ 시장의 같은 비 — 저장 세션이 15개 미만이면
+  30일 평균 거래량 × 종가로 근사(화면에 점선 테두리로 구별).
+- 섹터종목: Breadth 전략 섹터 ETF(`market_timing._BREADTH_SECTORS` — 미국 SPDR 11 · 한국 KODEX 13)
+  보유 비중 상위 15종목(`bot/etf_holdings.py` — 미국 SSGA 일일 엑셀 · 한국 KRX PDF, KRX 로그인 필요 ·
+  실패하면 2시간마다 하루 4회까지). 종목 이름은 한글이 있는 쪽(KRX PDF 한글명 > TradingView 이름).
+  상승일 거래 = 오른 날 거래대금 ÷ 그 주 거래대금 · 거래 몫 = 종목 주간 거래대금 ÷ 시장 · 시총 증감
+  = 시총 − 시총/(1+주간). 보유 목록은 오늘 것 하나를 두 주에 같이 쓴다(화면이 밝힌다).
+
+**페이지**(`bot/world_sector_pages.py`): `sector_mix.html` · `sentiment_map.html` ·
+`sector_stocks.html` + 나라별 종목 JSON `ws_{M}.json`(심리지도 칸 클릭 시 상대경로 지연 로드).
+내용이 바뀔 때만 쓴다(생성 시각 제외 해시, #442). 상태 줄·`--why`·일일 감사(board_audit)가
+`market_verdict` 하나를 쓴다(#35).
+
+진단: `--why`(읽기 전용) · `--probe [시장]`(원천만, 아무것도 안 씀) · `--run`(한 주기 + 재생성).
+
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
 Phase tracking — what's done, what's blocking the next phase:
