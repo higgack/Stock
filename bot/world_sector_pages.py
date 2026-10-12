@@ -407,14 +407,21 @@ def _mix_table(rec: dict, win: str, tid: str) -> str:
             f"<th>판정</th>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>{btn}")
 
 
+# 섹터혼합 창 — 순서가 곧 탭 순서이고 첫 창이 처음 열린다(사용자 2026-10-12 "하루가 먼저").
+MIX_WINDOWS = (("day", "하루"), ("week", "주간(최근 1주)"))
+
+
 def _mix_day(rec: dict, *, open_: bool, idx: int) -> str:
     d = rec["date"]
-    counts = {}
-    for r in rec.get("rows") or []:
-        counts[r.get("v_week")] = counts.get(r.get("v_week"), 0) + 1
-    common = counts.get("all_up", 0) + counts.get("all_down", 0)
-    multi = counts.get("k_up", 0) + counts.get("k_down", 0)
-    meta = [f"주간 공통 {common} · 2국 이상 {multi} · 엇갈림 {counts.get('mixed', 0)}"]
+    # 머리줄 계수는 처음 펼쳐지는 창(하루)부터 — 보이는 표와 같은 모집단을 먼저 말한다(#45).
+    meta = []
+    for win, name in MIX_WINDOWS:
+        counts = {}
+        for r in rec.get("rows") or []:
+            counts[r.get(f"v_{win}")] = counts.get(r.get(f"v_{win}"), 0) + 1
+        common = counts.get("all_up", 0) + counts.get("all_down", 0)
+        multi = counts.get("k_up", 0) + counts.get("k_down", 0)
+        meta.append(f"{name.split('(')[0]} 공통 {common} · 2국 이상 {multi} · 엇갈림 {counts.get('mixed', 0)}")
     st = []
     for m in ws.MARKETS:
         s = (rec.get("markets") or {}).get(m, {})
@@ -425,13 +432,14 @@ def _mix_day(rec: dict, *, open_: bool, idx: int) -> str:
     if not rec.get("final"):
         meta.append("아직 다 안 받음(받는 대로 바뀜)")
     g = f"mix{idx}"
+    # 첫 탭이 처음 열리는 창이다 — 순서와 기본값을 한 표(`MIX_WINDOWS`)에서 같이 정한다.
     tabs = (f"<div class='ws-tabs' data-tabs='{g}'>"
-            f"<span class='ws-tab active' data-tab='week'>주간(최근 1주)</span>"
-            f"<span class='ws-tab' data-tab='day'>하루</span></div>")
-    panes = (f"<div class='ws-pane active' data-group='{g}' data-tab='week'>"
-             f"{_mix_table(rec, 'week', g + 'w')}</div>"
-             f"<div class='ws-pane' data-group='{g}' data-tab='day'>"
-             f"{_mix_table(rec, 'day', g + 'd')}</div>")
+            + "".join(f"<span class='ws-tab{' active' if i == 0 else ''}' data-tab='{win}'>"
+                      f"{_h.escape(name)}</span>" for i, (win, name) in enumerate(MIX_WINDOWS))
+            + "</div>")
+    panes = "".join(f"<div class='ws-pane{' active' if i == 0 else ''}' data-group='{g}' "
+                    f"data-tab='{win}'>{_mix_table(rec, win, g + win[0])}</div>"
+                    for i, (win, name) in enumerate(MIX_WINDOWS))
     dd = _date.fromisoformat(d)
     return (f"<details class='ws-day'{' open' if open_ else ''}><summary>📅 {d} "
             f"({_WD[dd.weekday()]}) 기준<span class='ws-meta'>{_h.escape(' · '.join(meta))}</span>"
@@ -478,8 +486,9 @@ def render_mix(records: list[dict], state: dict, now: datetime, *, gen: str | No
 <b>업종이 '있다'</b> — 그 주에 받은 마지막 날 그 나라에 그 업종 종목이 {ws.MIN_N}개 이상일 때입니다(한
 종목짜리 업종은 그 종목의 등락일 뿐이라 뺍니다). 업종은 다섯 나라에 같은 이름으로 있는 TradingView 분류로
 맞춥니다 — 나라별 업종표를 손으로 짝짓지 않습니다.<br>
-<b>주간·하루</b> — 주간 = 기준일을 끝으로 한 7일(달력) 안의 그 나라 거래일 · 하루 = 기준일 하루.
-원래 블로그 표는 주간이고, 매일 갱신하려고 끝날을 하루씩 민 것입니다.<br>
+<b>하루·주간</b> — 하루 = 기준일 하루(처음 열리는 탭) · 주간 = 기준일을 끝으로 한 7일(달력) 안의 그 나라
+거래일. 원래 블로그 표는 주간이고, 매일 갱신하려고 끝날을 하루씩 민 것입니다. 날짜 줄의 계수도 하루 → 주간
+순서입니다.<br>
 <b>언제 갱신되나</b> — 나라마다 장 마감 {ws.READY_MIN // 60}시간 뒤 한 번 받습니다(미국은 한국 시각 이튿날
 아침). 그래서 저녁엔 그날 미국이 '대기'입니다. 받는 창은 다음 거래일 장전 거래(미국 프리마켓·동시호가
 등)가 시작되기 전까지이고, 원천은 '지금' 값만 주므로 그 창을 놓친 날은 다시 받을 수 없어 '수집 못 함'으로
@@ -956,8 +965,12 @@ def stocks_payloads(now: datetime, memo: dict | None = None) -> dict:
                 meta.append(f"보유 목록 갱신 실패({h['error']}) — {eh.retry_note(h, now)}")
             if not h:
                 meta.append("보유 목록을 아직 받지 않음")
+            # 옛 판 코드의 사유를 '지금 실패' 처럼 표 본문에 적지 않는다 — 머리줄과 같은 한 마디를 붙인다(#38).
+            pnote = eh.prior_note(h, now)
             empty = ((h.get("error") or "보유 목록을 아직 받지 않았습니다") if not h.get("rows")
                      else "해당 종목 없음")
+            if pnote and not h.get("rows"):
+                empty += f" ({pnote})"
             nodays = (f"{empty} · 아직 받은 하루치가 없습니다" if not h.get("rows")
                       else "보유 목록은 있지만 아직 받은 하루치가 없습니다")
             tables = []

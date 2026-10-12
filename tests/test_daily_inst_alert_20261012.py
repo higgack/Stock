@@ -48,12 +48,18 @@ def home(tmp_path, monkeypatch):
 
 
 # ── 언제 무엇을 ────────────────────────────────────────────────────────────────
+# 사용자 2026-10-12 "월~금 08:00 — 한국시간" = KR 개장일 아침(장 시작 전)에 직전 거래일 표.
+# 옛 계약(토 아침 = 금 기록, 월 아침엔 이미 보낸 금 기록이라 안 보냄)을 다시 썼다(#222) —
+# 남는 보장(정규장이 끝난 마지막 거래일 · 한 번만 · 08~12시 창)은 그대로 잰다.
 @pytest.mark.parametrize("now, recs, state, want", [
     (_at(2026, 10, 13, 8, 5), ["2026-10-12"], {}, "2026-10-12"),        # 화 아침 = 월 기록
     (_at(2026, 10, 13, 7, 55), ["2026-10-12"], {}, None),               # 08:00 전
     (_at(2026, 10, 13, 12, 0), ["2026-10-12"], {}, None),               # 12:00 지남 — 그날은 안 보냄
-    (_at(2026, 10, 10, 8, 0), ["2026-10-08"], {}, "2026-10-08"),        # 토 아침 = 금(10-09 한글날) 전 거래일
-    (_at(2026, 10, 12, 8, 0), ["2026-10-08"], {"sent": {"2026-10-08": {}}}, None),  # 월 아침 — 이미 보냄
+    (_at(2026, 10, 10, 8, 0), ["2026-10-08"], {}, None),                # 토 — 개장일이 아니다
+    (_at(2026, 10, 11, 9, 30), ["2026-10-08"], {}, None),               # 일 — 개장일이 아니다
+    (_at(2026, 10, 9, 8, 0), ["2026-10-08"], {}, None),                 # 금 10-09 한글날(평일 휴장)
+    (_at(2026, 10, 12, 8, 0), ["2026-10-08"], {}, "2026-10-08"),        # 월 아침 = 직전 거래일(목)
+    (_at(2026, 10, 12, 8, 0), ["2026-10-08"], {"sent": {"2026-10-08": {}}}, None),  # 이미 보냄
     (_at(2026, 10, 13, 8, 5), ["2026-10-08"], {}, None),                # 월 기록이 아직 없다
 ])
 def test_alert_targets_the_last_closed_session_once(now, recs, state, want):
@@ -61,6 +67,33 @@ def test_alert_targets_the_last_closed_session_once(now, recs, state, want):
     assert (rec or {}).get("date") == want, why
     if want is None:
         assert why, "안 보내면 사유를 말한다"
+
+
+def test_closed_morning_says_it_is_a_market_holiday_not_a_missing_record():
+    """휴장 아침의 사유는 '기록 없음' 이 아니라 '개장일 아침에만' 이어야 한다(#82) — 금요일 기록이
+    있어도 토요일엔 안 보내고, 그 기록은 다음 개장일 아침에 간다."""
+    rec, why = al.alert_target([_rec("2026-10-16")], {}, _at(2026, 10, 17, 8, 5))
+    assert rec is None and "휴장" in why and "10-17 토" in why, why
+    rec, _ = al.alert_target([_rec("2026-10-16")], {}, _at(2026, 10, 19, 8, 5))
+    assert rec["date"] == "2026-10-16", "다음 개장일(월) 아침에 금요일 기록이 간다"
+
+
+def test_open_day_question_goes_to_the_calendar_and_unknown_means_no_send(monkeypatch):
+    """개장일 판정은 거래소 달력에 묻는다 — 달력이 '모름' 이면 보내지 않고 그렇게 말한다(#54).
+    요일로 추정하지 않는다: 달력이 평일을 휴장이라 하면 안 보내고, 주말을 개장이라 하면 보낸다."""
+    from bot import market_calendar as mc
+    asked = []
+    monkeypatch.setattr(mc, "is_trading_day", lambda m, d: asked.append((m, d)) or None)
+    rec, why = al.alert_target([_rec("2026-10-12")], {}, _at(2026, 10, 13, 8, 5))
+    assert rec is None and "달력" in why and asked == [("KR", "2026-10-13")]
+    assert "범위 밖" in why, "달력이 있어도 범위 밖·오류면 '모름' 이다 — '달력이 없어' 로 단정하지 않는다"
+    monkeypatch.setattr(mc, "is_trading_day", lambda m, d: False)
+    assert al.alert_target([_rec("2026-10-12")], {}, _at(2026, 10, 13, 8, 5))[0] is None
+    monkeypatch.setattr(mc, "is_trading_day", lambda m, d: True)
+    import bot.kr_session as ks
+    monkeypatch.setattr(ks, "last_closed_session", lambda now: "2026-10-16")
+    rec, _ = al.alert_target([_rec("2026-10-16")], {}, _at(2026, 10, 17, 8, 5))
+    assert rec and rec["date"] == "2026-10-16", "판정은 달력이 한다 — 요일 규칙을 따로 두지 않는다"
 
 
 def test_alert_waits_for_the_morning_recheck_until_nine():

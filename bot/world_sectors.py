@@ -1219,7 +1219,7 @@ def _src_sig() -> str:
 
 
 VERDICT_MARK = {"ok": "✅", "wait": "⏳", "stale": "⚠️", "fail": "❌", "missed": "⚠️",
-                "holiday": "⚠️", "missed_fail": "❌", "none": "❓"}
+                "holiday": "⚠️", "missed_fail": "❌", "none": "❓", "retry": "⏳"}
 BAD_VERDICTS = ("fail", "missed_fail")    # 우리가 고칠 실패 — `--why` rc·감사 ❌
 
 
@@ -1279,7 +1279,8 @@ def why(now: datetime | None = None) -> int:
             for t in eh.etfs(m):
                 h = eh.load(t) or {}
                 if h.get("error"):
-                    print(f"   {t}: {h['error']}")
+                    note = eh.prior_note(h, now)
+                    print(f"   {t}: {h['error']}" + (f" — {note}" if note else ""))
     except Exception as exc:                                   # noqa: BLE001
         print(f"③ ETF 보유 목록: 판정 불가({type(exc).__name__}: {exc})")
         kinds.setdefault("h_error", []).extend(m for m in HOLD_MARKETS if m not in judged)
@@ -1297,7 +1298,8 @@ def why_summary(kinds: dict[str, list[str]], bad: int) -> str:
         return "✅ 다섯 나라 다 받음 · 보유 목록 이상 없음"
     # 기다리면 되는 것(⏳)과 사람이 볼 것(⚠️·❓)을 가른다 — '실패는 없음' 옆에 '갱신 실패' 를 적으면
     # 스스로 모순이다(독립 리뷰).
-    wait = {"wait": "수집 대기", "none": "받을 세션 없음", "h_none": "보유 목록 아직 안 물음"}
+    wait = {"wait": "수집 대기", "none": "받을 세션 없음", "h_none": "보유 목록 아직 안 물음",
+            "h_retry": "보유 목록 지금 코드로 다시 묻는 중(이전 판 실패 기록)"}
     look = {"stale": "원천 미게시", "holiday": "휴장 추정", "missed": "창 놓침(수집 시작 전 등)",
             "h_stale": "보유 목록 오늘 갱신 실패(옛 목록으로 그림)", "h_error": "보유 목록 판정 불가"}
     w = [f"{lab} {'·'.join(kinds[k])}" for k, lab in wait.items() if kinds.get(k)]
