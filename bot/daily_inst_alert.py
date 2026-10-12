@@ -111,7 +111,7 @@ def caption(rec: dict) -> str:
 def text_body(rec: dict) -> str:
     """그림을 못 그릴 때 보내는 같은 표(글자)."""
     from bot.daily_inst import LISTS
-    lines = [caption(rec), ""]
+    lines = [caption(rec), SOURCE_LINE, ""]
     for t in rec.get("tiers") or []:
         lines.append(f"<b>{_h.escape(_tier_title(t['label']))}</b>")
         for key, title in LISTS:
@@ -124,6 +124,9 @@ def text_body(rec: dict) -> str:
                                           for r in rows))
         lines.append("")
     return "\n".join(lines).strip()
+
+
+SOURCE_LINE = "KRX 기관합계 순매수 ÷ 시가총액"
 
 
 def _tier_title(label: str) -> str:
@@ -174,7 +177,7 @@ def render_png(rec: dict, out_path: str) -> str | None:
                     fontweight="bold", va="center", ha="left", color=black)
             if ti == 0:
                 ax.text(width - _MARGIN, y + _TITLE_H * 0.55,
-                        f"{rec['date'].replace('-', '.')} 기준 · KRX 기관합계 순매수 ÷ 시가총액",
+                        f"{rec['date'].replace('-', '.')} 기준 · {SOURCE_LINE}",
                         fontsize=6.5, va="center",
                         ha="right", color="#555555")
             ty = y + _TITLE_H
@@ -228,12 +231,18 @@ def _send(rec: dict, chats: list[str]) -> dict[str, str | None]:
     res: dict[str, str | None] = {}
     try:
         for c in chats:
-            if png and push_telegram_photo(png, caption(rec), filename="daily_inst.png", chats=[c]):
-                res[c] = "사진"
-                continue
-            if png:
-                log.warning("daily_inst_alert: 채널 %s 사진 보내기 실패 — 글자로 다시 보낸다", c)
-            res[c] = "글자" if push_telegram(text_body(rec), chats=[c]) else None
+            # 채널마다 따로 감싼다 — 한 채널에서 던지면 이미 받은 채널의 성공까지 잃어 다음 주기에
+            # 그 채널로 다시 간다(델타 리뷰 L1).
+            try:
+                if png and push_telegram_photo(png, caption(rec), filename="daily_inst.png", chats=[c]):
+                    res[c] = "사진"
+                    continue
+                if png:
+                    log.warning("daily_inst_alert: 채널 %s 사진 보내기 실패 — 글자로 다시 보낸다", c)
+                res[c] = "글자" if push_telegram(text_body(rec), chats=[c]) else None
+            except Exception as exc:                           # noqa: BLE001
+                log.warning("daily_inst_alert: 채널 %s 보내기 예외(%s: %s)", c, type(exc).__name__, exc)
+                res[c] = None
         return res
     finally:
         try:
@@ -274,14 +283,18 @@ def maybe_alert(now: datetime | None = None) -> dict:
     done = st.setdefault("sent_chats", {}).setdefault(d, {})
     todo = [c for c in chats if c not in done]
     tries = st.setdefault("tries", {})
-    tries[d] = int(tries.get(d, 0)) + 1
-    try:
-        res = _send(rec, todo)
-    except Exception as exc:                                   # noqa: BLE001
-        # 예외가 그대로 나가면 늘린 시도 횟수를 못 적어 상한(MAX_TRIES)이 영영 안 걸린다.
-        res = {}
-        log.warning("daily_inst_alert: %s 보내기 예외 — %s", d, exc)
-        st["last_error"] = f"예외({type(exc).__name__})"
+    err = ""
+    if todo:
+        tries[d] = int(tries.get(d, 0)) + 1
+        try:
+            res = _send(rec, todo)
+        except Exception as exc:                               # noqa: BLE001
+            # 예외가 그대로 나가면 늘린 시도 횟수를 못 적어 상한(MAX_TRIES)이 영영 안 걸린다.
+            res = {}
+            err = f" · 예외({type(exc).__name__})"
+            log.warning("daily_inst_alert: %s 보내기 예외 — %s", d, exc)
+    else:
+        res = {}          # 채널 설정에서 남은 채널이 빠졌다 — 받을 채널은 이미 다 받았다
     for c, how in res.items():
         if how:
             done[c] = {"at": now.isoformat(timespec="seconds"), "how": how}
@@ -289,12 +302,12 @@ def maybe_alert(now: datetime | None = None) -> dict:
     hows = sorted({v["how"] for v in done.values()})
     if not left:
         st.setdefault("sent", {})[d] = {"at": now.isoformat(timespec="seconds"), "how": "·".join(hows),
-                                        "rechecked": _settled(rec), "chats": len(chats)}
+                                        "settled": _settled(rec), "chats": len(chats)}
         log.info("daily_inst_alert: %s 기관 순매수 테이블을 채널 %d곳에 보냄(%s)", d, len(chats),
                  "·".join(hows))
     else:
         st["last_reason"] = (f"{d} 채널 {len(left)}/{len(chats)}곳 보내기 실패({tries[d]}/{MAX_TRIES}회)"
-                             " — 다음 주기에 그 채널만 다시")
+                             f"{err} — 다음 주기에 그 채널만 다시")
         log.warning("daily_inst_alert: %s", st["last_reason"])
     for k in sorted(st.get("sent") or {})[:-KEEP_SENT]:
         st["sent"].pop(k, None)
@@ -313,10 +326,14 @@ def why(now: datetime | None = None) -> int:
     st = load_state()
     rec, why_ = alert_target(di.load_records(), st, now)
     sent = st.get("sent") or {}
-    last = max(sent) if sent else None
+    part = {d: v for d, v in (st.get("sent_chats") or {}).items() if v}
+    got = sorted(set(sent) | set(part))
+    last = got[-1] if got else None
     print(f"# daily_inst_alert --why · {now.strftime('%Y-%m-%d %H:%M KST')}")
-    print(f"① 마지막으로 보낸 기준일: {last or '—'}"
-          + (f" ({sent[last]['at']} · {sent[last]['how']})" if last else ""))
+    if last in sent:
+        print(f"① 마지막으로 보낸 기준일: {last} ({sent[last]['at']} · {sent[last]['how']})")
+    else:
+        print(f"① 마지막으로 보낸 기준일: {last or '—'}" + (" (일부 채널만)" if last else ""))
     print(f"② 마지막 확인: {st.get('last_check') or '—'} · 사유: {st.get('last_reason') or '—'}")
     print("③ 지금: " + (f"보낼 기록 있음 — {rec['date']}" if rec else f"보내지 않음 — {why_}"))
     try:
@@ -325,11 +342,15 @@ def why(now: datetime | None = None) -> int:
     except Exception as exc:                                   # noqa: BLE001
         print(f"④ 한글 폰트: 판정 불가({type(exc).__name__})")
     chats, tw = _targets()
-    part = st.get("sent_chats") or {}
-    pend = {d: len(v) for d, v in part.items() if d not in sent}
     print(f"⑤ 보낼 채널: {len(chats)}곳" if chats else f"⑤ 보낼 채널: ❌ {tw}")
-    for d, n in sorted(pend.items()):
-        print(f"   {d}: 채널 {n}/{len(chats) or '?'}곳만 받음 — 나머지는 다음 주기에 다시")
+    for d in sorted(part):
+        if d in sent:
+            continue
+        # 다시 묻는다고 적는 건 **정말 다시 물을 때만** — 그날이 지금 대상이고 상한 전이어야 한다
+        # (델타 리뷰: 상한을 넘긴 날에도 '다음 주기에 다시' 라고 적었다).
+        again = rec is not None and rec.get("date") == d
+        tail = "나머지는 다음 주기에 다시" if again else "나머지는 보내지 못하고 그날은 끝남"
+        print(f"   {d}: 채널 {len(part[d])}/{len(chats) or '?'}곳 받음 — {tail}")
     return 0
 
 

@@ -163,8 +163,14 @@ def next_open(market: str, d: str) -> datetime | None:
 
 
 def window_end(market: str, d: str) -> datetime | None:
-    """`d` 를 받을 수 있는 마지막 시각(UTC) — 다음 세션 개장 − `PRE_OPEN_MIN`."""
-    no = next_open(market, d)
+    """`d` 를 받을 수 있는 마지막 시각(UTC) — 다음 세션 개장 − `PRE_OPEN_MIN`. 달력이 던지면 None
+    (모르면 '창이 지났다' 고 단정하지 않는다) — 부르는 곳(수집·상태 줄·판정·`--why`)이 셋 넘으므로
+    보호는 여기 **한 곳**에 둔다(#315 · 독립 리뷰: 판정 함수에만 걸면 상태 줄·재생성이 그대로 죽는다)."""
+    try:
+        no = next_open(market, d)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("world_sectors: %s %s 다음 개장을 못 구함(%s) — 창 끝 판정 생략", market, d, exc)
+        return None
     if no is None:
         return None
     return no - timedelta(minutes=PRE_OPEN_MIN.get(market, PRE_OPEN_DEFAULT))
@@ -820,13 +826,7 @@ def market_verdict(market: str, state: dict, now: datetime | None = None) -> tup
     if ms.get("missed") == due:
         info = miss_info(state, market, due) or {}
     else:
-        try:
-            end = window_end(market, due)
-        except Exception as exc:                               # noqa: BLE001
-            # 달력 하나가 던지면 상태 줄·재생성 서명·`--why` 가 통째로 죽는다 — 추론만 포기하고
-            # 아래 대기·실패 갈래로 떨어진다(#315).
-            log.warning("world_sectors: %s 창 끝을 못 구함(%s) — 놓침 추론 생략", market, exc)
-            end = None
+        end = window_end(market, due)              # 달력이 던지면 None(보호는 window_end 한 곳)
         if end is not None and now.astimezone(timezone.utc) >= end:
             info = miss_from(market, ms, due)       # 창이 지났는데 아직 기록 전(다음 주기에 기록)
     if info is not None:
@@ -1111,7 +1111,7 @@ def _refresh_holdings(now: datetime) -> dict:
     """섹터종목의 ETF 보유 목록 — 하루 한 번(이미 받았거나 오늘 시도했으면 건너뛴다)."""
     from bot import etf_holdings as eh
     out = {}
-    for m in ("US", "KR"):
+    for m in HOLD_MARKETS:
         kr_date = None
         if m == "KR":
             kr_date = due_session("KR", now) or (stored_dates("KR") or [None])[-1]
@@ -1302,6 +1302,12 @@ def why_summary(kinds: dict[str, list[str]], bad: int) -> str:
             "h_stale": "보유 목록 오늘 갱신 실패(옛 목록으로 그림)", "h_error": "보유 목록 판정 불가"}
     w = [f"{lab} {'·'.join(kinds[k])}" for k, lab in wait.items() if kinds.get(k)]
     lk = [f"{lab} {'·'.join(kinds[k])}" for k, lab in look.items() if kinds.get(k)]
+    # 갈래에 한 번도 안 나온 나라·보유 목록 — 빈 꼬리로 끝내지 말고 '판정 없음' 을 이름으로(#54)
+    seen = {m for k, v in kinds.items() if not k.startswith("h_") for m in v}
+    hseen = {m for k, v in kinds.items() if k.startswith("h_") for m in v}
+    gone = [m for m in MARKETS if m not in seen] + [f"보유 {m}" for m in HOLD_MARKETS if m not in hseen]
+    if gone:
+        lk.append("판정 없음 " + "·".join(gone))
     if lk:
         return "⚠️ 확인할 것 — " + " · ".join(lk + w)
     return "⏳ 아직 다 받지 않음 — " + " · ".join(w)

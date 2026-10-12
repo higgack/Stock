@@ -101,7 +101,7 @@ def test_maybe_alert_marks_sent_only_on_success_and_never_twice(home, chans, mon
     r2 = al.maybe_alert(t + timedelta(minutes=15))
     st = al.load_state()
     assert r2["sent"] is True and st["sent"]["2026-10-12"]["how"] == "사진"
-    assert st["sent"]["2026-10-12"]["rechecked"] is True and st["last_reason"] == ""
+    assert st["sent"]["2026-10-12"]["settled"] is True and st["last_reason"] == ""
     al.maybe_alert(t + timedelta(minutes=30))
     assert calls == [["A", "B"], ["A", "B"]], "보낸 날짜를 또 보냈다"
 
@@ -155,7 +155,7 @@ def test_maybe_alert_counts_a_send_exception_as_a_try(home, chans, monkeypatch):
     r = al.maybe_alert(_at(2026, 10, 13, 8, 0))
     assert r["sent"] is False
     st = al.load_state()
-    assert st["tries"]["2026-10-12"] == 1 and st["last_error"] == "예외(OSError)"
+    assert st["tries"]["2026-10-12"] == 1 and "예외(OSError)" in st["last_reason"]
 
 
 def test_no_send_path_still_records_when_it_looked(home, monkeypatch):
@@ -343,8 +343,8 @@ def test_dashboard_table_is_a_card_with_rank_bar_and_subtitle():
     assert h.startswith("<div class='di-card'>") and "<table class='di-tbl'>" in h
     assert "기준일 순매수 ÷ 시총" in h
     assert [int(x) for x in __import__("re").findall(r"<td class='di-rk'>(\d+)</td>", h)] == [1, 2, 3]
-    widths = [int(x) for x in __import__("re").findall(r"width:calc\((\d+)% - 12px\)", h)]
-    assert widths == [100, 95, 90], "1위 대비 막대(값 1.00·0.95·0.90%)"
+    widths = [float(x) for x in __import__("re").findall(r"width:calc\(\(100% - 12px\) \* ([\d.]+)\)", h)]
+    assert widths == [1.0, 0.95, 0.9], "1위 대비 막대 — 칸 폭에 비례(고정 12px 를 빼면 비례가 깨진다)"
     empty = di._table_html({}, "turn", "순매수 전환 TOP 10", [])
     assert "colspan='3'>해당 종목 없음" in empty
 
@@ -392,3 +392,129 @@ def test_value_text_stays_readable_over_its_bar_and_row_hover():
         for base in ("card", "surface2"):
             bg = [round(op * u + (1 - op) * b) for u, b in zip(up, rgb(board[base]))]
             assert ratio(up, bg) >= 4.5, (sel, base, round(ratio(up, bg), 2))
+
+
+# ── 델타 리뷰(2026-10-12) ─────────────────────────────────────────────────────
+def test_real_push_functions_send_only_to_the_given_chats(tmp_path, monkeypatch):
+    """채널별 발송은 실제 push 함수가 `chats=` 를 지켜야 성립한다 — 무시하면 채널마다 전 채널로 가
+    고치려던 중복이 그대로다(델타 리뷰 H1). 알림 테스트는 전부 push 를 스텁해 이걸 못 본다."""
+    import httpx
+
+    import bot.daily_kr_flow as fl
+    png = tmp_path / "x.png"
+    png.write_bytes(b"\x89PNG")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t" * 12)
+    monkeypatch.setenv("CHANNEL_CHAT_IDS", "A,B")
+    posted = []
+
+    class R:
+        status_code, text = 200, ""
+
+    def post(url, data=None, json=None, files=None, timeout=None):
+        posted.append((url.rsplit("/", 1)[-1], (data or json)["chat_id"]))
+        return R()
+    monkeypatch.setattr(httpx, "post", post)
+    assert fl.push_telegram_photo(str(png), "c", filename="daily_inst.png", chats=["B"])
+    assert fl.push_telegram("t", chats=["B"])
+    assert posted == [("sendPhoto", "B"), ("sendMessage", "B")]
+    posted.clear()
+    assert fl.push_telegram("t")
+    assert [c for _, c in posted] == ["A", "B"], "chats 가 없으면 종전대로 전 채널"
+
+
+def test_channel_targets_falls_back_to_the_standardview_token(monkeypatch):
+    import bot.daily_kr_flow as fl
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("STANDARDVIEW_TELEGRAM_TOKEN", "s" * 12)
+    monkeypatch.setenv("CHANNEL_CHAT_IDS", " A , ,B ")
+    assert fl.channel_targets() == ("s" * 12, ["A", "B"])
+
+
+def test_one_chat_raising_keeps_the_others_success(home, monkeypatch):
+    import bot.daily_kr_flow as fl
+    monkeypatch.setattr(al, "render_png", lambda rec, out: Path(out).write_bytes(b"png") and out)
+
+    def photo(png, cap, filename="", *, chats=None):
+        if chats == ["B"]:
+            raise OSError("socket")
+        return True
+    monkeypatch.setattr(fl, "push_telegram_photo", photo)
+    assert al._send(_rec("2026-10-12"), ["A", "B"]) == {"A": "사진", "B": None}
+
+
+def test_text_body_carries_the_source_line():
+    body = al.text_body(_rec("2026-10-12"))
+    assert body.splitlines()[1] == al.SOURCE_LINE == "KRX 기관합계 순매수 ÷ 시가총액"
+
+
+def test_a_removed_chat_does_not_cost_a_try_or_a_render(home, monkeypatch):
+    monkeypatch.setattr(di, "load_records", lambda: [_rec("2026-10-12")])
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t" * 12)
+    monkeypatch.setenv("CHANNEL_CHAT_IDS", "A")
+    al._save_state({"sent_chats": {"2026-10-12": {"A": {"at": "x", "how": "사진"}}},
+                    "tries": {"2026-10-12": 2}})
+    monkeypatch.setattr(al, "_send", lambda rec, cs: pytest.fail("받을 채널이 없는데 보냈다"))
+    r = al.maybe_alert(_at(2026, 10, 13, 8, 30))
+    st = al.load_state()
+    assert r["sent"] is True and st["tries"]["2026-10-12"] == 2 and "2026-10-12" in st["sent"]
+
+
+def test_settled_flag_records_an_evening_send(home, chans, monkeypatch):
+    rec = _rec("2026-10-12", recheck=False)
+    rec["collected_at"] = "2026-10-12T20:40:00+09:00"
+    monkeypatch.setattr(di, "load_records", lambda: [rec])
+    monkeypatch.setattr(al, "_send", lambda r, cs: {c: "사진" for c in cs})
+    al.maybe_alert(_at(2026, 10, 13, 9, 0))
+    assert al.load_state()["sent"]["2026-10-12"]["settled"] is False
+
+
+def test_settled_and_needs_recheck_share_the_boundary():
+    rec = {"date": "2026-10-12", "collected_at": "2026-10-13T07:00:00+09:00"}
+    assert di.is_settled(rec) is True
+    assert di.needs_recheck(rec, _at(2026, 10, 13, 8, 0)) is False
+    rec["collected_at"] = "2026-10-13T06:59:59+09:00"
+    assert di.is_settled(rec) is False and di.needs_recheck(rec, _at(2026, 10, 13, 8, 0)) is True
+
+
+def test_why_tells_partial_sends_truthfully(home, chans, monkeypatch, capsys):
+    """'다음 주기에 다시' 는 정말 다시 물을 때만(델타 리뷰 M1) · ① 은 어느 채널이든 받은 마지막 날."""
+    monkeypatch.setattr(di, "load_records", lambda: [_rec("2026-10-12")])
+    al._save_state({"sent_chats": {"2026-10-12": {"A": {"at": "x", "how": "사진"}}},
+                    "tries": {"2026-10-12": 1}})
+    al.why(_at(2026, 10, 13, 9, 0))
+    out = capsys.readouterr().out
+    assert "① 마지막으로 보낸 기준일: 2026-10-12 (일부 채널만)" in out
+    assert "2026-10-12: 채널 1/2곳 받음 — 나머지는 다음 주기에 다시" in out
+    al._save_state({"sent_chats": {"2026-10-12": {"A": {"at": "x", "how": "사진"}}},
+                    "tries": {"2026-10-12": al.MAX_TRIES}})
+    al.why(_at(2026, 10, 13, 9, 0))
+    out = capsys.readouterr().out
+    assert "나머지는 보내지 못하고 그날은 끝남" in out and "다음 주기에 다시" not in out
+    al._save_state({"sent": {"2026-10-12": {"at": "t", "how": "사진"}},
+                    "sent_chats": {"2026-10-12": {"A": {}, "B": {}}}})
+    al.why(_at(2026, 10, 13, 9, 0))
+    out = capsys.readouterr().out
+    assert "2026-10-12 (t · 사진)" in out and "곳 받음" not in out, "다 받은 날은 일부 줄을 안 찍는다"
+
+
+def test_cli_fills_only_the_channel_keys_from_dotenv(monkeypatch):
+    """진단 프로세스는 `.env` 를 안 읽는다(#23) — 봇이 쓰는 세 키만 채운다. 안 하면 `--why` 가 키가
+    있는데도 '채널 없음' 이라 말한다."""
+    import os
+
+    import bot.env_keys as ek
+    vals = {"TELEGRAM_BOT_TOKEN": "t" * 12, "CHANNEL_CHAT_IDS": "A", "STANDARDVIEW_TELEGRAM_TOKEN": "",
+            "OTHER_API_KEY": "nope"}
+    asked = []
+    monkeypatch.setattr(ek, "env_key", lambda k: asked.append(k) or vals.get(k, ""))
+    for k in vals:
+        # 없던 키를 그냥 delenv 하면 되돌릴 기록이 안 남아, 제품이 채운 값이 뒤 테스트로 샌다 —
+        # 먼저 setenv 로 '원래 없음' 을 기록시킨다.
+        monkeypatch.setenv(k, "x")
+        monkeypatch.delenv(k)
+    seen = []
+    monkeypatch.setattr(al, "why", lambda now=None: seen.append(os.environ.get("CHANNEL_CHAT_IDS")) or 0)
+    assert al.main([]) == 0
+    assert seen == ["A"] and os.environ.get("TELEGRAM_BOT_TOKEN") == "t" * 12
+    assert sorted(asked) == ["CHANNEL_CHAT_IDS", "STANDARDVIEW_TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN"]
+    assert "OTHER_API_KEY" not in os.environ

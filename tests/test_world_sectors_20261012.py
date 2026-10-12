@@ -703,6 +703,61 @@ def test_probe_prints_the_first_raw_row(tmp_path, monkeypatch):
     assert not any("⚠️ 파일이 적은 사용 범위" in ln for ln in lines), "범위가 맞는 파일엔 경고 없음"
 
 
+def test_ssga_scan_counts_every_row_to_the_end():
+    """'적힌 범위 < 실제 행' 은 실제 행을 **끝까지** 세야 잰다 — 표 끝에서 멈추면 고지문 줄이 빠져
+    범위가 맞는 파일과 틀린 파일이 같아 보인다(델타 리뷰)."""
+    rows = [[f"Co{i}", f"T{i}", "x", "y", 20 - i, "IT", 1, "USD"] for i in range(3)]
+    r = eh.scan_ssga_xlsx(_ssga_xlsx(rows))
+    assert r["rows"] == 5 + 3 + 2 and r["read"] == 3, "머리 5줄 + 보유 3 + 빈 줄 + 고지문"
+
+
+def test_kr_parse_strips_names_and_warns_on_a_big_unlisted_stock(caplog, monkeypatch):
+    import logging
+    df = _kr_pdf(["005930", "005931", "010010"], [" 삼성전자 ", "삼성전자우", "원화예금"], [50.0, 30.0, 20.0])
+    df["비중"] = [50.0, 30.0, 20.0]
+    drops: dict = {}
+    top = eh.parse_kr_pdf(df, listed=frozenset({"005930"}), drops=drops)
+    assert top[0]["name"] == "삼성전자", "이름 앞뒤 공백"
+    assert drops["big_unlisted"] == ["삼성전자우(005931 30.0%)"], "현금처럼 안 보이는 큰 행만"
+
+
+def test_fetch_kr_logs_the_big_unlisted_rows_and_the_fallback(monkeypatch, caplog):
+    import logging
+    import sys
+    import types
+    import bot.pykrx_client as pk
+    monkeypatch.setattr(pk, "krx_login_ready", lambda: True)
+    df = _kr_pdf(["005930", "005931"], ["삼성전자", "삼성전자우"], [50.0, 30.0])
+    df["비중"] = [60.0, 40.0]
+    fake = types.ModuleType("pykrx")
+    fake.stock = types.SimpleNamespace(get_etf_portfolio_deposit_file=lambda c, d: df)
+    monkeypatch.setitem(sys.modules, "pykrx", fake)
+    monkeypatch.setattr(eh, "kr_listed", lambda d: (frozenset({"005930"}), "목록 1종목"))
+    with caplog.at_level(logging.WARNING, logger="bot.etf_holdings"):
+        rows, _ = eh.fetch_kr("091160.KS", "2026-10-12")
+    assert [r["code"] for r in rows] == ["005930"]
+    assert "삼성전자우(005931 40.0%)" in caplog.text and "목록 1종목" in caplog.text
+    caplog.clear()
+    monkeypatch.setattr(eh, "kr_listed", lambda d: (None, "KRX 상장 목록을 못 구함(x)"))
+    with caplog.at_level(logging.WARNING, logger="bot.etf_holdings"):
+        eh.fetch_kr("091160.KS", "2026-10-12")
+    assert "상장 목록 없이 코드 모양·이름으로 거른다" in caplog.text
+
+
+def test_kr_listed_keeps_a_success_and_bounds_its_memory(monkeypatch):
+    from bot import daily_inst as di
+    monkeypatch.setattr(eh, "_LISTED", {})
+    calls = []
+    monkeypatch.setattr(di, "cached_mcap", lambda d: None)
+    monkeypatch.setattr(di, "fetch_mcap", lambda d: calls.append(d) or ({"005930": 1.0}, "", "ok"))
+    eh.kr_listed("2026-10-12", now=0)
+    eh.kr_listed("2026-10-12", now=10 * eh._LISTED_FAIL_SEC)
+    assert calls == ["2026-10-12"], "받은 목록은 다시 안 묻는다(그날 상장 목록은 안 바뀐다)"
+    for i in range(eh._LISTED_KEEP + 5):
+        eh.kr_listed(f"2026-09-{i + 1:02d}", now=0)
+    assert len(eh._LISTED) == eh._LISTED_KEEP
+
+
 def test_probe_cli_dispatch(monkeypatch):
     seen = []
     monkeypatch.setattr(eh, "probe", lambda t=None, **k: seen.append(t) or 0)
@@ -743,7 +798,7 @@ def test_kr_listed_prefers_the_daily_inst_cache_then_asks_krx_once(monkeypatch):
     from bot import daily_inst as di
     monkeypatch.setattr(eh, "_LISTED", {})
     cache = {"2026-10-08": {"005930": 1.0, "000660": 2.0}}
-    monkeypatch.setattr(di, "_mcap_cached", lambda d: cache.get(d))
+    monkeypatch.setattr(di, "cached_mcap", lambda d: cache.get(d))
     calls = []
     monkeypatch.setattr(di, "fetch_mcap", lambda d: calls.append(d) or (None, "응답이 비었다", "empty"))
     got, src = eh.kr_listed("2026-10-12", now=0)
@@ -1661,9 +1716,11 @@ def test_why_says_all_received_only_when_every_market_and_holding_is_ok(store, c
     ({"ok": ["KR"], "wait": ["US", "JP", "TW", "CN_A"], "h_ok": ["KR", "US"]}, 0, "⏳"),
     ({"ok": list(ws.MARKETS)[:4], "holiday": ["CN_A"], "h_ok": ["KR", "US"]}, 0, "⚠️"),
     ({"fail": ["KR"]}, 1, "❌"),
-    ({"ok": ["KR", "US"], "h_ok": ["KR", "US"]}, 0, "⏳"),     # 두 나라만 받음
-    ({"ok": list(ws.MARKETS)}, 0, "⏳"),                        # 보유 목록 판정이 아예 없음
-    ({"ok": list(ws.MARKETS), "h_ok": ["KR"]}, 0, "⏳"),        # 보유 목록 하나만
+    ({"ok": ["KR", "US"], "h_ok": ["KR", "US"]}, 0, "⚠️"),     # 두 나라만 판정됨 → '판정 없음' 을 이름으로
+    ({"ok": list(ws.MARKETS)}, 0, "⚠️"),                        # 보유 목록 판정이 아예 없음
+    ({"ok": list(ws.MARKETS), "h_ok": ["KR"]}, 0, "⚠️"),        # 보유 목록 하나만
+    ({"ok": list(ws.MARKETS)[:4], "stale": ["CN_A"], "h_ok": ["KR", "US"]}, 0, "⚠️"),
+    ({"ok": list(ws.MARKETS), "h_ok": ["KR"], "h_error": ["US"]}, 0, "⚠️"),
 ])
 def test_why_summary_branches(kinds, bad, want):
     line = ws.why_summary(kinds, bad)
@@ -1679,8 +1736,10 @@ def test_why_summary_never_says_no_failure_next_to_a_failure():
     line = ws.why_summary({"ok": list(ws.MARKETS), "h_ok": ["KR"], "h_stale": ["US"]}, 0)
     assert line.startswith("⚠️ 확인할 것 — ") and "보유 목록 오늘 갱신 실패" in line
     assert "실패는 없음" not in line
-    line = ws.why_summary({"ok": ["KR"], "wait": ["US"], "h_none": ["KR", "US"]}, 0)
+    line = ws.why_summary({"ok": ["KR", "JP", "TW", "CN_A"], "wait": ["US"], "h_none": ["KR", "US"]}, 0)
     assert line == "⏳ 아직 다 받지 않음 — 수집 대기 US · 보유 목록 아직 안 물음 KR·US"
+    line = ws.why_summary({"ok": list(ws.MARKETS), "h_ok": ["KR"]}, 0)
+    assert line == "⚠️ 확인할 것 — 판정 없음 보유 US", "빈 꼬리로 끝내지 않는다"
 
 
 def test_why_names_only_the_unjudged_holdings_market_on_error(store, monkeypatch, capsys):
@@ -1699,12 +1758,17 @@ def test_why_names_only_the_unjudged_holdings_market_on_error(store, monkeypatch
 
 
 def test_verdict_survives_a_calendar_that_raises(store, monkeypatch):
-    """창 끝 추론이 던져도 상태 줄·재생성·`--why` 가 죽지 않는다(독립 리뷰 M2)."""
+    """달력이 던져도 상태 줄·재생성·`--why` 가 죽지 않는다(독립 리뷰 M2) — 보호는 `window_end` 한
+    곳이라 그걸 부르는 판정·하루 상태·페이지가 다 산다(델타 리뷰 L5: 판정에만 걸었더니 나머지가 죽었다)."""
     def boom(m, d):
         raise RuntimeError("calendar")
-    monkeypatch.setattr(ws, "window_end", boom)
-    kind, line = ws.market_verdict("KR", ws.load_state(), _at(2026, 10, 12, 18, 40))
+    monkeypatch.setattr(ws, "next_open", boom)
+    now = _at(2026, 10, 12, 18, 40)
+    assert ws.window_end("KR", "2026-10-12") is None
+    kind, line = ws.market_verdict("KR", ws.load_state(), now)
     assert kind in ("wait", "none", "fail", "stale", "ok"), (kind, line)
+    ws.market_day_status("KR", "2026-10-12", now, ws.load_state())
+    wp.map_payloads(now)
 
 
 def test_verdict_infers_the_miss_exactly_at_the_window_end(store):

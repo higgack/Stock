@@ -482,6 +482,12 @@ def _mcap_cached(date: str) -> dict | None:
     return m if isinstance(m, dict) and m else None
 
 
+def cached_mcap(date: str) -> dict | None:
+    """그날 받아 둔 전 종목 시가총액 {6자리 코드: 원} — 네트워크 0. 다른 모듈(섹터종목의 KRX 상장
+    목록 대조)이 쓰는 공개 입구."""
+    return _mcap_cached(date)
+
+
 def _nets_for(date: str, budget: _Budget, now: datetime, deferred=(),
               ok: list | None = None) -> dict | None:
     """그날 원자료(캐시 우선). KRX 가 그날 자료를 주지 않는 날(표식)은 None.
@@ -1189,7 +1195,7 @@ def _row_html(r: dict, rank: int, top: float) -> str:
     w = max(4.0, min(100.0, r["r"] / top * 100)) if top > 0 else 0.0
     return (f"<tr title='{_h.escape(tip)}'><td class='di-rk'>{rank}</td><td class='di-nm'>"
             f"<a href='lookup/{_h.escape(r['t'])}'>{nm}</a></td>"
-            f"<td class='di-v'><span class='di-bar' style='width:calc({w:.0f}% - 12px)'></span>"
+            f"<td class='di-v'><span class='di-bar' style='width:calc((100% - 12px) * {w / 100:.3f})'></span>"
             f"<span class='di-num'>{r['r']:.2f}%</span></td></tr>")
 
 

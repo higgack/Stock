@@ -212,6 +212,12 @@ KR_DROP_REASONS = {"not_listed": "KRX 상장 목록에 없음(현금·선물·�
                    "code_shape": "6자리 종목코드 아님", "cash_name": "이름이 현금·예금"}
 _LISTED: dict[str, tuple[float, frozenset | None, str]] = {}
 _LISTED_FAIL_SEC = 1800
+_LISTED_KEEP = 10                 # 프로세스가 며칠 살아도 날짜별 목록(약 2,800 코드)이 쌓이지 않게
+# 상장 목록에 없어 버린 행 중 '현금·선물·채권' 처럼 안 보이는데 비중이 큰 것 — 목록이 그 종목보다
+# 오래됐거나(최대 7일) 우선주 ISIN 이 잘려 코드가 어긋난 경우일 수 있다(재지 못함). 조용히 빠지지 않게
+# 로그로 남긴다(#43).
+_KR_NON_STOCK_NAME = re.compile(r"현금|예금|선물|채권|국채|통안|CD|원화|달러|USD|KRW| F |F \d")
+_KR_BIG_DROP = 1.0                # % — 이 비중 이상인데 종목처럼 보이는 행을 버리면 경고
 
 
 def kr_listed(date: str, *, now: float | None = None) -> tuple[frozenset | None, str]:
@@ -232,7 +238,7 @@ def kr_listed(date: str, *, now: float | None = None) -> tuple[frozenset | None,
         d0 = _date.fromisoformat(date)
         for k in range(8):
             d = (d0 - timedelta(days=k)).isoformat()
-            m = di._mcap_cached(d)
+            m = di.cached_mcap(d)
             if m:
                 got, src = frozenset(m), f"Daily 기관매수 {d} 시가총액 목록 {len(m):,}종목"
                 break
@@ -245,6 +251,8 @@ def kr_listed(date: str, *, now: float | None = None) -> tuple[frozenset | None,
     except Exception as exc:                                   # noqa: BLE001
         src = f"KRX 상장 목록을 못 구함({type(exc).__name__}: {str(exc)[:60]})"
     _LISTED[date] = (t, got, src)
+    for k in sorted(_LISTED)[:-_LISTED_KEEP]:
+        _LISTED.pop(k, None)
     return got, src
 
 
@@ -276,6 +284,12 @@ def parse_kr_pdf(df, top: int = TOP_N, *, listed=None, drops: dict | None = None
         if listed is not None:
             if c not in listed:
                 cnt["not_listed"] += 1
+                try:
+                    w0 = float(r[wcol]) if wcol else float("nan")
+                except (TypeError, ValueError):
+                    w0 = float("nan")
+                if w0 >= _KR_BIG_DROP and not _KR_NON_STOCK_NAME.search(name):
+                    cnt.setdefault("big_unlisted", []).append(f"{name}({c} {w0:.1f}%)")
                 continue
         elif not _KR_CODE.match(c):
             cnt["code_shape"] += 1
@@ -325,8 +339,12 @@ def fetch_kr(ticker: str, date: str) -> tuple[list[dict], str]:
         log.warning("etf_holdings: %s — 상장 목록 없이 코드 모양·이름으로 거른다(%s)", ticker, src)
     drops: dict = {}
     rows = parse_kr_pdf(df, listed=listed, drops=drops)
+    if drops.get("big_unlisted"):
+        log.warning("etf_holdings: %s — 상장 목록에 없어 뺐는데 비중이 큰 행: %s (대조: %s)", ticker,
+                    ", ".join(drops["big_unlisted"]), src)
     if not rows:
-        why = " · ".join(f"{KR_DROP_REASONS[k]} {n}" for k, n in drops.items() if n) or "버린 행 없음"
+        why = (" · ".join(f"{KR_DROP_REASONS[k]} {drops[k]}" for k in KR_DROP_REASONS if drops.get(k))
+               or "버린 행 없음")
         raise HoldingsError(f"KRX {date} 구성종목 {len(df)}행 중 종목이 없음 — {why} · 대조: {src}")
     return rows, date
 
