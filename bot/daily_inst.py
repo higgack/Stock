@@ -69,6 +69,9 @@ TIERS = (("big", "시가총액 1조 이상", 1e12, None),
 LISTS = (("strength", "순매수 강도 TOP 10"),
          ("turn", "순매수 전환 TOP 10"),
          ("streak", "5일 연속 순매수 TOP 10"))
+# 카드 머리 한 줄 — 그 목록이 무엇을 고른 것인지(가이드를 열지 않아도 읽히게)
+LIST_SUB = {"strength": "기준일 순매수 ÷ 시총", "turn": "직전일 순매도 → 기준일 순매수",
+            "streak": "최근 5거래일 모두 순매수"}
 TOP_N = 10
 STREAK_N = 5
 KEEP_SESSIONS = 10        # 자동으로 채워 두는 최근 기록 수
@@ -214,6 +217,15 @@ def recheck_due_at(date: str) -> datetime:
     """그 거래일 기록을 다시 받아 대조할 수 있는 가장 이른 시각(이튿날 07:00 KST)."""
     d = datetime.fromisoformat(date).replace(tzinfo=_KST)
     return (d + timedelta(days=1)).replace(hour=RECHECK_HOUR, minute=0, second=0)
+
+
+def is_settled(rec: dict) -> bool:
+    """그 기록이 이튿날 재확인 시각 이후의 값인가 — 재확인을 했거나, 처음부터 그 시각 뒤에 받았다
+    (백필 등 — `needs_recheck` 가 다시 안 묻는 기록). 아침 알림이 '저녁 값' 이라 적을지 정한다."""
+    if rec.get("recheck"):
+        return True
+    got = _parse(rec.get("collected_at"))
+    return bool(got and got >= recheck_due_at(rec["date"]))
 
 
 def needs_recheck(rec: dict, now: datetime | None = None) -> bool:
@@ -468,6 +480,12 @@ class _Stop(Exception):
 def _mcap_cached(date: str) -> dict | None:
     m = (load_raw(date) or {}).get("mcap")
     return m if isinstance(m, dict) and m else None
+
+
+def cached_mcap(date: str) -> dict | None:
+    """그날 받아 둔 전 종목 시가총액 {6자리 코드: 원} — 네트워크 0. 다른 모듈(섹터종목의 KRX 상장
+    목록 대조)이 쓰는 공개 입구."""
+    return _mcap_cached(date)
 
 
 def _nets_for(date: str, budget: _Budget, now: datetime, deferred=(),
@@ -1086,8 +1104,13 @@ def status_verdict(latest: str | None, now: datetime | None = None,
 
 
 # ── 화면 ────────────────────────────────────────────────────────────────────
+# 값 글자(--di-up)는 막대(10%) 위 · 행 hover(--surface2) 위에서도 AA 4.5 이상(라이트 4.94 · 다크 4.61 —
+# 독립 리뷰 2026-10-12: 옛 #c62828·13% 는 hover 에서 4.08). --bg·--card 는 대비 가드가 이 블록을
+# 팔레트로 재게 하려고 공용 `_BOARD_CSS` 와 **같은 값**으로 다시 적는다 — 갈라지면 회귀가 잡는다.
 _DI_CSS = """
 <style>
+:root{--bg:#f7f8f9;--card:#ffffff;--di-up:#b71c1c}
+:root[data-theme="dark"]{--bg:#0f1117;--card:#1a1d27;--di-up:#f87171}
 .di-status{background:var(--surface2);border-left:3px solid var(--accent);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--fg);margin:10px 0}
 .di-search{display:flex;gap:8px;margin:12px 0}
 .di-search input{flex:1;max-width:420px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);font-size:13px}
@@ -1098,15 +1121,23 @@ _DI_CSS = """
 .di-day>summary{font-size:14px}
 .di-meta{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
 .di-body{padding:4px 0 12px}
-.di-tier{margin:14px 0 6px}
-.di-tier-h{font-size:16px;font-weight:700;margin:6px 0 8px;color:var(--fg)}
+.di-tier{margin:16px 0 8px}
+.di-tier-h{font-size:15px;font-weight:700;margin:6px 0 10px;color:var(--fg);border-left:3px solid var(--accent);padding-left:8px}
 .di-n{font-weight:400;font-size:12px;color:var(--muted);margin-left:6px}
-.di-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.di-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 @media (max-width:960px){.di-grid{grid-template-columns:1fr}}
-.di-tbl{width:100%;border-collapse:collapse;border:1px solid var(--fg);background:var(--card);font-size:13px}
-.di-tbl th{text-align:center;color:var(--fg);font-size:13px;font-weight:700;padding:8px;border-bottom:2px solid var(--fg);white-space:nowrap}
+.di-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.di-card-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.di-card-t{font-size:13px;font-weight:700;color:var(--fg)}
+.di-card-u{font-size:11px;color:var(--muted);white-space:nowrap}
+.di-tbl{width:100%;border-collapse:collapse;font-size:13px}
 .di-tbl td{padding:6px 10px;border-bottom:1px solid var(--border);color:var(--fg)}
-.di-tbl td.di-v{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;border-left:1px solid var(--border);width:34%}
+.di-tbl tr:last-child td{border-bottom:none}
+.di-tbl tbody tr:hover td{background:var(--surface2)}
+.di-tbl td.di-rk{width:22px;padding-right:0;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums;text-align:right}
+.di-tbl td.di-v{position:relative;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;width:38%;color:var(--di-up);font-weight:600}
+.di-bar{position:absolute;right:6px;top:5px;bottom:5px;border-radius:4px;background:var(--di-up);opacity:.10}
+.di-num{position:relative}
 .di-nm a{color:var(--fg);text-decoration:none}
 .di-nm a:hover{text-decoration:underline}
 .di-hit{background:rgba(250,204,21,.32)}
@@ -1155,14 +1186,17 @@ def _fmt_mcap(v: float) -> str:
     return f"{v / 1e12:.2f}조" if v >= 1e12 else f"{v / 1e8:,.0f}억"
 
 
-def _row_html(r: dict) -> str:
+def _row_html(r: dict, rank: int, top: float) -> str:
+    """한 줄 — 순위 · 종목 · 값(그 목록 1위 대비 막대). 막대는 값을 읽는 보조일 뿐 숫자가 정본이다."""
     import html as _h
     tip = (f"순매수 {r['net'] / 1e8:+,.1f}억 · 시총 {_fmt_mcap(r['mcap'])}"
            f" · {r['t']}")
     nm = _h.escape(str(r.get("n") or r["t"]))
-    return (f"<tr title='{_h.escape(tip)}'><td class='di-nm'>"
+    w = max(4.0, min(100.0, r["r"] / top * 100)) if top > 0 else 0.0
+    return (f"<tr title='{_h.escape(tip)}'><td class='di-rk'>{rank}</td><td class='di-nm'>"
             f"<a href='lookup/{_h.escape(r['t'])}'>{nm}</a></td>"
-            f"<td class='di-v'>{r['r']:.2f}%</td></tr>")
+            f"<td class='di-v'><span class='di-bar' style='width:calc((100% - 12px) * {w / 100:.3f})'></span>"
+            f"<span class='di-num'>{r['r']:.2f}%</span></td></tr>")
 
 
 def _na_reason(rec: dict, key: str) -> str:
@@ -1176,18 +1210,21 @@ def _na_reason(rec: dict, key: str) -> str:
 
 def _table_html(rec: dict, key: str, title: str, rows) -> str:
     import html as _h
-    head = f"<thead><tr><th colspan='2'>{_h.escape(title)}</th></tr></thead>"
+    head = (f"<div class='di-card-h'><span class='di-card-t'>{_h.escape(title)}</span>"
+            f"<span class='di-card-u'>{_h.escape(LIST_SUB.get(key, ''))}</span></div>")
     if rows is None:
-        body = (f"<tr class='di-na'><td colspan='2'>{_h.escape(_na_reason(rec, key))}"
+        body = (f"<tr class='di-na'><td colspan='3'>{_h.escape(_na_reason(rec, key))}"
                 "</td></tr>")
     elif not rows:
-        body = "<tr class='di-na'><td colspan='2'>해당 종목 없음</td></tr>"
+        body = "<tr class='di-na'><td colspan='3'>해당 종목 없음</td></tr>"
     else:
-        body = "".join(_row_html(r) for r in rows)
+        top = max((r["r"] for r in rows), default=0.0)
+        body = "".join(_row_html(r, i + 1, top) for i, r in enumerate(rows))
         if len(rows) < TOP_N:
-            body += (f"<tr class='di-na'><td colspan='2'>조건에 맞는 종목이 "
+            body += (f"<tr class='di-na'><td colspan='3'>조건에 맞는 종목이 "
                      f"{len(rows)}개뿐입니다</td></tr>")
-    return f"<table class='di-tbl'>{head}<tbody>{body}</tbody></table>"
+    return (f"<div class='di-card'>{head}<table class='di-tbl'><tbody>{body}</tbody>"
+            "</table></div>")
 
 
 def _day_meta(rec: dict) -> str:

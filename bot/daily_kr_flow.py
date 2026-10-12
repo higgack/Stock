@@ -647,14 +647,22 @@ def _chunk(text: str) -> list[str]:
     return out
 
 
-def push_telegram(text: str) -> bool:
-    import httpx
+def channel_targets() -> tuple[str, list[str]]:
+    """(봇 토큰, 채널 chat id 목록) — 두 push 함수와 Daily 기관매수 알림이 같이 쓴다(#38)."""
     token = (
         os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         or os.environ.get("STANDARDVIEW_TELEGRAM_TOKEN", "").strip()
     )
     raw_ids = os.environ.get("CHANNEL_CHAT_IDS", "").strip()
-    chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
+    return token, [c.strip() for c in raw_ids.split(",") if c.strip()]
+
+
+def push_telegram(text: str, *, chats: list[str] | None = None) -> bool:
+    """`chats` 를 주면 그 채널에만(채널마다 따로 성공을 재려는 호출부용), 없으면 전부."""
+    import httpx
+    token, chat_ids = channel_targets()
+    if chats is not None:
+        chat_ids = list(chats)
     if not token or not chat_ids:
         log.error("daily_byte: TELEGRAM_BOT_TOKEN / CHANNEL_CHAT_IDS missing")
         return False
@@ -683,18 +691,18 @@ def push_telegram(text: str) -> bool:
     return ok_all
 
 
-def push_telegram_photo(png_path: str, caption: str = "") -> bool:
+def push_telegram_photo(png_path: str, caption: str = "",
+                        filename: str = "daily_byte.png", *,
+                        chats: list[str] | None = None) -> bool:
     """인포그래픽 PNG 를 채널에 사진으로 push (sendPhoto). 실패해도 텍스트
-    push 는 별개로 진행되므로 best-effort."""
+    push 는 별개로 진행되므로 best-effort. Daily 기관매수 아침 알림도 이걸 쓴다
+    (`bot.daily_inst_alert`, 보내는 경로를 한 벌로 — #38)."""
     if not png_path or not os.path.exists(png_path):
         return False
     import httpx
-    token = (
-        os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        or os.environ.get("STANDARDVIEW_TELEGRAM_TOKEN", "").strip()
-    )
-    raw_ids = os.environ.get("CHANNEL_CHAT_IDS", "").strip()
-    chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
+    token, chat_ids = channel_targets()
+    if chats is not None:
+        chat_ids = list(chats)
     if not token or not chat_ids:
         return False
     api = f"https://api.telegram.org/bot{token}"
@@ -706,7 +714,7 @@ def push_telegram_photo(png_path: str, caption: str = "") -> bool:
                     f"{api}/sendPhoto",
                     data={"chat_id": chat, "caption": caption[:1024],
                           "parse_mode": "HTML"},
-                    files={"photo": ("daily_byte.png", f, "image/png")},
+                    files={"photo": (filename, f, "image/png")},
                     timeout=40,
                 )
             if r.status_code != 200:

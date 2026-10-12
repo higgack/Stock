@@ -19370,13 +19370,13 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="sector_mix.html">🌐 국가별 섹터혼합</a>
     &middot; <a href="sentiment_map.html">🗺️ 국가별 심리지도</a>
     &middot; <a href="sector_stocks.html">📑 국가별 섹터종목</a>
-    &middot; <a href="econ_calendar.html">📅 경제캘린더</a>
     &middot; <a href="marketcap.html">🏆 Market cap</a>
-    &middot; <a href="trade/">🌏 수출입</a>
-    &middot; <a href="daily_byte.html">📰 Daily Byte</a>
+    &middot; <a href="econ_calendar.html">📅 경제캘린더</a>
     &middot; <a href="daily_inst.html">🏦 Daily 기관매수</a>
+    &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
+    &middot; <a href="trade/">🌏 수출입</a>
     <span style="white-space:nowrap">&nbsp;|&nbsp;<a href="realestate.html">🏠 부동산</a></span>
     {_ext_nav}
   </div>

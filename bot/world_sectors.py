@@ -40,6 +40,7 @@ _REC_DIR = _DIR / "records"
 _STATE = _DIR / "state.json"
 
 MARKETS = ("KR", "US", "JP", "TW", "CN_A")
+HOLD_MARKETS = ("KR", "US")      # 섹터종목 — Breadth 전략 섹터 ETF 가 있는 나라(사용자 지정)
 READY_MIN = 180            # 마감 뒤 이만큼 지나서 받는다(지연 15분 + 시간외 단일가·정산 여유)
 RETRY_MIN = (30, 60, 120, 180)   # 같은 세션 연속 실패 시 다음 시도까지(분)
 KEEP_SNAP_DAYS = 45        # 종목별 원자료(gz) 보관 — 주간 표·20거래일 평균에 충분
@@ -162,8 +163,14 @@ def next_open(market: str, d: str) -> datetime | None:
 
 
 def window_end(market: str, d: str) -> datetime | None:
-    """`d` 를 받을 수 있는 마지막 시각(UTC) — 다음 세션 개장 − `PRE_OPEN_MIN`."""
-    no = next_open(market, d)
+    """`d` 를 받을 수 있는 마지막 시각(UTC) — 다음 세션 개장 − `PRE_OPEN_MIN`. 달력이 던지면 None
+    (모르면 '창이 지났다' 고 단정하지 않는다) — 부르는 곳(수집·상태 줄·판정·`--why`)이 셋 넘으므로
+    보호는 여기 **한 곳**에 둔다(#315 · 독립 리뷰: 판정 함수에만 걸면 상태 줄·재생성이 그대로 죽는다)."""
+    try:
+        no = next_open(market, d)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("world_sectors: %s %s 다음 개장을 못 구함(%s) — 창 끝 판정 생략", market, d, exc)
+        return None
     if no is None:
         return None
     return no - timedelta(minutes=PRE_OPEN_MIN.get(market, PRE_OPEN_DEFAULT))
@@ -663,19 +670,24 @@ def _record_miss(market: str, ms: dict, d: str) -> None:
 
     `kind="missed"` 로 덮기 **전에** 남겨야 한다 — 덮고 나면 403 이 창 내내 이어진 것과
     원천 값이 직전 세션과 같았던 것(휴장)이 같은 '수집 못 함' 이 된다(#82·#165)."""
-    tried = ms.get("date") == d and ms.get("kind") not in (None, "ok", "missed")
-    if tried:
-        info = {"kind": ms.get("kind"), "reason": ms.get("reason") or "", "n": int(ms.get("n") or 0)}
-    elif any(x < d for x in stored_dates(market)):
-        # 받은 적이 있는 시장인데 이 창엔 한 번도 안 물었다 — 봇이 그 창 내내 멈춰 있었다
-        info = {"kind": "not_tried", "reason": "받을 창 동안 한 번도 묻지 않았다(봇이 멈춰 있었을 수 있다)",
-                "n": 0}
-    else:
-        info = {"kind": "before_start", "reason": "수집을 시작하기 전 세션", "n": 0}
     misses = ms.setdefault("misses", {})
-    misses[d] = info
+    misses[d] = miss_from(market, ms, d)
     for k in sorted(misses)[:-KEEP_MISSES]:
         misses.pop(k, None)
+
+
+def miss_from(market: str, ms: dict, d: str) -> dict:
+    """그 창의 마지막 상태에서 놓친 사유를 만든다(순수에 가까움 — 저장 날짜만 읽는다). 기록하는
+    `_record_miss` 와, 아직 기록 전(창이 막 지났고 다음 주기 전)인 상태를 말하는 `market_verdict`
+    가 같이 쓴다 — 창이 지난 세션을 '다음 주기에 받는다' 고 적으면 거짓 약속이다."""
+    tried = ms.get("date") == d and ms.get("kind") not in (None, "ok", "missed")
+    if tried:
+        return {"kind": ms.get("kind"), "reason": ms.get("reason") or "", "n": int(ms.get("n") or 0)}
+    if any(x < d for x in stored_dates(market)):
+        # 받은 적이 있는 시장인데 이 창엔 한 번도 안 물었다 — 봇이 그 창 내내 멈춰 있었다
+        return {"kind": "not_tried", "reason": "받을 창 동안 한 번도 묻지 않았다(봇이 멈춰 있었을 수 있다)",
+                "n": 0}
+    return {"kind": "before_start", "reason": "수집을 시작하기 전 세션", "n": 0}
 
 
 def miss_info(state: dict, market: str, d: str) -> dict | None:
@@ -810,8 +822,14 @@ def market_verdict(market: str, state: dict, now: datetime | None = None) -> tup
         return "none", "아직 받을 세션 없음" + tail
     if last == due:
         return "ok", f"{due} 받음"
+    info = None
     if ms.get("missed") == due:
         info = miss_info(state, market, due) or {}
+    else:
+        end = window_end(market, due)              # 달력이 던지면 None(보호는 window_end 한 곳)
+        if end is not None and now.astimezone(timezone.utc) >= end:
+            info = miss_from(market, ms, due)       # 창이 지났는데 아직 기록 전(다음 주기에 기록)
+    if info is not None:
         if miss_is_holiday(info):
             return "holiday", (f"{due} 휴장 추정 — 받을 창 내내 원천 값이 직전 세션과 같았다(달력에 없는 "
                                f"휴장이거나 원천이 그 세션을 끝내 싣지 않음 · {info.get('n') or 0}회 확인)"
@@ -1093,7 +1111,7 @@ def _refresh_holdings(now: datetime) -> dict:
     """섹터종목의 ETF 보유 목록 — 하루 한 번(이미 받았거나 오늘 시도했으면 건너뛴다)."""
     from bot import etf_holdings as eh
     out = {}
-    for m in ("US", "KR"):
+    for m in HOLD_MARKETS:
         kr_date = None
         if m == "KR":
             kr_date = due_session("KR", now) or (stored_dates("KR") or [None])[-1]
@@ -1217,6 +1235,7 @@ def why(now: datetime | None = None) -> int:
     print(f"① 상태 파일: {_STATE} ({'있음' if _STATE.exists() else '없음'}) · 마지막 시도 "
           f"{st.get('last_try') or '—'} · 마지막 수집 {st.get('last_ok') or '—'}")
     bad = 0
+    kinds: dict[str, list[str]] = {}
     for m in MARKETS:
         ms = (st.get("markets") or {}).get(m) or {}
         have = stored_dates(m)
@@ -1225,6 +1244,7 @@ def why(now: datetime | None = None) -> int:
         kind, line = market_verdict(m, st, now)
         mark = VERDICT_MARK.get(kind, "❓")
         bad += kind in BAD_VERDICTS
+        kinds.setdefault(kind, []).append(m)
         print(f"② {m}: 받아야 할 세션 {due or '—'} · 마지막으로 받은 세션 {last or '—'} "
               f"(보관 {len(have)}일) {mark} {line}")
         if ms.get("reason"):
@@ -1242,9 +1262,10 @@ def why(now: datetime | None = None) -> int:
             lab = (a.get("labels") or {})
             print(f"   한국어 이름: 섹터 {len(lab.get('sec') or {})} · 업종 {len(lab.get('ind') or {})}"
                   " (0 이면 원천이 sector.tr/industry.tr 을 안 준 것 — 화면은 영문)")
+    judged: list[str] = []
     try:
         from bot import etf_holdings as eh
-        for m in ("KR", "US"):
+        for m in HOLD_MARKETS:
             got = []
             for t in eh.etfs(m):
                 h = eh.load(t) or {}
@@ -1252,6 +1273,8 @@ def why(now: datetime | None = None) -> int:
                            + ("✗" if h.get("error") and h.get("tried_day") != h.get("fetched_day") else ""))
             hk, hline = eh.holdings_verdict(m, now)
             bad += hk == "fail"
+            kinds.setdefault(f"h_{hk}", []).append(m)
+            judged.append(m)
             print(f"③ {m} ETF 보유 목록 {VERDICT_MARK.get(hk, '❓')} {hline}: {' '.join(got)}")
             for t in eh.etfs(m):
                 h = eh.load(t) or {}
@@ -1259,9 +1282,35 @@ def why(now: datetime | None = None) -> int:
                     print(f"   {t}: {h['error']}")
     except Exception as exc:                                   # noqa: BLE001
         print(f"③ ETF 보유 목록: 판정 불가({type(exc).__name__}: {exc})")
-    print("판정: " + ("✅ 다섯 나라 다 최신 · 보유 목록 이상 없음" if not bad
-                      else f"❌ {bad}건 — 나라 수집 실패 또는 보유 목록 없음(사유는 위)"))
+        kinds.setdefault("h_error", []).extend(m for m in HOLD_MARKETS if m not in judged)
+    print("판정: " + why_summary(kinds, bad))
     return 0 if not bad else 1
+
+
+def why_summary(kinds: dict[str, list[str]], bad: int) -> str:
+    """`--why` 마지막 줄(순수) — 실패가 없다는 것과 다 받았다는 것은 다른 사실이다. 아무것도 안
+    받았는데 '✅ 다 최신' 이라 적으면 거짓 안심이다(2026-10-12 VM 실측: 상태 파일도 없는데 ✅, #54)."""
+    if bad:
+        return f"❌ {bad}건 — 나라 수집 실패 또는 보유 목록 없음(사유는 위)"
+    all_ok = set(kinds) <= {"ok", "h_ok"} and len(kinds.get("ok", [])) == len(MARKETS)
+    if all_ok and len(kinds.get("h_ok", [])) == len(HOLD_MARKETS):
+        return "✅ 다섯 나라 다 받음 · 보유 목록 이상 없음"
+    # 기다리면 되는 것(⏳)과 사람이 볼 것(⚠️·❓)을 가른다 — '실패는 없음' 옆에 '갱신 실패' 를 적으면
+    # 스스로 모순이다(독립 리뷰).
+    wait = {"wait": "수집 대기", "none": "받을 세션 없음", "h_none": "보유 목록 아직 안 물음"}
+    look = {"stale": "원천 미게시", "holiday": "휴장 추정", "missed": "창 놓침(수집 시작 전 등)",
+            "h_stale": "보유 목록 오늘 갱신 실패(옛 목록으로 그림)", "h_error": "보유 목록 판정 불가"}
+    w = [f"{lab} {'·'.join(kinds[k])}" for k, lab in wait.items() if kinds.get(k)]
+    lk = [f"{lab} {'·'.join(kinds[k])}" for k, lab in look.items() if kinds.get(k)]
+    # 갈래에 한 번도 안 나온 나라·보유 목록 — 빈 꼬리로 끝내지 말고 '판정 없음' 을 이름으로(#54)
+    seen = {m for k, v in kinds.items() if not k.startswith("h_") for m in v}
+    hseen = {m for k, v in kinds.items() if k.startswith("h_") for m in v}
+    gone = [m for m in MARKETS if m not in seen] + [f"보유 {m}" for m in HOLD_MARKETS if m not in hseen]
+    if gone:
+        lk.append("판정 없음 " + "·".join(gone))
+    if lk:
+        return "⚠️ 확인할 것 — " + " · ".join(lk + w)
+    return "⏳ 아직 다 받지 않음 — " + " · ".join(w)
 
 
 def probe(market: str | None = None) -> int:
