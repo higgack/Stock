@@ -432,6 +432,30 @@ def test_mix_page_shows_verdicts_wins_and_hides_quiet_rows(pages):
     assert "주간 ±1%p · 하루 ±0.5%p" in h
 
 
+def test_mix_day_tab_comes_first_and_opens_by_default(pages):
+    """사용자 2026-10-12 "하루랑 일주일의 위치를 바꿔 — 처음 들어가면 하루로". 날짜마다 탭 묶음의 첫
+    탭이 '하루' 이고 그 탭·그 창이 켜져 있다. 머리줄 계수도 처음 보이는 창(하루)부터 말한다(#45) —
+    그 수는 그 기록의 `v_day` 로 다시 센 값과 같아야 한다(라벨만 바꾸고 주간 수를 두는 변형을 잡는다)."""
+    h = pages["mix"]
+    boxes = re.findall(r"<div class='ws-tabs' data-tabs='(mix\d+)'>(.*?)</div>", h)
+    assert boxes, "날짜마다 하루·주간 탭 묶음이 있다"
+    for g, inner in boxes:
+        tabs = re.findall(r"<span class='ws-tab( active)?' data-tab='(\w+)'>([^<]+)</span>", inner)
+        assert [t[1] for t in tabs] == ["day", "week"], tabs
+        assert tabs[0][0] == " active" and tabs[1][0] == "", "처음 켜지는 탭은 하루"
+        assert tabs[0][2] == "하루" and tabs[1][2].startswith("주간")
+        on = re.findall(rf"<div class='ws-pane( active)?' data-group='{g}' data-tab='(\w+)'>", h)
+        assert on == [(" active", "day"), ("", "week")], on
+    rec = pages["recs"][0]
+    cnt = lambda win, ks: sum(1 for r in rec["rows"] if r.get(f"v_{win}") in ks)
+    day_line = (f"하루 공통 {cnt('day', ('all_up', 'all_down'))} · 2국 이상 "
+                f"{cnt('day', ('k_up', 'k_down'))} · 엇갈림 {cnt('day', ('mixed',))}")
+    week_line = (f"주간 공통 {cnt('week', ('all_up', 'all_down'))} · 2국 이상 "
+                 f"{cnt('week', ('k_up', 'k_down'))} · 엇갈림 {cnt('week', ('mixed',))}")
+    meta = re.search(r"<span class='ws-meta'>([^<]*하루 공통[^<]*)</span>", h).group(1)
+    assert meta.index(day_line) < meta.index(week_line), meta
+
+
 def test_map_page_cells_tooltips_and_lazy_json(pages):
     h = pages["map"]
     assert "<title>국가별 심리지도</title>" in h
@@ -1019,6 +1043,117 @@ def test_holdings_failure_shows_retry_on_the_page(store):
     assert "보유 목록 갱신 실패(원천이 HTTP 503" in meta and "다음 시도 11:30" in meta, meta
 
 
+# ── 앞선 판 코드가 남긴 실패(2026-10-12 VM: 19:27 배포 뒤에도 18:52 옛 판 실패 때문에 20:52 까지
+#    미국 11개가 '보유 종목 행이 없음') — 지문이 다르거나 없는 실패는 다음 주기에 바로 다시 묻는다.
+def test_prior_code_failure_is_retried_at_once_and_counted_afresh(tmp_path, monkeypatch):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    monkeypatch.setattr(eh, "etfs", lambda m: {"XLK": "기술", "XLF": "금융"})
+    old = {"tried_day": "2026-10-12", "tries": 2, "error": "엑셀에 보유 종목 행이 없음",
+           "tried_at": "2026-10-12T18:52:00+09:00"}           # 지문 없음 = 이 기능 전의 판
+    eh._save("XLK", old)
+    eh._save("XLF", {**old, "sig": "0ldc0de000"})              # 다른 지문 = 다른 판
+    calls = []
+
+    def bad(t, session=None):
+        calls.append(t)
+        raise eh.HoldingsError("원천이 HTTP 503 — 원천 장애")
+    monkeypatch.setattr(eh, "fetch_us", bad)
+    now = _at(2026, 10, 12, 19, 30)                            # 옛 판의 2시간 간격(20:52) 전
+    eh.refresh("US", now)
+    assert sorted(calls) == ["XLF", "XLK"], "앞선 판의 실패는 간격을 기다리지 않는다"
+    for t in ("XLK", "XLF"):
+        h = eh.load(t)
+        assert h["tries"] == 1 and h["sig"] == eh.CODE_SIG and "503" in h["error"], h
+        assert not eh.prior_failure(h)
+        assert eh.retry_note(h, now) == "오늘 1/4회 실패 · 다음 시도 21:30", "지금 판의 실패는 간격을 지킨다"
+    eh.refresh("US", now + timedelta(minutes=15))
+    assert len(calls) == 2, "지금 판의 실패는 바로 다시 묻지 않는다"
+
+
+def test_prior_code_failure_at_the_daily_cap_is_still_retried(tmp_path, monkeypatch):
+    """하루 상한(`MAX_TRIES`)을 다 쓴 옛 판 기록도 — 상한은 '같은 코드로 몇 번 물었나' 다."""
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    monkeypatch.setattr(eh, "etfs", lambda m: {"XLK": "기술"})
+    eh._save("XLK", {"tried_day": "2026-10-12", "tries": eh.MAX_TRIES, "error": "옛 사유",
+                     "tried_at": "2026-10-12T18:52:00+09:00", "sig": "0ldc0de000"})
+    monkeypatch.setattr(eh, "fetch_us",
+                        lambda t, session=None: ([{"code": "AAPL", "name": "Apple", "weight": 20.0}], "As of x"))
+    assert eh.refresh("US", _at(2026, 10, 12, 19, 30))["ok"] == ["XLK"]
+    h = eh.load("XLK")
+    assert h["error"] == "" and h["sig"] == eh.CODE_SIG and h["fetched_day"] == "2026-10-12"
+    assert not eh.prior_failure(h), "성공 기록은 앞선 판 실패가 아니다"
+
+
+def test_prior_failure_needs_an_error_and_a_different_signature():
+    assert not eh.prior_failure({})
+    assert not eh.prior_failure({"error": "", "sig": "x"}), "실패가 아니면 판을 묻지 않는다"
+    assert eh.prior_failure({"error": "e"}), "지문이 없는 실패 = 이 기능 전의 판"
+    assert eh.prior_failure({"error": "e", "sig": "x" + eh.CODE_SIG})
+    assert not eh.prior_failure({"error": "e", "sig": eh.CODE_SIG})
+
+
+def test_code_sig_is_the_source_fingerprint_and_reacts_to_edits(tmp_path, monkeypatch):
+    """지문은 **이 모듈 소스**에서 나와야 배포가 그것을 바꾼다 — 상수면 옛 판의 실패를 영영 못
+    알아본다(뮤테이션 'CODE_SIG = 상수' 가 이 파일의 다른 테스트를 전부 통과했다, #365·#91b).
+    레포 파일엔 쓰지 않는다 — mtime 도 부작용이다(#365a)."""
+    assert eh.CODE_SIG == eh._source_sig(), "import 시점 지문 = 지금 디스크의 이 모듈 소스"
+    f = tmp_path / "etf_holdings.py"
+    f.write_text("a = 1\n")
+    monkeypatch.setattr(eh, "__file__", str(f))
+    s1 = eh._source_sig()
+    f.write_text("a = 2\n")
+    s2 = eh._source_sig()
+    assert s1 != s2 and len(s1) == 10, "소스가 바뀌면 지문도 바뀐다"
+    f.unlink()
+    assert eh._source_sig() == "nosig", "못 읽으면 지어내지 않고 그렇다고 적는다"
+
+
+def test_prior_failure_shows_as_retry_on_screen_why_and_audit(tmp_path, monkeypatch, capsys):
+    """화면·`--why`·감사가 같은 갈래를 말한다 — 옛 판의 사유를 '지금 실패(❌)' 로 적지 않고
+    '지금 코드로 다시 묻는다(⏳)' 로. 지금 판의 실패가 하나라도 있으면 그쪽(❌)이 이긴다."""
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    monkeypatch.setattr(eh, "etfs", lambda m: {"XLK": "기술", "XLF": "금융"})
+    now = _at(2026, 10, 12, 20, 6)
+    old = {"rows": [], "tried_day": "2026-10-12", "tries": 2, "error": "엑셀에 보유 종목 행이 없음",
+           "tried_at": "2026-10-12T18:52:00+09:00"}
+    eh._save("XLK", old)
+    eh._save("XLF", old)
+    kind, line = eh.holdings_verdict("US", now)
+    assert kind == "retry" and ws.VERDICT_MARK[kind] == "⏳", (kind, line)
+    assert "2/2" in line and "이전 판 코드" in line and "엑셀에 보유 종목 행이 없음" in line, line
+    assert eh.retry_note(old, now) == "이전 판 코드가 남긴 실패 기록 — 다음 주기에 지금 코드로 다시 묻습니다"
+    from bot.scripts import board_audit as ba
+    monkeypatch.setattr(ws, "HOLD_MARKETS", ("US",))
+    monkeypatch.setattr(ws, "MARKETS", ())
+    lines = ba._world_sectors_lines(state={}, now=now)
+    assert any(x.strip().startswith("⏳ US 섹터 ETF 보유 목록") for x in lines), lines
+    assert not any("❌" in x for x in lines), "감사가 옛 판의 실패를 ❌ 로 세지 않는다"
+    eh._save("XLF", {**old, "sig": eh.CODE_SIG, "error": "원천이 HTTP 503"})
+    kind, line = eh.holdings_verdict("US", now)
+    assert kind == "fail" and "1/2" in line and "503" in line, "지금 판의 실패가 이긴다"
+
+
+def test_prior_failure_is_named_on_the_page_and_in_why(store, capsys):
+    """같은 사실을 화면 머리줄과 `--why` 줄이 같이 말한다 — 화면엔 `retry_note`, `--why` 엔 ETF 줄 꼬리."""
+    fx.simulate(store, _at(2026, 9, 28, 0), 15)
+    now = _at(2026, 10, 13, 9, 30)
+    store.now = now
+    t = list(eh.etfs("US"))[0]
+    eh._save(t, {"rows": [], "tried_day": "2026-10-13", "tries": 2, "error": "엑셀에 보유 종목 행이 없음",
+                 "tried_at": "2026-10-13T08:52:00+09:00"})
+    meta = wp.stocks_payloads(now)["US"]["etfs"][0]["meta"]
+    assert "보유 목록 갱신 실패(엑셀에 보유 종목 행이 없음) — 이전 판 코드가 남긴 실패 기록" in meta, meta
+    ws.why(now)
+    out = capsys.readouterr().out
+    line = next(x for x in out.splitlines() if x.strip().startswith(f"{t}:"))
+    assert line.endswith("이전 판 코드의 기록(다음 주기에 다시 묻는다)"), line
+
+
+def test_why_summary_treats_a_prior_code_retry_as_waiting():
+    line = ws.why_summary({"ok": list(ws.MARKETS), "h_ok": ["KR"], "h_retry": ["US"]}, 0)
+    assert line == "⏳ 아직 다 받지 않음 — 보유 목록 지금 코드로 다시 묻는 중(이전 판 실패 기록) US", line
+
+
 @pytest.mark.parametrize("tv_name, hold, want", [
     ("Samsung Electronics Co., Ltd.", "삼성전자", "삼성전자"),
     ("삼성전자보통주", "삼성전자", "삼성전자"),            # VM 실측: 원천은 법인 정식명 — KRX 약칭이 먼저
@@ -1278,7 +1413,8 @@ def test_holdings_verdict_branches(tmp_path, monkeypatch):
     assert eh.holdings_verdict("KR", now)[0] == "none"
     eh._save("A", {"rows": [{"code": "1"}], "fetched_day": "2026-10-12", "tried_day": "2026-10-12"})
     assert eh.holdings_verdict("KR", now)[0] == "ok"
-    eh._save("B", {"rows": [], "error": "KRX_ID/KRX_PW 미설정", "tried_day": "2026-10-12"})
+    eh._save("B", {"rows": [], "error": "KRX_ID/KRX_PW 미설정", "tried_day": "2026-10-12",
+                   "sig": eh.CODE_SIG})
     kind, line = eh.holdings_verdict("KR", now)
     assert kind == "fail" and "KRX_ID" in line and "1/2" in line
     eh._save("B", {"rows": [{"code": "2"}], "fetched_day": "2026-10-11", "tried_day": "2026-10-12",

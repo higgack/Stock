@@ -374,10 +374,36 @@ RETRY_HOURS = 2
 MAX_TRIES = 4
 
 
+def _source_sig() -> str:
+    """이 모듈 소스의 지문 — 실패 기록에 찍는다(`prior_failure`). **import 시점에** 잰다: 처음 부를 때
+    재면 배포가 파일을 바꾼 뒤 재시작에 실패한 옛 프로세스가 새 지문을 찍는다(#426 · 지문은 디스크가
+    아니라 돌고 있는 코드를 잰다, #365). 주석만 고친 배포도 지문을 바꿔 실패한 ETF 를 한 번 더 묻게
+    하지만, 그 값은 ETF 하나당 요청 한 번이다."""
+    try:
+        import hashlib
+        return hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:10]
+    except Exception:                                          # noqa: BLE001
+        return "nosig"
+
+
+CODE_SIG = _source_sig()
+
+
+def prior_failure(cur: dict) -> bool:
+    """이 실패 기록이 **지금 돌고 있는 코드보다 앞선 판**이 남긴 것인가(지문이 다르거나 없다).
+
+    파서를 고쳐 배포해도 옛 판의 실패 기록이 재시도 간격(`RETRY_HOURS`)·하루 상한을 붙잡으면 고친
+    코드가 그만큼 늦게 묻고, 화면은 그동안 옛 판의 사유를 '지금 실패' 처럼 적는다(2026-10-12 VM: 19:27
+    배포 뒤에도 18:52 옛 판 실패 때문에 20:52 까지 미국 11개가 '보유 종목 행이 없음', #266·#364).
+    그런 기록은 다음 주기에 바로 다시 묻고 시도 횟수도 처음부터 센다."""
+    return bool(cur.get("error")) and cur.get("sig") != CODE_SIG
+
+
 def _retry_due(cur: dict, today: str, now: datetime) -> bool:
     """오늘 실패한 ETF 를 다시 물을 때인가 — 일시 장애 한 번이 하루를 비우지 않게(#161) 하되,
-    원천이 오래 죽었을 때 15분마다 두드리지도 않게(#116) `RETRY_HOURS` 간격 · 하루 `MAX_TRIES` 회."""
-    if cur.get("tried_day") != today:
+    원천이 오래 죽었을 때 15분마다 두드리지도 않게(#116) `RETRY_HOURS` 간격 · 하루 `MAX_TRIES` 회.
+    앞선 판 코드가 남긴 실패는 간격·상한을 따지지 않고 바로 다시 묻는다(`prior_failure`)."""
+    if cur.get("tried_day") != today or prior_failure(cur):
         return True
     if int(cur.get("tries") or 1) >= MAX_TRIES:
         return False
@@ -396,6 +422,8 @@ def _tried_at(cur: dict) -> datetime | None:
 def retry_note(h: dict, now: datetime) -> str:
     """실패한 보유 목록을 언제 다시 묻나 — 화면이 '기다리면 되나' 를 사실대로 말하게(#380)."""
     today = now.astimezone(_KST).date().isoformat()
+    if prior_failure(h):
+        return "이전 판 코드가 남긴 실패 기록 — 다음 주기에 지금 코드로 다시 묻습니다"
     if h.get("tried_day") != today:
         return "다음 주기에 다시 묻습니다"
     n = int(h.get("tries") or 1)
@@ -416,7 +444,8 @@ def refresh(market: str, now: datetime, kr_date: str | None = None) -> dict:
         cur = load(t) or {}
         if cur.get("fetched_day") == today or not _retry_due(cur, today, now):
             continue
-        tries = int(cur.get("tries") or 1) + 1 if cur.get("tried_day") == today else 1
+        same = cur.get("tried_day") == today and not prior_failure(cur)
+        tries = int(cur.get("tries") or 1) + 1 if same else 1
         try:
             if market == "US":
                 rows, asof = fetch_us(t)
@@ -429,6 +458,7 @@ def refresh(market: str, now: datetime, kr_date: str | None = None) -> dict:
                 raise HoldingsError("보유 종목의 비중이 전부 수가 아님(NaN·무한)")
             _save(t, {"ticker": t, "market": market, "rows": rows, "asof": asof,
                       "fetched_day": today, "tried_day": today, "tries": tries, "error": "",
+                      "sig": CODE_SIG,
                       "fetched_at": now.astimezone(_KST).isoformat(timespec="seconds")})
         except Exception as exc:                               # noqa: BLE001
             # 원천이 형식을 바꿔 파서가 다른 예외(KeyError·BadZipFile·ValueError …)를 내도 **같은
@@ -437,7 +467,7 @@ def refresh(market: str, now: datetime, kr_date: str | None = None) -> dict:
             why = (exc.reason if isinstance(exc, HoldingsError)
                    else f"보유 목록 처리 중 예외({type(exc).__name__}: {str(exc)[:80]}) — 원천 형식 "
                         "변경 또는 파서 결함")
-            cur.update({"tried_day": today, "tries": tries, "error": why,
+            cur.update({"tried_day": today, "tries": tries, "error": why, "sig": CODE_SIG,
                         "tried_at": now.astimezone(_KST).isoformat(timespec="seconds")})
             try:
                 _save(t, cur)
@@ -454,13 +484,14 @@ def holdings_verdict(market: str, now: datetime) -> tuple[str, str]:
     """한 나라 섹터 ETF 보유 목록 — (갈래, 한 줄). 감사·`--why` 가 같이 쓴다(#35).
 
     fail = 목록이 하나도 없는 ETF 가 있다(그 칸은 영영 빈다 — KRX 로그인 없음 등, 우리가 고칠 것
-    #303) · stale = 오늘 갱신은 실패했지만 마지막 목록이 있다 · none = 아직 한 번도 묻지 않음 ·
-    ok = 전부 목록이 있다."""
+    #303) · retry = 목록이 없는데 그 실패가 **앞선 판 코드**의 기록이다(지금 코드는 아직 안 물었다 —
+    다음 주기에 묻는다, `prior_failure`) · stale = 오늘 갱신은 실패했지만 마지막 목록이 있다 ·
+    none = 아직 한 번도 묻지 않음 · ok = 전부 목록이 있다."""
     tickers = list(etfs(market))
     if not tickers:
         return "none", "섹터 ETF 목록이 없음"
     today = now.astimezone(_KST).date().isoformat()
-    have, empty, old, untried = [], [], [], []
+    have, empty, prior, old, untried = [], [], [], [], []
     for t in tickers:
         h = load(t) or {}
         if h.get("rows"):
@@ -468,7 +499,7 @@ def holdings_verdict(market: str, now: datetime) -> tuple[str, str]:
             if h.get("error") and h.get("tried_day") == today and h.get("fetched_day") != today:
                 old.append(t)
         elif h.get("error"):
-            empty.append((t, h["error"]))
+            (prior if prior_failure(h) else empty).append((t, h["error"]))
         else:
             untried.append(t)
     n = len(tickers)
@@ -476,6 +507,11 @@ def holdings_verdict(market: str, now: datetime) -> tuple[str, str]:
         t, why = empty[0]
         more = f" 외 {len(empty) - 1}개" if len(empty) > 1 else ""
         return "fail", f"보유 목록이 없는 ETF {len(empty)}/{n}개 — {t}{more}: {why}"
+    if prior:
+        t, why = prior[0]
+        more = f" 외 {len(prior) - 1}개" if len(prior) > 1 else ""
+        return "retry", (f"보유 목록이 없는 ETF {len(prior)}/{n}개 — 이전 판 코드가 남긴 실패 기록"
+                         f"({t}{more}: {why}) · 다음 주기에 지금 코드로 다시 묻는다")
     if len(untried) == n:
         return "none", "아직 보유 목록을 묻지 않음"
     if old:

@@ -1,4 +1,4 @@
-"""Daily 기관매수 텔레그램 알림 — 매일 아침 08:00 KST(사용자 2026-10-12).
+"""Daily 기관매수 텔레그램 알림 — KR 개장일(월~금) 아침 08:00 KST, 장 시작 전(사용자 2026-10-12).
 
 사용자가 준 형식(블로그 「기관 순매수 테이블」 이미지) 그대로 — 흰 바탕에 시총 구간 셋 × 목록 셋
 (순매수 강도 · 순매수 전환 · 5일 연속 순매수 TOP 10) 표를 한 장의 PNG 로 그려 채널에 사진으로
@@ -6,9 +6,12 @@
 그리기와 보내기만 한다.
 
 언제 무엇을 보내나
-- 08:00~12:00 KST 사이, **정규장이 끝난 마지막 KR 거래일**(`kr_session.last_closed_session`)
-  기록을 한 번 보낸다. 화요일 아침 = 월요일 기록, 토요일 아침 = 금요일 기록 — 주말·월요일
-  아침엔 이미 보낸 금요일이라 보내지 않는다(같은 날짜를 두 번 보내지 않는다, #9 영구 seen-set).
+- **KR 개장일** 아침 08:00~12:00 KST 사이(장 시작 전 — 사용자 2026-10-12 "월~금 08:00"),
+  정규장이 끝난 마지막 KR 거래일(`kr_session.last_closed_session` = 그날 아침엔 직전 거래일) 기록을
+  한 번 보낸다. 월요일 아침 = 금요일 기록, 화요일 아침 = 월요일 기록. 주말·평일 휴장일 아침엔
+  보내지 않고 그 기록은 다음 개장일 아침에 간다(같은 날짜를 두 번 보내지 않는다, #9 영구 seen-set).
+  개장일인지는 거래소 달력(`market_calendar.is_trading_day`)이 정하고, 달력이 없으면 단정하지
+  않고 보내지 않는다(#54).
 - 기록은 그날 20:30 이후 받고 이튿날 07:00 이후 한 번 더 받아 대조한다(`RECHECK_HOUR`). 재확인이
   아직이면 09:00 까지 기다리고, 그 뒤엔 저녁 값으로 보내며 캡션에 그렇게 적는다(#43).
 - 12:00 이 지나도록 못 보냈으면 그날은 보내지 않는다 — 밤에 봇이 다시 떠서 아침 알림을 뒤늦게
@@ -38,6 +41,7 @@ ALERT_HOUR = 8            # 이 시각부터 보낸다(사용자 지정)
 RECHECK_WAIT_HOUR = 9     # 재확인이 아직이면 이 시각까지 기다린다
 ALERT_END_HOUR = 12       # 이 시각이 지나면 그날은 보내지 않는다
 MAX_TRIES = 6             # 하루 보내기 시도 상한(15분 간격)
+_WEEKDAY = "월화수목금토일"
 KEEP_SENT = 60
 
 
@@ -77,6 +81,15 @@ def alert_target(records: list[dict], state: dict, now: datetime) -> tuple[dict 
     now = _now(now)
     if not (ALERT_HOUR <= now.hour < ALERT_END_HOUR):
         return None, f"알림 시간({ALERT_HOUR:02d}:00~{ALERT_END_HOUR:02d}:00) 밖"
+    # 호출 시점에 모듈 속성으로 찾는다 — 테스트가 달력을 갈아끼운다.
+    from bot import market_calendar as _mc
+    today = now.date().isoformat()
+    is_open = _mc.is_trading_day("KR", today)
+    if is_open is None:
+        return None, "거래소 달력이 없어 오늘이 KR 개장일인지 정하지 못함"
+    if not is_open:
+        return None, (f"오늘({today[5:]} {_WEEKDAY[now.weekday()]})은 KR 휴장 — 개장일(월~금) "
+                      "아침에만 보낸다 · 그 기록은 다음 개장일 아침에")
     from bot.kr_session import last_closed_session
     want = last_closed_session(now)
     if want is None:
