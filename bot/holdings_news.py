@@ -8,10 +8,12 @@
 - 뉴스(매일 `RUN_HOUR`:`RUN_MIN` KST, 직전 집계 `WINDOW_OVERLAP_H` 시간 전 ~ 지금 · 상한 `MAX_WINDOW_H`
   시간 — 겹친 구간의 이미 실린 항목은 뺀다):
   · 한국: 네이버 검색 API(`naver_news_client`, 키 없으면 구글 뉴스) — 이름 검색이라 제목·요약에
-    그 이름이 실제로 나온 기사만 남긴다. 영문 이름(NAVER·HYBE)은 DART 한글 이름으로 찾는다(`with_ko`).
+    그 이름이 실제로 나온 기사만 남긴다. 영문 이름(NAVER·HYBE)은 DART 한글 이름으로 찾고(`with_ko`) 영문
+    이름으로도 한 번 더 찾는다(같은 원천 — 음역 한글명 '케이티' 로는 'KT' 기사를 놓친다).
     네이버가 호스팅한 기사(n.news.naver.com)는 본문 앞부분을 읽어 AI 에 같이 넘긴다(종목당
     `MAX_BODY_PER_STOCK` · 실행당 `MAX_BODY_PER_RUN` · 화면엔 싣지 않는다 — 판단 재료일 뿐 재게시가 아니다).
-  · 해외: Yahoo Finance 종목 뉴스(yfinance) — 못 받거나 0건이면 구글 뉴스(시장 locale).
+  · 해외: Yahoo Finance 종목 뉴스(yfinance) — 못 받거나 0건이면 구글 뉴스(시장 locale · 검색어가 한글이면
+    한국어 locale).
   · 텔레그램: 'Noah의 RAG' 채널(`TG_RAG_CHANNEL`)에 올라온 글 — `bot.portfolio_watch` 가 2분마다
     이미 그 채널을 읽고 있으므로 거기서 텍스트를 `TG_INBOX` 에 남기게 했다(추가 텔레그램 요청 0,
     해석성 요청 0 — #258). 이 모듈은 그 파일에서 종목 이름·코드가 **낱말로** 나온 글만 고른다.
@@ -21,7 +23,8 @@
   AI 가 relevant 에서 빼고, 화면은 뺀 항목도 따로 보여 준다(#43). 비용은 usage.jsonl 에
   subsystem `holdings_news` 로 남겨 대시보드 비용 카드·/usage 가 합산한다.
 
-저장: ~/.tradingagents/holdings_news/ — days/YYYY-MM-DD.json(하루 기록) · state.json · tg_inbox.jsonl.
+저장: ~/.tradingagents/holdings_news/ — days/YYYY-MM-DD.json(하루 기록) · days/bodies_YYYY-MM-DD.json(아직
+정리 안 된 종목의 본문 — AI 재료, 주기가 이어서 정리하는 날에만 · 화면엔 안 실림) · state.json · tg_inbox.jsonl.
 진단: `python -m bot.holdings_news --why`(읽기 전용 · 네트워크·LLM 0) · `--probe [티커…]`(원천만
 받아 보기 — LLM 0 · 이 보드의 기록은 안 쓴다, 뉴스 클라이언트 공용 캐시는 씀) · `--run`(지금 한 주기 —
 LLM 비용이 든다).
@@ -77,6 +80,7 @@ MAX_PER_SIDE = 3                   # Pros·Cons 각각 줄 상한
 LINE_CHARS = 90                    # 한 줄 글자 상한(넘으면 자른다 — 프롬프트는 70자를 요구)
 TICK_TIMEOUT_SEC = 1800            # 봇 주기 태스크의 기다림 상한
 STALE_TICK_MIN = 45                # 집계 시각이 지났는데 마지막 주기가 이보다 오래면 '봇 주기 멈춤'
+BEAT_SEC = 60                      # 긴 수집·정리 중 '주기가 살아 있다' 를 남기는 간격(아래 판정이 그걸 본다)
 SRC_FAIL_SHARE = 0.25              # 원천을 못 받은 종목이 보유의 이 비율 이상이면 장애(❌)
 SRC_MARKET_MIN = 3                 # 한 시장 종목이 이 수 이상인데 전부 실패·전부 0건이면 장애(❌)
 _MODEL = "gemini-2.5-flash-lite"   # 주어진 문장에서 근거를 골라 요약하는 일 — 판단 티어가 아니다
@@ -97,6 +101,16 @@ def _parse(s) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return d if d.tzinfo else d.replace(tzinfo=_KST)
+
+
+def _exc_msg(exc: BaseException, n: int) -> str:
+    """예외 문구 앞 `n` 자 — 비밀값을 **자르기 전에** 가린다. 자른 뒤 가리면 경계에 걸린 키 조각이 남는다
+    (#350 · 리뷰 2026-10-13 실측 'AIzaSyQQQQ'). 사유는 화면·기록·감사 줄에 실린다(§Secrets)."""
+    try:
+        from bot.env_keys import redact
+        return redact(str(exc))[:n]
+    except Exception:                                          # noqa: BLE001
+        return type(exc).__name__
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -254,8 +268,9 @@ def _us_etf(*, cache_only: bool = False) -> set:
 
 def search_name(stock: dict) -> str:
     """뉴스 검색어 — 법인 꼬리('(주)')를 떼고, 우선주는 본주 이름으로(뉴스는 본주 이름으로 쓴다). 국내
-    종목 이름에 한글이 없으면('NAVER'·'HYBE') DART 한글 이름(`ko`, `with_ko`)으로 — 영문 이름은 국내
-    뉴스 검색에 거의 안 걸린다(종목분석 화면과 같은 처방, 2026-06-08 NAVER 0-news)."""
+    종목 이름에 한글이 없으면('NAVER'·'HYBE') DART 한글 이름(`ko`, `with_ko`)이 먼저다(종목분석 화면과 같은
+    처방, 2026-06-08 NAVER 0-news). 영문 이름도 같이 찾는다 — DART 한글명이 음역('케이티'·'에이치엠엠')인
+    회사는 기사가 영문('KT'·'HMM')으로 쓴다(`fetch_stock_news`, 리뷰 2026-10-13)."""
     from bot.market import kr_news_query_name
     kr = stock.get("market") == "KR"
     nm = ((stock.get("ko") if kr else "") or kr_news_query_name(stock.get("name"))
@@ -294,7 +309,12 @@ def aliases(stock: dict) -> list[tuple[str, str]]:
     nm = kr_news_query_name(stock.get("name")) or str(stock.get("name") or "")
     names: list[str] = []
     for a in (nm, search_name(stock)):
-        names += [a, a.upper(), a.title()] if a.isascii() else [a]
+        if not a.isascii():
+            names.append(a)
+            continue
+        # 첫 글자 대문자 꼴은 네 글자 이상만 — 'HMM' → 'Hmm' 은 영어 감탄사라 텔레그램 잡담이 그 회사로
+        # 잡힌다(대소문자 그대로 비교라 짧은 꼴일수록 일반 낱말과 겹친다, 리뷰 2026-10-13).
+        names += [a, a.upper()] + ([a.title()] if len(a) >= 4 else [])
     out = [(a, "name") for a in dict.fromkeys(names) if len(a) >= 2]
     tk = str(stock.get("ticker") or "")
     if stock.get("market") == "KR":
@@ -396,6 +416,9 @@ def excerpt(text: str, span: tuple[int, int], cap: int = SNIPPET_CHARS) -> str:
 
 
 # ── 원천 ─────────────────────────────────────────────────────────────────────
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 def _item_ts(it: dict) -> datetime | None:
     """항목 시각 — 원천이 시각을 주면 그것, 날짜만 주면 그날 00:00 KST(창 판정은 날짜로 넉넉히 —
     다음 날 겹침은 지난 기록과의 중복 제거가 막는다)."""
@@ -456,7 +479,7 @@ def _fetch_yf(ticker: str) -> tuple[list | None, str]:
         import yfinance as yf
         raw = yf.Ticker(ticker).get_news(count=10) or []
     except Exception as exc:                                   # noqa: BLE001
-        return None, f"yfinance 실패({type(exc).__name__}: {str(exc)[:60]})"
+        return None, f"yfinance 실패({type(exc).__name__}: {_exc_msg(exc, 60)})"
     items = [x for x in (_yf_item(a) for a in raw) if x]
     if raw and not items:
         return None, f"yfinance 응답 {len(raw)}건을 하나도 못 읽음(형식 변경?)"
@@ -469,11 +492,13 @@ def _fetch_google(query: str, market: str) -> tuple[list | None, str]:
         hl, gl, ceid = locale_for_market(market)
         # 종목분석 화면(stock_snapshot)과 같은 인자 — 캐시 키가 (검색어, 언어, 날짜)라 인자를 줄이면
         # 그 화면이 4시간 동안 짧은 목록을 받는다(#38).
-        items = fetch_news(query, days_back=28, max_items=10, lang=hl, country=gl, ceid=ceid)
+        items = fetch_news(query, days_back=28, max_items=10, lang=hl, country=gl, ceid=ceid,
+                           empty_ok=True)
     except Exception as exc:                                   # noqa: BLE001
         return None, f"구글 뉴스 실패({type(exc).__name__})"
     if items is None:
-        return None, "구글 뉴스가 결과를 못 줌(실패 또는 0건)"
+        # empty_ok — 0건은 [] 로 온다. None 은 받지 못한 것(로그에 사유) 또는 빈 검색어다.
+        return None, "구글 뉴스 실패(로그 참조)"
     return items, ""
 
 
@@ -497,19 +522,36 @@ def fetch_stock_news(stock: dict) -> tuple[list[dict], str, str]:
     해외는 yfinance 가 **0건이어도** 구글 뉴스로 한 번 더 묻는다 — yfinance(1.7)는 깨진 응답을 예외 대신 빈
     목록으로 돌려준다(`hide_exceptions`, 리뷰 2026-10-12). 둘 다 0건이면 yfinance 의 답(0건)으로 둔다(그날
     뉴스가 정말 없을 수 있다 — 시장 전부가 0건이면 판정이 따로 잡는다, `_outage`)."""
+    from bot.market import has_hangul
     mk = stock.get("market")
     q = search_name(stock)
     if mk == "KR":
         items, why = _fetch_naver(q)
         if items is not None:
-            return items, "naver", ""
-        g, gwhy = _fetch_google(q, "KR")
-        return (g, "google", why) if g is not None else ([], "", f"{why} · {gwhy}")
+            items, used, why = items, "naver", ""
+        else:
+            g, gwhy = _fetch_google(q, "KR")
+            if g is None:
+                return [], "", f"{why} · {gwhy}"
+            items, used = g, "google"
+        alt = search_name({k: v for k, v in stock.items() if k != "ko"}) if stock.get("ko") else ""
+        if alt and alt != q:
+            # DART 한글명으로 찾은 종목은 영문 이름으로도 한 번 더(같은 원천) — '케이티' 로만 찾으면 'KT'
+            # 기사를 거의 다 놓친다. 합친 뒤 최근 순(수집이 종목당 상한에서 끊는다).
+            more, _ = _fetch_naver(alt) if used == "naver" else _fetch_google(alt, "KR")
+            if more:
+                links = {x.get("link") for x in items if x.get("link")}
+                items = items + [x for x in more if not x.get("link") or x.get("link") not in links]
+                items.sort(key=lambda x: (_item_ts(x) or _EPOCH).timestamp(), reverse=True)
+        return items, used, why
     tk = str(stock.get("ticker") or "")
     items, why = _fetch_yf(tk)
     if items:
         return items, "yfinance", ""
-    g, gwhy = _fetch_google(f"{tk.split('.')[0]} stock" if mk == "US" else (q or tk), mk or "US")
+    # 해외 비미국 종목의 검색어는 자산 기록의 한글 이름이다 — 그 시장 언어로 물으면 늘 0건이라 한국어로
+    # 묻는다(한국 투자자가 보는 기사가 그쪽이다, 리뷰 2026-10-13).
+    gq = f"{tk.split('.')[0]} stock" if mk == "US" else (q or tk)
+    g, gwhy = _fetch_google(gq, "KR" if mk != "US" and has_hangul(gq) else (mk or "US"))
     if items is not None:
         return (g, "google", "yfinance 0건") if g else ([], "yfinance", "")
     return (g, "google", why) if g is not None else ([], "", f"{why} · {gwhy}")
@@ -589,11 +631,13 @@ def _item_key(it: dict) -> str:
 
 def collect(now: datetime | None = None, *, model: dict | None = None,
             records: list[dict] | None = None, fetch=fetch_stock_news,
-            body=_fetch_body, pace: float = 0.25, us_etf: set | None = None, ko=None) -> dict | None:
+            body=_fetch_body, pace: float = 0.25, us_etf: set | None = None, ko=None,
+            beat=None) -> dict | None:
     """하루 기록 하나를 만든다(분석 전 — 종목마다 status 'pending' 또는 'empty'). 보유 종목이 없으면
     None(쓸 것이 없다). 저장은 부른 쪽이. `pace` = 원천 요청 사이 쉬는 초(구글 뉴스는 데이터센터 IP
     에서 몰아 치면 막힌다 — 네이버 키가 없으면 국내 전부가 구글로 간다). `us_etf`·`ko` = 미국 ETF 목록·
-    DART 한글명 조회(테스트·진단이 갈아 끼운다 — 없으면 실제로 묻는다).
+    DART 한글명 조회(테스트·진단이 갈아 끼운다 — 없으면 실제로 묻는다). `beat` = 종목마다 부르는 '아직 도는 중'
+    표시(긴 수집이 `STALE_TICK_MIN` 을 넘어도 판정이 '봇 주기 멈춤' 으로 읽지 않게, 리뷰 2026-10-13).
 
     창: 직전 기록의 끝보다 `WINDOW_OVERLAP_H` 시간 앞에서 연다 — 직전 집계 뒤에 늦게 닿은 글(07:14 글이
     07:15 집계 뒤에 수신함에 들어온 경우)이 어느 날에도 안 실리던 구멍(리뷰 2026-10-12 실측). 겹친 구간의
@@ -622,6 +666,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
     out_stocks = []
     bodies = 0
     for st0 in stocks:
+        if beat:
+            beat()
         st = with_ko(st0, ko)
         if "ko" in st and "ko" not in st0:
             src["ko_try"] += 1
@@ -634,7 +680,7 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
         except Exception as exc:                               # noqa: BLE001
             # 한 종목의 예외가 그날 수집 전체를 멈추지 않게 — 그 종목만 실패로 센다(#315).
             log.warning("holdings_news: %s 수집 예외: %s", st["key"], exc)
-            raw, used, why = [], "", f"수집 예외({type(exc).__name__}: {str(exc)[:60]})"
+            raw, used, why = [], "", f"수집 예외({type(exc).__name__}: {_exc_msg(exc, 60)})"
         if pace:
             time.sleep(pace)
         if used:
@@ -817,6 +863,7 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["dropped_lines"] = dp + dc
     stock["status"] = "ok"
     stock["reason"] = ""
+    stock["retry"] = False
 
 
 def batches(stocks: list[dict]) -> list[list[dict]]:
@@ -864,7 +911,7 @@ def call_llm(prompt: str) -> tuple[str | None, int, int, str, str]:
     """(응답 글, 입력 토큰, 출력 토큰, 실패 사유, 갈래). 갈래 = '' · 'no_key' · 'transient' · 'rejected'.
     JSON 설정을 빼고 다시 부르는 것은 **그 설정이 거부됐을 때(400)만** — 429·503 을 같은 주기에 두 번
     두드리지 않는다(리뷰 2026-10-12: 장애 중 한 주기 80회). 사유는 화면에 실리므로 키를 가린다(§Secrets)."""
-    from bot.env_keys import redact, remember_secret
+    from bot.env_keys import remember_secret
     try:
         from bot.genai_factory import effective_key, make_client
         key = effective_key()
@@ -887,7 +934,7 @@ def call_llm(prompt: str) -> tuple[str | None, int, int, str, str]:
     except Exception as exc:                                   # noqa: BLE001
         kind = _llm_fail_kind(exc)
         label = "AI 일시 오류" if kind == "transient" else "AI 호출 실패"
-        return None, 0, 0, redact(f"{label}({type(exc).__name__}: {str(exc)[:80]})"), kind
+        return None, 0, 0, f"{label}({type(exc).__name__}: {_exc_msg(exc, 80)})", kind
     pt = ot = 0
     try:
         um = getattr(resp, "usage_metadata", None)
@@ -909,6 +956,7 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
     · 거부·못 읽음·빠짐 → 그 묶음 종목의 시도 수를 센다(같은 요청을 되풀이해도 같다)."""
     pend = [s for s in rec.get("stocks") or [] if s.get("status") == "pending"]
     done = {"calls": 0, "analyzed": 0, "failed": 0, "no_key": False, "transient": False}
+    _attach_bodies(rec, pend)
     for grp in batches(pend):
         if done["calls"] >= max_calls:
             break
@@ -916,6 +964,7 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
         if kind == "no_key":
             for s in pend:
                 s["reason"] = "AI 키(GOOGLE_API_KEY) 미설정 — 뉴스만 보여 줍니다"
+                s["retry"] = False
             done["no_key"] = True
             break
         done["calls"] += 1
@@ -927,7 +976,10 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             llm_rec["cost_usd"] = round(llm_rec["cost_usd"] + _log_usage(pt, ot), 6)
         if kind == "transient":
             for s in grp:
-                s["reason"] = f"{why} — 다음 주기에 다시"
+                # 사유만 남기고 '다시 한다' 는 화면이 그날이 아직 이어서 정리되는 날일 때만 붙인다 — 저장해
+                # 두면 그날이 `_live_dates` 밖으로 나간 뒤에도 지킬 수 없는 약속이 남는다(리뷰 2026-10-13).
+                s["reason"] = why
+                s["retry"] = True
             done["transient"] = True
             if on_progress:
                 on_progress(rec)
@@ -942,8 +994,12 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             r = got.get(s["key"])
             if r is not None:
                 apply_result(s, r)
+                for it in s["items"]:
+                    if it.get("_body"):
+                        it["body_used"] = True      # 화면 표시는 '보냈다' 는 사실에서(본문 길이가 아니라)
                 done["analyzed"] += 1
                 continue
+            s["retry"] = False
             s["tries"] = int(s.get("tries") or 0) + 1
             s["reason"] = why or ("AI 응답을 못 읽음" if not data else "AI 응답에 이 종목이 없음")
             if s["tries"] >= MAX_ANALYZE_TRIES:
@@ -957,6 +1013,51 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
 # ── 저장 ─────────────────────────────────────────────────────────────────────
 def _day_path(date: str) -> Path:
     return _DAYS / f"{date}.json"
+
+
+def _bodies_path(date: str) -> Path:
+    """본문 사이드카 — 아직 정리 안 된 종목의 본문(AI 재료)만. 화면·하루 기록엔 안 실린다. 수집 주기 안에서만
+    메모리에 있던 본문이 일시 오류·상한·재시작으로 다음 주기로 밀린 종목에서 통째로 빠지던 구멍(리뷰
+    2026-10-13 실측: 07:10 503 한 번 → 그날 전 종목이 본문 없이 정리됐는데 카드는 '읽음')."""
+    return _DAYS / f"bodies_{date}.json"
+
+
+def _save_bodies(rec: dict) -> None:
+    keep = {s["key"]: {it["k"]: it["_body"] for it in s.get("items") or [] if it.get("_body") and it.get("k")}
+            for s in rec.get("stocks") or [] if s.get("status") == "pending"}
+    keep = {k: v for k, v in keep.items() if v}
+    p = _bodies_path(rec["date"])
+    try:
+        if keep:
+            _atomic_write(p, json.dumps(keep, ensure_ascii=False))
+        else:
+            p.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("holdings_news: 본문 사이드카 저장 실패 %s: %s", p.name, exc)
+
+
+def _attach_bodies(rec: dict, pend: list[dict]) -> None:
+    """기록에서 다시 읽은 대기 종목에 사이드카의 본문을 붙인다(이미 메모리에 있으면 그대로). 못 읽으면 본문
+    없이 간다 — 화면은 실제로 보낸 것만 '읽음' 으로 적으므로(`body_used`) 거짓말은 안 한다."""
+    need = [s for s in pend if any(it.get("body_chars") and not it.get("_body") for it in s.get("items") or [])]
+    if not need or not rec.get("date"):
+        return
+    p = _bodies_path(rec["date"])
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 본문 사이드카 %s 읽기 실패: %s", p.name, exc)
+        return
+    if not isinstance(data, dict):
+        return
+    for s in need:
+        got = data.get(s["key"]) if isinstance(data.get(s["key"]), dict) else {}
+        for it in s.get("items") or []:
+            b = got.get(it.get("k"))
+            if isinstance(b, str) and b and not it.get("_body"):
+                it["_body"] = b
 
 
 def _public(rec: dict) -> dict:
@@ -986,9 +1087,16 @@ def count_records() -> int:
 
 def save_record(rec: dict) -> None:
     _atomic_write(_day_path(rec["date"]), json.dumps(_public(rec), ensure_ascii=False))
+    _save_bodies(rec)
     try:
-        for f in _day_files()[:-KEEP_DAYS]:
+        files = _day_files()
+        for f in files[:-KEEP_DAYS]:
             f.unlink()
+        # 본문 사이드카는 주기가 아직 이어서 정리하는 날(최근 두 기록, `_live_dates`)에만 쓸모가 있다.
+        live = {f.stem for f in files[-2:]} | {rec["date"]}
+        for b in _DAYS.glob("bodies_*.json"):
+            if b.stem[len("bodies_"):] not in live:
+                b.unlink()
     except OSError as exc:
         log.warning("holdings_news: 옛 기록 정리 실패: %s", exc)
 
@@ -1049,6 +1157,7 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
     """오늘 기록이 없고 집계 시각이 지났으면 모으고, 대기 종목이 있으면 AI 에 보낸다 — 오늘 먼저, 남은 상한으로
     직전 기록의 대기분도(자정 무렵 늦은 집계·장애로 남은 것 — 오늘만 보면 영영 '대기' 다, 리뷰 2026-10-12).
     `last_tick` 은 **시작할 때** 남긴다 — 끝에만 남기면 긴 수집 중에 진단·감사가 '봇 주기 멈춤' 으로 읽는다."""
+    fixed = now is not None
     now = _now(now)
     if not _TICK.acquire(blocking=False):
         return {"status": "busy"}
@@ -1057,6 +1166,20 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
             st = load_state()
             st["last_tick"] = now.isoformat(timespec="seconds")
             _save_state(st)
+            beat_at = [time.monotonic()]
+
+            def beat() -> None:
+                # 같은 스레드·같은 상태 사전이라 다른 쓰기를 덮지 않는다(바쁜 주기가 따로 쓰면 그게 덮는다).
+                if time.monotonic() - beat_at[0] < BEAT_SEC:
+                    return
+                beat_at[0] = time.monotonic()
+                st["last_tick"] = (now if fixed else _now()).isoformat(timespec="seconds")
+                _save_state(st)
+
+            def progress(r: dict) -> None:
+                save_record(r)
+                beat()
+
             date = now.date().isoformat()
             recs = load_records(limit=3)
             rec = next((r for r in recs if r["date"] == date), None)
@@ -1065,7 +1188,7 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
                     tg_prune(now)
                 except Exception as exc:                       # noqa: BLE001
                     log.warning("holdings_news: 수신함 정리 실패: %s", exc)
-                rec = collect(now, records=recs, fetch=fetch, body=body, pace=pace)
+                rec = collect(now, records=recs, fetch=fetch, body=body, pace=pace, beat=beat)
                 if rec is None:
                     st["reason"] = "자산 대시보드에 보유 종목이 없음(portfolio.json)"
                     st["no_holdings"] = True
@@ -1080,7 +1203,7 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
             for r in todo:
                 if not any(s.get("status") == "pending" for s in r.get("stocks") or []):
                     continue
-                d = analyze(r, llm=llm, max_calls=MAX_LLM_CALLS - res["calls"], on_progress=save_record)
+                d = analyze(r, llm=llm, max_calls=MAX_LLM_CALLS - res["calls"], on_progress=progress)
                 save_record(r)
                 for k in ("calls", "analyzed", "failed"):
                     res[k] += d[k]
@@ -1106,7 +1229,7 @@ def tick_and_render(now: datetime | None = None) -> dict:
     except Exception as exc:                                   # noqa: BLE001
         log.exception("holdings_news: 주기 실패")
         st = load_state()
-        st["reason"] = f"주기 실패({type(exc).__name__}: {str(exc)[:80]})"
+        st["reason"] = f"주기 실패({type(exc).__name__}: {_exc_msg(exc, 80)})"
         st["no_holdings"] = False
         _save_state(st)
         res = {"status": "error"}
@@ -1185,7 +1308,7 @@ def status_verdict(records: list[dict], now: datetime | None = None,
     if out:                      # 장애(❌)가 대기(⚠️)보다 먼저 — 대기가 오래 가면 장애가 안 보였다
         return "fail", f"{head} · {out}" + (f" · Pros/Cons 대기 {len(pend)}종목" if pend else "")
     if pend:
-        reason = pend[0].get("reason") or "다음 주기에 이어서"
+        reason = _pending_reason(pend[0]) if pend[0].get("reason") else "다음 주기에 이어서"
         return "pending", f"{head} · Pros/Cons 대기 {len(pend)}종목 — {reason}"
     if failed:
         return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목(뉴스만 표시) — "
@@ -1336,7 +1459,7 @@ def _item_li(it: dict, off: bool) -> str:
         extra = f"<div class='hn-sum'>{_h.escape(summ)}</div>" if summ and summ != it.get("title") else ""
     elif summ:
         extra = f"<div class='hn-sum'>{_h.escape(summ[:180])}{'…' if len(summ) > 180 else ''}</div>"
-    body = " · 본문 앞부분을 AI 가 읽음" if it.get("body_chars") else ""
+    body = " · 본문 앞부분을 AI 가 읽음" if it.get("body_used") else ""
     cls = " class='hn-off'" if off else ""
     return (f"<li{cls}>[{it['n']}] {_h.escape(src)} · {when}{body}"
             f"<br>{title}{extra}</li>")
@@ -1351,6 +1474,14 @@ def _side(label: str, cls: str, lines: list[dict]) -> str:
     else:
         body = "<div class='hn-none'>해당 내용 없음</div>"
     return f"<div class='hn-side {cls}'><div class='hn-lbl'>{label}</div>{body}</div>"
+
+
+def _pending_reason(s: dict) -> str:
+    """아직 이어서 정리하는 날의 대기 사유 — 일시 오류면 '다음 주기에 다시' 를 여기서만 붙인다(저장본엔 없다)."""
+    r = s.get("reason") or ""
+    if not r:
+        return "다음 주기에 정리"
+    return f"{r} — 다음 주기에 다시" if s.get("retry") else r
 
 
 def _card(s: dict, *, final: bool = False) -> str:
@@ -1381,8 +1512,7 @@ def _card(s: dict, *, final: bool = False) -> str:
         pc = (f"<div class='hn-why'>Pros/Cons 정리를 마치지 못함 — "
               f"{_h.escape(s.get('reason') or '사유 미기록')} · 뉴스만 표시</div>")
     else:
-        pc = (f"<div class='hn-why'>Pros/Cons 대기 — {_h.escape(s.get('reason') or '다음 주기에 정리')}"
-              "</div>")
+        pc = f"<div class='hn-why'>Pros/Cons 대기 — {_h.escape(_pending_reason(s))}</div>"
     lis = "".join(_item_li(it, it["n"] not in relset) for it in items)
     off = len(items) - len([it for it in items if it["n"] in relset])
     offnote = f" · 그 회사 얘기가 아니라고 본 {off}건은 흐리게" if off and st == "ok" else ""

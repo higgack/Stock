@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -226,9 +227,11 @@ def us_etf_symbols(*, cache_only: bool = False) -> set:
     if ok == len(_URLS) and len(out) > 100:
         try:
             _ETF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            _ETF_CACHE_FILE.write_text(json.dumps(sorted(out)), encoding="utf-8")
-        except Exception:
-            pass
+            tmp = _ETF_CACHE_FILE.with_name(f".{_ETF_CACHE_FILE.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(sorted(out)), encoding="utf-8")
+            os.replace(tmp, _ETF_CACHE_FILE)         # 원자 교체 — 반쯤 쓴 파일을 읽지 않게(#379)
+        except Exception as exc:
+            log.warning("us_etf_symbols: 캐시 쓰기 실패: %s", exc)
         return out
     try:
         stale = set(json.loads(_ETF_CACHE_FILE.read_text("utf-8")))
@@ -237,4 +240,10 @@ def us_etf_symbols(*, cache_only: bool = False) -> set:
             return stale | out
     except Exception:
         pass
-    return out
+    # 캐시도 없고 한쪽만 받았다 — 그 일부를 돌려주면 부른 쪽이 '목록을 받았다' 로 읽어 못 받은 파일의 ETF
+    # (otherlisted = NYSE Arca 대부분)가 말없이 회사로 섞인다. 빈 set 이면 화면이 '목록을 못 받음' 을 말한다
+    # (리뷰 2026-10-13 · #280 부분을 완전본처럼 넘기지 않는다).
+    if out:
+        log.warning("us_etf_symbols: 목록 %d/%d 파일 · ETF %d종 — 완전본이 아니고 캐시도 없어 쓰지 않음",
+                    ok, len(_URLS), len(out))
+    return set()
