@@ -2255,6 +2255,7 @@ def _render_index(records: list[dict]) -> tuple[str, dict[str, str]]:
         ' · <a href="valuechain.html">🔗 밸류체인</a>'
         f' · <a href="trade/">🌏 수출입</a>'
         ' · <a href="daily_byte.html">📰 Daily Byte</a>'
+        ' · <a href="daily_inst.html">🏦 Daily 기관매수</a>'
         ' · <a href="reddit_insider.html">📨 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
     )
@@ -13079,6 +13080,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 종목분석</a>
+    · <a href="daily_inst.html">🏦 Daily 기관매수</a>
   </div>
   <h1>📰 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 08:00 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
@@ -19366,6 +19368,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="marketcap.html">🏆 Market cap</a>
     &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
+    &middot; <a href="daily_inst.html">🏦 Daily 기관매수</a>
     &middot; <a href="reddit_insider.html">📨 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
     <span style="white-space:nowrap">&nbsp;|&nbsp;<a href="realestate.html">🏠 부동산</a></span>

@@ -401,6 +401,24 @@ def _audit_home_surfaces(show_all):
         _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
 
+def _daily_inst_line(records=None, state=None, now=None) -> str:
+    """Daily 기관매수 판정 한 줄 — **화면과 같은 함수**(`status_verdict`)를 쓰고
+    저장된 기록만 읽는다(감사가 KRX 를 다시 받으면 자기가 만든 장애를 보고한다,
+    #321). 갈래 → 판정 글자: ok ✅ · wait ⚠️(경계 뒤 여유 안) · behind/none ❌
+    (수집이 멈췄다 — 고칠 것) · unknown ❓(판정 불가). 순수 함수라 값으로 잰다(#41)."""
+    try:
+        from bot import daily_inst as di
+        recs = di.load_records() if records is None else records
+        st = di.load_state() if state is None else state
+        latest = recs[-1]["date"] if recs else None
+        kind, line = di.status_verdict(latest, now, st)
+    except Exception as exc:                                   # noqa: BLE001
+        return f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"
+    mark = {"ok": "✅", "wait": "⚠️", "behind": "❌", "none": "❌"}.get(kind, "❓")
+    text = line.lstrip("✅⏳⚠️❓ ").strip()
+    return f"   {mark} 기록 {len(recs)}거래일 · {text}"
+
+
 def _vol_card_line(key: str, rec: dict) -> str:
     """변동성 카드 한 줄 — **순수 함수**라 회귀가 값으로 잰다(#176·#41).
 
@@ -573,6 +591,10 @@ def main() -> int:
                 _p("   ❌ 완결 기준일이 하나도 없다 — 보드가 통째로 비어 있다")
         except Exception as exc:                               # noqa: BLE001
             _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+        _p("")
+        _p("── 🏦 Daily 기관매수 — 기준일")
+        _p(_daily_inst_line())
 
         _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")
