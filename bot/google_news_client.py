@@ -83,6 +83,8 @@ def fetch_news(
     lang: str = "ko",
     country: str = "KR",
     ceid: str | None = None,
+    *,
+    empty_ok: bool = False,
 ) -> Optional[list[dict]]:
     """Google News RSS search for ``query``, newest-first.
 
@@ -96,6 +98,11 @@ def fetch_news(
     Returns list of {date, title, source, link, summary} dicts, or None
     when the query is empty, the fetch fails, or nothing matches. Cached
     per (query, lang, today) for 4h. No API key.
+
+    ``empty_ok`` — return ``[]`` (not None) when the fetch worked but nothing
+    matched, so a caller can tell "0 results" from "failed" (보유종목 News 가
+    원천 실패를 종목 단위로 센다 — 0건을 실패로 세면 매일 ❌, 리뷰 2026-10-13).
+    The cached path already returns the stored list (possibly ``[]``).
     """
     if not (query and query.strip()):
         return None
@@ -137,6 +144,7 @@ def fetch_news(
         link = (item.findtext("link") or "").strip()
         pub_raw = (item.findtext("pubDate") or "").strip()
         pub_date_str = ""
+        pub_ts = ""
         if pub_raw:
             try:
                 pub_dt = datetime.strptime(pub_raw, "%a, %d %b %Y %H:%M:%S %Z")
@@ -144,6 +152,7 @@ def fetch_news(
                 if pub_dt < cutoff:
                     continue
                 pub_date_str = pub_dt.strftime("%Y-%m-%d")
+                pub_ts = pub_dt.isoformat()     # 시각까지(보유종목 News 의 하루 창)
             except Exception:
                 pass
         title, publisher = _strip_source_suffix(title_raw)
@@ -153,6 +162,7 @@ def fetch_news(
             publisher = src_el.text.strip()
         out.append({
             "date": pub_date_str,
+            "ts": pub_ts,
             "title": title,
             "source": publisher,
             "link": link,
@@ -165,4 +175,4 @@ def fetch_news(
     except Exception as exc:
         log.warning("google_news: cache write failed: %s", exc)
 
-    return out or None
+    return out if (out or empty_ok) else None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -164,3 +165,89 @@ def drop_amex_rows(rows: list, key: str = "ticker") -> list:
     if not amex:
         return rows
     return [r for r in rows if str(r.get(key) or "").upper() not in amex]
+
+
+_ETF_CACHE_FILE = (Path.home() / ".tradingagents" / "cache" / "finviz"
+                   / "us_etf_symbols_v1.json")
+
+
+def parse_etf_symbols(text: str) -> set:
+    """NASDAQ Trader 심볼 파일 한 벌 → ETF 칸이 'Y' 인 심볼(대문자). 칸은 머리줄로 찾는다 — 두 파일의
+    심볼 칸 이름이 다르다('Symbol' / 'ACT Symbol'). 순수 함수."""
+    lines = (text or "").splitlines()
+    if not lines:
+        return set()
+    hdr = [h.strip() for h in lines[0].split("|")]
+    try:
+        si = next(i for i, h in enumerate(hdr) if h in ("Symbol", "ACT Symbol"))
+        ei = hdr.index("ETF")
+    except (StopIteration, ValueError):
+        return set()
+    out: set = set()
+    for ln in lines[1:]:
+        p = ln.split("|")
+        if len(p) > max(si, ei) and p[ei].strip() == "Y":
+            sym = p[si].strip().upper()
+            if sym and not sym.startswith("FILE CREATION"):
+                out.add(sym)
+    return out
+
+
+def us_etf_symbols(*, cache_only: bool = False) -> set:
+    """미국 상장 ETF 심볼 set — NASDAQ Trader 두 파일의 ETF 칸(보유종목 News 가 '회사' 가 아닌 미국 ETF 를
+    가른다 — 자산 기록은 미국 ETF 도 '미국 종목' 으로만 남긴다). 7일 캐시. 두 파일을 **다** 받았을 때만
+    굽는다(한쪽만이면 그쪽 ETF 가 일주일 내내 회사로 섞인다, #280). 다 못 받은 날은 낡은 캐시라도 그걸
+    쓴다(상장 ETF 는 천천히 바뀐다 — 빈 목록보다 낫다). `cache_only` = 네트워크 없이 캐시만(나이 무관 —
+    진단용). 둘 다 없으면 빈 set(부른 쪽이 '목록 없음' 을 말한다)."""
+    try:
+        if _ETF_CACHE_FILE.exists() and (
+                cache_only or time.time() - _ETF_CACHE_FILE.stat().st_mtime < _TTL):
+            return set(json.loads(_ETF_CACHE_FILE.read_text("utf-8")))
+    except Exception:
+        pass
+    if cache_only:
+        return set()
+    out: set = set()
+    ok = 0
+    try:
+        import httpx
+        for url in _URLS:
+            try:
+                r = httpx.get(url, timeout=20, follow_redirects=True)
+                got = parse_etf_symbols(r.text) if r.status_code == 200 else set()
+                if got:
+                    out |= got
+                    ok += 1
+                else:
+                    log.warning("us_etf_symbols: %s → HTTP %s · ETF %d", url, r.status_code, len(got))
+            except Exception as exc:
+                log.warning("us_etf_symbols: %s fetch failed: %s", url, exc)
+    except Exception as exc:
+        log.warning("us_etf_symbols: unavailable: %s", exc)
+    if ok == len(_URLS) and len(out) > 100:
+        tmp = _ETF_CACHE_FILE.with_name(f".{_ETF_CACHE_FILE.name}.{os.getpid()}.tmp")
+        try:
+            _ETF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(sorted(out)), encoding="utf-8")
+            os.replace(tmp, _ETF_CACHE_FILE)         # 원자 교체 — 반쯤 쓴 파일을 읽지 않게(#379)
+        except Exception as exc:
+            log.warning("us_etf_symbols: 캐시 쓰기 실패: %s", exc)
+            try:
+                tmp.unlink(missing_ok=True)          # 반쯤 쓴 임시 파일을 남기지 않는다
+            except OSError:
+                pass
+        return out
+    try:
+        stale = set(json.loads(_ETF_CACHE_FILE.read_text("utf-8")))
+        if stale:
+            log.warning("us_etf_symbols: 목록을 다 못 받아 낡은 캐시(%d종)를 씀", len(stale))
+            return stale | out
+    except Exception:
+        pass
+    # 캐시도 없고 한쪽만 받았다 — 그 일부를 돌려주면 부른 쪽이 '목록을 받았다' 로 읽어 못 받은 파일의 ETF
+    # (otherlisted = NYSE Arca 대부분)가 말없이 회사로 섞인다. 빈 set 이면 화면이 '목록을 못 받음' 을 말한다
+    # (리뷰 2026-10-13 · #280 부분을 완전본처럼 넘기지 않는다).
+    if out:
+        log.warning("us_etf_symbols: 목록 %d/%d 파일 · ETF %d종 — 완전본이 아니고 캐시도 없어 쓰지 않음",
+                    ok, len(_URLS), len(out))
+    return set()

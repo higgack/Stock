@@ -465,7 +465,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
     # — Standard View 폐기 #148 + 소스 삭제.)
     _sub_keys = {"분석": 0.0, "실적분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "부동산": 0.0, "블로그": 0.0, "관계후보": 0.0,
+                 "부동산": 0.0, "블로그": 0.0, "보유종목 News": 0.0, "관계후보": 0.0,
                  "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
@@ -486,7 +486,9 @@ def _compute_stats(records: list[dict]) -> dict:
                 "blog": "블로그",
                 # 실적분석(분기 인포그래픽) — 종목분석과 별개 surface 로
                 # 분리집계(사용자 2026-08-16 '종목분석처럼 보고루트 따라서').
-                "quarterly_infographic": "실적분석"}.get(_subsys, "분석"))
+                "quarterly_infographic": "실적분석",
+                # 보유종목 News Pros/Cons(사용자 2026-10-12) — 종목분석에 접히지 않게.
+                "holdings_news": "보유종목 News"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
             m = r.get("model") or "unknown"
@@ -735,6 +737,7 @@ def _render_stats_panel(stats: dict) -> str:
     for key, label in [("분석", "분석"), ("실적분석", "실적분석"),
                        ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
                        ("부동산", "부동산"), ("블로그", "블로그"),
+                       ("보유종목 News", "보유종목 News"),
                        ("관계후보", "관계후보"), ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
@@ -2249,6 +2252,7 @@ def _render_index(records: list[dict]) -> tuple[str, dict[str, str]]:
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
         ' · <a href="asia.html">🏯 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
+        ' · <a href="holdings_news.html">🗞️ 보유종목 News</a>'   # ASIA 옆(사용자 2026-10-12)
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="dart_feed.html">📋 DART</a>'
@@ -15497,6 +15501,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         '<div class="nav">'
         '<a href="market.html">🌍 홈</a>'
         ' · <a href="budget.html">📒 가계부</a>'
+        ' · <a href="holdings_news.html">🗞️ 보유종목 News</a>'
         '</div>')
     if not model or not model.get("holdings"):
         return _SCREENER_CSS + _PF_CSS + (
@@ -19357,6 +19362,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="budget.html">📒 가계부</a>
     &nbsp;|&nbsp;
     <a href="asia.html">🏯 ASIA</a>
+    &middot; <a href="holdings_news.html">🗞️ 보유종목 News</a>
     &middot; <a href="index.html">🦉 종목분석</a>
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="dart_feed.html">📋 DART</a>

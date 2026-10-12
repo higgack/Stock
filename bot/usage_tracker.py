@@ -460,6 +460,7 @@ def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
     in_window: list[dict] = []
     rotated = 0
     rotated_cost_usd = 0.0
+    rotated_by_sub: dict[str, float] = {}
     try:
         with open(USAGE_LOG, encoding="utf-8") as f:
             for raw in f:
@@ -478,7 +479,11 @@ def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
                 else:
                     rotated += 1
                     if rec.get("type") == "llm_call":
-                        rotated_cost_usd += rec.get("cost_usd", 0) or 0
+                        c = rec.get("cost_usd", 0) or 0
+                        rotated_cost_usd += c
+                        if rec.get("subsystem") and c:
+                            k = str(rec["subsystem"])
+                            rotated_by_sub[k] = rotated_by_sub.get(k, 0.0) + c
     except Exception as exc:
         log.warning("usage_tracker: read failed: %s", exc)
         return []
@@ -498,33 +503,59 @@ def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
                 # replace 실패 → 레코드 잔존, 다음 로테이션 재시도(이중적산 없음).
                 # 롤업쓰기 실패(희귀) → 그 회차 비용만 1회 미적산(과대계상 없음).
                 if rotated_cost_usd > 0:
-                    _add_rollup_cost_usd(rotated_cost_usd)
+                    _add_rollup_cost_usd(rotated_cost_usd, rotated_by_sub)
         except Exception as exc:
             log.warning("usage_tracker: rotation failed: %s", exc)
 
     return in_window
 
 
+def _read_rollup() -> dict:
+    try:
+        with open(ROLLUP_PATH, encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        log.warning("usage_tracker: rollup read failed: %s", exc)
+        return {}
+
+
 def rollup_cost_usd() -> float:
     """로테이션으로 usage.jsonl 에서 빠진 과거 llm_call 비용 총액(USD).
     '누적(전체)' = rollup_cost_usd() + 현재 파일 합. graceful(0.0)."""
     try:
-        with open(ROLLUP_PATH, encoding="utf-8") as f:
-            return float((json.load(f) or {}).get("cost_usd", 0.0) or 0.0)
-    except FileNotFoundError:
-        return 0.0
-    except Exception as exc:
+        return float(_read_rollup().get("cost_usd", 0.0) or 0.0)
+    except (TypeError, ValueError) as exc:
         log.warning("usage_tracker: rollup read failed: %s", exc)
         return 0.0
 
 
-def _add_rollup_cost_usd(delta: float) -> None:
-    """롤업 파일에 delta 적산(원자적 replace). 호출부가 _write_lock 보유."""
+def rollup_cost_by_subsystem() -> dict:
+    """로테이션으로 빠진 비용의 subsystem 별 적산(USD) — 보드 하나의 '누적' 이 30일 로테이션에도 참이
+    되게(2026-10-12 보유종목 News 리뷰: 파일 합만 읽으면 '누적' 이 조용히 '최근 30일' 이 된다). ⚠️ 이 칸이
+    생기기 전에 빠진 비용은 총액(`rollup_cost_usd`)에만 있다. graceful({})."""
+    subs = _read_rollup().get("by_subsystem")
+    out: dict[str, float] = {}
+    for k, v in (subs.items() if isinstance(subs, dict) else ()):
+        try:
+            out[str(k)] = float(v or 0)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _add_rollup_cost_usd(delta: float, by_sub: dict | None = None) -> None:
+    """롤업 파일에 delta 적산(원자적 replace) — subsystem 별 몫도 같이. 호출부가 _write_lock 보유."""
     total = rollup_cost_usd() + delta
+    subs = rollup_cost_by_subsystem()
+    for k, v in (by_sub or {}).items():
+        subs[k] = round(subs.get(k, 0.0) + v, 6)
     tmp = ROLLUP_PATH.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"cost_usd": round(total, 6),
-                   "note": "usage.jsonl 30일 로테이션으로 빠진 비용 적산분"}, f)
+        json.dump({"cost_usd": round(total, 6), "by_subsystem": subs,
+                   "note": "usage.jsonl 30일 로테이션으로 빠진 비용 적산분"}, f, ensure_ascii=False)
     os.replace(tmp, ROLLUP_PATH)
 
 

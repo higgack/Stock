@@ -15,6 +15,9 @@ surface 는 건드리지 않음 → "봇은 깨끗하게".
   * 중복: seen-set(~/.tradingagents/portfolio_watch_seen.json, msg_id).
     첫 run 은 기존 seen 처리(폭주 방지) — reddit/blog 와 동일.
   * 비용 ₩0 (LLM 0, pykrx/yfinance 만).
+  * 글(텍스트) 메시지는 🗞️ 보유종목 News 가 쓴다(사용자 2026-10-12 — Second Brain 이 학습하는 그
+    채널을 NOAH 도 읽는다): 여기서 이미 받은 메시지의 글만 `bot.holdings_news.TG_INBOX` 에 남긴다 →
+    텔레그램 요청 추가 0. 처음 한 번만 최근 `_TG_SEED_DAYS` 일치를 거슬러 담는다(`tg_seeded`).
 
 .env:
   TG_USER_API_ID / TG_USER_API_HASH  — my.telegram.org (reddit_insider 와 공유)
@@ -34,6 +37,7 @@ import os
 import sys
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("bot.portfolio_watch")
@@ -44,6 +48,19 @@ _DEFAULT_SESSION = _HOME_DIR / "reddit_user"  # reddit_insider 와 공유(추가
 _FETCH_LIMIT = 20          # 첫 run seed(기존 메시지 seen 처리)용 최근 N개
 _NEW_MSG_CAP = 300         # 이후 폴링: last_msg_id 이후 새 메시지 상한(고트래픽 안전)
 _ZIP_EXTS = (".zip", ".xlsx")
+_TG_SEED_LIMIT = 300       # 글 수신함 첫 채움 — 최근 N개 중
+_TG_SEED_DAYS = 3          # 이 날 수 안의 것만(보유종목 News 의 창은 최대 3일)
+
+
+def _capture(msgs, channel: str) -> int:
+    """글 메시지를 보유종목 News 수신함에 남긴다. 실패해도 자산 처리는 계속한다 — 다만 조용히 넘기지
+    않는다(#12)."""
+    try:
+        from bot.holdings_news import tg_append, tg_record
+        return tg_append([tg_record(m, channel) for m in msgs])
+    except Exception as exc:
+        log.warning("보유종목 News 수신함 기록 실패(%d건): %s", len(msgs), exc)
+        return 0
 
 
 def _load_seen() -> dict:
@@ -158,6 +175,7 @@ async def _run_async() -> int:
         return 0
 
     processed = 0
+    n_txt = 0
     try:
         msgs = []
         try:
@@ -189,6 +207,8 @@ async def _run_async() -> int:
             return 0
 
         pw = os.environ.get("BANKSALAD_ZIP_PW") or None
+        prev_last = last_msg_id
+        texts = []
         for m in msgs:
             mid = int(m.id)
             if mid in seen_ids or mid <= last_msg_id:
@@ -196,7 +216,10 @@ async def _run_async() -> int:
             seen_ids.add(mid)
             last_msg_id = max(last_msg_id, mid)
             if not _is_portfolio_doc(m):
-                continue  # 자산 zip/xlsx 아닌 메시지는 무시(RAG 텍스트는 Second Brain 담당)
+                # 자산 zip/xlsx 가 아닌 메시지 — 글은 보유종목 News 수신함으로(Second Brain 과 별도로 같은
+                # 채널을 읽는다, 사용자 2026-10-12). 사진·파일만 있는 메시지는 tg_record 가 거른다.
+                texts.append(m)
+                continue
             fname = _doc_filename(m)
             log.info("자산 문서 감지: %s (msg %d)", fname, mid)
             try:
@@ -244,12 +267,27 @@ async def _run_async() -> int:
             processed += 1
             _push_confirm("✅ 자산 업데이트 (RAG 채널 → 자산 대시보드)\n" + format_summary_text(model))
 
+        n_txt = _capture(texts, channel)
+        if not state.get("tg_seeded"):
+            # 첫 채움(1회) — 이 기능 전에 이미 '본 것' 으로 넘긴 최근 글. 실패해도 다시 시도하지 않는다
+            # (FloodWait 를 매 폴링 두드리지 않게 — 놓친 것은 사흘 치 과거 글뿐이다).
+            try:
+                cut = datetime.now(timezone.utc) - timedelta(days=_TG_SEED_DAYS)
+                old = []
+                async for m in client.iter_messages(chan_arg, limit=_TG_SEED_LIMIT):
+                    if int(m.id) <= prev_last and m.date and m.date >= cut and not _is_portfolio_doc(m):
+                        old.append(m)
+                n_txt += _capture(old, channel)
+                log.info("보유종목 News 수신함 첫 채움: 최근 %d일 %d건", _TG_SEED_DAYS, len(old))
+            except Exception as exc:
+                log.warning("보유종목 News 수신함 첫 채움 실패(다시 시도하지 않음): %s", exc)
+            state["tg_seeded"] = True
         state.update({"initialized": True, "ids": sorted(seen_ids), "last_msg_id": last_msg_id})
         _save_seen(state)
     finally:
         await client.disconnect()
 
-    log.info("portfolio_watch: 처리 %d건", processed)
+    log.info("portfolio_watch: 처리 %d건 · 글 %d건 → 보유종목 News 수신함", processed, n_txt)
     return 0
 
 

@@ -17712,7 +17712,7 @@ class TestNaverCommodityCharts:
         assert 'CSI300+500(대형·중형)" if market == "CN_A"' not in page, \
             "CN 부제가 옛 유니버스(CSI300+500)를 계속 표기"
 
-    def test_quarterly_cost_reported_on_all_surfaces(self):
+    def test_quarterly_cost_reported_on_all_surfaces(self, monkeypatch):
         # 사용자 2026-08-16: 실적분석 비용도 종목분석처럼 '할때마다 얼마' +
         # 보고루트(대시보드 비용카드 · /usage) 동일 표기. 비용 surface 추가 시
         # _compute_stats + cmd_usage 동시갱신 규칙(CLAUDE.md).
@@ -17726,8 +17726,27 @@ class TestNaverCommodityCharts:
         tg = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "month_cost_quarterly" in tg and "• 실적분석:" in tg, \
             "/usage 월간 subsystem 분포에 실적분석 누락"
-        assert '"blog", "quarterly_infographic")' in tg, \
-            "실적분석이 '분석' 버킷에서 차감되지 않아 이중계상"
+        # ⚠️ 2026-10-12 다시 씀(#222·#19): 옛 판은 `'"blog", "quarterly_infographic")' in tg`
+        # 라는 **소스 문자열**을 봤다 — 차감 튜플에 보유종목 News 를 더하며 줄을 바꾸자 멀쩡한
+        # 코드가 빨간불이었다. 계약은 "실적분석 비용은 '분석' 버킷에서 빠진다(이중계상 금지)"
+        # 이므로 `/usage` 본문을 실제로 태워 값으로 잰다. (옛 문자열이 가리키던 '오늘' 차감 튜플은
+        # `today_cost_analysis` 를 만드는데 그 값은 어디에도 찍히지 않는다 — 관측 가능한 계약은 월간
+        # `• 분석:` 줄이다, #291.)
+        pytest.importorskip("telegram")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t" * 12)
+        import time as _time
+        import bot.telegram_bot as _tb
+        import bot.usage_tracker as _ut
+        _rows = [{"type": "llm_call", "model": "gemini-2.5-flash", "cost_usd": 1.0,
+                  "ts": _time.time(), "subsystem": "quarterly_infographic"}]
+        monkeypatch.setattr(_ut, "load_records", lambda *a, **k: _rows)
+        monkeypatch.setattr(_tb, "_count_watchdog_restarts_24h", lambda: 0)
+        _out = _tb._build_usage_report()
+        _an = [ln for ln in _out.splitlines() if ln.strip().startswith("• 분석:")]
+        _qi = [ln for ln in _out.splitlines() if ln.strip().startswith("• 실적분석:")]
+        assert _an and "₩0" in _an[0].replace(" ", ""), \
+            "실적분석이 '분석' 버킷에서 차감되지 않아 이중계상: " + _out
+        assert _qi and "₩0" not in _qi[0], _out
         # 일반화 헬퍼가 기존 종목분석 집계를 그대로 재사용하는지(회귀)
         from bot.usage_tracker import sum_analysis_cost_krw, sum_subsystem_cost_krw
         assert callable(sum_analysis_cost_krw) and callable(sum_subsystem_cost_krw)
@@ -45280,6 +45299,49 @@ def _daily_inst_html() -> str:
                            _dt(2026, 10, 12, 21, 40, tzinfo=_di._KST))
 
 
+def _holdings_news_html() -> str:
+    """🗞️ 보유종목 News — 카드의 **모든 갈래**(Pros/Cons · 둘 다 없음 · 대기 · 실패 · 텔레그램 · 흐린
+    항목 · 본문 읽음 · 뉴스 없음 줄 · 뺀 상품 줄)가 그려지는 기록으로(빈 기록은 껍데기만, #91c).
+    기록을 **이틀** 넣는다 — 지난 날은 펼칠 때 불러오는 머리(`hn-lazy`)로만 그려져, 하루만 넣으면 그
+    갈래가 한 번도 안 그려진다."""
+    from datetime import datetime as _dt
+
+    from bot import holdings_news as _hn
+
+    def it(n, src, title, **k):
+        return {"n": n, "src": src, "title": title, "summary": k.get("summary", "요약<b>"),
+                "link": k.get("link", "https://ex.com/a"), "source": k.get("source", "한경"),
+                "ts": "2026-10-12T15:00", "dated_only": k.get("dated_only", False),
+                **({"body_chars": 300} if k.get("body") else {})}
+    stocks = [
+        {"key": "KR:039030", "market": "KR", "ticker": "039030", "name": "이오<테크>", "value": 3.2e8,
+         "status": "ok", "relevant": [1], "items": [it(1, "naver", "수주", body=True),
+                                                     it(2, "telegram", "텔레그램 글", link="")],
+         "pros": [{"t": "수주 확대", "refs": [1]}], "cons": [{"t": "단가 하락", "refs": [1]}]},
+        {"key": "US:AMAT", "market": "US", "ticker": "AMAT", "name": "어플라이드", "value": 1.4e7,
+         "status": "ok", "relevant": [1], "items": [it(1, "yfinance", "news", dated_only=True)],
+         "pros": [], "cons": []},
+        {"key": "KR:000660", "market": "KR", "ticker": "000660", "name": "SK하이닉스", "value": 9e6,
+         "status": "pending", "reason": "AI 키 미설정", "items": [it(1, "google", "x")]},
+        {"key": "KR:005930", "market": "KR", "ticker": "005930", "name": "삼성전자", "value": 8e6,
+         "status": "failed", "reason": "AI 응답을 못 읽음", "items": [it(1, "naver", "y")]},
+        {"key": "KR:123456", "market": "KR", "ticker": "123456", "name": "조용한회사", "value": 1e6,
+         "status": "empty", "items": []},
+    ]
+    rec = {"date": "2026-10-13",
+           "window": {"since": "2026-10-12T07:10:00+09:00", "until": "2026-10-13T07:12:00+09:00"},
+           "collected_at": "2026-10-13T07:12:00+09:00",
+           "universe": {"n": 5, "unmatched": ["알수없음"], "etf": ["KODEX 200"]},
+           "sources": {"naver": 3, "google": 1, "yfinance": 1, "fail": 1,
+                       "fail_reasons": {"네이버 검색 실패": 1},
+                       "fallback": {"네이버 검색 키 없음": 1}, "dropped_name": 2,
+                       "body_ok": 1, "body_try": 2,
+                       "telegram": {"inbox": 9, "window": 4, "matched": 1}},
+           "stocks": stocks, "llm": {"calls": 2, "pt": 900, "ot": 200, "cost_usd": 0.0002}}
+    return _hn.render_page([rec, dict(rec, date="2026-10-12")], {},
+                           _dt(2026, 10, 13, 8, 0, tzinfo=_hn._KST))
+
+
 def _bollinger_html() -> str:
     """🔋 Bollinger 페이지 — 카드·차트·표·잠정 줄·부분 스캔·인용문이 **전부
     그려지는** 픽스처로. 빈 payload 는 껍데기만 그려 각주·표 클래스를 한 번도
@@ -45410,6 +45472,7 @@ def _render_all_pages():
         # 하드코딩 목록을 또 늘려야 한다(#24).
         ("bollinger_board", _bollinger_html()),
         ("daily_inst", _daily_inst_html()),
+        ("holdings_news", _holdings_news_html()),
         # 이름은 모듈 stem(커버리지 대조) — 한 모듈이 세 페이지를 그린다.
         ("world_sector_pages", _world_sector_html()["map"]),
         ("world_sector_pages:mix", _world_sector_html()["mix"]),
