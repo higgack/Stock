@@ -1892,3 +1892,22 @@ def test_probe_searches_with_the_dart_korean_name(hn, monkeypatch):
     assert asked == ["네이버", "HYBE"]
     assert any("검색어 '네이버'(DART 한글명 '네이버')" in ln for ln in out)
     assert any("검색어 'HYBE' · ⚠️ 영문 이름인데 DART 한글명을 못 얻음" in ln for ln in out)
+
+
+def test_us_etf_symbols_falls_back_to_a_stale_list(tmp_path, monkeypatch):
+    """목록을 다 못 받은 날은 7일 넘은 캐시라도 쓴다 — 빈 목록이면 그날 미국 ETF 가 전부 회사로 섞인다."""
+    import os
+
+    import httpx
+
+    import bot.us_symbol_names as us
+    cache = tmp_path / "etf.json"
+    monkeypatch.setattr(us, "_ETF_CACHE_FILE", cache)
+    cache.write_text(json.dumps(["AIRR", "DRAM"]), encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(cache, (old, old))
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    assert us.us_etf_symbols() == {"AIRR", "DRAM"}
+    assert cache.stat().st_mtime == old                                # 낡은 캐시를 새것처럼 다시 굽지 않는다
+    cache.unlink()
+    assert us.us_etf_symbols() == set()

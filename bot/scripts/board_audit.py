@@ -426,7 +426,8 @@ def _holdings_news_line(records=None, state=None, now=None) -> str:
     """🗞️ 보유종목 News 판정 한 줄 — **화면과 같은 함수**(`holdings_news.status_verdict`)로 저장된
     기록만 읽는다(감사가 원천·AI 를 다시 부르면 비용과 자기 장애를 만든다, #321). 갈래 → 글자:
     ok ✅ · wait ⚠️(오늘 집계 시각 전·집계 중) · pending ⚠️(Pros/Cons 대기 — AI 키 없음 포함, 키는
-    사람이 넣는다) · fail ❌(집계 못 함·봇 주기 멈춤·원천 전멸·AI 정리 실패) · none ❓(보유 종목 없음)."""
+    사람이 넣는다) · fail ❌(집계 못 함·봇 주기 멈춤·원천 장애 — 전멸·25% 이상·한 시장 통째 실패·0건 — ·AI
+    정리 실패) · none ❓(보유 종목 없음)."""
     try:
         from bot import holdings_news as hn
         recs = hn.load_records(limit=3) if records is None else records     # 판정엔 최근 며칠이면 된다

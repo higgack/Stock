@@ -195,8 +195,9 @@ def parse_etf_symbols(text: str) -> set:
 def us_etf_symbols(*, cache_only: bool = False) -> set:
     """미국 상장 ETF 심볼 set — NASDAQ Trader 두 파일의 ETF 칸(보유종목 News 가 '회사' 가 아닌 미국 ETF 를
     가른다 — 자산 기록은 미국 ETF 도 '미국 종목' 으로만 남긴다). 7일 캐시. 두 파일을 **다** 받았을 때만
-    굽는다(한쪽만이면 그쪽 ETF 가 일주일 내내 회사로 섞인다, #280). `cache_only` = 네트워크 없이 캐시만
-    (나이 무관 — 진단용). 실패면 빈 set(부른 쪽이 '목록 없음' 을 말한다)."""
+    굽는다(한쪽만이면 그쪽 ETF 가 일주일 내내 회사로 섞인다, #280). 다 못 받은 날은 낡은 캐시라도 그걸
+    쓴다(상장 ETF 는 천천히 바뀐다 — 빈 목록보다 낫다). `cache_only` = 네트워크 없이 캐시만(나이 무관 —
+    진단용). 둘 다 없으면 빈 set(부른 쪽이 '목록 없음' 을 말한다)."""
     try:
         if _ETF_CACHE_FILE.exists() and (
                 cache_only or time.time() - _ETF_CACHE_FILE.stat().st_mtime < _TTL):
@@ -228,4 +229,12 @@ def us_etf_symbols(*, cache_only: bool = False) -> set:
             _ETF_CACHE_FILE.write_text(json.dumps(sorted(out)), encoding="utf-8")
         except Exception:
             pass
+        return out
+    try:
+        stale = set(json.loads(_ETF_CACHE_FILE.read_text("utf-8")))
+        if stale:
+            log.warning("us_etf_symbols: 목록을 다 못 받아 낡은 캐시(%d종)를 씀", len(stale))
+            return stale | out
+    except Exception:
+        pass
     return out
