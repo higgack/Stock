@@ -25,6 +25,7 @@ _WD = "월화수목금토일"
 _GEN = "\x00GEN\x00"     # 생성 시각 자리 — 내용 비교에서 빼려고 마지막에 채운다
 CURRENCY = {"KR": "원", "US": "달러", "JP": "엔", "TW": "대만달러", "CN_A": "위안"}
 RENDER_DAYS = 10          # 섹터혼합 — 최근 10기준일만 싣는다(그 앞은 기록 보관만)
+STOCK_MARKETS = ("KR", "US")   # 섹터종목 — Breadth 전략 섹터 ETF 가 있는 나라(사용자 지정)
 
 SENT_HELP = {
     "hot_up": "거래가 몰리며 시장보다 강했다",
@@ -47,19 +48,30 @@ def market_name(m: str) -> str:
     return f"{flag} {label}"
 
 
-def lookup_ticker(sym: str) -> str:
-    """TradingView 기호(`TSE:7203`) → 종목분석 화면 티커(yfinance 꼴, 순수).
+_SUFFIX = {"TSE": ".T", "TWSE": ".TW", "TPEX": ".TWO", "SSE": ".SS", "SZSE": ".SZ", "BSE": ".BJ"}
+_US_EX = ("NYSE", "NASDAQ", "AMEX")      # `tv_scanner.EXCHANGES["US"]` 와 같은 셋
 
-    한국은 6자리 그대로(분석 화면 리졸버가 .KS/.KQ 를 정한다, #399)."""
+
+def lookup_ticker(sym: str) -> str:
+    """TradingView 기호(`TSE:7203`) → 종목분석 화면 티커(yfinance 꼴, 순수). 모르는 거래소면 "".
+
+    한국은 6자리 그대로(분석 화면 리졸버가 .KS/.KQ 를 정한다, #399). 모르는 접두(일본 나고야
+    `NAG`·후쿠오카 `FSE`·삿포로 `SAPSE` 주상장 등)는 링크를 걸지 않는다 — 미국식으로 떨어뜨리면
+    `lookup/7203` 같은 맨 숫자가 국내 리졸버로 풀려 남의 회사 화면을 연다(#399·#400)."""
     ex, _, code = str(sym).rpartition(":")
     ex = ex.upper()
     if ex == "KRX":
         return code
-    suffix = {"TSE": ".T", "TWSE": ".TW", "TPEX": ".TWO", "SSE": ".SS",
-              "SZSE": ".SZ", "BSE": ".BJ"}.get(ex)
-    if suffix:
-        return code + suffix
-    return code.replace(".", "-")          # 미국 BRK.B → BRK-B
+    if ex in _SUFFIX:
+        return code + _SUFFIX[ex]
+    if ex in _US_EX:
+        return code.replace(".", "-")          # 미국 BRK.B → BRK-B
+    return ""
+
+
+def lookup_href(sym: str) -> str:
+    lk = lookup_ticker(sym)
+    return f"lookup/{lk}" if lk else ""
 
 
 def _pp(v, digits: int = 2) -> str:
@@ -75,6 +87,20 @@ def _cls(v) -> str:
     if v is None:
         return "ws-na"
     return "ws-up" if v > 0 else "ws-dn" if v < 0 else "ws-flat"
+
+
+DAY_TEXT = {"closed": "휴장", "holiday": "휴장 추정", "pending": "대기", "missing": "수집 못 함"}
+
+
+def week_tag(mon: _date, now: datetime) -> str:
+    """주 머리말 꼬리 — 오늘(KST)이 든 주일 때만 '이번 주'. 마지막 저장일로 정하면 월요일 아침
+    (미국은 화요일 아침까지) 지난주를 '이번 주' 라 부른다(#34)."""
+    this = ws.week_monday(ws._now(now).date().isoformat())
+    if mon == this:
+        return " — 이번 주"
+    if mon == this - timedelta(days=7):
+        return " — 지난주"
+    return ""
 
 
 def _md(d: str) -> str:
@@ -243,11 +269,16 @@ _WS_JS = r"""
   // 심리지도 칸 — 그 나라 종목 JSON 을 처음 누를 때 한 번 받는다(상대 경로 — 토큰 경로 보존)
   var cache={};
   function openCell(td){
-    var m=td.getAttribute('data-m'), w=+td.getAttribute('data-w');
+    var m=td.getAttribute('data-m'), mon=td.getAttribute('data-mon');
     var box=document.getElementById('ws-detail-'+m);
     if(!box) return;
     var go=function(js){
-      var wk=js.weeks[w]; if(!wk) return;
+      // 주는 순서가 아니라 월요일 날짜로 찾는다 — 열어 둔 옛 페이지에서 새 주가 들어온 뒤 누르면
+      // 순서로는 다른 주 종목이 옛 머리말 아래 그려진다
+      var wk=null; (js.weeks||[]).forEach(function(x){if(x.monday===mon) wk=x;});
+      if(!wk){box.style.display='block';
+        box.querySelector('.js-ws-body').innerHTML='<div class="ws-off">'+esc(box.getAttribute('data-gone'))+'</div>';
+        return;}
       var kind=td.getAttribute('data-kind'), key=td.getAttribute('data-key');
       var day=td.getAttribute('data-day'); day=(day===null||day==='')?null:+day;
       var idx=(kind==='sec'?wk.secs:wk.inds).indexOf(key);
@@ -318,19 +349,25 @@ def status_lines(state: dict, now: datetime, markets=None) -> list[str]:
 
 # ── 국가별 섹터혼합 ────────────────────────────────────────────────────────────
 def _mix_cell(m: str, c: dict | None, win: str, rec: dict) -> str:
+    st = (rec.get("markets") or {}).get(m, {})
     if c is None:
-        st = (rec.get("markets") or {}).get(m, {})
-        if win == "day" and st.get("day") in ("closed", "pending", "missing"):
-            txt = {"closed": "휴장", "pending": "대기", "missing": "수집 못 함"}[st["day"]]
-            return f"<td class='ws-off'>{txt}</td>"
-        return "<td class='ws-off'>—</td>"
+        if win == "day" and st.get("day") in DAY_TEXT:
+            return f"<td class='ws-off'>{DAY_TEXT[st['day']]}</td>"
+        if win == "week" and not st.get("sessions"):
+            return "<td class='ws-off'>휴장</td>"
+        if win == "week" and not st.get("got"):
+            return "<td class='ws-off'>받은 날 없음</td>"
+        return (f"<td class='ws-off' title='그 나라에 이 업종 종목이 {ws.MIN_N}개 미만이거나 없음'>—</td>")
     v = c.get(win)
     if v is None:
-        st = (rec.get("markets") or {}).get(m, {}).get("day")
-        txt = {"closed": "휴장", "pending": "대기", "missing": "수집 못 함"}.get(st, "—")
+        txt = DAY_TEXT.get(st.get("day"), "—")
         return f"<td class='ws-off'>{txt if win == 'day' else '—'}</td>"
-    sub = (f"이긴 날 {c.get('wins', 0)}/{c.get('N', 0)}" if win == "week"
-           else f"{c.get('n', 0)}종목")
+    if win == "week":
+        sub = f"이긴 날 {c.get('wins', 0)}/{c.get('N', 0)}"
+        if st.get("got") is not None and st.get("sessions") and st["got"] < st["sessions"]:
+            sub += f" · {st['got']}/{st['sessions']}일 받음"
+    else:
+        sub = f"{c.get('n', 0)}종목"
     tip = f"{c.get('n', 0)}종목 · 시장 대비 {_pp(v)}"
     return (f"<td title='{_h.escape(tip)}'><div class='ws-v {_cls(v)}'>{_pp(v)}</div>"
             f"<div class='ws-sub'>{sub}</div></td>")
@@ -376,7 +413,8 @@ def _mix_day(rec: dict, *, open_: bool, idx: int) -> str:
     st = []
     for m in ws.MARKETS:
         s = (rec.get("markets") or {}).get(m, {})
-        mark = {"ok": "✅", "closed": "휴장", "pending": "⏳", "missing": "✗"}.get(s.get("day"), "—")
+        mark = {"ok": "✅", "closed": "휴장", "holiday": "휴장 추정", "pending": "⏳",
+                "missing": "✗"}.get(s.get("day"), "—")
         st.append(f"{market_name(m).split()[0]}{mark}")
     meta.append(" ".join(st))
     if not rec.get("final"):
@@ -425,7 +463,9 @@ def render_mix(records: list[dict], state: dict, now: datetime, *, gen: str | No
 <b>값</b> — 그 업종의 등락에서 <b>그 나라 시장 전체의 등락</b>을 뺀 값(%p)입니다. 업종 등락과 시장 등락은
 둘 다 종목 등락률을 <b>전일 시가총액으로 가중 평균</b>한 것(업종 지수와 같은 방식)이고, 여러 날이면 날마다
 누적한 뒤 뺍니다. <b>이긴 날 n/N</b> 은 그 업종이 시장보다 강했던 날 수 / 그 나라가 그 주에 거래한 날
-수입니다(휴장이 다르면 N 이 다릅니다).<br>
+중 <b>우리가 받은 날</b> 수입니다(휴장이 다르면 N 이 다릅니다 · 못 받은 날이 있으면 'k/n일 받음' 을 같이
+적고, 하루도 못 받았으면 '받은 날 없음'). 시가총액 통화가 거래 통화와 다른 종목(해외 주식예탁증서 등)은
+종목 수·거래대금엔 넣고 등락 가중에선 뺍니다 — 몇 개인지는 심리지도 주 머리에 적습니다.<br>
 <b>판정</b> — 강세·약세 기준은 <b>주간 ±1%p · 하루 ±0.5%p</b>입니다. 업종이 있는 나라가 전부 같은 쪽이면
 'N국 공통 강세·약세', 강세(또는 약세)가 두 나라 이상이고 반대쪽이 없으면 'K국 강세·약세', 강세와 약세가
 같이 있으면 '엇갈림'입니다. 기준 안쪽인 나라는 세지 않습니다(예: 미국 −0.86%p 는 약세로 안 셉니다).
@@ -436,8 +476,9 @@ def render_mix(records: list[dict], state: dict, now: datetime, *, gen: str | No
 <b>주간·하루</b> — 주간 = 기준일을 끝으로 한 7일(달력) 안의 그 나라 거래일 · 하루 = 기준일 하루.
 원래 블로그 표는 주간이고, 매일 갱신하려고 끝날을 하루씩 민 것입니다.<br>
 <b>언제 갱신되나</b> — 나라마다 장 마감 {ws.READY_MIN // 60}시간 뒤 한 번 받습니다(미국은 한국 시각 이튿날
-아침). 그래서 저녁엔 그날 미국이 '대기'입니다. 원천은 '지금' 값만 주므로 그 창을 놓친 날은 다시 받을 수
-없고 '수집 못 함'으로 남습니다.<br>
+아침). 그래서 저녁엔 그날 미국이 '대기'입니다. 받는 창은 다음 거래일 장전 거래(미국 프리마켓·동시호가
+등)가 시작되기 전까지이고, 원천은 '지금' 값만 주므로 그 창을 놓친 날은 다시 받을 수 없어 '수집 못 함'으로
+남습니다. 창 내내 원천 값이 직전 거래일과 같았던 날은 '휴장 추정'(달력에 없는 휴장 — 태풍 휴장 등)입니다.<br>
 <b>우리가 정한 것</b> — 블로그가 산식을 다 밝히지 않아 가중 방식·하루 기준(±0.5%p)·업종 최소 종목 수·
 정렬(공통 → 2국 이상 → 엇갈림, 같은 묶음에선 신호 낸 나라들의 |%p| 평균 순)은 우리가 정했습니다.
 </details>
@@ -462,14 +503,16 @@ def _tip(label: str, cell: dict, when: str, upshare=None) -> str:
 
 
 def _map_cell(m: str, w: int, kind: str, row: dict, cell: dict | None, *, day: int | None,
-              head: str, title: str, summ: str, src: str, label_when: str, upshare=None) -> str:
+              head: str, title: str, summ: str, src: str, label_when: str, upshare=None,
+              mon: str = "") -> str:
     if cell is None or cell.get("s") is None:
         return "<td class='ws-off'>—</td>"
     name, tok = ws.SENTIMENT[cell["s"]]
     approx = " ws-approx" if cell.get("basis") in ("approx", "mixed") else ""
     wkc = " ws-wk" if day is None else ""
     tip = _tip(row["label"], cell, label_when, upshare)
-    attrs = (f" data-m='{m}' data-w='{w}' data-kind='{kind}' data-key='{_h.escape(row['key'])}'"
+    attrs = (f" data-m='{m}' data-mon='{mon}' data-kind='{kind}'"
+             f" data-key='{_h.escape(row['key'])}'"
              f" data-day='{'' if day is None else day}' data-src='{_h.escape(src)}'"
              f" data-head='{_h.escape(head)}' data-title='{_h.escape(title)}'"
              f" data-sum='{_h.escape(summ)}'")
@@ -494,14 +537,15 @@ def _map_table(m: str, w: int, wk: dict, kind: str, sums: dict, src: str) -> str
         tds = []
         for i, c in enumerate(cols):
             if c["status"] != "ok":
-                txt = {"closed": "휴장", "pending": "·", "missing": "수집 못 함"}.get(c["status"], "·")
+                txt = "·" if c["status"] == "pending" else DAY_TEXT.get(c["status"], "·")
                 tds.append(f"<td class='ws-off'>{txt}</td>")
                 continue
             tds.append(_map_cell(m, w, kind, r, r["cells"].get(c["date"]), day=i, head=hdr,
                                  title=r["label"], summ=summ, src=src,
-                                 label_when=_md(c["date"])))
+                                 label_when=_md(c["date"]), mon=wk["monday"]))
         tds.append(_map_cell(m, w, kind, r, wkcell, day=None, head=hdr, title=r["label"],
-                             summ=summ, src=src, label_when="주간", upshare=s.get("upshare")))
+                             summ=summ, src=src, label_when="주간", upshare=s.get("upshare"),
+                             mon=wk["monday"]))
         body.append(f"<tr><td class='ws-l'>{_h.escape(r['label'])}<span class='ws-n'>{r['n']}</span>"
                     f"</td>{''.join(tds)}</tr>")
     if not body:
@@ -567,14 +611,15 @@ def render_map(payloads: dict[str, dict], state: dict, now: datetime, *,
                      f"<div class='ws-pane' data-group='{g}' data-tab='ind'>"
                      f"{_map_table(m, w, wk, 'ind', wk.get('sums') or {}, src)}</div>"
                      f"{_size_table(wk.get('size'))}")
-            title = f"{mon.month}/{mon.day}(월) 주" + (" — 이번 주" if w == 0 else "")
+            title = f"{mon.month}/{mon.day}(월) 주" + week_tag(mon, now)
             weeks_html.append(f"<details class='ws-day'{' open' if w == 0 else ''}><summary>🗓️ "
                               f"{title}<span class='ws-meta'>{_h.escape(wk.get('meta') or '')}</span>"
                               f"</summary>{inner}</details>")
         if not weeks_html:
             weeks_html.append("<div class='ws-status'>아직 받은 날이 없습니다 — 장 마감 "
                               f"{ws.READY_MIN // 60}시간 뒤 자동으로 받습니다.</div>")
-        detail = (f"<div class='ws-detail' id='ws-detail-{m}' style='display:none'>"
+        detail = (f"<div class='ws-detail' id='ws-detail-{m}' style='display:none' "
+                  f"data-gone='이 주의 종목 자료가 그 뒤 갱신됐습니다 — 페이지를 새로고침해 주세요'>"
                   f"<div class='ws-detail-h'><div><div class='ws-detail-k js-ws-k'></div>"
                   f"<div class='ws-detail-t js-ws-t'></div><div class='ws-sub js-ws-s'></div></div>"
                   f"<button class='ws-btn js-ws-close'>닫기</button></div>"
@@ -599,14 +644,16 @@ def render_map(payloads: dict[str, dict], state: dict, now: datetime, *,
 상대 거래대금 = (업종 거래대금 ÷ 업종의 직전 20거래일 평균) ÷ (같은 비율의 시장 값). 하루 칸은 시장 대비
 ±{thr_d:g}%p · 상대 거래대금 {vthr_d:g}배, 주간 칸은 ±{thr_w:g}%p · {vthr_w:g}배를 기준으로 갈랐습니다(하루
 등락이 주간보다 작아서). 칸 아래 숫자는 시장 대비 %p, 칸에 마우스를 올리면 설명과 수치가 뜨고 <b>칸을 누르면
-그 업종 종목 표</b>가 열립니다(그날 열은 테두리로 표시).<br>
+그 업종 종목 표</b>가 열립니다(그날 열은 테두리로 표시). '·' 는 아직 받을 때가 안 됐거나 받는 중인
+날입니다.<br>
 <b>여섯 갈래</b> — 거래 몰린 상승(오르며 거래 많음) · 조용한 상승(오르는데 거래 평범) · 소강(둘 다 평범) ·
 손바뀜(등락은 평범한데 거래 많음) · 관심 이탈(거래 안 늘고 약함) · 거래 몰린 하락(약하며 거래 많음).<br>
-<b>점선 칸</b> — 우리 자체 이력이 아직 20거래일이 안 돼 상대 거래대금을 TradingView 의 <b>30일 평균
-거래량 × 그날 종가</b>로 근사한 칸입니다. 이력이 쌓이면 저절로 실측으로 바뀝니다.<br>
+<b>점선 칸</b> — 직전 20거래일 중 우리 자체 이력이 {ws.BASE_MIN}일이 안 돼 상대 거래대금을 TradingView 의
+<b>30일 평균 거래량 × 그날 종가</b>로 근사한 칸입니다. 이력이 쌓이면 저절로 실측으로 바뀝니다.<br>
 <b>등락 계산</b> — 업종·시장 모두 종목 등락률의 전일 시가총액 가중 평균(우리가 정함). 행 옆 숫자는 그
 업종 종목 수, 정렬은 주간 시장 대비 %p 순입니다. 휴장은 '휴장', 그날을 받을 창을 놓쳤으면 '수집 못 함'
-(원천이 '지금' 값만 주므로 지난날은 다시 받을 수 없습니다).<br>
+(원천이 '지금' 값만 주므로 지난날은 다시 받을 수 없습니다), 창 내내 원천 값이 직전 거래일과 같았으면
+'휴장 추정'입니다.<br>
 <b>종목 표</b> — 그 주 요일별 등락 · 주간(누적) · <b>상승일 거래</b>(그 주 거래대금 중 오른 날의 몫) ·
 <b>거래 몫</b>(그 종목 주간 거래대금 ÷ 시장 전체) · 시총 · 시총 증감. 머리글을 누르면 정렬합니다.
 </details>
@@ -620,7 +667,7 @@ def render_stocks(payloads: dict[str, dict], state: dict, now: datetime, *,
                   gen: str | None = None) -> str:
     """sector_stocks.html — 한·미 Breadth 섹터 ETF 마다 보유 상위 15종목의 이번 주·지난주 표."""
     tabs, panes, data_tags = [], [], []
-    for j, m in enumerate(("KR", "US")):
+    for j, m in enumerate(STOCK_MARKETS):
         p = payloads.get(m) or {}
         act = " active" if j == 0 else ""
         tabs.append(f"<span class='ws-tab{act}' data-tab='{m}'>{market_name(m)}</span>")
@@ -643,7 +690,7 @@ def render_stocks(payloads: dict[str, dict], state: dict, now: datetime, *,
                     f"찾기' autocomplete='off'> <span class='ws-sub js-ws-count'></span></div>"
                     f"<div class='js-ws-body'></div></div></div>")
             if not inner:
-                inner.append(f"<div class='ws-off'>{_h.escape(e['empty'])} · 아직 받은 날이 없습니다</div>")
+                inner.append(f"<div class='ws-off'>{_h.escape(e['nodays'])}</div>")
             blocks.append(
                 f"<details class='ws-day'{' open' if k == 0 else ''}><summary>{_h.escape(e['ticker'])} "
                 f"{_h.escape(e['label'])}<span class='ws-meta'>{_h.escape(e['meta'])}</span></summary>"
@@ -654,7 +701,7 @@ def render_stocks(payloads: dict[str, dict], state: dict, now: datetime, *,
         panes.append(f"<div class='ws-pane{act}' data-group='mkt' data-tab='{m}'>"
                      f"<div class='ws-sub'>{_h.escape(p.get('head') or '')}</div>{bar}{''.join(blocks)}</div>")
     gen_s = now.strftime("%Y-%m-%d %H:%M KST") if gen is None else gen
-    st = "<br>".join(_h.escape(x) for x in status_lines(state, now, ("KR", "US")))
+    st = "<br>".join(_h.escape(x) for x in status_lines(state, now, STOCK_MARKETS))
     return f"""{_head('국가별 섹터종목')}
 {_NAV}
 <h1>📑 <em>국가별 섹터종목</em> — 섹터 ETF 보유 상위 15종목의 한 주</h1>
@@ -678,10 +725,44 @@ def render_stocks(payloads: dict[str, dict], state: dict, now: datetime, *,
 
 
 # ── 화면 재료 조립(디스크만 읽는다) ────────────────────────────────────────────
-def _week_payload(m: str, monday: _date, now: datetime) -> tuple[dict, dict]:
+def _week_stocks(memo: dict | None, m: str, monday: _date) -> dict:
+    """한 재생성 안에서 같은 주를 두 번 읽지 않는다 — 심리지도와 섹터종목이 한·미 두 주를 같이
+    쓰는데, 하루치 원본 캐시(`_CACHE_MAX['snap']`)는 그 사이 다른 날로 밀려 다시 푼다(L9)."""
+    if memo is None or m not in STOCK_MARKETS:
+        # 섹터종목이 다시 읽지 않는 나라는 붙들지 않는다 — 미국 한 주가 메모리에서 수십 MB 라
+        # 다섯 나라를 다 들고 있으면 재생성 정점이 그만큼 오른다
+        return ws.week_stocks(m, monday)
+    key = (m, monday.isoformat())
+    if key not in memo:
+        memo[key] = ws.week_stocks(m, monday)
+    return memo[key]
+
+
+def _hold_names(m: str) -> dict[str, str]:
+    """그 나라 섹터 ETF 보유 목록의 {종목코드: 이름} — 심리지도 종목 표도 섹터종목과 같은 이름을
+    쓰게(국내 ETF 구성종목은 KRX 한글명을 준다, #38). 보유 목록이 없는 나라는 빈 dict."""
+    try:
+        from bot import etf_holdings as eh
+        out = {}
+        for t in eh.etfs(m):
+            for r in (eh.load(t) or {}).get("rows") or []:
+                if r.get("code") and r.get("name"):
+                    out.setdefault(str(r["code"]), str(r["name"]))
+        return out
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+
+def _int(v):
+    return None if v is None else round(v)
+
+
+def _week_payload(m: str, monday: _date, now: datetime, memo: dict | None = None,
+                  hold_names: dict | None = None) -> tuple[dict, dict]:
     """(화면용 주간 지도, 종목 JSON 한 주). 종목 표 숫자는 `stock_week_row` 가 만든다."""
     wk = ws.map_week(m, monday, now)
-    st = ws.week_stocks(m, monday)
+    st = _week_stocks(memo, m, monday)
+    hn = hold_names or {}
     labels = st["labels"]
     secs = sorted({it["sector"] for it in st["stocks"].values() if it["sector"]})
     inds = sorted({it["industry"] for it in st["stocks"].values() if it["industry"]})
@@ -694,12 +775,13 @@ def _week_payload(m: str, monday: _date, now: datetime) -> tuple[dict, dict]:
         if all(v is None for v in it["chg"]):
             continue
         r = ws.stock_week_row(it, st["mval"])
-        rows.append([code, it["name"], si.get(it["sector"]), ii.get(it["industry"]),
-                     it.get("cap"), [None if v is None else round(v, 2) for v in it["chg"]],
+        rows.append([code, display_name(it["name"], hn.get(code)), si.get(it["sector"]),
+                     ii.get(it["industry"]),
+                     _int(it.get("cap")), [None if v is None else round(v, 2) for v in it["chg"]],
                      None if r["week"] is None else round(r["week"], 2),
                      None if r["upshare"] is None else round(r["upshare"], 1),
                      None if r["share"] is None else round(r["share"], 3),
-                     r["dcap"], f"lookup/{lookup_ticker(it['sym'])}"])
+                     _int(r["dcap"]), lookup_href(it["sym"])])
         for kind, key in (("sec", it["sector"]), ("ind", it["industry"])):
             if not key:
                 continue
@@ -721,10 +803,13 @@ def _week_payload(m: str, monday: _date, now: datetime) -> tuple[dict, dict]:
           "indLabels": [labels["ind"].get(k) or k for k in inds], "rows": rows}
     wk["sums"] = sums
     wk["size"] = size_rows(m, monday, st)
-    ok = sum(1 for s in status if s == "ok")
+    ok_days = [d for d, s in zip(days, status) if s == "ok"]
     bases = wk.get("basis") or []
-    wk["meta"] = (f"받은 날 {ok}일 · 종목 {len(rows):,}" +
-                  (" · 상대 거래대금 근사 포함" if "approx" in bases else ""))
+    last = ws.load_agg(m, ok_days[-1]) if ok_days else None
+    fx = int((last or {}).get("fx_skip") or 0)
+    wk["meta"] = (f"받은 날 {len(ok_days)}일 · 종목 {len(rows):,}" +
+                  (" · 상대 거래대금 근사 포함" if "approx" in bases else "") +
+                  (f" · 시총 통화가 달라 등락 가중에서 뺀 종목 {fx}" if fx else ""))
     return wk, js
 
 
@@ -733,8 +818,14 @@ def size_rows(m: str, monday: _date, st: dict) -> dict | None:
     first = next((i for i, ok in enumerate(st["ok"]) if ok), None)
     if first is None:
         return None
-    items = [it for it in st["stocks"].values() if it["chg"][first] is not None and it.get("cap")]
-    items.sort(key=lambda it: -(it["cap"] or 0))
+    def cap_at(it, i):
+        caps = it.get("caps")
+        return caps[i] if caps else it.get("cap")
+    # 순위 = 그 주 **첫 거래일** 시총(화면 설명 그대로 — 마지막 날 값이면 그 주 등락이 순위에
+    # 섞인다) · 그날 가중 = **그날** 시총의 전일 환산
+    items = [it for it in st["stocks"].values()
+             if it["chg"][first] is not None and cap_at(it, first)]
+    items.sort(key=lambda it: -(cap_at(it, first) or 0))
     bands = (("초대형 30", 0, 30), ("31–100위", 30, 100), ("101–500위", 100, 500),
              ("501위 이하", 500, None))
     rows = []
@@ -750,7 +841,7 @@ def size_rows(m: str, monday: _date, st: dict) -> dict | None:
             w = wr = 0.0
             for it in grp:
                 chg = it["chg"][i]
-                cap = it.get("cap")
+                cap = cap_at(it, i)
                 if chg is None or not cap or it.get("fx") or chg <= -100:
                     continue
                 prev = cap / (1 + chg / 100)
@@ -771,7 +862,7 @@ def size_rows(m: str, monday: _date, st: dict) -> dict | None:
     return {"days": st["days"], "rows": rows, "conc": conc}
 
 
-def map_payloads(now: datetime) -> tuple[dict, dict]:
+def map_payloads(now: datetime, memo: dict | None = None) -> tuple[dict, dict]:
     """나라마다 이번 주·지난주 — (화면 재료, 나라별 종목 JSON)."""
     pages, jsons = {}, {}
     for m in ws.MARKETS:
@@ -780,8 +871,9 @@ def map_payloads(now: datetime) -> tuple[dict, dict]:
             pages[m], jsons[m] = {"weeks": []}, None
             continue
         weeks, js_weeks = [], []
+        hn = _hold_names(m)
         for mm in (mon, mon - timedelta(days=7)):
-            wk, js = _week_payload(m, mm, now)
+            wk, js = _week_payload(m, mm, now, memo, hn)
             if not any(c["status"] == "ok" for c in wk["cols"]):
                 continue
             weeks.append(wk)
@@ -813,7 +905,7 @@ def _holding_rows(h: dict, st: dict | None) -> list[dict]:
             r = ws.stock_week_row(it, st["mval"])
             ind = st["labels"]["ind"].get(it["industry"]) or it["industry"] or ""
             rows.append({"c": code, "nm": display_name(it["name"], hold.get("name")), "ind": ind,
-                         "href": f"lookup/{lookup_ticker(it['sym'])}", "cap": it.get("cap"),
+                         "href": lookup_href(it["sym"]), "cap": it.get("cap"),
                          "chg": it["chg"], "wk": r["week"], "up": r["upshare"],
                          "sh": r["share"], "dcap": r["dcap"], "w": hold.get("weight")})
         else:
@@ -823,19 +915,20 @@ def _holding_rows(h: dict, st: dict | None) -> list[dict]:
     return rows
 
 
-def stocks_payloads(now: datetime) -> dict:
+def stocks_payloads(now: datetime, memo: dict | None = None) -> dict:
     """섹터종목 — 한·미 ETF 마다 보유 상위 15종목의 이번 주·지난주 표 재료.
 
     보유 목록은 **오늘 것 하나**를 두 주에 같이 쓴다(지난주 보유 목록을 따로 받지 않는다 —
     화면이 그렇게 밝힌다)."""
     from bot import etf_holdings as eh
     out = {}
-    for m in ("KR", "US"):
+    state = ws.load_state()
+    for m in STOCK_MARKETS:
         mon = ws.latest_monday(m)
         weeks = []
         if mon:
             for mm in (mon, mon - timedelta(days=7)):
-                st = ws.week_stocks(m, mm)
+                st = _week_stocks(memo, m, mm)
                 if any(st["ok"]):
                     weeks.append((mm, st))
         etfs = []
@@ -852,16 +945,17 @@ def stocks_payloads(now: datetime) -> dict:
                 meta.append("보유 목록을 아직 받지 않음")
             empty = ((h.get("error") or "보유 목록을 아직 받지 않았습니다") if not h.get("rows")
                      else "해당 종목 없음")
+            nodays = (f"{empty} · 아직 받은 하루치가 없습니다" if not h.get("rows")
+                      else "보유 목록은 있지만 아직 받은 하루치가 없습니다")
             tables = []
             for mm, st in weeks:
                 days = st["days"]
                 tables.append({"days": days, "dayLabels": [_md(d) for d in days],
-                               "status": [ws.market_day_status(m, d, now) for d in days],
+                               "status": [ws.market_day_status(m, d, now, state) for d in days],
                                "cur": CURRENCY.get(m, ""), "rows": _holding_rows(h, st)})
             etfs.append({"ticker": t.split(".")[0], "label": label, "meta": " · ".join(meta),
-                         "empty": empty, "tables": tables})
-        labels = [f"{mm.month}/{mm.day}(월) 주" + (" — 이번 주" if i == 0 else "")
-                  for i, (mm, _st) in enumerate(weeks)]
+                         "empty": empty, "nodays": nodays, "tables": tables})
+        labels = [f"{mm.month}/{mm.day}(월) 주" + week_tag(mm, now) for mm, _st in weeks]
         out[m] = {"etfs": etfs, "weeks": labels, "head": eh.etf_label(m)}
     return out
 
@@ -897,8 +991,9 @@ def regenerate(now: datetime | None = None) -> list[str]:
     st = ws.load_state()
     wrote: list[str] = []
     jobs = []
+    memo: dict = {}
     try:
-        pages, jsons = map_payloads(now)
+        pages, jsons = map_payloads(now, memo)
         jobs.append(("sentiment_map.html", lambda g: render_map(pages, st, now, gen=g)))
         for m, js in jsons.items():
             if js is not None:
@@ -915,7 +1010,7 @@ def regenerate(now: datetime | None = None) -> list[str]:
     except Exception as exc:                                   # noqa: BLE001
         log.warning("world_sectors: 섹터혼합 재료 실패: %s", exc)
     try:
-        sp = stocks_payloads(now)
+        sp = stocks_payloads(now, memo)
         jobs.append(("sector_stocks.html", lambda g: render_stocks(sp, st, now, gen=g)))
     except Exception as exc:                                   # noqa: BLE001
         log.warning("world_sectors: 섹터종목 재료 실패: %s", exc)

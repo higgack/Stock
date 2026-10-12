@@ -13,7 +13,7 @@
   30일 평균 거래량 × 그날 종가로 **근사**하고 화면이 그렇게 밝힌다(#171).
 - 심리 6갈래 — 하루 칸 ±1%p · 1.1배, 주간 칸 ±2%p · 1.05배(캡처 설명문 그대로).
 
-수집 — 각 시장 세션 마감 `READY_MIN` 분 뒤부터 다음 세션 개장 전까지 한 번. 직전 세션과 값이
+수집 — 각 시장 세션 마감 `READY_MIN` 분 뒤부터 다음 세션 장전 거래 전까지 한 번. 직전 세션과 값이
 거의 같으면(원천이 아직 그날을 안 실었거나 달력에 없는 휴장) 굽지 않는다. 그 창을 놓친
 세션은 다시 받을 수 없다 — TradingView 는 '지금' 값만 주므로 빈 날로 남고 화면이 그렇게 말한다.
 진단 — `cd ~/stock && .venv/bin/python -m bot.world_sectors --why`(읽기 전용) ·
@@ -50,10 +50,23 @@ BASE_N, BASE_MIN = 20, 15  # 상대 거래대금 기준 = 직전 20거래일 중
 MAP_THR = {"day": (1.0, 1.1), "week": (2.0, 1.05)}    # 심리지도 (%p, 배) — 캡처 설명문
 MIX_THR = {"day": 0.5, "week": 1.0}                  # 섹터혼합 강세·약세 경계(%p) — 우리가 정함
 MIN_ROWS = 300             # 한 시장 종목이 이보다 적으면 굽지 않는다
-_FALLBACK_HOURS = {        # 달력이 그 날짜를 모를 때만(평일 가정) — (개장 h,m, 마감 h,m) UTC
+# 달력이 그 날짜를 모를 때만(평일 가정) — (현지 시간대, 개장 h,m, 마감 h,m). 현지 시각으로 적어
+# 서머타임을 따른다(UTC 로 고정하면 여름 미국은 한 시간 늦게 열린다고 보고, 그 사이 재시도가
+# 다음 세션 장중 값을 전 세션 날짜로 굽는다). 시간대 자료(tzdata)가 없으면 `_FALLBACK_UTC`.
+_FALLBACK_LOCAL = {
+    "KR": ("Asia/Seoul", 9, 0, 15, 30), "US": ("America/New_York", 9, 30, 16, 0),
+    "JP": ("Asia/Tokyo", 9, 0, 15, 30), "TW": ("Asia/Taipei", 9, 0, 13, 30),
+    "CN_A": ("Asia/Shanghai", 9, 30, 15, 0),
+}
+_FALLBACK_UTC = {
     "KR": (0, 0, 6, 30), "US": (14, 30, 21, 0), "JP": (0, 0, 6, 30),
     "TW": (1, 0, 5, 30), "CN_A": (1, 30, 7, 0),
 }
+# 받을 창의 끝 = 다음 세션 개장 − 이만큼(분). 개장 전에도 장전 거래(미국 프리마켓 04:00 ET ·
+# 한국 NXT 08:00 · 대만·한국 단일가 · 중국 09:15 동시호가)가 값을 움직일 수 있어, 그 전에 창을
+# 닫는다 — 원천이 장전 값을 '그날' 값에 섞는지는 재지 못했다(#165), 그래서 넉넉히 당긴다.
+PRE_OPEN_MIN = {"US": 330}
+PRE_OPEN_DEFAULT = 90
 ROW = ("sym", "name", "sector", "industry", "chg", "val", "cap", "avg", "close", "fx")
 
 SENTIMENT = {              # 키 → (화면 이름, 칸 색 토큰)
@@ -109,9 +122,21 @@ def session_times(market: str, d: str) -> tuple[datetime, datetime] | None:
     dd = _date.fromisoformat(d)
     if dd.weekday() >= 5:
         return None
-    oh, om, ch, cm = _FALLBACK_HOURS[market]
-    base = datetime(dd.year, dd.month, dd.day, tzinfo=timezone.utc)
-    return base.replace(hour=oh, minute=om), base.replace(hour=ch, minute=cm)
+    return _fallback_times(market, dd)
+
+
+def _fallback_times(market: str, dd: _date) -> tuple[datetime, datetime]:
+    tzname, oh, om, ch, cm = _FALLBACK_LOCAL[market]
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tzname)
+        o = datetime(dd.year, dd.month, dd.day, oh, om, tzinfo=tz)
+        c = datetime(dd.year, dd.month, dd.day, ch, cm, tzinfo=tz)
+        return o.astimezone(timezone.utc), c.astimezone(timezone.utc)
+    except Exception:                                          # noqa: BLE001
+        oh, om, ch, cm = _FALLBACK_UTC[market]
+        base = datetime(dd.year, dd.month, dd.day, tzinfo=timezone.utc)
+        return base.replace(hour=oh, minute=om), base.replace(hour=ch, minute=cm)
 
 
 def due_session(market: str, now: datetime | None = None) -> str | None:
@@ -134,6 +159,14 @@ def next_open(market: str, d: str) -> datetime | None:
         if t:
             return t[0]
     return None
+
+
+def window_end(market: str, d: str) -> datetime | None:
+    """`d` 를 받을 수 있는 마지막 시각(UTC) — 다음 세션 개장 − `PRE_OPEN_MIN`."""
+    no = next_open(market, d)
+    if no is None:
+        return None
+    return no - timedelta(minutes=PRE_OPEN_MIN.get(market, PRE_OPEN_DEFAULT))
 
 
 def sessions_in(market: str, start: str, end: str) -> list[str]:
@@ -507,27 +540,94 @@ def mix_sort_key(verdict: str, cells: dict[str, float | None], thr: float) -> tu
 
 
 # ── 수집 ───────────────────────────────────────────────────────────────────
-def validate(rows: list[list], prev: dict | None) -> tuple[bool, str, str]:
+STALE_SAME = 0.9          # 직전 세션과 (등락, 거래대금)이 같은 종목이 이만큼이면 '아직 안 실음'
+STALE_MIN_COMMON = 100    # 시장 전체 판정에 필요한 비교 종목 수
+STALE_MIN_EXCH = 50       # 거래소별 판정에 필요한 비교 종목 수
+RESET_SHARE = 0.5         # 등락 0 · 거래대금 0 인 종목이 이만큼이면 원천이 값을 초기화한 것
+SIZE_FLOOR = 0.7          # 최근 저장분(중앙값) 대비 이만큼 못 되면 잘린 응답
+SIZE_TOL = 0.02           # '같은 크기' 로 칠 오차
+SIZE_ACCEPT_RUNS = 2      # 다른 세션 이만큼이 같은 크기로 'small' 이면 새 기준으로 받는다
+
+
+def _same_share(rows: list[list], old: dict) -> tuple[float, int] | None:
+    """오늘 거래가 있었던 종목 중 직전 세션과 (등락, 거래대금)이 같은 몫. 이틀 다 거래가 없던 종목
+    (0, 0)은 빼고 잰다 — 거래가 드문 소형 거래소(나고야 등)가 '아직 안 실음' 으로 보이지 않게."""
+    traded = [r for r in rows if r[0] in old and r[5]]
+    if not traded:
+        return None
+    return sum(1 for r in traded if old[r[0]] == (r[4], r[5])) / len(traded), len(traded)
+
+
+def validate(rows: list[list], prev: dict | None, *, base_n: int | None = None,
+             accept_size: bool = False) -> tuple[bool, str, str]:
     """굽기 전 검사 — (통과, 사유, 갈래). 직전 세션과 값이 거의 같으면 원천이 아직 그날을
-    안 실은 것(또는 달력에 없는 휴장)이다 — 같은 값을 두 날로 세면 그 주가 통째로 틀린다."""
+    안 실은 것(또는 달력에 없는 휴장)이다 — 같은 값을 두 날로 세면 그 주가 통째로 틀린다.
+
+    - 거래소별로도 잰다 — 한 거래소만 늦게 갱신되면(대만 TPEX 처럼 종목의 절반 미만) 시장 전체
+      비율은 90% 아래라 통과하고, 그 거래소 종목들의 전날 등락이 오늘 날짜로 구워진다.
+    - 등락 0 · 거래대금 0 이 절반 넘으면 원천이 다음 세션 전에 값을 초기화한 것이다.
+    - 종목 수는 최근 저장분 **중앙값**(`base_n`) 대비 — 직전 한 날과만 대면 그날이 비정상으로
+      컸을 때 그 뒤가 전부 막힌다. 그래도 원천 필터가 정당하게 바뀌면 영영 막히므로
+      `accept_size`(다른 세션들도 같은 크기로 막혔다)면 이 검사만 건너뛴다(#171)."""
     n = len(rows)
     if n < MIN_ROWS:
         return False, f"종목이 {n}개뿐 — 원천 응답이 잘린 것으로 보임", "small"
     good = sum(1 for r in rows if r[4] is not None and r[5] is not None)
     if good < 0.9 * n:
         return False, f"등락·거래대금이 빈 종목이 많음({n - good}/{n})", "partial"
+    zero = sum(1 for r in rows if r[4] == 0 and not r[5])
+    if zero >= RESET_SHARE * n:
+        return (False, f"등락 0·거래대금 0 인 종목이 {zero}/{n} — 원천이 다음 세션 전에 값을 "
+                "초기화한 것으로 보임", "reset")
+    base = base_n
+    if base is None and prev and isinstance(prev.get("rows"), list):
+        base = len(prev["rows"])
+    if base and good < SIZE_FLOOR * base and not accept_size:
+        return False, f"종목이 {good}개 — 최근 저장분 {base}개의 70% 미만", "small"
     if prev and isinstance(prev.get("rows"), list):
-        pn = len(prev["rows"])
-        if pn and n < 0.7 * pn:
-            return False, f"종목이 {n}개 — 직전 세션 {pn}개의 70% 미만", "small"
         old = {r[0]: (r[4], r[5]) for r in prev["rows"]}
-        common = [r for r in rows if r[0] in old]
-        if len(common) >= 100:
-            same = sum(1 for r in common if old[r[0]] == (r[4], r[5])) / len(common)
-            if same >= 0.9:
-                return (False, f"직전 세션({prev.get('date')})과 값이 같음({same:.0%}) — 원천이 "
-                        "아직 이 세션 값을 싣지 않았거나 달력에 없는 휴장", "stale")
+        tot = _same_share(rows, old)
+        if tot and tot[1] >= STALE_MIN_COMMON and tot[0] >= STALE_SAME:
+            return (False, f"직전 세션({prev.get('date')})과 값이 같음({tot[0]:.0%}) — 원천이 "
+                    "아직 이 세션 값을 싣지 않았거나 달력에 없는 휴장", "stale")
+        by_ex: dict[str, list] = {}
+        for r in rows:
+            by_ex.setdefault(str(r[0]).split(":")[0], []).append(r)
+        if len(by_ex) > 1:
+            for ex, rs in sorted(by_ex.items()):
+                sh = _same_share(rs, old)
+                if sh and sh[1] >= STALE_MIN_EXCH and sh[0] >= STALE_SAME:
+                    return (False, f"{ex} 종목 값이 직전 세션({prev.get('date')})과 같음({sh[0]:.0%}"
+                            f" · {sh[1]}종목) — 그 거래소를 원천이 아직 안 실음", "stale")
     return True, "", ""
+
+
+def _base_rows(market: str, d: str, k: int = 5) -> int | None:
+    """최근 저장분(최대 k 세션)의 종목 수 중앙값 — 크기 검사의 기준."""
+    counts = sorted(int(a.get("rows") or 0) for a in
+                    (load_agg(market, x) for x in [x for x in stored_dates(market) if x < d][-k:]) if a)
+    counts = [c for c in counts if c > 0]
+    return counts[len(counts) // 2] if counts else None
+
+
+def _note_small(ms: dict, d: str, n: int) -> None:
+    seen = ms.setdefault("small_seen", {})
+    seen[d] = n
+    for x in sorted(seen)[:-5]:
+        seen.pop(x, None)
+
+
+def _accepted_size(market: str, ms: dict, d: str, rows: list) -> bool:
+    """다른 세션 `SIZE_ACCEPT_RUNS` 개가 같은 크기(±2%)로 'small' 에 막혔으면 이 크기를 새 기준으로
+    받는다 — 원천 필터가 정당하게 바뀐 경우 영영 막히지 않게. 받을 때 경고를 남긴다."""
+    n = len(rows)
+    same = [x for x, c in (ms.get("small_seen") or {}).items()
+            if x != d and abs(int(c) - n) <= SIZE_TOL * max(int(c), 1)]
+    if len(same) >= SIZE_ACCEPT_RUNS:
+        log.warning("world_sectors: %s %s — 앞선 세션 %s 도 같은 크기(%d종목)로 막혔다 — 원천 종목 "
+                    "수가 바뀐 것으로 보고 새 기준으로 받는다", market, d, ", ".join(sorted(same)), n)
+        return True
+    return False
 
 
 def save_snapshot(market: str, d: str, rows: list[list], labels: dict, meta: dict,
@@ -551,6 +651,47 @@ def _scanner():
     return tv_scanner
 
 
+# 놓친 세션의 사유 — 창 내내 이것만 났으면 '휴장 추정'(원천 값이 직전 세션과 같았다 = 달력에
+# 없는 휴장이거나 원천이 그 세션을 끝내 안 실음 — 우리가 고칠 게 없다, #260). 그 밖의 갈래
+# (403·형식·일부만 받음·예외)로 놓쳤으면 우리가 고칠 실패다 — 감사가 ❌ 로 센다.
+HOLIDAY_KINDS = ("stale",)
+KEEP_MISSES = 60
+
+
+def _record_miss(market: str, ms: dict, d: str) -> None:
+    """창을 놓친 순간 — 그 창에서 마지막으로 난 실패(갈래·사유·횟수)를 날짜별로 남긴다.
+
+    `kind="missed"` 로 덮기 **전에** 남겨야 한다 — 덮고 나면 403 이 창 내내 이어진 것과
+    원천 값이 직전 세션과 같았던 것(휴장)이 같은 '수집 못 함' 이 된다(#82·#165)."""
+    tried = ms.get("date") == d and ms.get("kind") not in (None, "ok", "missed")
+    if tried:
+        info = {"kind": ms.get("kind"), "reason": ms.get("reason") or "", "n": int(ms.get("n") or 0)}
+    elif any(x < d for x in stored_dates(market)):
+        # 받은 적이 있는 시장인데 이 창엔 한 번도 안 물었다 — 봇이 그 창 내내 멈춰 있었다
+        info = {"kind": "not_tried", "reason": "받을 창 동안 한 번도 묻지 않았다(봇이 멈춰 있었을 수 있다)",
+                "n": 0}
+    else:
+        info = {"kind": "before_start", "reason": "수집을 시작하기 전 세션", "n": 0}
+    misses = ms.setdefault("misses", {})
+    misses[d] = info
+    for k in sorted(misses)[:-KEEP_MISSES]:
+        misses.pop(k, None)
+
+
+def miss_info(state: dict, market: str, d: str) -> dict | None:
+    return (((state.get("markets") or {}).get(market) or {}).get("misses") or {}).get(d)
+
+
+def miss_is_holiday(info: dict | None) -> bool:
+    return bool(info) and info.get("kind") in HOLIDAY_KINDS
+
+
+def miss_is_ours(info: dict | None) -> bool:
+    """놓친 사유가 우리가 고칠 실패인가 — 휴장 추정·수집 시작 전이 아니면 그렇다(기록이 없으면
+    판정하지 않는다)."""
+    return bool(info) and info.get("kind") not in (*HOLIDAY_KINDS, "before_start")
+
+
 def _collect(market: str, now: datetime, st: dict, res: dict) -> None:
     d = due_session(market, now)
     ms = st.setdefault("markets", {}).setdefault(market, {})
@@ -562,35 +703,46 @@ def _collect(market: str, now: datetime, st: dict, res: dict) -> None:
         return
     # 창을 놓쳤는지를 백오프보다 **먼저** 본다 — 백오프 대기 중에 다음 세션이 열리면 그 세션은
     # 더는 받을 수 없는데, 대기부터 보면 '실패 중' 으로 남아 다음 시도 시각을 계속 약속한다.
-    no = next_open(market, d)
-    if no and now.astimezone(timezone.utc) >= no:
+    end = window_end(market, d)
+    if end and now.astimezone(timezone.utc) >= end:
         if ms.get("missed") != d:
-            log.warning("world_sectors: %s %s 를 받을 창을 놓쳤다 — 다음 세션이 이미 열렸다",
-                        market, d)
+            _record_miss(market, ms, d)
+            log.warning("world_sectors: %s %s 를 받을 창을 놓쳤다(%s)", market, d,
+                        ms["misses"][d]["kind"])
         ms.update({"missed": d, "date": d, "kind": "missed", "next_try": None,
-                   "reason": f"{d} 를 받을 창을 놓쳤다(다음 세션이 이미 열림 — 원천은 '지금' 값만 준다)"})
+                   "reason": f"{d} 를 받을 창을 놓쳤다(다음 세션 장전 거래가 시작됨 — 원천은 "
+                             "'지금' 값만 준다)"})
         return
     nt = _parse(ms.get("next_try"))
     if ms.get("date") == d and nt and now < nt:
         return
     n = (int(ms.get("n") or 0) if ms.get("date") == d else 0) + 1
     tv = _scanner()
+    # 원천 호출부터 저장까지 — `ScanError` 가 아닌 예외(디스크 가득 참·파서 결함)는 `tick` 이 받아
+    # **같은 실패 경로**(날짜·횟수·백오프)로 보낸다. 날짜를 안 적으면 상태 줄이 '대기' 로 남고
+    # 백오프도 안 걸려 15분마다 전 종목을 다시 받는다(독립 리뷰 실측: 6주기 · 6콜 · ⏳).
     try:
         got = tv.scan(market)
+        rows = [r for r in (normalize(x) for x in got["rows"]) if r]
+        prev_d = next((x for x in reversed(stored_dates(market)) if x < d), None)
+        prev = load_snapshot(market, prev_d) if prev_d else None
+        base = _base_rows(market, d)
+        ok, why, kind = validate(rows, prev, base_n=base)
+        if not ok and kind == "small" and _accepted_size(market, ms, d, rows):
+            ok, why, kind = validate(rows, prev, base_n=base, accept_size=True)
+        if not ok and kind == "small":
+            _note_small(ms, d, len(rows))
+        if ok:
+            meta = {"total": got.get("total"), "pages": got.get("pages"),
+                    "dropped": got.get("dropped") or [], "bad_rows": got.get("bad_rows") or 0,
+                    "dup_rows": got.get("dup_rows") or 0}
+            save_snapshot(market, d, rows, labels_of(got["rows"]), meta, now)
     except tv.ScanError as exc:
-        _fail_market(market, ms, d, n, now, exc.reason, exc.kind)
-        res["failed"].append(market)
-        return
-    rows = [r for r in (normalize(x) for x in got["rows"]) if r]
-    prev_d = next((x for x in reversed(stored_dates(market)) if x < d), None)
-    ok, why, kind = validate(rows, load_snapshot(market, prev_d) if prev_d else None)
+        ok, why, kind = False, exc.reason, exc.kind
     if not ok:
         _fail_market(market, ms, d, n, now, why, kind)
         res["failed"].append(market)
         return
-    meta = {"total": got.get("total"), "pages": got.get("pages"),
-            "dropped": got.get("dropped") or []}
-    save_snapshot(market, d, rows, labels_of(got["rows"]), meta, now)
     ms.update({"date": d, "n": 0, "kind": "ok", "reason": "", "next_try": None,
                "last_ok": _iso(now), "rows": len(rows), "dropped": meta["dropped"]})
     res["stored"].append(f"{market}:{d}")
@@ -615,10 +767,17 @@ def tick(now: datetime | None = None) -> dict:
         try:
             _collect(m, now, st, res)
         except Exception as exc:                               # noqa: BLE001
+            # 원천 호출·저장 중 예외(`ScanError` 밖) — 받을 세션을 알면 같은 실패 경로로(백오프·날짜)
             log.exception("world_sectors: %s 수집 중 예외", m)
             ms = st.setdefault("markets", {}).setdefault(m, {})
-            ms.update({"kind": "error", "reason": f"수집 중 예외({type(exc).__name__}: {str(exc)[:120]})",
-                       "next_try": _iso(now + timedelta(minutes=RETRY_MIN[0]))})
+            why = f"수집 중 예외({type(exc).__name__}: {str(exc)[:120]})"
+            d = ms.get("due")
+            if d:
+                n = (int(ms.get("n") or 0) if ms.get("date") == d else 0) + 1
+                _fail_market(m, ms, d, n, now, why, "error")
+            else:
+                ms.update({"kind": "error", "reason": why,
+                           "next_try": _iso(now + timedelta(minutes=RETRY_MIN[0]))})
             res["failed"].append(m)
     if res["stored"]:
         st["last_ok"] = _iso(now)
@@ -636,8 +795,11 @@ def market_verdict(market: str, state: dict, now: datetime | None = None) -> tup
     """한 나라 수집 상태 — (갈래, 사람이 읽는 한 줄). 화면 상태 줄·`--why`·감사가 같이 쓴다(#35).
 
     ok = 받아야 할 세션을 받음 · wait = 받을 때가 됐고 다음 주기에 받는다 · stale = 원천이 아직
-    그 세션 값을 싣지 않음(우리가 고칠 게 없다, #260) · fail = 수집 실패(사유) · missed = 그
-    세션을 받을 창을 놓침(다시 받을 수 없다) · none = 아직 받을 세션이 없음."""
+    그 세션 값을 싣지 않음(우리가 고칠 게 없다, #260) · fail = 수집 실패(사유) · 창을 놓친 세션은
+    셋으로 가른다 — holiday = 창 내내 원천 값이 직전 세션과 같았다(휴장 추정 ⚠️) · missed_fail =
+    창 동안 우리가 고칠 실패(403·형식·일부만 받음·예외·봇 멈춤)로 놓침(❌ — '⚠️ 놓침' 으로 접으면
+    매일 깨져도 결산에 안 오른다: 미국은 겨울에 08:00 감사가 보는 세션이 늘 이미 놓친 직전
+    세션이다) · missed = 수집 시작 전 세션 등 · none = 아직 받을 세션이 없음."""
     now = _now(now)
     ms = (state.get("markets") or {}).get(market) or {}
     have = stored_dates(market)
@@ -649,7 +811,18 @@ def market_verdict(market: str, state: dict, now: datetime | None = None) -> tup
     if last == due:
         return "ok", f"{due} 받음"
     if ms.get("missed") == due:
-        return "missed", f"{due} 를 받을 창을 놓쳤다(원천은 '지금' 값만 준다 — 다시 받을 수 없다)" + tail
+        info = miss_info(state, market, due) or {}
+        if miss_is_holiday(info):
+            return "holiday", (f"{due} 휴장 추정 — 받을 창 내내 원천 값이 직전 세션과 같았다(달력에 없는 "
+                               f"휴장이거나 원천이 그 세션을 끝내 싣지 않음 · {info.get('n') or 0}회 확인)"
+                               + tail)
+        if miss_is_ours(info):
+            n = info.get("n") or 0
+            tried = f"창 동안 {n}회 실패 — 마지막 사유: {info.get('reason')}" if n else info.get("reason")
+            return "missed_fail", (f"{due} 를 받을 창을 놓쳤다 — {tried}(원천은 '지금' 값만 준다 — "
+                                   "다시 받을 수 없다)" + tail)
+        why_ = f" — {info['reason']}" if info.get("reason") else ""
+        return "missed", f"{due} 를 받을 창을 놓쳤다{why_}(원천은 '지금' 값만 준다 — 다시 받을 수 없다)" + tail
     if ms.get("date") == due and ms.get("kind") not in (None, "ok"):
         nt = _parse(ms.get("next_try"))
         when = f" · 다음 시도 {nt.strftime('%m-%d %H:%M')}" if nt else ""
@@ -659,11 +832,14 @@ def market_verdict(market: str, state: dict, now: datetime | None = None) -> tup
 
 
 # ── 섹터혼합(나라 사이 업종 비교) ─────────────────────────────────────────────
-def market_day_status(market: str, d: str, now: datetime) -> str:
-    """그 시장의 `d` — ok(받음) · closed(휴장) · pending(아직이거나 받는 중) · missing(못 받음).
+def market_day_status(market: str, d: str, now: datetime, state: dict | None = None) -> str:
+    """그 시장의 `d` — ok(받음) · closed(휴장) · pending(아직이거나 받는 중) · holiday(휴장 추정)
+    · missing(못 받음).
 
-    '못 받음' 은 **받을 창이 지났을 때만**이다 — 다음 세션이 열리기 전엔 실패해도 다시 묻고
-    있으므로 'pending' 이다(창이 남았는데 '수집 못 함' 이라 적으면 거짓 단정이다, #165)."""
+    '못 받음' 은 **받을 창이 지났을 때만**이다 — 창이 남았으면 실패해도 다시 묻고 있으므로
+    'pending' 이다(창이 남았는데 '수집 못 함' 이라 적으면 거짓 단정이다, #165). 창 내내 원천
+    값이 직전 세션과 같았으면 '휴장 추정' — 달력에 없는 휴장(태풍 휴장 · 달력이 끝난 해의
+    휴일)을 '수집 못 함' 이라 적으면 그것도 거짓 단정이다."""
     if agg_path(market, d).exists():
         return "ok"
     if not session_times(market, d):
@@ -671,10 +847,11 @@ def market_day_status(market: str, d: str, now: datetime) -> str:
     due = due_session(market, now)
     if due is None or due < d:
         return "pending"
-    no = next_open(market, d)
-    if no is not None and _now(now).astimezone(timezone.utc) < no:
+    end = window_end(market, d)
+    if end is not None and _now(now).astimezone(timezone.utc) < end:
         return "pending"
-    return "missing"
+    info = miss_info(load_state() if state is None else state, market, d)
+    return "holiday" if miss_is_holiday(info) else "missing"
 
 
 def mix_record(d: str, now: datetime | None = None) -> dict:
@@ -683,6 +860,7 @@ def mix_record(d: str, now: datetime | None = None) -> dict:
     주간 = d 를 끝으로 한 7일(달력) 안의 그 나라 세션들 — 나라마다 휴장이 달라 N 이 다를 수
     있다(캡처의 한국 'n/3' 처럼). 업종이 '있다' = 그 주에 받은 마지막 세션에 `MIN_N`종목 이상."""
     now = _now(now)
+    state = load_state()
     start = (_date.fromisoformat(d) - timedelta(days=6)).isoformat()
     markets = {}
     labels: dict[str, str] = {}
@@ -690,7 +868,7 @@ def mix_record(d: str, now: datetime | None = None) -> dict:
     for m in MARKETS:
         sess = sessions_in(m, start, d)
         aggs = aggs_for(m, sess)
-        st_day = market_day_status(m, d, now)
+        st_day = market_day_status(m, d, now, state)
         markets[m] = {"day": st_day, "sessions": len(sess), "got": len(aggs),
                       "last": max(aggs) if aggs else None}
         if not aggs:
@@ -725,9 +903,9 @@ def mix_record(d: str, now: datetime | None = None) -> dict:
         rows.append(row)
     # 굳히는 조건 — 나라마다 그날을 받았거나 · 휴장이거나 · 받을 창이 지났다(더 기다려도
     # 안 바뀐다). 창이 남은 실패는 기다린다.
-    final = all(s["day"] in ("ok", "closed", "missing") for s in markets.values())
+    final = all(s["day"] in ("ok", "closed", "holiday", "missing") for s in markets.values())
     return {"date": d, "markets": markets, "rows": rows, "final": final,
-            "computed_at": _iso(now)}
+            "computed_at": _iso(now), "ver": calc_sig()}
 
 
 def mix_dates(now: datetime | None = None, limit: int = 10) -> list[str]:
@@ -738,9 +916,33 @@ def mix_dates(now: datetime | None = None, limit: int = 10) -> list[str]:
     return sorted(seen, reverse=True)[:limit]
 
 
+_CALC_SIG: dict = {}
+
+
+def calc_sig() -> str:
+    """판정·집계를 만드는 이 파일의 소스 지문 — 굳힌 섹터혼합 기록에 찍는다. 규칙을 고치면
+    지문이 바뀌어 업종 합계가 남아 있는 날은 다시 계산된다(굳힌 기록이 수정을 가리지 않게, #18·#21b).
+    손으로 올리는 버전은 이 레포에서 여섯 번 졌다(#119)."""
+    path = Path(__file__)
+    try:
+        mt = path.stat().st_mtime_ns
+    except OSError:
+        return "?"
+    if _CALC_SIG.get("mt") != mt:
+        import hashlib
+        _CALC_SIG.update(mt=mt, sig=hashlib.sha1(path.read_bytes()).hexdigest()[:12])
+    return _CALC_SIG["sig"]
+
+
 def load_mix_record(d: str) -> dict | None:
+    """굳힌 기록 — 지문이 다르고 그날 업종 합계가 아직 남아 있으면 None(다시 계산할 수 있다).
+    합계가 보관 기간(`KEEP_AGG_DAYS`)을 넘겨 지워진 날은 옛 기록이 유일한 재료라 그대로 쓴다."""
     r = _read_json(_REC_DIR / f"{d}.json")
-    return r if isinstance(r, dict) and r.get("date") == d else None
+    if not (isinstance(r, dict) and r.get("date") == d):
+        return None
+    if r.get("ver") != calc_sig() and any(agg_path(m, d).exists() for m in MARKETS):
+        return None
+    return r
 
 
 def finalize_records(now: datetime | None = None) -> list[str]:
@@ -758,7 +960,7 @@ def finalize_records(now: datetime | None = None) -> list[str]:
 
 
 def mix_records(now: datetime | None = None, limit: int = 10) -> list[dict]:
-    """화면용 — 굳힌 기록은 그대로, 아직 안 굳은 날은 지금 값으로 계산."""
+    """화면용 — 굳힌 기록은 그대로, 아직 안 굳은 날(또는 규칙이 바뀐 날)은 지금 값으로 계산."""
     now = _now(now)
     out = []
     for d in mix_dates(now, limit):
@@ -776,7 +978,8 @@ def map_week(market: str, monday: _date, now: datetime | None = None,
     # 기준(직전 20거래일)용 집계까지 한 번에 읽는다
     lo = (monday - timedelta(days=45)).isoformat()
     aggs = aggs_for(market, [x for x in all_dates if lo <= x <= days[-1]])
-    cols = [{"date": x, "status": market_day_status(market, x, now)} for x in days]
+    state = load_state()
+    cols = [{"date": x, "status": market_day_status(market, x, now, state)} for x in days]
     ok_days = [x for x in days if x in aggs]
     bases = {x: base_aggs(market, x, aggs) for x in ok_days}
     out = {"market": market, "monday": monday.isoformat(), "cols": cols, "groups": {}}
@@ -817,7 +1020,8 @@ def code_of(sym: str) -> str:
 def week_stocks(market: str, monday: _date) -> dict:
     """그 주에 받은 날들의 종목별 등락·거래대금 — {days, ok, stocks{code: …}, mval[]}.
 
-    `stocks[code]` = {sym, name, sector, industry, cap(마지막 날), chg[날], val[날]}."""
+    `stocks[code]` = {sym, name, sector, industry, cap(마지막 날), chg[날], val[날], caps[날]} —
+    `caps` 는 날짜별 시총(규모 구간 순위 = 첫 거래일 값 · 그날 가중 = 그날 값)."""
     days = [(monday + timedelta(days=i)).isoformat() for i in range(5)]
     snaps = {x: load_snapshot(market, x) for x in days}
     stocks: dict[str, dict] = {}
@@ -836,10 +1040,11 @@ def week_stocks(market: str, monday: _date) -> dict:
             it = stocks.get(c)
             if it is None:
                 it = stocks[c] = {"sym": sym, "name": name, "sector": sec, "industry": ind,
-                                  "cap": None, "fx": fx, "chg": [None] * 5, "val": [None] * 5}
-            it["chg"][i], it["val"][i] = chg, val
+                                  "cap": None, "fx": fx, "chg": [None] * 5, "val": [None] * 5,
+                                  "caps": [None] * 5}
+            it["chg"][i], it["val"][i], it["caps"][i] = chg, val, cap
             if cap:
-                it["cap"] = cap
+                it["cap"] = cap          # 화면의 '시총' = 그 주 마지막으로 받은 날 값
             it["name"], it["sector"], it["industry"] = name, sec, ind
         mval.append(tot)
     labels = {"sec": {}, "ind": {}}
@@ -996,7 +1201,8 @@ def _src_sig() -> str:
 
 
 VERDICT_MARK = {"ok": "✅", "wait": "⏳", "stale": "⚠️", "fail": "❌", "missed": "⚠️",
-                "none": "❓"}
+                "holiday": "⚠️", "missed_fail": "❌", "none": "❓"}
+BAD_VERDICTS = ("fail", "missed_fail")    # 우리가 고칠 실패 — `--why` rc·감사 ❌
 
 
 def _fmt_ret(v) -> str:
@@ -1018,7 +1224,7 @@ def why(now: datetime | None = None) -> int:
         last = have[-1] if have else None
         kind, line = market_verdict(m, st, now)
         mark = VERDICT_MARK.get(kind, "❓")
-        bad += kind == "fail"
+        bad += kind in BAD_VERDICTS
         print(f"② {m}: 받아야 할 세션 {due or '—'} · 마지막으로 받은 세션 {last or '—'} "
               f"(보관 {len(have)}일) {mark} {line}")
         if ms.get("reason"):
@@ -1044,14 +1250,17 @@ def why(now: datetime | None = None) -> int:
                 h = eh.load(t) or {}
                 got.append(f"{t.split('.')[0]}:{len(h.get('rows') or [])}"
                            + ("✗" if h.get("error") and h.get("tried_day") != h.get("fetched_day") else ""))
-            print(f"③ {m} ETF 보유 목록: {' '.join(got)}")
+            hk, hline = eh.holdings_verdict(m, now)
+            bad += hk == "fail"
+            print(f"③ {m} ETF 보유 목록 {VERDICT_MARK.get(hk, '❓')} {hline}: {' '.join(got)}")
             for t in eh.etfs(m):
                 h = eh.load(t) or {}
                 if h.get("error"):
                     print(f"   {t}: {h['error']}")
     except Exception as exc:                                   # noqa: BLE001
         print(f"③ ETF 보유 목록: 판정 불가({type(exc).__name__}: {exc})")
-    print("판정: " + ("✅ 다섯 나라 다 최신" if not bad else f"❌ {bad}개 나라 수집 실패 — 사유는 위"))
+    print("판정: " + ("✅ 다섯 나라 다 최신 · 보유 목록 이상 없음" if not bad
+                      else f"❌ {bad}건 — 나라 수집 실패 또는 보유 목록 없음(사유는 위)"))
     return 0 if not bad else 1
 
 
@@ -1075,7 +1284,16 @@ def probe(market: str | None = None) -> int:
                  and sum(1 for r in rows if r.get(c) not in (None, "")) < 0.5 * len(rows)]
         print(f"✅ {m}: 원천 totalCount {got['total']} · 받은 행 {len(rows):,} · {got['pages']}쪽 · "
               f"섹터 {len(agg['sec'])} · 업종 {len(agg['ind'])} · 시장 등락 "
-              f"{_fmt_ret(ret(agg['mkt']))}")
+              f"{_fmt_ret(ret(agg['mkt']))}"
+              + (f" · 열 수가 안 맞아 버린 행 {got.get('bad_rows')}" if got.get("bad_rows") else "")
+              + (f" · 겹친 행 {got.get('dup_rows')}" if got.get("dup_rows") else ""))
+        # 시총 통화가 거래 통화와 다른 종목(ADR 등) — 등락 가중에서 빠진다. 시총÷종가(= 내재 주식
+        # 수)를 같이 찍어, 원천이 그 시총을 어느 통화로 주는지 사람이 가늠하게 한다(재지 못했다, #165)
+        fxr = [r for r in norm if r[9]]
+        print(f"   시총 통화가 거래 통화와 다른 종목 {len(fxr):,}(등락 가중 제외)"
+              + ("" if not fxr else " · 예: " + ", ".join(
+                  f"{r[0]} 시총 {r[6]:,.0f} ÷ 종가 {r[8]:,.2f} = {r[6] / r[8]:,.0f}주"
+                  if r[6] and r[8] else f"{r[0]} 시총·종가 없음" for r in fxr[:3])))
         if got["dropped"]:
             print(f"   원천이 몰라 뺀 열: {', '.join(got['dropped'])}")
         if empty:

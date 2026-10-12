@@ -30,8 +30,8 @@ def _at(y, mo, d, h, mi=0):
 
 
 @pytest.fixture
-def store(tmp_path):
-    with fx.patched(tmp_path) as fake:
+def store(tmp_path, monkeypatch):
+    with fx.patched(tmp_path, monkeypatch) as fake:
         yield fake
 
 
@@ -305,14 +305,19 @@ def test_failure_ladder_and_missed_window(store):
     assert ws.load_state()["markets"]["TW"]["n"] == 2
     kind, _ = ws.market_verdict("TW", ws.load_state(), t + timedelta(minutes=31))
     assert kind == "fail"
-    tick(_at(2026, 10, 13, 9, 55))                     # 대만 개장 09:00 현지 = 10:00 KST — 아직 창 안
+    # 대만 개장 09:00 현지 = 10:00 KST → 창 끝 = 개장 90분 전 08:30 KST(단일가·시험매매 전)
+    tick(_at(2026, 10, 13, 8, 25))
     assert ws.load_state()["markets"]["TW"]["n"] == 3 and not ws.load_state()["markets"]["TW"].get("missed")
     n = store.calls.count("TW")
-    tick(_at(2026, 10, 13, 10, 5))
+    tick(_at(2026, 10, 13, 8, 35))
     ms = ws.load_state()["markets"]["TW"]
     assert ms.get("missed") == "2026-10-12" and store.calls.count("TW") == n, \
-        "다음 세션이 열린 뒤엔 그 세션을 묻지 않는다(지금 값은 다음 세션 장중 값이다)"
-    assert ws.market_verdict("TW", ws.load_state(), _at(2026, 10, 13, 10, 5))[0] == "missed"
+        "장전 거래가 시작되면 그 세션을 묻지 않는다(지금 값은 다음 세션 값일 수 있다)"
+    kind, line = ws.market_verdict("TW", ws.load_state(), _at(2026, 10, 13, 8, 35))
+    assert kind == "missed_fail" and ws.VERDICT_MARK[kind] == "❌", \
+        "우리 실패(403)로 창을 놓쳤으면 ⚠️ 가 아니라 ❌ — 매일 깨져도 결산에 안 오르면 안 된다"
+    assert "3회 실패" in line and "HTTP 403" in line, line
+    assert ms["misses"]["2026-10-12"] == {"kind": "http", "reason": "원천이 HTTP 403", "n": 3}
 
 
 def test_unexpected_exception_in_one_market_does_not_stop_the_others(store, monkeypatch):
@@ -342,8 +347,9 @@ def test_mix_record_covers_industries_in_two_or_more_markets_and_finalizes(store
     assert row["cells"]["JP"]["day"] is None and row["cells"]["JP"]["week"] is not None
     c = row["cells"]["KR"]
     assert c["N"] == 4 and 0 <= c["wins"] <= 4 and c["n"] == fx.N_STOCKS // 8
-    done = ws.finalize_records(now)
-    assert ws.load_mix_record("2026-10-12") or "2026-10-12" not in done
+    # 받는 주기(`tick`)가 이미 굳혔다 — 다시 불러도 같은 날을 또 쓰지 않는다(멱등)
+    assert ws.load_mix_record("2026-10-12")["final"]
+    assert "2026-10-12" not in ws.finalize_records(now)
 
 
 def test_mix_record_waits_for_the_us_session(store):
@@ -423,7 +429,6 @@ def test_mix_page_shows_verdicts_wins_and_hides_quiet_rows(pages):
     if quiet:
         assert "js-ws-q" in h and "신호 약한 업종" in h
     assert "휴장" in h, "일본 10-12 는 휴장으로 적혀야 한다"
-    assert "기준 ±1%p" not in h or True
     assert "주간 ±1%p · 하루 ±0.5%p" in h
 
 
@@ -465,12 +470,18 @@ def test_stocks_page_embeds_escaped_etf_tables(pages):
     kr = pages["stocks_payload"]["KR"]["etfs"][0]["tables"][0]
     miss = next(r for r in kr["rows"] if r["c"] == "999999")
     assert miss["cap"] is None and miss["nm"] == "수집 안 된 종목", "못 찾은 보유 종목도 이름·비중은 남긴다"
-    assert "이번 주" in h and "지난주" not in h or "주 —" in h
+    assert pages["stocks_payload"]["KR"]["weeks"] == ["10/12(월) 주 — 이번 주", "10/5(월) 주 — 지난주"]
 
 
 def test_pages_escape_names(pages):
-    assert "<회사>" not in pages["stocks"].split("<script")[0]
-    assert "&lt;회사&gt;" not in pages["map"] or True
+    """이름은 HTML 바깥(본문)에 날것으로 나오지 않는다 — 종목 이름은 JSON(스크립트 태그·별도
+    파일)에만 실리고 JS 가 escape 해서 그린다."""
+    for key in ("stocks", "map", "mix"):
+        outside = re.sub(r"<script.*?</script>", "", pages[key], flags=re.S)
+        leaked = "<회사>" in outside             # 큰 페이지 `not in` 단언은 실패 시 pytest diff 가 멈춘다
+        assert not leaked, key
+    assert any("<회사>" in r[1] for r in pages["jsons"]["KR"]["weeks"][0]["rows"]), \
+        "픽스처 이름에 '<' 가 실려야 이 검사가 무언가를 잰다"
 
 
 def test_regenerate_writes_only_when_content_changes(tmp_path, monkeypatch):
@@ -623,7 +634,7 @@ def test_audit_lines_use_the_screen_verdict(store):
     store.now = _at(2026, 10, 12, 18, 40)
     ws.tick(store.now)
     lines = _world_sectors_lines(now=store.now)
-    assert len(lines) == len(ws.MARKETS)
+    assert len(lines) == len(ws.MARKETS) + 2, "나라별 수집 + 한·미 섹터 ETF 보유 목록"
     assert lines[0].startswith("   ✅ KR") and "2026-10-12 받음" in lines[0]
     page = wp.status_lines(ws.load_state(), store.now)
     assert page[0].endswith("2026-10-12 받음"), "감사와 화면이 같은 줄을 말한다"
@@ -824,3 +835,606 @@ def test_new_data_or_holdings_change_forces_a_redraw(store, monkeypatch, tick_re
     assert ws.tick_and_render(t0 + timedelta(minutes=15))["regenerated"] is False
     assert ws.tick_and_render(t0 + timedelta(minutes=30))["regenerated"] is True
     assert len(calls) == 2
+
+
+# ── 독립 리뷰 반영(2026-10-12) — High 4 · Medium · Low · 살아남은 뮤테이션 ──────────────
+def _cols():
+    return [*tv.CORE, *tv.OPTIONAL]
+
+
+def test_scan_continues_after_a_short_page_when_total_says_more(monkeypatch):
+    """원천이 쪽을 줄여 줘도(요청 2000 · 응답 1000) '마지막 쪽' 으로 읽지 않고 받은 만큼 뒤에서
+    이어 묻는다 — 건너뛰면 1000~2000 이 빠진다."""
+    monkeypatch.setattr(tv, "PAGE", 2000)
+    c = _cols()
+    s = _Sess([_Resp(200, _page(c, 1000, 0, 3000)), _Resp(200, _page(c, 1000, 1000, 3000)),
+               _Resp(200, _page(c, 1000, 2000, 3000))])
+    got = tv.scan("KR", session=s, sleep=lambda x: None)
+    assert len(got["rows"]) == 3000 and got["pages"] == 3
+    assert [b["range"][0] for b in s.bodies] == [0, 1000, 2000]
+
+
+def test_scan_partial_answer_fails_instead_of_baking(monkeypatch):
+    monkeypatch.setattr(tv, "PAGE", 2000)
+    c = _cols()
+    s = _Sess([_Resp(200, _page(c, 1000, 0, 6000)), _Resp(200, {"totalCount": 6000, "data": []})])
+    with pytest.raises(tv.ScanError) as ei:
+        tv.scan("US", session=s, sleep=lambda x: None)
+    assert ei.value.kind == "partial" and "6,000 중 1,000행" in ei.value.reason
+
+
+def test_scan_stops_exactly_at_total(monkeypatch):
+    """두 쪽이 꽉 차도 totalCount 를 다 받았으면 세 번째를 묻지 않는다."""
+    monkeypatch.setattr(tv, "PAGE", 3)
+    c = _cols()
+    s = _Sess([_Resp(200, _page(c, 3, 0, 6)), _Resp(200, _page(c, 3, 3, 6))])
+    got = tv.scan("KR", session=s, sleep=lambda x: None)
+    assert len(s.bodies) == 2 and len(got["rows"]) == 6
+
+
+def test_scan_counts_dropped_and_duplicate_rows(monkeypatch):
+    monkeypatch.setattr(tv, "PAGE", 3)
+    c = _cols()
+    p1 = _page(c, 3, 0, 100)
+    p2 = _page(c, 3, 2, 100)                     # 2 가 쪽 경계에서 또 온다(시총 동률)
+    p2["data"].append({"s": "KRX:BAD", "d": ["x"]})
+    p2["totalCount"] = 100
+    s = _Sess([_Resp(200, {"totalCount": 7, "data": p1["data"]}),
+               _Resp(200, {"totalCount": 7, "data": p2["data"]}),
+               _Resp(200, {"totalCount": 7, "data": []})])
+    with pytest.raises(tv.ScanError) as ei:
+        tv.scan("KR", session=s, sleep=lambda x: None)
+    assert "버린 행 1" in ei.value.reason and "겹친 행 1" in ei.value.reason
+    s = _Sess([_Resp(200, {"totalCount": 4, "data": p1["data"]}),
+               _Resp(200, {"totalCount": 4, "data": p2["data"][:2]})])
+    got = tv.scan("KR", session=s, sleep=lambda x: None)
+    assert [r["symbol"] for r in got["rows"]] == ["KRX:000000", "KRX:000001", "KRX:000002",
+                                                    "KRX:000003"]
+    assert got["dup_rows"] == 1
+
+
+def test_exception_while_storing_takes_the_failure_path_with_backoff(store, monkeypatch):
+    """예외만 따로 적으면 날짜가 안 바뀌어 '⏳ 대기' 로 남고 15분마다 전 종목을 다시 받는다."""
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(ws, "save_snapshot", full)
+    t = _at(2026, 10, 12, 18, 40)
+    for mins in (0, 15, 30):
+        store.now = t + timedelta(minutes=mins)
+        ws.tick(store.now)
+    assert store.calls.count("KR") == 2, store.calls       # 0분 · 30분(백오프 30분)
+    ms = ws.load_state()["markets"]["KR"]
+    assert ms["kind"] == "error" and ms["date"] == "2026-10-12" and ms["n"] == 2
+    kind, line = ws.market_verdict("KR", ws.load_state(), t + timedelta(minutes=30))
+    assert kind == "fail" and "OSError" in line
+
+
+def test_exception_before_the_source_call_still_backs_off(store, monkeypatch):
+    real = ws.window_end
+    calls = []
+
+    def boom(m, d):
+        calls.append(m)
+        if m == "KR":
+            raise RuntimeError("달력 고장")
+        return real(m, d)
+    monkeypatch.setattr(ws, "window_end", boom)
+    t = _at(2026, 10, 12, 18, 40)
+    ws.tick(t)
+    ms = ws.load_state()["markets"]["KR"]
+    assert ms["kind"] == "error" and ms["date"] == "2026-10-12" and ms["n"] == 1
+    assert ws.market_verdict("KR", ws.load_state(), t)[0] == "fail"
+
+
+def test_stale_for_the_whole_window_reads_as_a_holiday(store, monkeypatch):
+    """달력에 없는 휴장(대만 태풍 휴장)을 '수집 못 함' 이라 적으면 거짓 단정이다(#165)."""
+    store.now = _at(2026, 10, 8, 18, 0)
+    ws.tick(store.now)
+    assert ws.agg_path("TW", "2026-10-08").exists()
+    same = fx.fake_rows("TW", "2026-10-08")
+    real = tv.scan
+    monkeypatch.setattr(tv, "scan", lambda m, **k: ({"rows": same, "total": fx.N_STOCKS,
+                                                    "dropped": [], "pages": 1}
+                                                   if m == "TW" else real(m, **k)))
+    t = _at(2026, 10, 12, 17, 40)
+    while t <= _at(2026, 10, 13, 8, 40):          # 창 끝 08:30 KST 를 넘긴 주기까지
+        store.now = t
+        ws.tick(t)
+        t += timedelta(minutes=15)
+    st = ws.load_state()
+    kind, line = ws.market_verdict("TW", st, t)
+    assert kind == "holiday" and ws.VERDICT_MARK[kind] == "⚠️" and "휴장 추정" in line, line
+    assert ws.market_day_status("TW", "2026-10-12", t) == "holiday"
+    rec = ws.mix_record("2026-10-12", t)
+    assert rec["markets"]["TW"]["day"] == "holiday"
+    cell = wp._mix_cell("TW", None, "day", rec)
+    assert ">휴장 추정<" in cell
+
+
+def test_a_window_with_no_attempt_after_collecting_is_our_failure(store):
+    store.now = _at(2026, 10, 8, 18, 40)
+    ws.tick(store.now)                       # KR 10-08 받음
+    t = _at(2026, 10, 13, 8, 0)              # 10-12 창(18:30 ~ 10-13 07:30) 내내 봇이 없었다
+    store.now = t
+    ws.tick(t)
+    kind, line = ws.market_verdict("KR", ws.load_state(), t)
+    assert kind == "missed_fail" and "한 번도 묻지 않았다" in line, line
+    assert ws.market_day_status("KR", "2026-10-12", t) == "missing"
+
+
+def test_missing_before_the_first_collection_is_not_an_alarm(store):
+    t = _at(2026, 10, 13, 8, 0)              # 배포 첫 주기 — KR 10-12 창은 이미 지났다
+    store.now = t
+    ws.tick(t)
+    kind, line = ws.market_verdict("KR", ws.load_state(), t)
+    assert kind == "missed" and ws.VERDICT_MARK[kind] == "⚠️" and "수집을 시작하기 전" in line
+
+
+def test_why_counts_a_missed_failure_as_bad(store, capsys):
+    store.fail["KR"] = "원천이 HTTP 403"
+    t = _at(2026, 10, 12, 18, 40)
+    while t < _at(2026, 10, 13, 8, 0):
+        store.now = t
+        ws.tick(t)
+        t += timedelta(minutes=15)
+    assert ws.why(t) == 1
+    assert "❌" in capsys.readouterr().out
+
+
+def test_window_closes_before_pre_market_trading():
+    assert ws.window_end("KR", "2026-10-12") == datetime(2026, 10, 12, 22, 30, tzinfo=timezone.utc)
+    assert ws.window_end("US", "2026-10-12") == datetime(2026, 10, 13, 8, 0, tzinfo=timezone.utc), \
+        "미국은 프리마켓 04:00 ET(= 08:00 UTC 서머타임) 전에 닫는다"
+
+
+def test_fallback_hours_follow_daylight_saving():
+    summer = ws._fallback_times("US", datetime(2027, 7, 6).date())
+    winter = ws._fallback_times("US", datetime(2027, 1, 6).date())
+    assert summer[0].hour == 13 and summer[0].minute == 30 and summer[1].hour == 20
+    assert winter[0].hour == 14 and winter[1].hour == 21
+
+
+def test_one_etf_exception_does_not_stop_the_others(tmp_path, monkeypatch):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    monkeypatch.setattr(eh, "etfs", lambda m: {"XLK": "기술", "XLB": "소재"})
+    calls = []
+
+    def fetch(t, session=None):
+        calls.append(t)
+        if t == "XLK":
+            raise KeyError("xl/workbook.xml")      # 'PK 로 시작하지만 xlsx 가 아닌 zip'
+        return [{"code": "LIN", "name": "Linde", "weight": 15.0}], "x"
+    monkeypatch.setattr(eh, "fetch_us", fetch)
+    t0 = _at(2026, 10, 12, 8, 0)
+    res = eh.refresh("US", t0)
+    assert res == {"ok": ["XLB"], "failed": ["XLK"]}
+    h = eh.load("XLK")
+    assert "KeyError" in h["error"] and h["tries"] == 1
+    eh.refresh("US", t0 + timedelta(minutes=15))
+    assert calls == ["XLK", "XLB"], "백오프 없이 15분마다 다시 받았다"
+
+
+def test_holdings_drop_non_finite_weights():
+    rows = [[f"Co{i}", f"T{i}", "x", "y", 20 - i, "Information Technology", 1, "USD"] for i in range(5)]
+    rows.insert(1, ["Bad", "NAN1", "x", "y", "NaN", "Information Technology", 1, "USD"])   # 글자 'NaN' — float() 가 받는다
+    top, _asof = eh.parse_ssga_xlsx(_ssga_xlsx(rows))
+    assert "NAN1" not in [t["code"] for t in top] and len(top) == 5
+    json.dumps(top, allow_nan=False)
+
+
+def test_holdings_verdict_branches(tmp_path, monkeypatch):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    monkeypatch.setattr(eh, "etfs", lambda m: {"A": "a", "B": "b"})
+    now = _at(2026, 10, 12, 10, 0)
+    assert eh.holdings_verdict("KR", now)[0] == "none"
+    eh._save("A", {"rows": [{"code": "1"}], "fetched_day": "2026-10-12", "tried_day": "2026-10-12"})
+    assert eh.holdings_verdict("KR", now)[0] == "ok"
+    eh._save("B", {"rows": [], "error": "KRX_ID/KRX_PW 미설정", "tried_day": "2026-10-12"})
+    kind, line = eh.holdings_verdict("KR", now)
+    assert kind == "fail" and "KRX_ID" in line and "1/2" in line
+    eh._save("B", {"rows": [{"code": "2"}], "fetched_day": "2026-10-11", "tried_day": "2026-10-12",
+                   "error": "HTTP 503"})
+    assert eh.holdings_verdict("KR", now)[0] == "stale"
+
+
+def test_validate_checks_each_exchange_and_skips_untraded_pairs():
+    def row(ex, i, chg, val):
+        return [f"{ex}:{i}", "n", "S", "I", chg, val, 100.0, None, 1, 0]
+    prev = [row("TWSE", i, 1.0 + i, 10.0) for i in range(250)] + \
+           [row("TPEX", i, 2.0 + i, 20.0) for i in range(100)]
+    cur = [row("TWSE", i, 9.0 + i, 11.0) for i in range(250)] + \
+          [row("TPEX", i, 2.0 + i, 20.0) for i in range(100)]          # TPEX 만 어제 값
+    ok, why, kind = ws.validate(cur, {"date": "d0", "rows": prev})
+    assert kind == "stale" and "TPEX" in why, why
+    quiet_prev = [row("NAG", i, 0.0, 0.0) for i in range(60)] + [row("TSE", i, 1.0, 5.0 + i) for i in range(300)]
+    quiet_cur = [row("NAG", i, 0.0, 0.0) for i in range(60)] + [row("TSE", i, 2.0, 6.0 + i) for i in range(300)]
+    assert ws.validate(quiet_cur, {"date": "d0", "rows": quiet_prev}) == (True, "", ""), \
+        "이틀 다 거래가 없던 종목(0,0)은 '아직 안 실음' 의 증거가 아니다"
+
+
+@pytest.mark.parametrize("same_n, want", [(368, "stale"), (352, "")])
+def test_validate_stale_threshold_is_ninety_percent(same_n, want):
+    prev = [[f"A:{i}", "n", "S", "I", 1.0 + i, 10.0, 100.0, None, 1, 0] for i in range(400)]
+    cur = [r[:4] + ([r[4]] if i < same_n else [r[4] + 0.5]) + r[5:] for i, r in enumerate(prev)]
+    assert ws.validate(cur, {"date": "d0", "rows": prev})[2] == want    # 92% · 88%
+
+
+def test_validate_rejects_a_zero_reset():
+    rows = [[f"A:{i}", "n", "S", "I", 0.0 if i < 250 else 1.0, 0.0 if i < 250 else 5.0, 100.0,
+             None, 1, 0] for i in range(400)]
+    assert ws.validate(rows, None)[2] == "reset"
+
+
+def test_size_check_uses_the_recent_median_and_can_accept_a_new_size():
+    rows = [[f"A:{i}", "n", "S", "I", 1.0 + i, 10.0, 100.0, None, 1, 0] for i in range(400)]
+    assert ws.validate(rows, None, base_n=600)[2] == "small"
+    assert ws.validate(rows, None, base_n=500)[0], "500 의 70% = 350 < 400"
+    assert ws.validate(rows, None, base_n=600, accept_size=True)[0]
+    ms = {"small_seen": {"2026-10-06": 401, "2026-10-07": 399}}
+    assert ws._accepted_size("KR", ms, "2026-10-08", rows)
+    assert not ws._accepted_size("KR", {"small_seen": {"2026-10-06": 401}}, "2026-10-08", rows)
+    assert not ws._accepted_size("KR", {"small_seen": {"2026-10-08": 400, "2026-10-07": 401}},
+                                 "2026-10-08", rows), "같은 세션 재시도는 세지 않는다(다른 세션 하나뿐)"
+
+
+def test_size_check_baseline_is_the_median_of_recent_sessions(store):
+    fx.simulate(store, _at(2026, 10, 5, 0), 4)
+    have = ws.stored_dates("KR")
+    assert ws._base_rows("KR", "2026-10-30") == fx.N_STOCKS and len(have) >= 3
+
+
+def test_week_cell_tie_is_not_a_win():
+    agg = {"mkt": {"w": 1.0, "wr": 1.0}, "ind": {"X": {"w": 1.0, "wr": 1.0}}}
+    assert ws.week_cell([("d", agg, None)], "ind", "X")["wins"] == 0
+
+
+def test_mix_record_finalizes_when_a_market_missed_its_window(store, monkeypatch):
+    fx.simulate(store, _at(2026, 10, 5, 0), 8)
+    monkeypatch.setattr(ws, "market_day_status",
+                        lambda m, d, now, state=None: "missing" if m == "TW" else "ok")
+    assert ws.mix_record("2026-10-12", _at(2026, 10, 13, 9, 0))["final"]
+
+
+def test_two_stock_industries_are_absent_from_mix_and_map(pages):
+    rec = pages["recs"][0]
+    assert not any(r["key"] == fx.TWO_STOCK_IND for r in rec["rows"]), \
+        "다섯 나라 모두 2종목뿐인 업종은 '있다' 가 아니다(MIN_N)"
+    wk = pages["map_payload"]["KR"]["weeks"][0]
+    assert fx.TWO_STOCK_IND not in {r["key"] for r in wk["groups"]["ind"]}
+
+
+def test_finalize_runs_when_a_session_is_stored(store):
+    fx.simulate(store, _at(2026, 10, 5, 0), 8)
+    t = _at(2026, 10, 13, 9, 30)
+    store.now = t
+    ws.tick(t)
+    assert (ws._REC_DIR / "2026-10-12.json").exists(), "받은 주기에 섹터혼합 기록을 굳히지 않았다"
+
+
+def test_frozen_mix_record_is_recomputed_when_the_rules_change(store):
+    fx.simulate(store, _at(2026, 10, 5, 0), 9)
+    now = _at(2026, 10, 13, 9, 30)
+    ws.finalize_records(now)
+    path = ws._REC_DIR / "2026-10-12.json"
+    rec = json.loads(path.read_text())
+    assert rec["ver"] == ws.calc_sig()
+    rec["ver"], rec["rows"] = "old", []
+    path.write_text(json.dumps(rec))
+    assert ws.load_mix_record("2026-10-12") is None, "규칙이 바뀌었는데 굳힌 기록이 수정을 가린다"
+    assert ws.mix_records(now)[0]["rows"], "다시 계산한 값을 그려야 한다"
+    ws.finalize_records(now)
+    assert json.loads(path.read_text())["ver"] == ws.calc_sig()
+    for m in ws.MARKETS:                      # 업종 합계가 보관 기간을 넘겨 지워진 날 — 옛 기록뿐
+        ws.agg_path(m, "2026-10-12").unlink(missing_ok=True)
+    rec["ver"] = "old"
+    path.write_text(json.dumps(rec))
+    assert ws.load_mix_record("2026-10-12")["ver"] == "old"
+
+
+def test_week_stocks_keeps_each_days_cap_and_the_last_as_cap(store):
+    fx.simulate(store, _at(2026, 10, 5, 0), 9)
+    st = ws.week_stocks("KR", ws.week_monday("2026-10-06"))
+    it = st["stocks"]["000005"]
+    ok = [c for c in it["caps"] if c]
+    assert len(set(ok)) > 1, "픽스처 시총이 날마다 같으면 첫날·마지막 날을 못 가른다"
+    assert it["cap"] == ok[-1]
+
+
+def test_size_bands_rank_by_the_first_days_cap():
+    stocks = {}
+    for i in range(40):
+        first, last = 100.0 - i, float(i + 1)        # 첫날 큰 순 ≠ 마지막 날 큰 순
+        chg = 1.0 if i < 30 else -1.0
+        stocks[str(i)] = {"chg": [chg, chg, None, None, None], "val": [1.0] * 2 + [None] * 3,
+                          "caps": [first, last, None, None, None], "cap": last, "fx": 0}
+    st = {"ok": [True, True, False, False, False], "days": ["a", "b", "c", "d", "e"], "stocks": stocks}
+    sz = wp.size_rows("KR", None, st)
+    top = sz["rows"][0]
+    assert top["label"] == "초대형 30" and top["days"][:2] == [1.0, 1.0], top
+
+
+def test_concentration_is_the_top_ten_share():
+    vals = [float(v) for v in range(1, 13)]                # 1..12
+    stocks = {str(i): {"chg": [1.0, None, None, None, None], "val": [v, None, None, None, None],
+                       "caps": [10.0, None, None, None, None], "cap": 10.0, "fx": 0}
+              for i, v in enumerate(vals)}
+    st = {"ok": [True, False, False, False, False], "days": list("abcde"), "stocks": stocks}
+    sz = wp.size_rows("KR", None, st)
+    assert sz["conc"][0] == pytest.approx(sum(sorted(vals)[-10:]) / sum(vals) * 100)
+
+
+def test_week_payload_sums_count_only_rising_days(monkeypatch):
+    days = [f"2026-10-{d:02d}" for d in range(12, 17)]
+    monkeypatch.setattr(ws, "map_week", lambda m, mon, now: {
+        "cols": [{"date": d, "status": "ok"} for d in days], "basis": []})
+    monkeypatch.setattr(ws, "load_agg", lambda m, d: None)
+    st = {"days": days, "ok": [True] * 5, "mval": [100.0] * 5,
+          "labels": {"sec": {}, "ind": {}},
+          "stocks": {"1": {"sym": "KRX:000001", "name": "가", "sector": "S", "industry": "I",
+                           "cap": 10.0, "caps": [10.0] * 5, "fx": 0,
+                           "chg": [1.0, 0.0, -1.0, None, 2.0], "val": [10.0, 20.0, 30.0, None, 40.0]}}}
+    monkeypatch.setattr(ws, "week_stocks", lambda m, mon: st)
+    wk, js = wp._week_payload("KR", ws.week_monday("2026-10-12"), _at(2026, 10, 12, 20))
+    s = wk["sums"][("sec", "S")]
+    assert s["val"] == 100.0 and s["up"] == 50.0, "보합(0.0) 날은 '오른 날' 이 아니다"
+    assert s["upshare"] == pytest.approx(50.0) and s["share"] == pytest.approx(100 / 500 * 100)
+    assert js["rows"][0][10] == "lookup/000001"
+
+
+def test_mix_table_hides_quiet_rows_behind_a_button():
+    rec = {"markets": {}, "rows": [
+        {"key": "a", "label": "A", "cells": {}, "v_week": "none", "l_week": "뚜렷하지 않음",
+         "k_week": [3, 0, 0]},
+        {"key": "b", "label": "B", "cells": {}, "v_week": "k_up", "l_week": "2국 강세",
+         "k_week": [1, -2, -1]}]}
+    h = wp._mix_table(rec, "week", "t")
+    row_a = re.search(r"<tr[^>]*>(?:(?!</tr>).)*<b>A</b>", h).group(0)
+    assert "display:none" in row_a and "js-ws-q" in row_a
+    row_b = re.search(r"<tr[^>]*>(?:(?!</tr>).)*<b>B</b>", h).group(0)
+    assert "display:none" not in row_b
+    assert "신호 약한 업종 1개 더 보기" in h
+
+
+@pytest.mark.parametrize("st, want", [
+    ({"day": "ok", "sessions": 5, "got": 4}, "4/5일 받음"),
+    ({"day": "ok", "sessions": 5, "got": 0}, None),
+])
+def test_mix_week_cell_says_how_many_days_were_received(st, want):
+    rec = {"markets": {"KR": st}}
+    if want:
+        h = wp._mix_cell("KR", {"week": 1.5, "wins": 3, "N": 4, "n": 9}, "week", rec)
+        assert "이긴 날 3/4 · 4/5일 받음" in h
+    else:
+        assert ">받은 날 없음<" in wp._mix_cell("KR", None, "week", rec)
+    assert ">휴장<" in wp._mix_cell("KR", None, "week", {"markets": {"KR": {"sessions": 0}}})
+    full = wp._mix_cell("KR", {"week": 1.5, "wins": 3, "N": 5, "n": 9}, "week",
+                        {"markets": {"KR": {"sessions": 5, "got": 5}}})
+    assert "일 받음" not in full
+
+
+def test_map_pending_column_shows_a_dot_not_a_dash():
+    wk = {"monday": "2026-10-12", "cols": [{"date": "2026-10-12", "status": "ok"},
+                                           {"date": "2026-10-13", "status": "pending"},
+                                           {"date": "2026-10-14", "status": "holiday"}],
+          "groups": {"sec": [{"key": "S", "label": "섹터", "n": 9, "cells": {},
+                              "week": {"rel": None}}]}}
+    h = wp._map_table("KR", 0, wk, "sec", {}, "ws_KR.json")
+    tds = re.findall(r"<td class='ws-off'>([^<]*)</td>", h)
+    assert tds[1:3] == ["·", "휴장 추정"], tds          # [0] = 받은 날인데 그 칸 값 없음 → '—'
+
+
+@pytest.mark.parametrize("now, want", [
+    (_at(2026, 10, 12, 10, 0), " — 지난주"),          # 월요일 아침 — 마지막 저장은 지난주
+    (_at(2026, 10, 7, 20, 0), " — 이번 주"),
+    (_at(2026, 10, 20, 9, 0), ""),
+])
+def test_week_tag_follows_today_not_the_last_stored_day(now, want):
+    assert wp.week_tag(ws.week_monday("2026-10-05"), now) == want
+
+
+def test_map_title_does_not_call_last_week_this_week(store):
+    fx.simulate(store, _at(2026, 9, 28, 0), 12)
+    now = _at(2026, 10, 12, 10, 0)
+    pages_, _js = wp.map_payloads(now)
+    h = wp.render_map(pages_, ws.load_state(), now)
+    wrong = "10/5(월) 주 — 이번 주" in h
+    assert "10/5(월) 주 — 지난주" in h and not wrong
+
+
+@pytest.mark.parametrize("sym", ["NAG:7203", "FSE:9999", "SAPSE:1234", "XYZ:ABC"])
+def test_unknown_exchange_prefix_gets_no_link(sym):
+    assert wp.lookup_ticker(sym) == "" and wp.lookup_href(sym) == ""
+
+
+def test_stocks_page_json_tags_parse_and_keep_dangerous_names(pages):
+    h = pages["stocks"]
+    tags = re.findall(r"<script type='application/json' id='(ws-etf-[^']+)'>(.*?)</script>", h, re.S)
+    assert tags
+    names = []
+    for _id, body in tags:
+        names += [r["nm"] for r in json.loads(body)["rows"]]   # `</script>` 가 태그를 닫으면 깨진다
+    assert any("</script>" in n for n in names), "픽스처에 위험한 이름이 실려야 가드를 잰다"
+    outside = re.sub(r"<script.*?</script>", "", h, flags=re.S)
+    leaked = "<회사>" in outside
+    assert not leaked, "이름이 스크립트 태그 밖으로 샜다(`</script>` 가 태그를 닫았다)"
+
+
+def test_stocks_tables_mark_days_that_are_not_received(pages):
+    kr = pages["stocks_payload"]["KR"]["etfs"][0]["tables"][0]
+    assert "ok" in kr["status"] and set(kr["status"]) - {"ok"}, kr["status"]
+
+
+def test_map_json_uses_the_same_korean_name_as_the_etf_table(store, monkeypatch):
+    real = fx.fake_rows
+
+    def rows(market, session, n=fx.N_STOCKS):
+        out = real(market, session, n)
+        out[4]["description"] = "Ganada Electronics"     # 원천 이름에 한글이 없는 종목
+        return out
+    monkeypatch.setattr(fx, "fake_rows", rows)
+    fx.simulate(store, _at(2026, 10, 5, 0), 9)
+    now = _at(2026, 10, 13, 9, 30)
+    store.now = now
+    eh.fetch_kr = lambda t, d: ([{"code": "000004", "name": "가나다전자", "weight": 9.0}], d)
+    eh.fetch_us = lambda t, session=None: ([{"code": "T4", "name": "X CORP", "weight": 9.0}], "x")
+    ws._refresh_holdings(now)
+    _pages, jsons = wp.map_payloads(now)
+    row = next(r for r in jsons["KR"]["weeks"][0]["rows"] if r[0] == "000004")
+    assert row[1] == "가나다전자"
+    us = next(r for r in jsons["US"]["weeks"][0]["rows"] if r[0] == "T4")
+    assert us[1] == "Ganada Electronics", "보유 목록에도 한글 이름이 없으면 원천 이름 그대로"
+    sp = wp.stocks_payloads(now)
+    kr = next(r for t in sp["KR"]["etfs"] for tb in t["tables"] for r in tb["rows"] if r["c"] == "000004")
+    assert kr["nm"] == row[1], "두 화면이 같은 종목을 다른 이름으로 부른다(#38)"
+
+
+def test_map_meta_names_the_currency_mismatch_count(pages):
+    meta = pages["map_payload"]["KR"]["weeks"][0]["meta"]
+    n = sum(1 for i in range(fx.N_STOCKS) if i % fx.FX_EVERY == 7)
+    assert f"시총 통화가 달라 등락 가중에서 뺀 종목 {n}" in meta, meta
+
+
+def test_regenerate_reads_each_week_once(tmp_path, monkeypatch):
+    import bot.dashboard as d
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path / "archive")
+    with fx.patched(tmp_path) as fake:
+        fx.simulate(fake, _at(2026, 10, 6, 0), 6)
+        real = ws.week_stocks
+        seen = []
+        monkeypatch.setattr(ws, "week_stocks", lambda m, mon: seen.append((m, mon)) or real(m, mon))
+        wp.regenerate(_at(2026, 10, 12, 9, 0))
+    assert seen and len(seen) == len(set(seen)), "심리지도와 섹터종목이 같은 주를 두 번 읽었다"
+
+
+def test_stocks_page_says_why_a_table_is_missing(store):
+    eh._save("XLK", {"rows": [{"code": "T1", "name": "X", "weight": 5.0}], "fetched_day": "2026-10-12"})
+    sp = wp.stocks_payloads(_at(2026, 10, 12, 9, 0))
+    e = next(x for x in sp["US"]["etfs"] if x["ticker"] == "XLK")
+    assert e["nodays"] == "보유 목록은 있지만 아직 받은 하루치가 없습니다"
+    h = wp.render_stocks(sp, ws.load_state(), _at(2026, 10, 12, 9, 0))
+    old_text = "해당 종목 없음 · 아직" in h
+    assert "보유 목록은 있지만 아직 받은 하루치가 없습니다" in h and not old_text
+
+
+def test_chart_board_nav_lists_the_three_boards():
+    from bot.fred_boards import _NAV
+    for page in ("sector_mix.html", "sentiment_map.html", "sector_stocks.html"):
+        assert f'href="{page}"' in _NAV
+
+
+@pytest.mark.skipif(not _NODE, reason="node 없음")
+def test_cell_click_finds_the_week_by_monday_not_by_position():
+    harness = r"""
+    function El(attrs){this.attrs=attrs||{};this.innerHTML='';this.textContent='';this.value='';
+      this.style={};this.kids={};this.handlers={};}
+    El.prototype.getAttribute=function(k){return k in this.attrs?this.attrs[k]:null;};
+    El.prototype.querySelector=function(s){return this.kids[s]||(this.kids[s]=new El());};
+    El.prototype.querySelectorAll=function(){return [];};
+    El.prototype.addEventListener=function(t,f){this.handlers[t]=f;};
+    El.prototype.scrollIntoView=function(){};
+    var box=new El({'data-gone':'GONE-MESSAGE'});
+    var td=new El({'data-m':'KR','data-mon':'2026-10-12','data-kind':'sec','data-key':'S',
+      'data-day':'','data-src':'ws_KR.json','data-head':'h','data-title':'t','data-sum':'s'});
+    global.document={querySelectorAll:function(s){return s==='td.js-ws-cell'?[td]:[];},
+      getElementById:function(id){return id==='ws-detail-KR'?box:null;}};
+    global.window={};
+    var payload=null;
+    global.fetch=function(){return Promise.resolve({ok:true,json:function(){return payload;}});};
+    """ + wp._WS_JS + r"""
+    var wk={monday:'2026-10-12',days:['a'],dayLabels:['월'],status:['ok'],secs:['S'],inds:['I'],
+      indLabels:['업'],rows:[['1','가',0,0,10,[1.0],1.0,100,0.1,1,'']]};
+    payload={cur:'원',weeks:[{monday:'2026-10-05',days:[],dayLabels:[],status:[],secs:['S'],inds:[],
+      indLabels:[],rows:[['9','다른 주',0,0,10,[1.0],1.0,100,0.1,1,'']]}]};
+    td.handlers.click();
+    setTimeout(function(){
+      var miss=box.kids['.js-ws-body'].innerHTML;
+      payload={cur:'원',weeks:[payload.weeks[0],wk]};
+      // 캐시를 피하려 다른 나라 칸처럼 — 같은 칸을 새 응답으로 다시
+      td.attrs['data-m']='KR';
+      console.log(JSON.stringify({miss:miss}));
+    },20);
+    """
+    out = _js_eval(harness)
+    js = json.loads(out.strip().splitlines()[-1])
+    assert "GONE-MESSAGE" in js["miss"] and "다른 주" not in js["miss"], js
+
+
+def test_base_rows_is_the_median_not_the_last(store, monkeypatch):
+    days = {"2026-10-05": 100, "2026-10-06": 900, "2026-10-07": 300}
+    monkeypatch.setattr(ws, "stored_dates", lambda m: sorted(days))
+    monkeypatch.setattr(ws, "load_agg", lambda m, d: {"rows": days[d], "mkt": {}})
+    assert ws._base_rows("KR", "2026-10-08") == 300
+    days["2026-10-07"] = 1000
+    assert ws._base_rows("KR", "2026-10-08") == 900, "마지막 날(1000)이 아니라 중앙값"
+
+
+def test_refresh_drops_non_finite_weights_even_if_the_fetcher_lets_them_through(tmp_path, monkeypatch):
+    monkeypatch.setattr(eh, "_DIR", tmp_path / "h")
+    monkeypatch.setattr(eh, "etfs", lambda m: {"XLK": "기술"})
+    monkeypatch.setattr(eh, "fetch_us", lambda t, session=None: (
+        [{"code": "A", "name": "a", "weight": float("nan")},
+         {"code": "B", "name": "b", "weight": 5.0}], "x"))
+    eh.refresh("US", _at(2026, 10, 12, 8, 0))
+    assert [r["code"] for r in eh.load("XLK")["rows"]] == ["B"]
+    json.dumps(eh.load("XLK"), allow_nan=False)
+
+
+def test_twenty_session_baseline_reaches_the_map_once_history_is_long_enough(store):
+    """자체 이력이 직전 20세션 중 15개를 넘으면 상대 거래대금은 근사가 아니라 그 이력 평균 —
+    배선을 끝까지 태운다(`map_week` 가 기준을 버리면 화면이 영원히 점선)."""
+    fx.simulate(store, _at(2026, 9, 8, 0), 35)
+    wk = ws.map_week("KR", ws.week_monday("2026-10-12"), _at(2026, 10, 13, 9, 0))
+    cells = [r["cells"]["2026-10-12"] for r in wk["groups"]["sec"]]
+    assert cells and all(c["basis"] == "20d" for c in cells), [c["basis"] for c in cells]
+    assert "20d" in wk["basis"]
+
+
+def test_size_band_weights_each_day_by_that_days_cap():
+    """그날 가중 = 그날 시총의 전일 환산 — 마지막 날 시총으로 가중하면 월요일 칸이 금요일 규모로
+    재진다(같은 구간 안에서 등락이 다른 두 종목으로 가른다)."""
+    stocks = {
+        "A": {"chg": [10.0, None, None, None, None], "val": [1.0, None, None, None, None],
+              "caps": [110.0, None, None, None, None], "cap": 1.0, "fx": 0},
+        "B": {"chg": [0.0, None, None, None, None], "val": [1.0, None, None, None, None],
+              "caps": [1.0, None, None, None, None], "cap": 100.0, "fx": 0},
+    }
+    st = {"ok": [True, False, False, False, False], "days": list("abcde"), "stocks": stocks}
+    day0 = wp.size_rows("KR", None, st)["rows"][0]["days"][0]
+    assert day0 == pytest.approx(round((100 * 10 + 1 * 0) / 101, 2)), day0
+
+
+def test_size_escape_reaches_through_collection(store, monkeypatch):
+    """원천 종목 수가 정당하게 줄면(필터 변경) 70% 검사가 영영 막는다 — 다른 세션 둘이 같은 크기로
+    막혔으면 셋째 세션에 새 기준으로 받는다. 수집 경로(`_collect`)를 통째로 태운다."""
+    real = fx.fake_rows
+    monkeypatch.setattr(fx, "fake_rows", lambda m, d, n=None: real(m, d, 500 if d <= "2026-10-08" else 320))
+    for day in (6, 7, 8):
+        store.now = _at(2026, 10, day, 23, 30)
+        ws.tick(store.now)
+    assert ws._base_rows("KR", "2026-10-12") == 500
+    for day in (12, 13):
+        store.now = _at(2026, 10, day, 19, 0)
+        ws.tick(store.now)
+        ms = ws.load_state()["markets"]["KR"]
+        assert ms["kind"] == "small" and ms["small_seen"][f"2026-10-{day}"] == 320
+    store.now = _at(2026, 10, 14, 19, 0)
+    ws.tick(store.now)
+    assert ws.agg_path("KR", "2026-10-14").exists(), "같은 크기로 두 세션 막혔으면 셋째엔 받아야 한다"
+
+
+def test_regenerate_memo_holds_only_the_sector_stock_markets(tmp_path, monkeypatch):
+    """재생성 메모는 섹터종목이 다시 읽는 나라만 붙든다 — 다섯 나라를 다 들면 정점 메모리가 오른다."""
+    import bot.dashboard as d
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path / "archive")
+    seen = {}
+    real = wp.map_payloads
+
+    def spy(now, memo=None):
+        out = real(now, memo)
+        seen["keys"] = {m for m, _mon in memo}
+        return out
+    monkeypatch.setattr(wp, "map_payloads", spy)
+    with fx.patched(tmp_path) as fake:
+        fx.simulate(fake, _at(2026, 10, 6, 0), 6)
+        wp.regenerate(_at(2026, 10, 12, 9, 0))
+    assert seen["keys"] == set(wp.STOCK_MARKETS)

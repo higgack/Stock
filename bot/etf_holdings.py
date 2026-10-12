@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,17 @@ _TIMEOUT = (10, 30)
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 _KR_CODE = re.compile(r"^\d{6}$")
+
+
+def _finite(v) -> bool:
+    """비중이 쓸 수 있는 수인가 — NaN·무한은 `json.dumps` 가 `NaN` 으로 써 브라우저 `JSON.parse` 가
+    실패하고, 그 뒤 ETF 표가 전부 안 그려진다. 비중이 없는(None) 행은 남긴다(이름은 보인다)."""
+    if v is None:
+        return True
+    try:
+        return math.isfinite(float(v))
+    except (TypeError, ValueError):
+        return False
 
 
 class HoldingsError(Exception):
@@ -89,6 +101,8 @@ def parse_ssga_xlsx(data: bytes, top: int = TOP_N) -> tuple[list[dict], str]:
             w = float(cells[head["weight"]])
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(w):
+            continue
         if not tk or tk in ("-", "--") or sector.lower() in ("unassigned", "-"):
             continue
         out.append({"code": tk.upper(), "name": name, "weight": w})
@@ -142,6 +156,8 @@ def parse_kr_pdf(df, top: int = TOP_N) -> list[dict]:
             continue
         w = float(r[wcol]) if wcol and r[wcol] == r[wcol] else None
         v = float(r[vcol]) if vcol and r[vcol] == r[vcol] else None
+        w = w if w is not None and math.isfinite(w) else None
+        v = v if v is not None and math.isfinite(v) else None
         out.append({"code": c, "name": str(r[ncol]) if ncol else c, "weight": w, "_v": v})
     tot = sum(x["_v"] for x in out if x["_v"])
     for x in out:
@@ -254,16 +270,60 @@ def refresh(market: str, now: datetime, kr_date: str | None = None) -> dict:
                 if not kr_date:
                     raise HoldingsError("기준 거래일을 못 정함(달력 없음)")
                 rows, asof = fetch_kr(t, kr_date)
-        except HoldingsError as exc:
-            cur.update({"tried_day": today, "tries": tries, "error": exc.reason,
+            rows = [r for r in rows if _finite(r.get("weight"))]
+            if not rows:
+                raise HoldingsError("보유 종목의 비중이 전부 수가 아님(NaN·무한)")
+            _save(t, {"ticker": t, "market": market, "rows": rows, "asof": asof,
+                      "fetched_day": today, "tried_day": today, "tries": tries, "error": "",
+                      "fetched_at": now.astimezone(_KST).isoformat(timespec="seconds")})
+        except Exception as exc:                               # noqa: BLE001
+            # 원천이 형식을 바꿔 파서가 다른 예외(KeyError·BadZipFile·ValueError …)를 내도 **같은
+            # 실패 경로**로 — 반복문을 빠져나가면 나머지 ETF 는 한 번도 안 묻고, 저장도 백오프도
+            # 없이 15분마다 같은 파일을 받는다(독립 리뷰 실측: 3주기 · XLK 3콜 · 나머지 10개 0콜).
+            why = (exc.reason if isinstance(exc, HoldingsError)
+                   else f"보유 목록 처리 중 예외({type(exc).__name__}: {str(exc)[:80]}) — 원천 형식 "
+                        "변경 또는 파서 결함")
+            cur.update({"tried_day": today, "tries": tries, "error": why,
                         "tried_at": now.astimezone(_KST).isoformat(timespec="seconds")})
-            _save(t, cur)
+            try:
+                _save(t, cur)
+            except Exception as werr:                          # noqa: BLE001
+                log.warning("etf_holdings: %s 실패 기록을 못 씀: %s", t, werr)
             res["failed"].append(t)
-            log.warning("etf_holdings: %s 보유 종목 실패(오늘 %d/%d회) — %s", t, tries, MAX_TRIES,
-                        exc.reason)
+            log.warning("etf_holdings: %s 보유 종목 실패(오늘 %d/%d회) — %s", t, tries, MAX_TRIES, why)
             continue
-        _save(t, {"ticker": t, "market": market, "rows": rows, "asof": asof,
-                  "fetched_day": today, "tried_day": today, "tries": tries, "error": "",
-                  "fetched_at": now.astimezone(_KST).isoformat(timespec="seconds")})
         res["ok"].append(t)
     return res
+
+
+def holdings_verdict(market: str, now: datetime) -> tuple[str, str]:
+    """한 나라 섹터 ETF 보유 목록 — (갈래, 한 줄). 감사·`--why` 가 같이 쓴다(#35).
+
+    fail = 목록이 하나도 없는 ETF 가 있다(그 칸은 영영 빈다 — KRX 로그인 없음 등, 우리가 고칠 것
+    #303) · stale = 오늘 갱신은 실패했지만 마지막 목록이 있다 · none = 아직 한 번도 묻지 않음 ·
+    ok = 전부 목록이 있다."""
+    tickers = list(etfs(market))
+    if not tickers:
+        return "none", "섹터 ETF 목록이 없음"
+    today = now.astimezone(_KST).date().isoformat()
+    have, empty, old, untried = [], [], [], []
+    for t in tickers:
+        h = load(t) or {}
+        if h.get("rows"):
+            have.append(t)
+            if h.get("error") and h.get("tried_day") == today and h.get("fetched_day") != today:
+                old.append(t)
+        elif h.get("error"):
+            empty.append((t, h["error"]))
+        else:
+            untried.append(t)
+    n = len(tickers)
+    if empty:
+        t, why = empty[0]
+        more = f" 외 {len(empty) - 1}개" if len(empty) > 1 else ""
+        return "fail", f"보유 목록이 없는 ETF {len(empty)}/{n}개 — {t}{more}: {why}"
+    if len(untried) == n:
+        return "none", "아직 보유 목록을 묻지 않음"
+    if old:
+        return "stale", f"{len(old)}/{n}개 ETF 오늘 갱신 실패 — 마지막으로 받은 목록으로 그린다"
+    return "ok", f"{len(have)}/{n}개 ETF 보유 목록 있음" + (f" · 미시도 {len(untried)}" if untried else "")

@@ -44,6 +44,7 @@ OPTIONAL = ("sector.tr", "industry.tr", "average_volume_30d_calc", "currency",
 
 PAGE = 2000          # 한 요청 행 수 — 라이브러리 기본 50 은 5천 종목에 100콜이다
 MAX_PAGES = 8        # 시장당 상한(미국 ~5천 종목 = 3쪽) — 원천이 끝없이 주는 사고를 막는다
+PARTIAL_MIN = 0.98  # totalCount 대비 이만큼 못 받으면 일부만 받은 것으로 본다(겹침·버린 행 여유)
 _TIMEOUT = (10, 30)
 _HEADERS = {
     "accept": "text/plain, */*; q=0.01",
@@ -55,7 +56,7 @@ _HEADERS = {
 
 
 class ScanError(Exception):
-    """수집 실패 — `kind` 로 갈래를 가른다(network · http · format · empty)."""
+    """수집 실패 — `kind` 로 갈래를 가른다(network · http · format · empty · partial)."""
 
     def __init__(self, reason: str, kind: str):
         super().__init__(reason)
@@ -76,7 +77,10 @@ def build_query(market: str, columns: list[str], start: int, size: int) -> dict:
                               "operands": [{"expression": e} for e in exprs]}}
     # 보통주 또는 DR — 웹 스크리너 기본 요청(`STOCKS_QUERY.filter2`)에서 우선주·펀드만 뺐다.
     # DR 을 넣는 건 사용자가 준 블로그 캡처가 미국 업종에 ADR(SK hynix·ASML·ARM)을
-    # 넣기 때문이다 — 그 나라에서 거래되는 대로 센다.
+    # 넣기 때문이다 — 그 나라에서 거래되는 대로 센다. 단 시총 통화가 거래 통화와 다르면
+    # (`world_sectors.normalize` 의 `fx`) 종목 수·거래대금에만 들고 **등락 가중에선 빠진다** —
+    # 몇 개인지는 화면(심리지도 주 머리)·`--probe` 가 적는다. 원천이 ADR 시총을 어느 통화로
+    # 주는지·`is_primary` 가 ADR 을 이미 빼는지는 재지 못했다(#165).
     filt2 = {"operator": "and", "operands": [{"operation": {"operator": "or", "operands": [
         _and({"left": "type", "operation": "equal", "right": "stock"},
              {"left": "typespecs", "operation": "has", "right": ["common"]}),
@@ -131,19 +135,30 @@ def _post(market: str, body: dict, session=None):
 
 
 def scan(market: str, *, session=None, sleep=time.sleep) -> dict:
-    """한 시장 전 종목 — {"rows": [dict], "total": int, "dropped": [열], "pages": int}.
+    """한 시장 전 종목 — {"rows": [dict], "total": int, "dropped": [열], "pages": int,
+    "bad_rows": int, "dup_rows": int}.
 
     실패는 `ScanError`(갈래·사유). 400 이 우리가 보낸 **선택 열**을 지목하면 그 열만 빼고 한 번
-    더 묻는다 — 필수 열을 지목하면 실패다(그 열 없이는 판정을 못 한다)."""
+    더 묻는다 — 필수 열을 지목하면 실패다(그 열 없이는 판정을 못 한다).
+
+    ⚠️ 원천이 `totalCount` 를 말하면 **그만큼 받았는지 대조한다** — 쪽 크기를 줄여 주거나(요청
+    2000 · 응답 1000) 행을 버려야 하면 '마지막 쪽' 으로 읽고 멈춘 일부를 완전본으로 굽게 된다
+    (#280 — 첫날은 비교할 저장분이 없고, 그 뒤로는 날마다 같은 일부라 어떤 검사도 안 걸린다).
+    그래서 다음 쪽은 **받은 만큼 뒤에서** 묻고(원천이 쪽을 줄여 줘도 건너뛰지 않게), 다 받기 전에
+    끝나면 `partial` 로 실패한다. 같은 기호가 쪽 경계에서 두 번 오면 한 번만 센다(시총 정렬의
+    동률). 원천이 `totalCount` 를 안 주면 대조할 수 없다 — `total` 이 None 으로 남는다."""
     from bot.naver_diag import http_reason
     columns = [*CORE, *OPTIONAL]
     dropped: list[str] = []
     rows: list[dict] = []
+    seen: set[str] = set()
+    bad = dup = 0
     total = None
     page = 0
+    offset = 0           # 원천이 지금까지 준 항목 수(버린 행 포함) — 다음 쪽의 시작
     retried = False
     while page < MAX_PAGES:
-        body = build_query(market, columns, page * PAGE, PAGE)
+        body = build_query(market, columns, offset, PAGE)
         try:
             r = _post(market, body, session)
         except Exception as exc:                               # noqa: BLE001
@@ -151,16 +166,16 @@ def scan(market: str, *, session=None, sleep=time.sleep) -> dict:
         status = getattr(r, "status_code", None)
         if status == 400 and not retried:
             text = (getattr(r, "text", "") or "")[:4000]
-            bad = unknown_fields(text, columns)
-            core_bad = [c for c in bad if c in CORE]
+            badf = unknown_fields(text, columns)
+            core_bad = [c for c in badf if c in CORE]
             if core_bad:
                 raise ScanError(f"원천이 필수 열을 모른다고 답함({', '.join(core_bad)}) — "
                                 + http_reason(400, body=text), "format")
-            if bad:
-                dropped += bad
-                columns = [c for c in columns if c not in bad]
+            if badf:
+                dropped += badf
+                columns = [c for c in columns if c not in badf]
                 retried = True
-                log.warning("tv_scanner: %s 원천이 열 %s 를 몰라 빼고 다시 묻는다", market, bad)
+                log.warning("tv_scanner: %s 원천이 열 %s 를 몰라 빼고 다시 묻는다", market, badf)
                 continue
         if status != 200:
             raise ScanError(http_reason(status, body=getattr(r, "content", b"")), "http")
@@ -177,17 +192,37 @@ def scan(market: str, *, session=None, sleep=time.sleep) -> dict:
                 total = int(js.get("totalCount"))
             except (TypeError, ValueError):
                 total = None
-        for it in js["data"]:
+        data = js["data"]
+        for it in data:
             d = it.get("d") if isinstance(it, dict) else None
             if not isinstance(d, list) or len(d) != len(columns):
+                bad += 1
                 continue
             row = dict(zip(columns, d))
             row["symbol"] = it.get("s") or ""
+            if row["symbol"] and row["symbol"] in seen:
+                dup += 1
+                continue
+            seen.add(row["symbol"])
             rows.append(row)
         page += 1
-        if not js["data"] or len(js["data"]) < PAGE or (total is not None and len(rows) >= total):
+        offset += len(data)
+        if not data:
+            break
+        if total is not None:
+            if offset >= total:
+                break
+        elif len(data) < PAGE:
             break
         sleep(0.6)
     if not rows:
         raise ScanError(f"원천이 종목을 하나도 주지 않음(totalCount={total})", "empty")
-    return {"rows": rows, "total": total, "dropped": dropped, "pages": page}
+    if total is not None and len(rows) < PARTIAL_MIN * total:
+        raise ScanError(
+            f"원천이 totalCount {total:,} 중 {len(rows):,}행만 줌({page}쪽"
+            + (f" · 열 수가 안 맞아 버린 행 {bad}" if bad else "")
+            + (f" · 겹친 행 {dup}" if dup else "")
+            + (f" · 쪽 상한 {MAX_PAGES}에 닿음" if page >= MAX_PAGES else "")
+            + ") — 일부만 받은 응답은 굽지 않는다", "partial")
+    return {"rows": rows, "total": total, "dropped": dropped, "pages": page,
+            "bad_rows": bad, "dup_rows": dup}

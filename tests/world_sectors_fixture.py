@@ -37,22 +37,40 @@ def code_for(market: str, i: int) -> str:
     return f"{1000 + i}"
 
 
+# 두 종목짜리 업종 — 다섯 나라 모두에 있지만 `MIN_N`(3) 미만이라 섹터혼합·심리지도 업종에 없어야
+# 한다(1종목 업종만으로는 '두 나라 이상' 조건이 먼저 걸러 `MIN_N` 을 못 잰다, #91c)
+TWO_STOCK_IND = "Tobacco"
+TWO_STOCK_AT = (316, 317)
+FX_EVERY = 53            # 이 간격의 종목은 시총 통화가 거래 통화와 다르다(ADR·DR 꼴)
+
+
 def fake_rows(market: str, session: str, n: int = N_STOCKS) -> list[dict]:
-    """세션마다 다른(그러나 결정적인) 값 — 직전 세션과 같으면 '원천이 안 실음' 으로 거부된다."""
+    """세션마다 다른(그러나 결정적인) 값 — 직전 세션과 같으면 '원천이 안 실음' 으로 거부된다.
+
+    원천 모양을 흉내 낸다(#155): 시총은 날마다 그날 등락만큼 움직이고(첫날·마지막 날 시총이
+    다르다), 이름엔 HTML 에 위험한 `<`·`</script>` 가 섞이고, 시총 통화가 다른 종목이 몇 있다."""
     rnd = random.Random(f"{market}{session}")
+    day = int(session.replace("-", "")) if session else 0
     secs = list(SECTORS.items())
     rows = []
     for i in range(n):
         sk, (sko, inds) = secs[i % 4]
         ind = inds[(i // 4) % 2]
+        ind_ko = IND_KO[ind]
+        if i in TWO_STOCK_AT:
+            ind, ind_ko = TWO_STOCK_IND, "담배"
         chg = rnd.gauss(0.6 if sk == "Finance" else -0.2, 1.5)
+        name = f"{market}<회사></script>{i}" if i == 0 else f"{market}<회사>{i}"
+        drift = 1 + ((day * 7 + i) % 11 - 5) / 100        # 날마다 다른 시총(±5%)
         rows.append({"symbol": f"{PFX[market]}:{code_for(market, i)}", "name": code_for(market, i),
-                     "description": f"{market}<회사>{i}", "sector": sk, "industry": ind,
+                     "description": name, "sector": sk, "industry": ind,
                      "close": 100.0, "change": chg,
                      "Value.Traded": rnd.uniform(1e8, 5e9) * (2.0 if sk == "Finance" else 1.0),
-                     "market_cap_basic": 1e12 / (i + 1), "sector.tr": sko, "industry.tr": IND_KO[ind],
+                     "market_cap_basic": 1e12 / (i + 1) * drift, "sector.tr": sko,
+                     "industry.tr": ind_ko,
                      "average_volume_30d_calc": rnd.uniform(1e6, 3e7), "currency": CUR[market],
-                     "fundamental_currency_code": CUR[market]})
+                     "fundamental_currency_code": "USD" if i % FX_EVERY == 7 and market != "US"
+                     else ("TWD" if i % FX_EVERY == 7 else CUR[market])})
     return rows
 
 
@@ -72,36 +90,40 @@ class FakeScanner:
 
 
 @contextlib.contextmanager
-def patched(root):
-    """모듈 상태를 `root` 아래로 옮기고 원천을 가짜로 — 끝나면 전부 되돌린다(테스트 밖 쓰기 0)."""
+def patched(root, mp=None):
+    """모듈 상태를 `root` 아래로 옮기고 원천을 가짜로 — 끝나면 전부 되돌린다(테스트 밖 쓰기 0).
+
+    `mp`(pytest monkeypatch)를 주면 **그것으로** 갈아 끼운다. 테스트가 같은 monkeypatch 로
+    `tv.scan` 을 또 갈면 되돌리기도 한 줄에 쌓여 역순으로 풀린다 — 따로 되돌리면 autouse
+    fixture 가 monkeypatch 를 먼저 만든 탓에 그 테스트의 되돌리기가 **우리 복원 뒤에** 돌아
+    가짜 원천이 다음 테스트로 샌다(2026-10-12 실측: 뒤 테스트의 진짜 `scan` 이 가짜 행을 받았다)."""
     from bot import etf_holdings as eh
     from bot import tv_scanner as tv
     from bot import world_sectors as ws
-    saved = {(ws, k): getattr(ws, k) for k in ("_DIR", "_SNAP", "_REC_DIR", "_STATE")}
-    saved[(eh, "_DIR")] = eh._DIR
-    saved[(tv, "scan")] = tv.scan
-    saved[(eh, "fetch_us")] = eh.fetch_us
-    saved[(eh, "fetch_kr")] = eh.fetch_kr
     fake = FakeScanner(ws)
-    ws._DIR = root / "ws"
-    ws._SNAP = ws._DIR / "snap"
-    ws._REC_DIR = ws._DIR / "records"
-    ws._STATE = ws._DIR / "state.json"
-    eh._DIR = ws._DIR / "holdings"
-    tv.scan = fake
-    eh.fetch_us = lambda t, session=None: (
-        [{"code": f"T{i * 4}", "name": f"US{i}", "weight": 10 - i * 0.3} for i in range(15)],
-        "As of Oct 12 2026")
-    eh.fetch_kr = lambda t, d: (
-        [{"code": f"{i * 4:06d}", "name": f"KR{i}", "weight": 9 - i * 0.2} for i in range(14)]
-        + [{"code": "999999", "name": "수집 안 된 종목", "weight": 0.5}], d)
+    d = root / "ws"
+    new = {(ws, "_DIR"): d, (ws, "_SNAP"): d / "snap", (ws, "_REC_DIR"): d / "records",
+           (ws, "_STATE"): d / "state.json", (eh, "_DIR"): d / "holdings", (tv, "scan"): fake,
+           (eh, "fetch_us"): lambda t, session=None: (
+               [{"code": f"T{i * 4}", "name": f"US{i}", "weight": 10 - i * 0.3} for i in range(15)],
+               "As of Oct 12 2026"),
+           (eh, "fetch_kr"): lambda t, dd: (
+               [{"code": f"{i * 4:06d}", "name": f"KR{i}", "weight": 9 - i * 0.2} for i in range(14)]
+               + [{"code": "999999", "name": "수집 안 된 종목", "weight": 0.5}], dd)}
+    saved = {k: getattr(*k) for k in new}
+    for (mod, k), v in new.items():
+        if mp is not None:
+            mp.setattr(mod, k, v)
+        else:
+            setattr(mod, k, v)
     ws.cache_clear()
     ws._REGEN_LAST.clear()
     try:
         yield fake
     finally:
-        for (mod, k), v in saved.items():
-            setattr(mod, k, v)
+        if mp is None:
+            for (mod, k), v in saved.items():
+                setattr(mod, k, v)
         ws.cache_clear()
         ws._REGEN_LAST.clear()
 
