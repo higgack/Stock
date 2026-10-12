@@ -332,6 +332,21 @@ def test_collect_window_filters_dedupe_telegram_and_body(hn):
     assert by["KR:000660"]["via"] == "google" and by["KR:000660"]["items"][0]["title"] == "SK하이닉스 HBM 증설"
 
 
+def test_collect_survives_one_stocks_exception(hn):
+    """한 종목의 예외가 그날 수집 전체를 멈추지 않는다 — 그 종목만 실패로 센다(#315)."""
+    def fetch(st):
+        if st["key"] == "KR:035720":
+            raise RuntimeError("깨진 응답")
+        return ([_it(f"{st['name']} 소식", "2026-10-12T06:00:00+09:00", link=f"https://p/{st['key']}")],
+                "naver", "")
+    rec = hn.collect(_t(_NOW), model=_model(_h("삼성전자", "005930", "KR"), _h("카카오", "035720", "KR")),
+                     records=[], fetch=fetch, pace=0)
+    by = {x["key"]: x for x in rec["stocks"]}
+    assert by["KR:005930"]["status"] == "pending" and by["KR:035720"]["status"] == "empty"
+    assert rec["sources"]["fail"] == 1
+    assert list(rec["sources"]["fail_reasons"]) == ["수집 예외(RuntimeError: 깨진 응답)"]
+
+
 def test_collect_window_start_rules(hn):
     model = _model(_h("삼성전자", "005930", "KR"))
     f = _fetcher({})
@@ -527,6 +542,13 @@ def test_parse_json_tolerates_fences(hn):
 
 
 # ── 저장 ─────────────────────────────────────────────────────────────────────
+def test_load_skips_a_record_with_a_malformed_date(hn):
+    """날짜가 깨진 기록 하나가 페이지 전체를 막지 않게(렌더가 그 날짜를 날짜로 읽는다)."""
+    hn.save_record({"date": "2026-10-12", "stocks": []})
+    (hn._DAYS / "x.json").write_text(json.dumps({"date": "어제", "stocks": []}), encoding="utf-8")
+    assert [r["date"] for r in hn.load_records()] == ["2026-10-12"]
+
+
 def test_save_prunes_and_load_skips_broken(hn, monkeypatch):
     monkeypatch.setattr(hn, "KEEP_DAYS", 2)
     for d in ("2026-10-10", "2026-10-11", "2026-10-12"):
@@ -624,6 +646,7 @@ def _done(*stocks, sources=None):
     ([], {"reason": "주기 실패(X)"}, "2026-10-12T09:00", "fail", "오늘 집계 못 함"),
     ([], {"last_tick": "2026-10-12T07:00:00+09:00"}, "2026-10-12T09:00", "fail", "봇 주기가 멈췄을 수"),
     ([], {"last_tick": "2026-10-12T08:55:00+09:00"}, "2026-10-12T09:00", "wait", "집계 중"),
+    ([], {}, "2026-10-12T09:00", "wait", "아직 한 번도 돌리지 않음"),    # '집계 중' 은 재지 않은 주장(#165)
     ([_done({"status": "pending", "items": [1], "reason": "AI 키 없음"})], {}, "2026-10-12T09:00",
      "pending", "Pros/Cons 대기 1종목 — AI 키 없음"),
     ([_done({"status": "failed", "items": [1], "reason": "AI 응답을 못 읽음"})], {}, "2026-10-12T09:00",
@@ -688,6 +711,16 @@ def test_render_cards_and_status(hn):
     assert "본문 읽음 1/2" in html and "제목·요약에 이름이 없어 뺀 검색 결과 4건" in html
     assert "대체 원천으로 받은 종목 1(네이버 키 없음)" in html and "AI 2회 · $0.0123" in html
     assert "<div class='v'>4 / 5</div>" in html
+
+
+def test_render_links_only_http(hn):
+    """원천이 준 링크가 `javascript:` 면 href 로 싣지 않는다 — escape 로는 그 스킴이 안 막힌다."""
+    rec = _page_rec()
+    rec["stocks"][0]["items"][0]["link"] = "javascript:alert(1)"
+    rec["stocks"][0]["items"][2]["link"] = " HTTPS://ok.example/x "
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN")
+    assert "javascript:" not in html and "기사 1" in html
+    assert "href='HTTPS://ok.example/x'" in html
 
 
 def test_render_lookup_links_follow_the_resolver(hn):

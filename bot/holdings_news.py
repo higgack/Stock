@@ -545,7 +545,12 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
         als = aliases(st)
         name_als = [a for a in als if a[1] == "name"]
         items: list[dict] = []
-        raw, used, why = fetch(st)
+        try:
+            raw, used, why = fetch(st)
+        except Exception as exc:                               # noqa: BLE001
+            # 한 종목의 예외가 그날 수집 전체를 멈추지 않게 — 그 종목만 실패로 센다(#315).
+            log.warning("holdings_news: %s 수집 예외: %s", st["key"], exc)
+            raw, used, why = [], "", f"수집 예외({type(exc).__name__}: {str(exc)[:60]})"
         if pace:
             time.sleep(pace)
         if used:
@@ -852,8 +857,10 @@ def load_records() -> list[dict]:
         except Exception as exc:                               # noqa: BLE001
             log.warning("holdings_news: 기록 %s 읽기 실패: %s", f.name, exc)
             continue
-        if isinstance(r, dict) and r.get("date"):
+        if isinstance(r, dict) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(r.get("date") or "")):
             out.append(r)
+        else:
+            log.warning("holdings_news: 기록 %s 의 날짜가 형식 밖이라 건너뜀", f.name)
     return out
 
 
@@ -955,7 +962,11 @@ def status_verdict(records: list[dict], now: datetime | None = None,
         if st.get("reason"):
             return "fail", f"오늘 집계 못 함 — {st['reason']}"
         tick_at = _parse(st.get("last_tick"))
-        if tick_at and now - tick_at > timedelta(minutes=45):
+        if tick_at is None:
+            # 주기가 한 번도 안 돌았다 — '집계 중' 이라 적으면 재지 않은 주장이다(#165).
+            return "wait", ("봇이 이 보드의 주기를 아직 한 번도 돌리지 않음 — 봇이 새 판으로 뜨면 약 3분 뒤 첫 "
+                            f"주기 · 마지막 기록 {last or '없음'}")
+        if now - tick_at > timedelta(minutes=45):
             return "fail", (f"{RUN_HOUR:02d}:{RUN_MIN:02d} 이 지났는데 오늘 기록이 없고 마지막 주기가 "
                             f"{tick_at.strftime('%m-%d %H:%M')} — 봇 주기가 멈췄을 수 있음")
         return "wait", f"오늘 집계 중(또는 다음 주기) · 마지막 기록 {last or '없음'}"
@@ -1097,13 +1108,20 @@ def _lookup(s: dict) -> str:
     return f"lookup/{s.get('sym') or t}"
 
 
+def _safe_link(u: str) -> str:
+    """원천이 준 링크 중 http(s) 만 href 로 — `javascript:` 같은 스킴은 escape 로 막히지 않는다."""
+    u = str(u or "").strip()
+    return u if u.lower().startswith(("http://", "https://")) else ""
+
+
 def _item_li(it: dict, off: bool) -> str:
     import html as _h
     src = "📨 텔레그램" if it["src"] == "telegram" else f"📰 {it.get('source') or it['src']}"
     when = it["ts"][5:10] if it.get("dated_only") else it["ts"][5:16].replace("T", " ")
     title = _h.escape(it.get("title") or "")
-    if it.get("link"):
-        title = f"<a href='{_h.escape(it['link'])}' target='_blank' rel='noopener'>{title}</a>"
+    link = _safe_link(it.get("link"))
+    if link:
+        title = f"<a href='{_h.escape(link)}' target='_blank' rel='noopener'>{title}</a>"
     summ = it.get("summary") or ""
     extra = ""
     if it["src"] == "telegram":
