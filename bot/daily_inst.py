@@ -88,6 +88,10 @@ TICK_TIMEOUT_SEC = 600    # 봇 루프가 한 주기를 기다리는 상한(넘�
 MISSING_MIN_AGE_H = 12    # '자료 없음' 확정은 첫 실패 뒤 이만큼 지나야(일시 장애 배제)
 REOPEN_H = 24             # 자료 없음·휴장 표식은 창 안에 있는 동안 이 간격으로 다시 묻는다
 SPAN_N = KEEP_SESSIONS + STREAK_N - 1   # 보관 기록의 5일 창이 닿는 거래일 수(표식 재질의 범위)
+# 한 주기가 보는 거래일 수 — 창 범위 맨 앞 기록(span[0])도 5일 창을 다 가지려면 그 앞
+# STREAK_N-1 거래일이 더 필요하고, KRX 휴장 표식 날은 목록에서 빠지므로 여유를 둔다(여유가
+# 2일이면 휴장 표식 셋에 그 기록을 다시 만들 때 연속 목록이 판정 불가로 바뀐다, 델타 리뷰 L5).
+CAL_N = SPAN_N + STREAK_N - 1 + 6
 _KRX_TIMEOUT = (10, 60)   # pykrx 요청 (connect, read) 초 — 라이브러리 기본값은 '무한'
 _BACKOFF_MIN = (15, 30, 60, 120, 180)
 
@@ -235,10 +239,14 @@ def _ensure_krx_timeout() -> None:
     세션은 `get_auth_session()` 이 아니라 **모듈 전역을 직접** 읽는다 — 그 함수는 세션이
     없으면 로그인을 다시 시도하므로, 자격증명이 틀린 날 조회마다 실패한 로그인이 한 번씩
     더 쌓인다(독립 리뷰). ⚠️ 못 보는 축(#274): pykrx 를 처음 import 할 때의 로그인
-    (`webio` 모듈 로드 시점), 세션이 없는 익명 경로(로그인 실패), 요청 도중의 재로그인
-    (1시간 만료) 직후 한 번은 timeout 을 못 단다 — 재지 않았다. 그 경우는 봇
-    루프의 `TICK_TIMEOUT_SEC` 과 화면의 '수집이 끝나지 않음' 이 덮는다. 붙이지 못하면
-    프로세스당 한 번 경고한다(조용히 보호가 사라지지 않게, #12)."""
+    (`webio` 모듈 로드 시점), 세션이 없는 익명 경로(로그인 실패), 그리고 요청 도중의
+    재로그인(1시간 만료)이 세션 객체를 새로 만들 때 **그 재로그인이 걸린 조회 하나**
+    (라이브러리가 그 조회 안에서 잇는 요청 포함 — 몇 개인지는 재지 않았다)는 timeout 이
+    없다. 다음 조회 전에 다시 붙이므로(`fetch_nets` 는 시장마다) 그 창은 조회 하나를
+    넘지 않는다 — 시장마다 다시 붙이기 전엔 같은 `fetch_nets` 의 KOSDAQ 조회까지 무방비
+    였다(델타 리뷰 L6). 그 경우는 봇 루프의 `TICK_TIMEOUT_SEC` 과 화면의 '수집이 끝나지
+    않음' 이 덮는다. 붙이지 못하면 프로세스당 한 번 경고한다(조용히 보호가 사라지지 않게,
+    #12)."""
     try:
         from requests.adapters import HTTPAdapter
 
@@ -289,6 +297,9 @@ def fetch_nets(date: str) -> tuple[dict | None, str, str]:
         return None, f"pykrx 없음({type(exc).__name__})", "error"
     out: dict = {}
     for mkt, sfx in MARKETS:
+        # 시장마다 다시 붙인다 — 앞 시장 조회 도중 재로그인이 세션을 새로 만들면 이 조회가
+        # timeout 없이 나간다(델타 리뷰 L6). 이미 붙었으면 아무것도 안 한다.
+        _ensure_krx_timeout()
         try:
             df = stock.get_market_net_purchases_of_equities(ymd, ymd, mkt, INVESTOR)
         except Exception as exc:                               # noqa: BLE001
@@ -563,11 +574,13 @@ def _recheck(rec: dict, sessions: list[str], budget: _Budget, now: datetime) -> 
     return new
 
 
-def _save_state(st: dict) -> None:
+def _save_state(st: dict) -> bool:
     try:
         _write_json(_STATE, st)
+        return True
     except Exception as exc:                                   # noqa: BLE001
         log.warning("daily_inst: 상태 저장 실패: %s", exc)
+        return False
 
 
 def _ladder(n: int) -> int:
@@ -680,7 +693,7 @@ def _tick_body(st: dict, now: datetime, budget: int, res: dict) -> None:
         res.update(status="fail", reason=st["reason"])
         return
     target = settled_session(now)
-    cal = recent_sessions(target, KEEP_SESSIONS + STREAK_N + 5) if target else None
+    cal = recent_sessions(target, CAL_N) if target else None
     if not cal:
         _fail(st, now, "거래일 달력(exchange_calendars)이 없어 받을 날짜를 정할 수 없다")
         res.update(status="fail", reason=st["reason"])
@@ -688,6 +701,7 @@ def _tick_body(st: dict, now: datetime, budget: int, res: dict) -> None:
     b = _Budget(budget)
     ok: list = []
     outage, waiting, out_of_budget, day_failed = "", "", False, []
+    alive, asked_live = "", False   # 이번 주기에 순매수 엔드포인트가 답한 가장 나중 날짜
     # ① 자료 없음·휴장 표식을 하루 한 번 다시 묻는다 — 일시 장애로 찍힌 표식이 영구히
     #    남지 않게(독립 리뷰). 범위는 보관 기록의 5일 창이 닿는 거래일까지.
     pre = [d for d in cal if not _is_holiday(d)]
@@ -697,12 +711,9 @@ def _tick_body(st: dict, now: datetime, budget: int, res: dict) -> None:
         for d in reversed([x for x in cal if x >= lo]):
             raw = load_raw(d)
             if raw and raw.get("nodata") and _reopen_due(raw, now):
-                got = _reopen(d, raw, cal, b, now, ok)
-                if got is not None:
-                    stale |= set(got)
+                _reopen(d, raw, cal, b, now, ok, st, stale)
     except _Stop:
         out_of_budget = True
-    st["stale"] = sorted(stale)
     # KRX 가 휴장으로 답한 날은 거래일에서 뺀다 — 직전 거래일·5일 창이 그날을 건너뛴다.
     # ⚠️ 표식을 다시 물은 **뒤에** 정한다 — 휴장 표식이 풀린 날을 옛 목록으로 다시 만들면
     # 직전 거래일이 그날을 또 건너뛴다(델타 리뷰 반영 중 테스트가 잡음).
@@ -789,9 +800,25 @@ def _tick_body(st: dict, now: datetime, budget: int, res: dict) -> None:
                 _day_fail(days, bad, now, why, kind, traded="시가총액은 나옴" in why)
                 deferred.add(bad)       # 이 주기 안에서 같은 날을 또 묻지 않는다
                 day_failed.append(bad)
-                if len(day_failed) >= 2:
-                    outage = f"지난 거래일 여러 날이 연달아 실패({', '.join(day_failed)}) — {why}"
-                    break
+                if len(day_failed) >= 2 and not alive:
+                    # 둘째 날부터는 원천 장애와 '여러 날이 실제로 빔' 을 가른다 — 이번
+                    # 주기에 순매수를 받은 날이 있거나, 캐시된 가장 나중 날이 지금 답하면
+                    # 엔드포인트는 살아 있다. 무조건 장애로 끊으면 두 날이 실제로 비는
+                    # 동안 ③ 이 그 앞 날짜에 닿지 못하고 ④ 도 서지 않아 보드가 통째로
+                    # 멈춘다(델타 리뷰 실측: 3일간 기준일 하나만 만들고 매 주기 실패).
+                    if not ok and b.left < 2:
+                        raise _Stop()       # 대조할 예산이 없다 — 장애로 단정하지 않는다
+                    if ok:
+                        alive = max(ok)
+                    else:
+                        asked_live = True
+                        alive = _live_control("", sessions, b,
+                                              "지난 거래일 여러 날 실패 — 원천 장애인지 대조") or ""
+                    if not alive:
+                        outage = (f"지난 거래일 여러 날이 연달아 실패({', '.join(day_failed)})"
+                                  f" — {why} · 이번 주기에 받은 날도, 다시 물어 답한 날도 없다"
+                                  "(원천 장애로 보임)")
+                        break
                 continue
             outage = why
             break
@@ -804,15 +831,24 @@ def _tick_body(st: dict, now: datetime, budget: int, res: dict) -> None:
     # ④ '자료 없음' 확정 — **같은 엔드포인트의 양성 대조**가 있을 때만: 그날보다 **나중**
     #    날짜의 기관 순매수가 지금 답해야 한다 — 이번 주기에 새로 받았거나, 캐시면 가장 나중
     #    날을 다시 묻는다(`_live_control` · 시총은 다른 엔드포인트라 순매수 엔드포인트만 죽은
-    #    것과 구별하지 못한다). 첫 실패 뒤 `MISSING_MIN_AGE_H` 가
-    #    지나야 하고, 두 날 이상 실패한 주기(원천 장애)엔 확정하지 않는다(독립 리뷰).
-    if not outage and len(day_failed) == 1:
-        bad = day_failed[0]
-        info = days.get(bad) or {}
-        first = _parse(info.get("first"))
-        if (info.get("traded") and int(info.get("n") or 0) >= MISSING_AFTER
-                and first and now - first >= timedelta(hours=MISSING_MIN_AGE_H)
-                and (any(x > bad for x in ok) or _live_control(bad, sessions, b))):
+    #    것과 구별하지 못한다). 첫 실패 뒤 `MISSING_MIN_AGE_H` 가 지나야 하고, 원천 장애로
+    #    끊긴 주기엔 확정하지 않는다(독립 리뷰). 여러 날이 실제로 비면 날마다 같은 조건으로
+    #    확정한다 — 대조는 한 주기에 한 번이다: 늘 캐시된 가장 나중 날을 물으므로 그게 답하면
+    #    그 앞 날은 다 서고, 안 답하면 다른 날을 위해 또 물어도 같은 날을 묻는 것이다.
+    if not outage and day_failed:
+        proven = max([alive, *ok])
+        for bad in sorted(set(day_failed)):
+            info = days.get(bad) or {}
+            first = _parse(info.get("first"))
+            if not (info.get("traded") and int(info.get("n") or 0) >= MISSING_AFTER
+                    and first and now - first >= timedelta(hours=MISSING_MIN_AGE_H)):
+                continue
+            if proven <= bad and not asked_live:
+                asked_live = True
+                proven = max(proven, _live_control(bad, sessions, b,
+                                                   f"{bad} 자료 없음 확정 대조") or "")
+            if proven <= bad:
+                continue
             _mark_nodata(bad, "missing", info.get("reason") or "KRX 가 그날 기관 순매수를 주지 않음",
                          now)
             days.pop(bad, None)
@@ -855,12 +891,18 @@ def _reopen_due(raw: dict, now: datetime) -> bool:
 
 
 def _reopen(d: str, raw: dict, cal: list, budget: _Budget, now: datetime,
-            ok: list) -> list[str] | None:
+            ok: list, st: dict, stale: set) -> bool:
     """자료 없음·휴장 표식을 단 날을 다시 묻는다. 못 받으면 다음 확인을 하루 뒤로 미루고
-    None. 받으면 표식을 지우고 **다시 만들어야 할 기록 날짜**(그날과 그날을 5일 창에 둔
-    기록)를 돌려준다 — 기록은 지우지 않는다. 지우면 보관 범위 밖 기록은 ③ 이 다시 안
-    만들어 영영 사라지고(델타 리뷰 실측), 다시 만드는 동안 화면이 빈다. 호출부가
-    `st["stale"]` 에 남겨 제자리에서 다시 만든다(`_rebuild`)."""
+    False. 받으면 **다시 만들어야 할 기록 날짜**(그날과 그날을 5일 창에 둔 기록)를
+    `stale`·`st["stale"]` 에 넣어 **상태를 먼저 저장한 뒤** 원자료를 쓰고 표식을 지운다 —
+    기록은 지우지 않는다. 지우면 보관 범위 밖 기록은 ③ 이 다시 안 만들어 영영 사라지고
+    (델타 리뷰 실측), 다시 만드는 동안 화면이 빈다. 제자리에서 다시 만드는 건 호출부다
+    (`_rebuild`).
+
+    순서가 거꾸로면 그 사이 재시작(배포·watchdog)이 표식만 지우고 의무를 잃는다 — 그
+    뒤로는 표식이 없어 재질의가 안 서고, 기록이 있어 ③ 도, 자료 없음 카드라 재확인도
+    건너뛰어 카드가 영영 남는다(델타 리뷰 M1 실측). 상태를 저장하지 못하면 표식을 그대로
+    두고 다음 주기가 다시 묻는다(의무만 잃는 것보다 2콜을 한 번 더 쓰는 쪽이 낫다)."""
     if not budget.take(2):
         raise _Stop()
     nets, _why, _kind = fetch_nets(d)
@@ -868,9 +910,8 @@ def _reopen(d: str, raw: dict, cal: list, budget: _Budget, now: datetime,
         raw = dict(raw)
         raw["at"] = _iso(now)
         _write_json(_raw_path(d), raw)
-        return None
-    _write_json(_raw_path(d), {"date": d, "fetched_at": _iso(now), "nets": nets})
-    ok.append(d)
+        return False
+    ok.append(d)        # 원천이 지금 답했다 — 저장 여부와 무관한 사실(양성 대조)
     out = []
     for x in (x for x in cal if x >= d):
         rec = load_record(x)
@@ -881,9 +922,20 @@ def _reopen(d: str, raw: dict, cal: list, budget: _Budget, now: datetime,
         win = rec.get("window") or [x]
         if x == d or win[0] <= d <= x:
             out.append(x)
+    new = set(out) - stale
+    if new:
+        stale |= new
+        st["stale"] = sorted(stale)
+        if not _save_state(st):
+            stale -= new
+            st["stale"] = sorted(stale)
+            log.warning("daily_inst: %s 다시 만들 기록을 상태에 남기지 못해 표식을 그대로 "
+                        "둔다 — 다음 주기가 다시 묻는다", d)
+            return False
+    _write_json(_raw_path(d), {"date": d, "fetched_at": _iso(now), "nets": nets})
     log.warning("daily_inst: %s 표식(%s)을 지웠다 — 다시 물으니 자료가 왔다 · 다시 만들 기록 %s",
                 d, raw.get("nodata"), ", ".join(out) or "없음")
-    return out
+    return True
 
 
 def _rebuild(x: str, sessions: list[str], budget: _Budget, now: datetime, deferred=(),
@@ -903,22 +955,25 @@ def _rebuild(x: str, sessions: list[str], budget: _Budget, now: datetime, deferr
     return rec
 
 
-def _live_control(bad: str, sessions: list[str], budget: _Budget) -> bool:
-    """'자료 없음' 확정의 양성 대조를 지금 잰다 — 그날보다 나중 거래일 중 원자료가 캐시된
-    가장 최근 날을 원천에 다시 묻는다(2콜, 아무것도 안 쓴다). 그 날이 지금 답하면 순매수
-    엔드포인트는 살아 있고 그날만 비는 것이다.
+def _live_control(after: str, sessions: list[str], budget: _Budget,
+                  purpose: str) -> str | None:
+    """순매수 엔드포인트가 지금 살아 있는지 잰다 — `after` 보다 나중 거래일 중 원자료가
+    캐시된 가장 최근 날을 원천에 다시 묻는다(2콜, 아무것도 안 쓴다). 답하면 그 날짜,
+    아니면(물을 날이 없거나 예산이 모자라도) None.
 
+    쓰는 곳이 둘이다 — ③ 둘째 날이 실패했을 때 '원천 장애' 와 '여러 날이 실제로 빔' 을
+    가르고, ④ '자료 없음' 확정의 양성 대조(그날보다 **나중** 날짜가 지금 답한다)가 된다.
     이번 주기에 나중 날짜를 새로 받은 경우만 대조로 치면, 나중 날짜는 처음 받은 뒤 캐시라
-    15분 주기에서 그 조건이 거의 다시 서지 않아 빠진 날 하나가 이웃 기록을 영영 막는다
-    (델타 리뷰 실측). 다른 조건(횟수·12시간·한 날만 실패)이 다 섰을 때만 부른다."""
-    later = [x for x in sessions if x > bad
+    15분 주기에서 그 조건이 거의 다시 서지 않아 빠진 날이 이웃 기록을 영영 막는다(델타
+    리뷰 실측)."""
+    later = [x for x in sessions if x > after
              and (r := load_raw(x)) and not r.get("nodata")]
     if not later or not budget.take(2):
-        return False
+        return None
     nets, why, _kind = fetch_nets(later[-1])
-    log.warning("daily_inst: %s 자료 없음 확정 대조 — %s 를 다시 물으니 %s", bad, later[-1],
+    log.warning("daily_inst: %s — %s 를 다시 물으니 %s", purpose, later[-1],
                 "답함" if nets is not None else f"안 됨({why})")
-    return nets is not None
+    return later[-1] if nets is not None else None
 
 
 # ── 판정(순수) ──────────────────────────────────────────────────────────────
@@ -1369,7 +1424,7 @@ def tick_and_render() -> dict:
 
 
 # ── 진단 CLI ────────────────────────────────────────────────────────────────
-_WHY_VER = 3   # 2026-10-12 델타 리뷰 반영(③ 휴장 뺀 기대일 · 최신 기록 = 자료 없음 카드 제외)
+_WHY_VER = 4   # 2026-10-12 최종 델타 리뷰 반영(③ 휴장으로 뺀 날 전부 · 지난 거래일 여럿 결측 판정)
 _RUN_HINT = "cd ~/stock && .venv/bin/python -m bot.daily_inst --why"
 
 
@@ -1407,9 +1462,17 @@ def why() -> int:
     exp = _expected(now)
     settled = settled_session(now)
     bh, bm = boundary_hm()
+    skipped: list = []
+    if settled and exp and settled != exp:
+        # 뺀 날은 하나가 아닐 수 있다 — 달력 기준일만 적으면 연달아 휴장으로 답한 날 중
+        # 마지막 하나만 말한다(델타 리뷰 L4).
+        from bot import market_calendar as mc
+        start = (datetime.fromisoformat(exp) + timedelta(days=1)).date().isoformat()
+        skipped = [d for d in (mc.sessions_between("KR", start, settled) or [])
+                   if _is_holiday(d)] or [settled]
     print(f"③ 지금 받아야 할 마지막 거래일: {exp or '판정 불가(달력 없음)'}"
-          + (f"(달력 기준 {settled} 은 KRX 가 휴장으로 답해 뺐다)"
-             if settled and exp and settled != exp else "")
+          + (f"(달력 기준 {', '.join(skipped)} 은 KRX 가 휴장으로 답해 뺐다)"
+             if skipped else "")
           + f" · 그날을 요구하는 시각 {bh:02d}:{bm:02d} KST")
     recs = load_records()
     latest = latest_real(recs)

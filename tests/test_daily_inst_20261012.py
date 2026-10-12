@@ -407,6 +407,25 @@ def test_missing_needs_twelve_hours_and_three_tries(cal, store, krx, n_pre, age_
     assert bool(di.load_raw("2026-10-06")) is marked
 
 
+def test_missing_is_never_marked_in_a_tick_cut_by_an_outage(cal, store, krx):
+    """같은 주기에 확정 조건을 다 채운 날(3회 · 12시간 · 더 나중 날짜를 받음)이 있어도,
+    그 뒤에 원천 장애로 끊긴 주기면 확정하지 않는다 — 장애 중의 '빈 응답' 은 그날 자료가
+    없다는 증거가 아니다(독립 리뷰). 같은 설정에서 장애가 없으면 확정되는 것은
+    `test_missing_needs_twelve_hours_and_three_tries[2-13-True]` 가 잰다."""
+    f = krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-06", "2026-09-30"},
+            mcap_mode={"2026-09-30": "empty"})
+    now = _at("2026-10-12", 21, 0)
+    di._write_json(di._STATE, {"days": {"2026-10-06": {
+        "n": 2, "reason": "x(시가총액은 나옴)", "kind": "empty", "traded": True,
+        "first": di._iso(now - timedelta(hours=13)),
+        "next_try": di._iso(now - timedelta(minutes=1))}}})
+    res = di.tick(now=now, budget=100)
+    assert ("net", "20261012", "KOSPI", "기관합계") in f.calls, "기준일을 안 받았다(대조가 안 섰다)"
+    assert res["status"] == "fail" and "KRX 가 답하지 않음" in res["reason"]
+    assert di.load_state()["days"]["2026-10-06"]["n"] == 3, "확정 조건까지 가지 않았다(재현 실패)"
+    assert not di.load_raw("2026-10-06"), "원천 장애로 끊긴 주기에 '자료 없음' 을 확정했다"
+
+
 def test_missing_needs_a_later_date_answering_now(cal, store, krx):
     """더 **나중** 날짜가 **지금** 답해야 대조가 선다 — 앞 날짜만 새로 받은 것은 대조가
     아니고(시총은 다른 엔드포인트라 순매수만 죽은 것과 구별하지 못한다), 나중 날짜가
@@ -436,7 +455,7 @@ def test_missing_needs_a_later_date_answering_now(cal, store, krx):
     assert di.load_raw("2026-10-06")["nodata"] == "missing"
     # 예산이 2콜도 안 남았으면 대조를 못 한 것이다 — 묻지도 확정하지도 않는다
     n = len(f.calls)
-    assert di._live_control("2026-10-06", SESS, di._Budget(1)) is False
+    assert di._live_control("2026-10-06", SESS, di._Budget(1), "t") is None
     assert len(f.calls) == n, "예산 없이 물었다"
 
 
@@ -516,11 +535,87 @@ def test_day_failures_outside_the_window_are_dropped(cal, store, krx):
     assert di.load_state()["days"] == {}
 
 
-def test_two_bad_past_days_are_an_outage(cal, store, krx):
-    krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-06", "2026-09-30"})
+def test_two_bad_past_days_with_a_dead_endpoint_are_an_outage(cal, store, krx):
+    """지난 거래일 둘이 실패했는데 이번 주기에 순매수를 받은 날도 없고, 캐시된 가장 나중
+    날을 다시 물어도 안 답하면 원천 장애다 — 전체 백오프."""
+    f = krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-06", "2026-09-30"})
+    f.boom = {"2026-10-12"}
+    _seed_raw(_SEED, skip={"2026-10-06", "2026-09-30"})
     res = di.tick(now=_at("2026-10-12", 21, 0), budget=100)
     assert res["status"] == "fail" and "여러 날" in res["reason"]
+    assert "다시 물어 답한 날도 없다" in res["reason"]
+    assert [c for c in f.calls if c[1] == "20261012"], "장애로 끊기 전에 대조를 안 물었다"
     assert di.load_state()["fails"] == 1
+    assert not di.load_raw("2026-10-06") and not di.load_raw("2026-09-30"), "장애에 표식을 달았다"
+
+
+def test_two_bad_past_days_with_a_live_endpoint_keep_building_then_both_get_cards(
+        cal, store, krx):
+    """둘째 날이 실패해도 엔드포인트가 살아 있으면(이번 주기에 받은 날이 있다) 장애로
+    끊지 않고 그 앞 날짜를 계속 메운다 — 무조건 끊으면 두 날이 실제로 비는 동안 기준일
+    하나만 만들고 보드가 멈춘다(델타 리뷰 실측). 충분히 지켜본 뒤엔 두 날 다 '자료 없음'
+    카드가 되고 대조는 한 주기에 한 번이다(셋째 날이 실패해도 다시 묻지 않는다)."""
+    bad = {"2026-10-06", "2026-10-01", "2026-09-30"}
+    f = krx({d: _day() for d in SESS}, ready=set(SESS) - bad)
+    now = _at("2026-10-12", 21, 0)
+    res = di.tick(now=now, budget=100)
+    st = di.load_state()
+    assert res["status"] == "ok" and st["fails"] == 0 and not st.get("next_try")
+    assert "2026-09-29" in res["built"], "둘째 실패에서 끊어 그 앞 날짜를 안 메웠다"
+    assert bad <= set(st["days"])
+    assert len([c for c in f.calls if c[1] == "20261012" and c[2] == "KOSPI"]) == 1, \
+        "이번 주기에 받은 날이 있는데 대조를 또 물었다"
+    t = now
+    for _ in range(2):
+        t = max(di._parse(st["days"][d]["next_try"]) for d in bad) + timedelta(minutes=1)
+        di.tick(now=t, budget=100)
+        st = di.load_state()
+    assert all(st["days"][d]["n"] == 3 for d in bad)
+    assert not any(di.load_raw(d) for d in bad), "12시간도 안 지켜보고 확정했다"
+    # 이튿날 아침: 받은 날이 없는 주기 — 캐시된 가장 나중 날을 한 번만 다시 물어 대조한다
+    n = len(f.calls)
+    res = di.tick(now=_at("2026-10-13", 10, 0), budget=100)
+    assert res["status"] != "fail"
+    live = [c for c in f.calls[n:] if c[1] == "20261012" and c[2] == "KOSPI"]
+    assert len(live) == 1, f"대조를 {len(live)}번 물었다(한 주기 한 번)"
+    for d in bad:
+        assert di.load_raw(d)["nodata"] == "missing"
+    assert not bad & set(di.load_state().get("days", {}))
+    built = di.tick(now=_at("2026-10-13", 10, 16), budget=100)["built"]
+    assert {"2026-10-12", "2026-10-06", "2026-10-02", "2026-10-01", "2026-09-30"} <= set(built)
+    assert all(di.load_record(d)["nodata"] for d in bad)
+
+
+def test_failed_control_is_asked_once_and_marks_nothing(cal, store, krx):
+    """엔드포인트는 살아 있지만(재질의로 앞 날짜를 받았다) 그건 빈 날들보다 **앞**이라
+    대조가 아니다 — 가장 나중 날을 한 번 다시 묻고, 안 답하면 두 날 다 확정하지 않는다.
+    대조는 한 주기에 한 번이다(실패한 대조를 날마다 또 물으면 2콜씩 샌다)."""
+    bad = {"2026-10-06", "2026-10-07"}
+    f = krx({d: _day() for d in SESS}, ready=set(SESS) - bad)
+    f.boom = {"2026-10-12"}
+    now = _at("2026-10-12", 21, 0)
+    _seed_raw(_SEED, skip=bad)
+    di._mark_nodata("2026-09-25", "missing", "x", now - timedelta(hours=25))
+    old = {"n": 2, "reason": "x(시가총액은 나옴)", "kind": "empty", "traded": True,
+           "first": di._iso(now - timedelta(hours=30)),
+           "next_try": di._iso(now - timedelta(minutes=1))}
+    di._write_json(di._STATE, {"days": {d: dict(old) for d in bad}})
+    res = di.tick(now=now, budget=100)
+    assert di.load_raw("2026-09-25").get("nets"), "앞 날짜 재질의가 안 됐다(재현이 안 됐다)"
+    assert res["status"] != "fail", "엔드포인트가 답했는데 장애로 끊었다"
+    assert len([c for c in f.calls if c[1] == "20261012" and c[2] == "KOSPI"]) == 1, \
+        "실패한 대조를 다시 물었다"
+    assert not any(di.load_raw(d) for d in bad), "빈 날보다 앞 날짜로 확정했다"
+
+
+def test_second_failure_without_budget_for_the_control_is_not_an_outage(cal, store, krx):
+    """대조할 예산이 없으면 장애로 단정하지 않는다 — 예산 소진으로 끝난다."""
+    krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-06", "2026-09-30"})
+    _seed_raw(_SEED, skip={"2026-10-06", "2026-09-30"})
+    # 10-06(2) + 시총 대조(1) + 09-30(2) + 시총 대조(1) = 6 — 대조 2콜이 안 남는다
+    res = di.tick(now=_at("2026-10-12", 21, 0), budget=7)
+    st = di.load_state()
+    assert res["status"] == "budget" and st["fails"] == 0 and not st.get("next_try")
 
 
 def test_partial_mcap_is_not_cached_and_is_asked_again(cal, store, krx):
@@ -806,19 +901,137 @@ def test_reopen_rebuilds_neighbours_in_place_even_outside_the_kept_range(cal, st
 
 
 def test_stale_rebuilds_survive_a_tick_that_runs_out_of_budget(cal, store, krx):
-    """표식 재질의가 예산을 다 써도 다시 만들 기록을 잃지 않는다 — 상태에 남겨 다음 주기가
-    잇는다. 예산 소진은 실패가 아니다(그 날짜를 늦추지 않는다)."""
+    """재구성(①-b)이 예산을 다 써도 다시 만들 기록을 잃지 않는다 — 상태에 남겨 다음 주기가
+    잇는다. 예산 소진은 실패가 아니다(그 날짜를 늦추지 않는다). 재질의(①)는 2콜로 성공하고,
+    캐시만으로 되는 이웃은 다시 만든 뒤 09-22 재구성(09-16 이 필요)에서 예산이 끝난다."""
     krx({d: _day() for d in SESS})
     now = _at("2026-10-12", 21, 0)
     _seed_raw(_SEED, skip={"2026-09-16", "2026-09-22"})
     _pre_reopen_store(now)
-    res = di.tick(now=now, budget=2)        # 재질의 2콜로 끝 — 09-22 재구성엔 09-16 이 필요
+    res = di.tick(now=now, budget=2)
     st = di.load_state()
     assert res["status"] == "budget" and st["stale"] == ["2026-09-22"]
     assert di.load_record("2026-09-22")["nodata"], "옛 기록을 지웠다"
     assert "stale:2026-09-22" not in st.get("days", {}), "예산 소진을 실패로 셌다"
     res = di.tick(now=now + timedelta(minutes=15), budget=100)
     assert "2026-09-22" in res["built"] and di.load_state()["stale"] == []
+
+
+_NEIGHBOURS = {"2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28"}
+
+
+def test_reopen_runs_out_of_budget_after_a_successful_reopen(cal, store, krx):
+    """재질의(①) 자체가 예산으로 멈춰도 앞서 성공한 재질의의 재구성 대상은 남는다 —
+    표식 둘, 예산 2콜: 나중 표식(09-22)이 2콜로 풀리고 앞 표식(09-21)에서 끝난다(델타
+    리뷰 L3)."""
+    f = krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    _seed_raw(_SEED, skip={"2026-09-16", "2026-09-22"})
+    _pre_reopen_store(now)
+    di._mark_nodata("2026-09-21", "missing", "x(시가총액은 나옴)", now - timedelta(hours=25))
+    res = di.tick(now=now, budget=2)
+    st = di.load_state()
+    assert res["status"] == "budget" and set(st["stale"]) == _NEIGHBOURS
+    assert di.load_raw("2026-09-21")["nodata"] == "missing"
+    assert not [c for c in f.calls if c[1] == "20260921"], "예산 없이 물었다"
+    res = di.tick(now=now + timedelta(minutes=15), budget=100)
+    assert _NEIGHBOURS <= set(res["built"]) and di.load_state()["stale"] == []
+
+
+def test_rebuild_obligation_is_saved_before_the_mark_is_lifted(cal, store, krx, monkeypatch):
+    """표식을 지운 뒤 재구성 전에 프로세스가 죽어도(배포 재시작·watchdog) 다시 만들 기록을
+    잃지 않는다 — 의무를 **먼저** 상태에 저장하고 원자료를 쓴다. 거꾸로면 표식이 없어
+    재질의가 안 서고, 기록이 있어 ③ 도, 자료 없음 카드라 재확인도 건너뛰어 카드가 영영
+    남았다(델타 리뷰 M1 실측)."""
+    krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    _seed_raw(_SEED, skip={"2026-09-22"})
+    _pre_reopen_store(now)
+    real = di._rebuild
+
+    def killed(*a, **k):
+        raise SystemExit("restart")             # tick 의 except Exception 도 못 잡는다
+
+    monkeypatch.setattr(di, "_rebuild", killed)
+    with pytest.raises(SystemExit):
+        di.tick(now=now, budget=100)
+    assert di.load_raw("2026-09-22").get("nets"), "표식을 안 풀었다(재현이 안 됐다)"
+    assert set(di.load_state()["stale"]) == _NEIGHBOURS, "재구성 의무를 잃었다"
+    monkeypatch.setattr(di, "_rebuild", real)
+    res = di.tick(now=now + timedelta(minutes=15), budget=100)
+    assert _NEIGHBOURS <= set(res["built"])
+    assert not di.load_record("2026-09-22").get("nodata")
+    assert di.load_record("2026-09-23")["prev"] == "2026-09-22"
+
+
+def test_reopen_keeps_the_mark_when_the_obligation_cannot_be_saved(cal, store, krx,
+                                                                  monkeypatch):
+    """의무를 상태에 남기지 못하면 표식을 그대로 둔다 — 다음 주기가 다시 묻는다(의무만
+    잃는 것보다 2콜을 한 번 더 쓰는 쪽이 낫다)."""
+    krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    _seed_raw(_SEED, skip={"2026-09-22"})
+    _pre_reopen_store(now)
+    at0 = di.load_raw("2026-09-22")["at"]
+    monkeypatch.setattr(di, "_save_state", lambda st: False)
+    res = di.tick(now=now, budget=100)
+    raw = di.load_raw("2026-09-22")
+    assert raw.get("nodata") == "missing" and raw["at"] == at0, "저장 못 한 채 표식을 지웠다"
+    assert di.load_record("2026-09-22")["nodata"]
+    assert not _NEIGHBOURS & set(res["built"]), "남기지 못한 의무로 기록을 다시 만들었다"
+
+
+def test_stale_rebuild_blocked_by_a_deferred_window_day_is_not_a_failure(cal, store, krx):
+    """재구성할 기록의 창 날짜가 이미 다른 이유로 재시도 대기면 그건 재구성 실패가 아니다
+    — 실패로 세면 '재시도 대기 중' 이 사유로 남고 그 기록이 늦춰지고 판정이 ⚠️ 가 된다
+    (델타 리뷰 L1)."""
+    krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    di._write_json(di._STATE, {"stale": ["2026-10-07"], "days": {"2026-10-06": {
+        "n": 1, "reason": "x(시가총액은 나옴)", "kind": "empty", "traded": True,
+        "first": di._iso(now - timedelta(hours=1)),
+        "next_try": di._iso(now + timedelta(minutes=10))}}})
+    di.tick(now=now, budget=100)
+    st = di.load_state()
+    assert "stale:2026-10-07" not in st.get("days", {}), "대기 중인 창 날짜를 재구성 실패로 셌다"
+    assert st["stale"] == ["2026-10-07"], "재구성 대상을 버렸다"
+
+
+def test_rebuild_of_the_oldest_span_day_keeps_a_full_window_despite_krx_holidays(
+        cal, store, krx):
+    """창 범위 맨 앞 기록도 5일 창을 다 가진다 — 한 주기가 보는 거래일 여유가 2일이면
+    KRX 휴장 표식 셋에 그 기록을 다시 만들 때 연속 목록이 판정 불가로 바뀐다(델타 리뷰
+    L5)."""
+    krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    hol = ("2026-10-01", "2026-10-07", "2026-10-08")
+    for d in hol:
+        di._mark_nodata(d, "holiday", "x", now)         # 방금 찍음 — 재질의 안 함
+    sess = [d for d in SESS if d <= "2026-10-12" and d not in hol]
+    x = sess[-di.SPAN_N]
+    di._write_json(di._STATE, {"stale": [x]})
+    res = di.tick(now=now, budget=200)
+    assert x in res["built"]
+    rec = di.load_record(x)
+    assert len(rec["window"]) == di.STREAK_N and not rec["streak_missing"]
+    assert rec["tiers"][0]["lists"]["streak"] is not None
+
+
+def test_waiting_state_of_an_older_target_clears_when_budget_runs_out(cal, store, krx):
+    """예산이 끝난 주기에 집계 대기를 남기는 건 **지금 기준일**의 대기일 때만이다 —
+    앞 기준일의 대기를 남기면 어제 사유가 새 기준일의 ⏳ 줄에 붙는다(델타 리뷰 L2)."""
+    krx({d: _day() for d in SESS},
+        ready=set(SESS) - {"2026-10-01", "2026-10-02", "2026-10-12"})
+    now = _at("2026-10-12", 22, 0)
+    for d in ("2026-10-01", "2026-10-02"):
+        di._mark_nodata(d, "missing", "x", now - timedelta(hours=25))
+    di._write_json(di._STATE, {"waiting": True, "wait_date": "2026-10-08", "wait_n": 3,
+                               "reason": "2026-10-08 기관 순매수가 아직 비었다",
+                               "next_try": di._iso(now - timedelta(minutes=1))})
+    res = di.tick(now=now, budget=2)
+    st = di.load_state()
+    assert res["status"] == "budget"
+    assert st["waiting"] is False and "wait_date" not in st and not st["reason"]
 
 
 def test_stale_outside_the_window_is_dropped_not_built(cal, store, krx):
@@ -935,7 +1148,8 @@ def test_why_counts_real_records_only(cal, store, monkeypatch, capsys):
 
 def test_why_names_the_expected_session_after_a_krx_holiday(cal, store, monkeypatch, capsys):
     """③ 은 판정과 같은 '받아야 할 날' 을 찍는다 — 달력 기준만 찍으면 KRX 가 휴장으로
-    답한 날 뒤에 판정 줄과 다른 날짜를 말한다(델타 리뷰)."""
+    답한 날 뒤에 판정 줄과 다른 날짜를 말한다(델타 리뷰). 뺀 날은 **전부** 적는다 —
+    달력 기준일만 적으면 연달아 휴장으로 답한 날 중 마지막 하나만 말한다(델타 리뷰 L4)."""
     monkeypatch.setattr(di, "_pykrx_stock", lambda: (_ for _ in ()).throw(AssertionError("받았다")))
     now = _at("2026-10-13", 21, 0)
     monkeypatch.setattr(di, "_now", lambda now=None: _at("2026-10-13", 21, 0))
@@ -944,8 +1158,8 @@ def test_why_names_the_expected_session_after_a_krx_holiday(cal, store, monkeypa
     di._mark_nodata("2026-10-13", "holiday", "x", now)
     assert di.why() == 0
     out = capsys.readouterr().out
-    assert ("③ 지금 받아야 할 마지막 거래일: 2026-10-08(달력 기준 2026-10-13 은 KRX 가 "
-            "휴장으로 답해 뺐다)") in out
+    assert ("③ 지금 받아야 할 마지막 거래일: 2026-10-08(달력 기준 2026-10-12, 2026-10-13 은 "
+            "KRX 가 휴장으로 답해 뺐다)") in out
     # 휴장 표식이 없으면 덧붙이지 않는다
     for p in (store / "raw").glob("*.json"):
         p.unlink()
@@ -1020,6 +1234,29 @@ def test_krx_session_gets_a_default_timeout(monkeypatch, caplog):
         di._ensure_krx_timeout()
     warned = [r for r in caplog.records if "timeout 을 못 붙였다" in r.getMessage()]
     assert len(warned) == 1 and "_auth_session" in warned[0].getMessage()
+
+
+def test_krx_timeout_is_reattached_per_market_after_a_mid_fetch_relogin(monkeypatch):
+    """KOSPI 조회 도중 재로그인이 세션 객체를 새로 만들면 같은 `fetch_nets` 의 KOSDAQ
+    조회가 timeout 없이 나갔다 — 시장마다 다시 붙인다(델타 리뷰 L6)."""
+    import requests
+    auth = pytest.importorskip("pykrx.website.comm.auth")
+    krxs = type("S", (), {"session": requests.Session()})()
+    monkeypatch.setattr(auth, "_auth_session", krxs)
+    seen = {}
+
+    class Relogin(FakeKRX):
+        def get_market_net_purchases_of_equities(self, a, b, mkt, inv):
+            if mkt == "KOSPI":
+                krxs.session = requests.Session()      # 1시간 만료 재로그인(refresh)
+            else:
+                seen[mkt] = getattr(krxs.session, "_noah_timeout", False)
+            return super().get_market_net_purchases_of_equities(a, b, mkt, inv)
+
+    f = Relogin({"2026-10-12": _day()}, MCAP)
+    monkeypatch.setattr(di, "_pykrx_stock", lambda: f)
+    nets, _why, kind = di.fetch_nets("2026-10-12")
+    assert kind == "ok" and seen == {"KOSDAQ": True}, "재로그인 뒤 KOSDAQ 조회가 무방비였다"
 
 
 def test_missing_credentials_backs_off_without_calling_source(cal, store, monkeypatch):
