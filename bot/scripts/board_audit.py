@@ -429,13 +429,14 @@ def _holdings_news_line(records=None, state=None, now=None) -> str:
     사람이 넣는다) · fail ❌(집계 못 함·봇 주기 멈춤·원천 전멸·AI 정리 실패) · none ❓(보유 종목 없음)."""
     try:
         from bot import holdings_news as hn
-        recs = hn.load_records() if records is None else records
+        recs = hn.load_records(limit=3) if records is None else records     # 판정엔 최근 며칠이면 된다
+        n = hn.count_records() if records is None else len(records)
         st = hn.load_state() if state is None else state
         kind, line = hn.status_verdict(recs, now, st)
     except Exception as exc:                                   # noqa: BLE001
         return f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"
     mark = {"ok": "✅", "wait": "⚠️", "pending": "⚠️", "fail": "❌"}.get(kind, "❓")
-    return f"   {mark} 기록 {len(recs)}일 · {line}"
+    return f"   {mark} 기록 {n}일 · {line}"
 
 
 def _world_sectors_lines(state=None, now=None) -> list[str]:

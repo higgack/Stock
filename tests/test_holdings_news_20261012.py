@@ -37,6 +37,13 @@ def hn(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_TG_LOCK", d / ".tg_inbox.lock")
     monkeypatch.setattr(m, "_RUN_LOCK", d / ".run.lock")
     monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "usage.jsonl")
+    monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "usage_rollup.json")
+    # 바깥 조회 둘(미국 ETF 목록·DART 한글명)은 **원천 쪽에서** 막는다 — 샌드박스에선 프록시가 소켓 가드를
+    # 지나 실제로 나갔다(#312). 래퍼(`_us_etf`·`_dart_ko`)는 그대로 둬서 같이 잰다.
+    import bot.dart_client as dc
+    import bot.us_symbol_names as us
+    monkeypatch.setattr(us, "us_etf_symbols", lambda **k: set())
+    monkeypatch.setattr(dc, "get_dart", lambda: types.SimpleNamespace(news_search_name=lambda c: None))
     return m
 
 
@@ -202,16 +209,33 @@ def test_fetch_naver_needs_both_keys(hn, monkeypatch):
     assert hn._fetch_naver("삼성전자") == (None, "네이버 검색 키(NAVER_CLIENT_ID/SECRET) 없음")
 
 
+_LONG = "삼성전자가 HBM4 를 공급한다. " + "공급 일정과 물량 설명이 이어진다. " * 12     # 200자 넘는 본문
+
+
 def test_extract_naver_body(hn):
     html = ("<html><article id='dic_area' class='x'><script>var a=1;</script>"
-            "삼성전자가 <b>HBM4</b> 를 공급한다.&nbsp;끝 문장.<br>"
+            f"{_LONG.replace('HBM4', '<b>HBM4</b>')}&nbsp;끝 문장.<br>"
             "Copyright ⓒ 언론사 무단 전재</article></html>")
     b = hn.extract_naver_body(html)
-    assert b.startswith("삼성전자가 HBM4 를 공급한다.") and "Copyright" not in b and "var a" not in b
+    assert b.startswith("삼성전자가 HBM4 를 공급한다.") and b.endswith("끝 문장.")
+    assert "Copyright" not in b and "var a" not in b
     # article 태그가 없어도 dic_area 시작점에서 읽는다
-    assert hn.extract_naver_body("<div id=\"dic_area\">본문 일부</div>").startswith("본문 일부")
+    assert hn.extract_naver_body(f"<div id=\"dic_area\">본문 일부 {_LONG}</div>").startswith("본문 일부")
     assert hn.extract_naver_body("<div>다른 구조</div>") == "" and hn.extract_naver_body("") == ""
     assert len(hn.extract_naver_body("<article id='dic_area'>" + "가" * 5000 + "</article>")) == hn.BODY_CHARS
+
+
+def test_extract_naver_body_keeps_text_after_a_photo_credit(hn):
+    """맨 위 사진 출처('ⓒ 뉴스1 DB')에서 자르면 본문이 사진 설명 한 줄로 줄어든 채 '읽음' 으로 세졌다
+    (리뷰 2026-10-12 합성 화면 실측) — 저작권 꼬리는 `FOOT_MIN` 글자 뒤에서만 자른다."""
+    html = (f"<article id='dic_area'>삼성전자 서초사옥 ⓒ 뉴스1 DB<br>{_LONG}"
+            "<br>Copyright ⓒ 뉴스1. All rights reserved. 무단 전재 및 재배포 금지</article>")
+    b = hn.extract_naver_body(html)
+    assert b.startswith("삼성전자 서초사옥 ⓒ 뉴스1 DB 삼성전자가 HBM4") and "All rights" not in b
+    assert hn.extract_naver_body("<article id='dic_area'>삼성전자 서초사옥 ⓒ 뉴스1 DB</article>") == ""
+    # 너무 짧게 뽑히면(사진 설명만·구조 변경) 본문으로 세지 않는다
+    assert hn.extract_naver_body("<article id='dic_area'>" + "가" * (hn.BODY_MIN - 1) + "</article>") == ""
+    assert hn.extract_naver_body("<article id='dic_area'>" + "가" * hn.BODY_MIN + "</article>") == "가" * 80
 
 
 def test_fetch_body_only_reads_naver_hosts(hn, monkeypatch):
@@ -223,10 +247,10 @@ def test_fetch_body_only_reads_naver_hosts(hn, monkeypatch):
 
     def fake_get(url, **kw):
         got.append(url)
-        return types.SimpleNamespace(status_code=200, text="<article id='dic_area'>본문</article>")
+        return types.SimpleNamespace(status_code=200, text=f"<article id='dic_area'>{_LONG}</article>")
     monkeypatch.setattr(requests, "get", fake_get)
     assert hn._fetch_body("https://www.press.com/news/1") == ""        # 언론사 원문은 안 읽는다
-    assert hn._fetch_body("https://n.news.naver.com/mnews/article/001/1") == "본문"
+    assert hn._fetch_body("https://n.news.naver.com/mnews/article/001/1") == _LONG.strip()
     assert got == ["https://n.news.naver.com/mnews/article/001/1"]
     monkeypatch.setattr(fc, "naver_paused", lambda: True)             # 일시정지면 안 친다
     assert hn._fetch_body("https://n.news.naver.com/mnews/article/001/2") == ""
@@ -304,7 +328,8 @@ def _collect_fixture(hn):
 def test_collect_window_filters_dedupe_telegram_and_body(hn):
     model, recs, fetch, body, bodies = _collect_fixture(hn)
     rec = hn.collect(_t(_NOW), model=model, records=recs, fetch=fetch, body=body, pace=0)
-    assert rec["window"] == {"since": "2026-10-11T07:15:00+09:00", "until": "2026-10-12T07:15:00+09:00"}
+    # 직전 창 끝(10-11 07:15)보다 6시간 앞에서 연다 — 늦게 닿은 입력을 놓치지 않게(겹친 건 지난 기록과 대조)
+    assert rec["window"] == {"since": "2026-10-11T01:15:00+09:00", "until": "2026-10-12T07:15:00+09:00"}
     by = {s["key"]: s for s in rec["stocks"]}
     sam = by["KR:005930"]
     titles = [it["title"] for it in sam["items"]]
@@ -430,12 +455,14 @@ def _rec(*stocks):
             "llm": {"calls": 0, "pt": 0, "ot": 0, "cost_usd": 0.0}}
 
 
-def _llm(resp, *, pt=1000, ot=200, why=""):
+def _llm(resp, *, pt=1000, ot=200, why="", kind=None):
+    """가짜 `call_llm` — (글, 입력, 출력, 사유, 갈래). 갈래를 안 주면 사유로 정한다(no_key · 거부 · 정상)."""
     calls = []
 
     def f(prompt):
         calls.append(prompt)
-        return (resp(prompt) if callable(resp) else resp), pt, ot, why
+        k = kind if kind is not None else ("no_key" if why == "no_key" else "rejected" if why else "")
+        return (resp(prompt) if callable(resp) else resp), pt, ot, why, k
     f.calls = calls
     return f
 
@@ -476,15 +503,16 @@ def test_analyze_reasons_unreadable_and_call_failure(hn):
     hn.analyze(_rec(s), llm=_llm("이건 JSON 이 아님"))
     assert s["reason"] == "AI 응답을 못 읽음" and s["status"] == "pending"
     u = _stock("KR:B")
-    hn.analyze(_rec(u), llm=_llm(None, pt=0, ot=0, why="AI 호출 실패(TimeoutError: x)"))
-    assert u["reason"] == "AI 호출 실패(TimeoutError: x)"
+    hn.analyze(_rec(u), llm=_llm(None, pt=0, ot=0, why="AI 호출 실패(ClientError: 400 bad)", kind="rejected"))
+    assert u["reason"] == "AI 호출 실패(ClientError: 400 bad)" and u["tries"] == 1   # 거부는 시도로 센다
 
 
 def test_analyze_without_key_says_so_and_spends_nothing(hn):
     rec = _rec(_stock("KR:A"), _stock("KR:B"), _stock("KR:C", status="ok"))
     f = _llm(None, pt=0, ot=0, why="no_key")
     done = hn.analyze(rec, llm=f)
-    assert done == {"calls": 0, "analyzed": 0, "failed": 0, "no_key": True} and len(f.calls) == 1
+    assert done == {"calls": 0, "analyzed": 0, "failed": 0, "no_key": True, "transient": False}
+    assert len(f.calls) == 1
     assert [s["reason"] for s in rec["stocks"][:2]] == ["AI 키(GOOGLE_API_KEY) 미설정 — 뉴스만 보여 줍니다"] * 2
     assert rec["stocks"][2]["reason"] == "" and rec["llm"]["calls"] == 0
 
@@ -579,7 +607,7 @@ def _answer_all(prompt):
 
 def test_tick_waits_until_run_time(hn, portfolio):
     res = hn.tick(_t("2026-10-12T06:00"), llm=_llm(_answer_all), fetch=_news_for_all, pace=0)
-    assert res == {"status": "wait"} and hn.load_records() == []
+    assert res["status"] == "wait" and res["calls"] == 0 and hn.load_records() == []
     assert hn.load_state()["last_tick"] == "2026-10-12T06:00:00+09:00"
 
 
@@ -803,7 +831,7 @@ def test_regenerate_writes_only_when_content_changes(hn, tmp_path, monkeypatch):
 def test_day_fragments_hold_only_the_past_days_in_view(hn, monkeypatch):
     monkeypatch.setattr(hn, "RENDER_DAYS", 3)
     recs = [dict(_page_rec(), date=d) for d in ("2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12")]
-    fr = hn.day_fragments(recs)
+    fr = hn.day_fragments(recs, _t("2026-10-12T09:00"))
     assert sorted(fr) == ["hn_d_2026-10-10.html", "hn_d_2026-10-11.html"]     # 최신일·창 밖은 없다
     body = fr["hn_d_2026-10-11.html"]
     assert body == hn._day_body(recs[2]) and "data-q='삼성전자 005930'" in body and "<details" not in body[:20]
@@ -882,10 +910,26 @@ global.fetch = (url) => { fetched.push(url); return Promise.resolve(Object.proto
   ? { ok: true, text: () => Promise.resolve(frags[url]) } : { ok: false, status: 404 }); };
 const flush = () => new Promise(r => setTimeout(r, 0));
 eval(src);
-const vis = () => root.querySelectorAll('[data-hncard]').filter(c => c.style.display !== 'none').map(c => c.getAttribute('data-q'));
-const snap = () => ({ st: st.textContent, vis: vis(), days: days.map(d => ({ lazy: d.getAttribute('data-lazy'),
+const cards = () => root.querySelectorAll('[data-hncard]');
+const vis = () => cards().filter(c => c.style.display !== 'none').map(c => c.getAttribute('data-q'));
+const snap = () => ({ st: st.textContent, vis: vis(), hits: cards().filter(c => c.classList.contains('hn-hit'))
+  .map(c => c.getAttribute('data-q')), days: days.map(d => ({ lazy: d.getAttribute('data-lazy'),
   display: d.style.display, open: d.open, note: (d.querySelector('.hn-lazy') || {}).textContent || '' })), fetched: fetched.slice() });
+const steps = process.argv[5] ? JSON.parse(fs.readFileSync(process.argv[5], 'utf8')) : null;
 (async () => {
+  if (steps) {                     // [동작, 인자] 목록 — 시나리오를 테스트가 정한다
+    const out = {};
+    for (const [op, arg] of steps) {
+      if (op === 'search') { q.value = arg; q.fire('input'); }
+      else if (op === 'pill') { pills.find(p => p.getAttribute('data-hnf') === arg).fire('click'); }
+      else if (op === 'open' || op === 'close') { days[arg].open = op === 'open'; days[arg].fire('toggle');
+        await flush(); await flush(); }
+      else if (op === 'snap') { out[arg] = snap(); }
+      else throw new Error('하네스가 모르는 동작: ' + op);
+    }
+    console.log(JSON.stringify(out));
+    return;
+  }
   const out = { base: snap() };
   q.value = '카카'; q.fire('input'); out.search = snap();
   days[1].open = true; days[1].fire('toggle'); await flush(); await flush(); out.loaded = snap();
@@ -911,7 +955,7 @@ def test_page_js_filters_loaded_days_and_loads_past_days_on_open(hn, tmp_path):
     old = {**_page_rec(), "date": "2026-10-10"}
     recs = [today, yday, old]
     page = hn.render_page(recs, {}, _t("2026-10-12T09:00"), gen="GEN")
-    frags = {k: v for k, v in hn.day_fragments(recs).items() if k.endswith("10-11.html")}   # 10-10 은 404
+    frags = {k: v for k, v in hn.day_fragments(recs, _t("2026-10-12T09:00")).items() if k.endswith("10-11.html")}   # 10-10 은 404
     (tmp_path / "page.html").write_text(page, encoding="utf-8")
     (tmp_path / "frags.json").write_text(json.dumps(frags, ensure_ascii=False), encoding="utf-8")
     (tmp_path / "page.js").write_text(hn._HN_JS, encoding="utf-8")
@@ -1194,3 +1238,657 @@ def test_module_docs_name_every_path_it_writes():
     for p in ("days/YYYY-MM-DD.json", "state.json", "tg_inbox.jsonl"):
         assert p in doc
     assert os.path.basename(str(m.TG_INBOX)) == "tg_inbox.jsonl"
+
+
+# ── 독립 리뷰 반영(2026-10-12) ───────────────────────────────────────────────
+def test_excerpt_centres_on_a_mention_deep_in_a_paragraph(hn):
+    """앞에서부터 자르면 긴 머리말 뒤에 나온 종목이 잘려 AI 가 근거를 못 본다(리뷰 실측: 800자 뒤 언급
+    → 이름도 내용도 없는 발췌)."""
+    text = "가" * 800 + " 삼성전자 HBM4 퀄 통과 " + "나" * 800
+    ex = hn.excerpt(text, hn.find_mentions(text, "삼성전자")[0])
+    assert "삼성전자 HBM4 퀄 통과" in ex and len(ex) <= hn.SNIPPET_CHARS
+    two = "시황 " * 200 + "\n삼성전자\nHBM4 공급 확대"                  # 긴 머리줄 + 이름만 한 줄
+    ex2 = hn.excerpt(two, hn.find_mentions(two, "삼성전자")[0])
+    assert "삼성전자 HBM4 공급 확대" in ex2 and len(ex2) <= hn.SNIPPET_CHARS
+    t = "머리말 " * 45 + "삼성전자 신고가"                                 # 카드 제목(120자)
+    title = hn.excerpt(t, hn.find_mentions(t, "삼성전자")[0], 120)
+    assert "삼성전자 신고가" in title and len(title) <= 120
+
+
+def test_collect_telegram_item_carries_the_mention(hn):
+    _tg(hn, (9, "2026-10-12T06:30:00+09:00", "시장 정리 " * 120 + "삼성전자 HBM4 퀄 통과", False))
+    rec = hn.collect(_t(_NOW), model=_model(_h("삼성전자", "005930", "KR")), records=[],
+                     fetch=_fetcher({}), pace=0, us_etf=set(), ko=lambda c: "")
+    it = rec["stocks"][0]["items"][0]
+    assert "삼성전자 HBM4 퀄 통과" in it["summary"] and "삼성전자" in it["title"]
+
+
+def _harness(hn, tmp_path, recs, steps, *, frags_ok=None):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    page = hn.render_page(recs, {}, _t("2026-10-12T09:00"), gen="GEN")
+    frags = {k: v for k, v in hn.day_fragments(recs, _t("2026-10-12T09:00")).items() if frags_ok is None or k in frags_ok}
+    for name, body in (("page.html", page), ("frags.json", json.dumps(frags, ensure_ascii=False)),
+                       ("page.js", hn._HN_JS), ("harness.js", _DOM_HARNESS),
+                       ("steps.json", json.dumps(steps, ensure_ascii=False))):
+        (tmp_path / name).write_text(body, encoding="utf-8")
+    r = subprocess.run([node, *(str(tmp_path / n) for n in ("harness.js", "page.html", "frags.json", "page.js",
+                                                            "steps.json"))],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def _three_days():
+    today = _page_rec()
+    yday = {**_page_rec(), "date": "2026-10-11"}
+    old = {**_page_rec(), "date": "2026-10-10"}
+    return [today, yday, old]
+
+
+def test_page_js_keeps_a_past_day_open_after_loading_it(hn, tmp_path):
+    """검색·필터 없이 지난 날을 펼치면 조각을 불러온 뒤에도 **열려 있어야** 한다 — 불러오기가 `run()` 을
+    부르고, 필터가 없을 때 기본 접힘으로 되돌리면 두 번 눌러야 열린다(리뷰 실측)."""
+    o = _harness(hn, tmp_path, _three_days(), [["open", 1], ["snap", "opened"], ["search", "삼성"],
+                                               ["search", ""], ["snap", "cleared"]])
+    op = o["opened"]
+    assert op["fetched"] == ["hn_d_2026-10-11.html"] and [d["open"] for d in op["days"]] == [True, True, False]
+    assert sorted(op["vis"]) == sorted(["삼성전자 005930", "엔비디아 NVDA", "도요타 7203.T",
+                                        "에코프로비엠 247540"] * 2)
+    # 필터를 걸었다가 지우면 그때만 기본 접힘으로 돌아간다(필터가 연 날을 닫는다)
+    assert [d["open"] for d in o["cleared"]["days"]] == [True, False, False]
+
+
+def _pill_rec():
+    def st(key, mk, *, pro=False, con=False, tg=False):
+        items = [{"n": 1, "src": "telegram" if tg else "naver", "title": f"{key} 글", "summary": "",
+                  "link": "", "source": "x", "ts": "2026-10-12T06:00+09:00", "dated_only": False}]
+        return {"key": f"{mk}:{key}", "market": mk, "ticker": key, "sym": key, "name": key, "value": 1.0,
+                "status": "ok", "relevant": [1], "items": items,
+                "pros": [{"t": "p", "refs": [1]}] if pro else [], "cons": [{"t": "c", "refs": [1]}] if con else []}
+    return {"date": "2026-10-12", "stocks": [st("A1", "KR", pro=True), st("B2", "US", con=True, tg=True),
+                                             st("C3", "JP", pro=True, con=True), st("D4", "KR", tg=True)]}
+
+
+@pytest.mark.parametrize("pill, want", [
+    ("KR", ["A1 A1", "D4 D4"]), ("XX", ["B2 B2", "C3 C3"]), ("pro", ["A1 A1", "C3 C3"]),
+    ("con", ["B2 B2", "C3 C3"]), ("tg", ["B2 B2", "D4 D4"]), ("all", ["A1 A1", "B2 B2", "C3 C3", "D4 D4"]),
+])
+def test_page_js_pills_filter_by_their_own_attribute(hn, tmp_path, pill, want):
+    """필터마다 **제 속성**만 본다 — 카드 넷의 속성 조합을 서로 다르게 둬야 다른 칸을 보는 변형이 잡힌다(#91c)."""
+    o = _harness(hn, tmp_path, [_pill_rec()], [["pill", pill], ["snap", "s"]])
+    assert sorted(o["s"]["vis"]) == want
+
+
+def test_page_js_search_highlight_is_removed_when_cleared(hn, tmp_path):
+    o = _harness(hn, tmp_path, [_pill_rec()], [["search", "C3"], ["snap", "on"], ["search", ""], ["snap", "off"]])
+    assert o["on"]["hits"] == ["C3 C3"] and o["off"]["hits"] == [] and len(o["off"]["vis"]) == 4
+
+
+def test_page_js_retries_a_failed_load(hn, tmp_path):
+    """불러오기에 실패한 날은 접었다 다시 펼치면 **다시 묻는다** — 진행 표시를 안 풀면 영영 못 연다."""
+    o = _harness(hn, tmp_path, _three_days(), [["open", 2], ["close", 2], ["open", 2], ["snap", "s"]],
+                 frags_ok=set())
+    assert o["s"]["fetched"] == ["hn_d_2026-10-10.html"] * 2
+    assert o["s"]["days"][2]["note"] == "불러오기 실패 — 접었다 다시 펼쳐 보세요."
+
+
+# ── 원천 장애 판정(리뷰 Medium 3) ──────────────────────────────────────────────
+def _src_rec(*stocks, fail=0, reasons=None, **got):
+    return {"date": "2026-10-12", "stocks": list(stocks),
+            "sources": {"fail": fail, "fail_reasons": reasons or ({"원천 X": fail} if fail else {}),
+                        "telegram": {"matched": 0}, **got}}
+
+
+def _s(mk, *, failed=False, raw=3):
+    return {"market": mk, "status": "ok", "items": [1] if raw and not failed else [],
+            "via": "" if failed else "naver", "via_why": "원천 X" if failed else "", "raw_n": 0 if failed else raw}
+
+
+@pytest.mark.parametrize("rec, kind, frag", [
+    # 몇 종목의 일시 실패는 장애가 아니다 — 그래도 ✅ 줄이 그 수를 말한다(#41)
+    (_src_rec(_s("KR", failed=True), *[_s("KR")] * 9, fail=1, naver=9), "ok", "원천 못 받은 종목 1"),
+    # 보유의 25% 이상(3종목 이상)이 못 받으면 장애 — 전멸만 잡던 판정은 312/379 실패도 ✅ 였다(리뷰 실측)
+    (_src_rec(*[_s("KR", failed=True)] * 3, *[_s("KR")] * 7, fail=3, naver=7), "fail", "원천 실패 3/10종목 — 원천 X"),
+    # 한 시장이 통째로 실패(3종목 이상)면 비율이 낮아도 장애
+    (_src_rec(*[_s("KR", failed=True)] * 3, *[_s("US")] * 17, fail=3, yfinance=17), "fail",
+     "KR 보유 3종목 전부 원천 실패 — 원천 X"),
+    # 시장 종목이 적으면(2) 통째 실패도 장애로 치지 않는다(일시 실패 둘이 매일 ❌ 가 되지 않게)
+    (_src_rec(*[_s("KR", failed=True)] * 2, *[_s("US")] * 10, fail=2, yfinance=10), "ok", "원천 못 받은 종목 2"),
+    # 시장 전부가 0건 — yfinance 는 깨진 응답을 빈 목록으로 숨긴다
+    (_src_rec(*[_s("US", raw=0)] * 4, *[_s("KR")] * 4, naver=4, yfinance=4), "fail",
+     "US 보유 4종목 전부 원천이 0건을 줌"),
+    (_src_rec(*[_s("US", raw=0)] * 2, *[_s("KR")] * 4, naver=4, yfinance=2), "ok", "보유 6종목"),
+])
+def test_status_verdict_counts_partial_outages(hn, rec, kind, frag):
+    k, line = hn.status_verdict([rec], _t("2026-10-12T09:00"), {})
+    assert k == kind and frag in line, line
+
+
+def test_status_verdict_outage_wins_over_pending(hn):
+    rec = _src_rec(*[_s("KR", failed=True)] * 3, {**_s("KR"), "status": "pending", "reason": "AI 대기"},
+                   fail=3, naver=1)
+    k, line = hn.status_verdict([rec], _t("2026-10-12T09:00"), {})
+    assert k == "fail" and line.endswith("Pros/Cons 대기 1종목"), line
+
+
+@pytest.mark.parametrize("ago, kind", [(44, "wait"), (46, "fail")])
+def test_status_verdict_stale_tick_boundary(hn, ago, kind):
+    now = _t("2026-10-12T09:00")
+    st = {"last_tick": (now - timedelta(minutes=ago)).isoformat()}
+    assert hn.status_verdict([], now, st)[0] == kind
+
+
+# ── DART 한글명 · 영문 이름 대소문자(리뷰 Medium 4) ─────────────────────────────
+def test_with_ko_only_asks_for_korean_stocks_without_hangul(hn):
+    asked = []
+    ko = lambda c: asked.append(c) or "네이버"                          # noqa: E731
+    nv = hn.with_ko({"name": "NAVER", "market": "KR", "ticker": "035420"}, ko)
+    assert nv["ko"] == "네이버" and asked == ["035420"]
+    assert hn.with_ko({"name": "삼성전자", "market": "KR", "ticker": "005930"}, ko) == \
+        {"name": "삼성전자", "market": "KR", "ticker": "005930"}
+    assert "ko" not in hn.with_ko({"name": "NVIDIA", "market": "US", "ticker": "NVDA"}, ko)
+    assert asked == ["035420"]                                       # 한글 이름·해외는 묻지 않는다
+    assert hn.search_name(nv) == "네이버"                              # 국내 뉴스 검색은 한글 이름으로
+    assert hn.aliases(nv) == [("NAVER", "name"), ("Naver", "name"), ("네이버", "name"), ("035420", "code")]
+
+
+def test_ascii_name_matches_its_case_variants(hn):
+    s = {"name": "S-Oil", "market": "KR", "ticker": "010950", "ko": "에쓰오일"}
+    for text in ("S-OIL, 정제마진 개선", "S-Oil 배당", "에쓰오일 실적"):
+        assert hn.mentioned(text, hn.aliases(s)), text
+    assert not hn.mentioned("s-oil 소문자는 안 잡는다", hn.aliases(s))
+    assert hn.aliases({"name": "NVDA", "market": "US", "ticker": "NVDA"})[-1] == ("NVDA", "ticker")
+    assert not hn.find_mentions("Now 급등", "NOW", "ticker")          # 티커는 대소문자 그대로만
+
+
+def test_collect_uses_the_dart_korean_name(hn):
+    """'NAVER' 로는 국내 뉴스가 거의 안 걸린다(2026-06-08 NAVER 0-news) — 검색·이름 거르기·AI 머리가 한글
+    이름도 쓰고, 몇 종목을 확인했는지 화면이 센다."""
+    seen = []
+
+    def fetch(st):
+        seen.append(hn.search_name(st))
+        return ([_it("네이버, 웹툰 해외 매출 확대", "2026-10-12T06:00:00+09:00", link="https://p/1"),
+                 _it("다른 회사 기사", "2026-10-12T05:00:00+09:00", link="https://p/2")], "naver", "")
+    rec = hn.collect(_t(_NOW), model=_model(_h("NAVER", "035420", "KR")), records=[], fetch=fetch, pace=0,
+                     us_etf=set(), ko=lambda c: "네이버")
+    s = rec["stocks"][0]
+    assert seen == ["네이버"] and s["ko"] == "네이버" and [it["title"] for it in s["items"]] == ["네이버, 웹툰 해외 매출 확대"]
+    assert rec["sources"]["ko_try"] == 1 and rec["sources"]["ko_ok"] == 1 and rec["sources"]["dropped_name"] == 1
+    assert "### key=KR:035420 · NAVER / 네이버(035420, 한국)" in hn.build_prompt([s])
+    assert "영문 이름 국내 종목 한글명 확인 1/1" in hn._day_meta(rec)
+    miss = hn.collect(_t(_NOW), model=_model(_h("NAVER", "035420", "KR")), records=[], fetch=fetch, pace=0,
+                      us_etf=set(), ko=lambda c: "")
+    assert "ko" not in miss["stocks"][0] and "한글명 확인 0/1" in hn._day_meta(miss)
+
+
+def test_dart_ko_takes_only_hangul_and_survives_errors(hn, monkeypatch, caplog):
+    import bot.dart_client as dc
+    box = {"v": "네이버"}
+    monkeypatch.setattr(dc, "get_dart", lambda: types.SimpleNamespace(news_search_name=lambda c: box["v"]))
+    assert hn._dart_ko("035420") == "네이버"
+    box["v"] = "NAVER"                                                 # 영문만 오면 '' — 검색어로 못 쓴다
+    assert hn._dart_ko("035420") == ""
+    monkeypatch.setattr(dc, "get_dart", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    with caplog.at_level("WARNING", logger="bot.holdings_news"):
+        assert hn._dart_ko("035420") == ""
+    assert any("DART 한글명 조회 실패 035420: x" in r.getMessage() for r in caplog.records)
+    # 수집이 기본값으로 실제 `_dart_ko` 를 쓴다(주입 없이)
+    monkeypatch.setattr(dc, "get_dart", lambda: types.SimpleNamespace(news_search_name=lambda c: "네이버"))
+    rec = hn.collect(_t(_NOW), model=_model(_h("NAVER", "035420", "KR")), records=[], fetch=_fetcher({}),
+                     pace=0, us_etf=set())
+    assert rec["stocks"][0]["ko"] == "네이버"
+
+
+def test_us_etf_wrapper_feeds_collect_and_why(hn, portfolio, monkeypatch):
+    """수집은 목록을 받고(네트워크 허용), `--why` 는 캐시만 본다(읽기 전용) — 같은 래퍼, 인자만 다르다."""
+    import bot.us_symbol_names as us
+    asked = []
+    monkeypatch.setattr(us, "us_etf_symbols", lambda **k: asked.append(k) or {"NVDA"})
+    rec = hn.collect(_t(_NOW), model=_model(_h("엔비디아", "NVDA", "US", source="alias"),
+                                            _h("삼성전자", "005930", "KR")), records=[], fetch=_fetcher({}), pace=0)
+    assert [s["key"] for s in rec["stocks"]] == ["KR:005930"] and rec["universe"]["etf"] == ["엔비디아"]
+    out = []
+    hn.why(_t("2026-10-12T09:00"), out=out.append)
+    assert asked == [{"cache_only": False}, {"cache_only": True}]
+    assert any("미국 ETF 목록 1종(캐시)" in ln for ln in out)
+    monkeypatch.setattr(us, "us_etf_symbols", lambda **k: (_ for _ in ()).throw(OSError("disk")))
+    assert hn._us_etf() == set()
+
+
+# ── 기록 읽기 상한(리뷰 Medium 5) ─────────────────────────────────────────────
+def test_load_records_reads_only_the_newest_files(hn):
+    for d in ("2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12"):
+        hn.save_record({"date": d, "stocks": []})
+    (hn._DAYS / "2026-10-07.json").write_text(json.dumps({"date": "2026-10-12", "stocks": []}), encoding="utf-8")
+    (hn._DAYS / "x.json").write_text(json.dumps({"date": "2026-10-13", "stocks": []}), encoding="utf-8")
+    # 이름이 날짜가 아닌 파일은 셈에도 '최근' 자리에도 안 낀다(이름순으로 맨 뒤에 서서 최신 하루를 밀어낸다)
+    assert [r["date"] for r in hn.load_records(limit=2)] == ["2026-10-11", "2026-10-12"]
+    assert [r["date"] for r in hn.load_records()][0] == "2026-10-08"    # 이름과 안의 날짜가 다르면 건너뜀
+    assert hn.count_records() == 6 and hn.load_records(limit=0) == []
+
+
+def test_tick_and_regenerate_read_a_bounded_number_of_days(hn, portfolio, monkeypatch, tmp_path):
+    import bot.dashboard as d
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path / "arch")
+    seen = []
+    real = hn.load_records
+    monkeypatch.setattr(hn, "load_records", lambda limit=None: seen.append(limit) or real(limit))
+    hn.tick(_t(_NOW), llm=_llm(_answer_all), fetch=_news_for_all, body=lambda l: "", pace=0)
+    hn.regenerate(_t(_NOW))
+    assert seen == [3, hn.RENDER_DAYS]
+
+
+def test_render_total_counts_kept_days_not_loaded_ones(hn):
+    html = hn.render_page([_page_rec()], {}, _t("2026-10-12T09:00"), gen="GEN", total=45)
+    assert f"총 45일 기록 중 최근 {hn.RENDER_DAYS}일 표시(그 앞은 보관만)" in html
+
+
+# ── 창 겹침(리뷰 Medium 6) ────────────────────────────────────────────────────
+def test_next_window_overlaps_to_catch_late_arrivals(hn):
+    """07:14 글이 07:15 집계 **뒤에** 수신함에 닿으면 어느 날에도 안 실렸다(리뷰 실측) — 다음 창은 직전 창
+    끝보다 6시간 앞에서 열고, 이미 실린 항목은 지난 기록과 대조해 뺀다."""
+    model = _model(_h("삼성전자", "005930", "KR"))
+    day1 = hn.collect(_t("2026-10-12T07:15"), model=model, records=[], fetch=_fetcher({}), pace=0, us_etf=set())
+    _tg(hn, (1, "2026-10-12T07:00:00+09:00", "삼성전자 일찍 온 글", False))
+    day1 = hn.collect(_t("2026-10-12T07:15"), model=model, records=[], fetch=_fetcher({}), pace=0, us_etf=set())
+    assert [it["id"] for it in day1["stocks"][0]["items"]] == [1]
+    _tg(hn, (2, "2026-10-12T07:14:00+09:00", "삼성전자 늦게 닿은 글", False))   # 집계 뒤에 수신함에 들어옴
+    day2 = hn.collect(_t("2026-10-13T07:15"), model=model, records=[_public_copy(hn, day1)], fetch=_fetcher({}),
+                      pace=0, us_etf=set())
+    assert day2["window"]["since"] == "2026-10-12T01:15:00+09:00"
+    assert [it["id"] for it in day2["stocks"][0]["items"]] == [2]        # 늦은 글은 실리고 어제 글은 안 겹친다
+
+
+def _public_copy(hn, rec):
+    return json.loads(json.dumps(hn._public(rec), ensure_ascii=False))
+
+
+def test_in_window_end_is_exclusive(hn):
+    since, until = _t("2026-10-11T07:15"), _t("2026-10-12T07:15")
+    assert hn._in_window({"ts": "2026-10-12T07:15:00+09:00"}, since, until) is False   # 끝 시각은 다음 창 몫
+    assert hn._in_window({"ts": "2026-10-11T07:15:00+09:00"}, since, until) is True
+
+
+# ── AI 일시 오류(리뷰 Medium 7) ───────────────────────────────────────────────
+def test_llm_fail_kind(hn):
+    from google.genai import errors as ge
+    body = {"error": {"code": 0, "message": "m", "status": "S"}}
+    assert hn._llm_fail_kind(ge.ServerError(503, body)) == "transient"
+    assert hn._llm_fail_kind(ge.ClientError(429, body)) == "transient"
+    assert hn._llm_fail_kind(ge.ClientError(400, body)) == "rejected"
+    assert hn._llm_fail_kind(ge.ClientError(403, body)) == "rejected"
+    assert hn._llm_fail_kind(TimeoutError("t")) == "transient"
+    assert hn._llm_fail_kind(type("ReadTimeout", (Exception,), {})("t")) == "transient"
+    assert hn._llm_fail_kind(type("ConnectError", (Exception,), {})("c")) == "transient"
+    assert hn._llm_fail_kind(ValueError("bug")) == "rejected"
+
+
+class _FakeModels:
+    def __init__(self, errs):
+        self.errs, self.calls = list(errs), []
+
+    def generate_content(self, model, contents, config=None):
+        self.calls.append(config is not None)
+        if self.errs:
+            raise self.errs.pop(0)
+        return types.SimpleNamespace(text='{"stocks": []}', usage_metadata=types.SimpleNamespace(
+            prompt_token_count=10, candidates_token_count=2))
+
+
+def _fake_genai(monkeypatch, errs, key="k" * 20):
+    import bot.genai_factory as gf
+    models = _FakeModels(errs)
+    monkeypatch.setattr(gf, "effective_key", lambda: key)
+    monkeypatch.setattr(gf, "make_client", lambda *a, **k: types.SimpleNamespace(models=models))
+    return models
+
+
+def test_call_llm_retries_without_config_only_on_400(hn, monkeypatch):
+    from google.genai import errors as ge
+    body = {"error": {"code": 400, "message": "bad config", "status": "INVALID_ARGUMENT"}}
+    m = _fake_genai(monkeypatch, [ge.ClientError(400, body)])
+    text, pt, ot, why, kind = hn.call_llm("p")
+    assert (text, pt, ot, why, kind) == ('{"stocks": []}', 10, 2, "", "") and m.calls == [True, False]
+    m = _fake_genai(monkeypatch, [ge.ServerError(503, {"error": {"code": 503, "message": "UNAVAILABLE"}})])
+    text, _, _, why, kind = hn.call_llm("p")
+    assert text is None and kind == "transient" and why.startswith("AI 일시 오류(ServerError: 503")
+    assert m.calls == [True]                                          # 503 을 같은 주기에 두 번 두드리지 않는다
+    m = _fake_genai(monkeypatch, [ge.ClientError(403, {"error": {"code": 403, "message": "denied"}})])
+    assert hn.call_llm("p")[3:] == ("AI 호출 실패(ClientError: 403 None. {'error': {'code': 403, 'message': "
+                                    "'denied'}})", "rejected") and m.calls == [True]
+    assert _fake_genai(monkeypatch, [], key="") and hn.call_llm("p") == (None, 0, 0, "no_key", "no_key")
+
+
+def test_call_llm_masks_the_key_in_the_reason(hn, monkeypatch):
+    """사유는 화면에 실린다 — 원천 오류 문구에 키가 되읊어져도 가린다(§Secrets)."""
+    key = "AIza" + "x" * 30
+    _fake_genai(monkeypatch, [RuntimeError(f"bad key {key} rejected")], key=key)
+    why = hn.call_llm("p")[3]
+    assert key not in why and "***" in why
+
+
+def test_transient_ai_errors_do_not_fail_the_day(hn):
+    """30분 장애(일시 오류 세 주기)가 그날 분석을 통째로 '실패' 로 굳혔다(리뷰 실측) — 일시 오류는 시도로
+    세지 않고 그 주기를 바로 멈춘다(남은 묶음을 같은 장애에 다시 던지지 않는다)."""
+    rec = _rec(*[_stock(f"KR:{i:06d}", 1) for i in range(hn.BATCH_MAX + 2)])          # 묶음 둘
+    down = _llm(None, pt=0, ot=0, why="AI 일시 오류(ServerError: 503 UNAVAILABLE)", kind="transient")
+    for _ in range(hn.MAX_ANALYZE_TRIES + 1):
+        done = hn.analyze(rec, llm=down)
+        assert done["transient"] and done["calls"] == 1
+    assert len(down.calls) == hn.MAX_ANALYZE_TRIES + 1
+    ss = rec["stocks"]
+    assert all(s["status"] == "pending" and s["tries"] == 0 for s in ss)
+    assert ss[0]["reason"] == "AI 일시 오류(ServerError: 503 UNAVAILABLE) — 다음 주기에 다시"
+    done = hn.analyze(rec, llm=_llm(_answer_all))                     # 회복하면 바로 정리된다
+    assert done["analyzed"] == len(ss) and all(s["status"] == "ok" for s in ss)
+
+
+def test_tick_stops_on_a_transient_error_before_yesterday(hn, portfolio):
+    """일시 오류면 그 주기는 거기서 멈춘다 — 같은 장애에 어제 대기분까지 던지지 않는다."""
+    hn.save_record(_pending_day("2026-10-11"))
+    down = _llm(None, pt=0, ot=0, why="AI 일시 오류(ServerError: 503)", kind="transient")
+    res = hn.tick(_t(_NOW), llm=down, fetch=_news_for_all, body=lambda l: "", pace=0)
+    assert res["transient"] and len(down.calls) == 1
+    y = [r for r in hn.load_records() if r["date"] == "2026-10-11"][0]["stocks"][0]
+    assert y["reason"] == "" and y["status"] == "pending"
+
+
+def test_rejected_ai_calls_count_tries_and_keep_going(hn):
+    rec = _rec(*[_stock(f"KR:{i:06d}", 1) for i in range(hn.BATCH_MAX + 2)])
+    bad = _llm(None, pt=0, ot=0, why="AI 호출 실패(ClientError: 400 too long)", kind="rejected")
+    done = hn.analyze(rec, llm=bad)
+    assert done["calls"] == 2 and not done["transient"]                # 거부는 그 묶음만 — 다음 묶음은 간다
+    assert all(s["tries"] == 1 for s in rec["stocks"])
+
+
+# ── 지난 날 대기(리뷰 Low 8) ──────────────────────────────────────────────────
+def _pending_day(date, key="KR:005930"):
+    s = _stock(key, 1)
+    return {"date": date, "window": {"until": f"{date}T07:15:00+09:00"}, "stocks": [s],
+            "llm": {"calls": 0, "pt": 0, "ot": 0, "cost_usd": 0.0}}
+
+
+def test_tick_finishes_the_latest_previous_days_pending(hn, portfolio):
+    """자정 무렵 늦은 집계·장애로 남은 어제의 '대기' 는 오늘만 보는 주기로는 영영 안 끝났다(리뷰) — 오늘 먼저,
+    남은 상한으로 직전 기록 **하나**의 대기분도 정리한다(그보다 앞선 날은 안 돈다)."""
+    hn.save_record(_pending_day("2026-10-10", "KR:000001"))
+    hn.save_record(_pending_day("2026-10-11"))
+    res = hn.tick(_t("2026-10-12T06:00"), llm=_llm(_answer_all), fetch=_news_for_all, pace=0)
+    assert res["status"] == "wait" and res["analyzed"] == 1
+    by = {r["date"]: r["stocks"][0]["status"] for r in hn.load_records()}
+    assert by == {"2026-10-10": "pending", "2026-10-11": "ok"}
+
+
+def test_tick_resumes_yesterday_after_today(hn, portfolio):
+    hn.save_record(_pending_day("2026-10-11"))
+    seen = []
+
+    def llm(prompt):
+        seen.append([ln.split("key=")[1].split(" ")[0] for ln in prompt.splitlines() if ln.startswith("### key=")])
+        return _answer_all(prompt), 10, 2, "", ""
+    hn.tick(_t(_NOW), llm=llm, fetch=_news_for_all, body=lambda l: "", pace=0)
+    assert seen == [["KR:005930", "US:NVDA"], ["KR:005930"]]           # 오늘 둘 → 어제 하나
+
+
+def test_older_pending_days_say_they_did_not_finish(hn):
+    now = _t("2026-10-12T09:00")
+    recs = [_pending_day("2026-10-10"), _pending_day("2026-10-11"), {**_pending_day("2026-10-12")}]
+    fr = hn.day_fragments(recs, now)
+    assert "Pros/Cons 대기 — 다음 주기에 정리" in fr["hn_d_2026-10-11.html"]      # 직전 날은 아직 이어서 정리
+    assert "Pros/Cons 정리를 마치지 못함 — 사유 미기록 · 뉴스만 표시" in fr["hn_d_2026-10-10.html"]
+    page = hn.render_page(recs, {}, now, gen="GEN")
+    assert "Pros/Cons 대기 — 다음 주기에 정리" in page.split("<details class='hn-day'")[1]
+
+
+# ── 본문이 AI 에 다 닿는다(리뷰 Low 9) ─────────────────────────────────────────
+def test_prompt_carries_the_whole_body(hn):
+    s = _stock("KR:A", 1)
+    s["items"][0]["summary"] = "요" * 500
+    s["items"][0]["_body"] = "가" * (hn.BODY_CHARS - 10) + "끝까지닿는본문"
+    p = hn.build_prompt([s])
+    assert "끝까지닿는본문" in p and "요" * 300 in p            # 줄 상한(요약)과 본문 상한이 따로다
+
+
+# ── yfinance 0건(리뷰 Low 10) ─────────────────────────────────────────────────
+def test_yfinance_empty_also_asks_google(hn, monkeypatch):
+    us = {"key": "US:NVDA", "market": "US", "ticker": "NVDA", "name": "엔비디아"}
+    monkeypatch.setattr(hn, "_fetch_yf", lambda t: ([], ""))
+    monkeypatch.setattr(hn, "_fetch_google", lambda q, mk: ([{"title": "g"}], ""))
+    assert hn.fetch_stock_news(us) == ([{"title": "g"}], "google", "yfinance 0건")
+    monkeypatch.setattr(hn, "_fetch_google", lambda q, mk: (None, "구글 실패"))
+    assert hn.fetch_stock_news(us) == ([], "yfinance", "")               # 둘 다 0건 — 실패로 세지 않는다
+    monkeypatch.setattr(hn, "_fetch_yf", lambda t: ([{"title": "y"}], ""))
+    monkeypatch.setattr(hn, "_fetch_google", lambda q, mk: pytest.fail("yfinance 가 줬으면 구글은 안 묻는다"))
+    assert hn.fetch_stock_news(us) == ([{"title": "y"}], "yfinance", "")
+
+
+def test_collect_records_raw_counts(hn):
+    rec = hn.collect(_t(_NOW), model=_model(_h("엔비디아", "NVDA", "US", source="alias")), records=[],
+                     fetch=_fetcher({"US:NVDA": ([_it("old", "2026-10-01T06:00:00+09:00", link="https://y/0")],
+                                                  "yfinance", "")}), pace=0, us_etf=set())
+    s = rec["stocks"][0]
+    assert s["raw_n"] == 1 and s["items"] == []                         # 원천은 줬는데 창 밖 — 0건과 다르다
+
+
+# ── 미국 ETF(리뷰 Low 11) ─────────────────────────────────────────────────────
+_NASDAQ_LISTED = ("Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n"
+                  "AIRR|First Trust RBA American Industrial Renaissance ETF|G|N|N|100|Y|N\n"
+                  "NVDA|NVIDIA Corporation - Common Stock|Q|N|N|100|N|N\n"
+                  "File Creation Time: 1012202622:01|||||||")
+_OTHER_LISTED = ("ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n"
+                 "DRAM|Roundhill Memory ETF|P|DRAM|Y|100|N|DRAM\n"
+                 "IBM|International Business Machines Corporation Common Stock|N|IBM|N|100|N|IBM\n"
+                 "File Creation Time: 1012202622:01|||||||")
+
+
+def test_parse_etf_symbols_reads_both_files(hn):
+    from bot.us_symbol_names import parse_etf_symbols
+    assert parse_etf_symbols(_NASDAQ_LISTED) == {"AIRR"} and parse_etf_symbols(_OTHER_LISTED) == {"DRAM"}
+    assert parse_etf_symbols("Symbol|Security Name\nX|y") == set() and parse_etf_symbols("") == set()
+
+
+def test_us_etf_symbols_caches_only_a_complete_list(tmp_path, monkeypatch):
+    import httpx
+
+    import bot.us_symbol_names as us
+    monkeypatch.setattr(us, "_ETF_CACHE_FILE", tmp_path / "etf.json")
+    many = "\n".join(f"E{i:03d}|ETF {i}|G|N|N|100|Y|N" for i in range(120))
+    pages = {us._URLS[0]: _NASDAQ_LISTED.replace("NVDA|", many + "\nNVDA|"), us._URLS[1]: _OTHER_LISTED}
+    hits = []
+
+    def get(url, **kw):
+        hits.append(url)
+        if url not in pages:
+            raise httpx.ConnectError("down")
+        return types.SimpleNamespace(status_code=200, text=pages[url])
+    monkeypatch.setattr(httpx, "get", get)
+    full = us.us_etf_symbols()
+    assert {"AIRR", "DRAM", "E000"} <= full and (tmp_path / "etf.json").exists()
+    assert us.us_etf_symbols() == full and len(hits) == 2               # 캐시 — 다시 안 받는다
+    (tmp_path / "etf.json").unlink()
+    del pages[us._URLS[1]]
+    part = us.us_etf_symbols()
+    assert "DRAM" not in part and not (tmp_path / "etf.json").exists()  # 한쪽만이면 굽지 않는다(#280)
+    assert us.us_etf_symbols(cache_only=True) == set()                  # 진단 — 캐시 없으면 묻지 않고 빈 set
+    assert len(hits) == 4
+
+
+def test_universe_counts_us_etfs_as_etf(hn):
+    stocks, skipped = hn.universe(_model(_h("first trust rba", "AIRR", "US", source="alias"),
+                                         _h("엔비디아", "NVDA", "US", source="alias")), us_etf={"AIRR"})
+    assert [s["key"] for s in stocks] == ["US:NVDA"] and skipped["etf"] == ["first trust rba"]
+    assert skipped["us_etf_n"] == 1
+
+
+def test_day_meta_says_when_the_us_etf_list_was_missing(hn):
+    rec = hn.collect(_t(_NOW), model=_model(_h("엔비디아", "NVDA", "US", source="alias")), records=[],
+                     fetch=_fetcher({}), pace=0, us_etf=set())
+    assert "미국 ETF 목록을 못 받아 ETF 가 회사로 섞였을 수 있음" in hn._day_meta(rec)
+    rec2 = hn.collect(_t(_NOW), model=_model(_h("엔비디아", "NVDA", "US", source="alias")), records=[],
+                      fetch=_fetcher({}), pace=0, us_etf={"AIRR"})
+    assert "ETF 목록" not in hn._day_meta(rec2)
+
+
+# ── 누적 비용 = 파일 + 로테이션 몫(리뷰 Low 12) ─────────────────────────────────
+def test_rotation_keeps_a_per_subsystem_rollup(tmp_path, monkeypatch):
+    import bot.usage_tracker as ut
+    logf = tmp_path / "usage.jsonl"
+    monkeypatch.setattr(ut, "USAGE_LOG", logf)
+    monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "rollup.json")
+    old = time.time() - 40 * 86400
+    rows = [{"ts": old, "type": "llm_call", "cost_usd": 2.0, "subsystem": "holdings_news"},
+            {"ts": old, "type": "llm_call", "cost_usd": 0.5},
+            {"ts": time.time(), "type": "llm_call", "cost_usd": 1.0, "subsystem": "holdings_news"}]
+    logf.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    (tmp_path / "rollup.json").write_text(json.dumps({"cost_usd": 4.0, "by_subsystem": {"holdings_news": 1.0,
+                                                                                        "screener": 3.0}}))
+    ut.load_records()                                                   # 이전 적산분에 더한다(덮지 않는다)
+    assert ut.rollup_cost_usd() == 6.5
+    assert ut.rollup_cost_by_subsystem() == {"holdings_news": 3.0, "screener": 3.0}
+    ut.load_records()                                                   # 다시 돌아도 이중 적산 없음
+    assert ut.rollup_cost_by_subsystem() == {"holdings_news": 3.0, "screener": 3.0}
+
+
+def test_cost_line_total_includes_rotated_cost(hn, tmp_path):
+    now = _t("2026-10-12T09:00")
+    (tmp_path / "usage_rollup.json").write_text(json.dumps(
+        {"cost_usd": 9.0, "by_subsystem": {"holdings_news": 0.01, "screener": 8.99}}), encoding="utf-8")
+    (tmp_path / "usage.jsonl").write_text(json.dumps({"type": "llm_call", "subsystem": "holdings_news",
+                                                      "cost_usd": 0.001, "ts": now.timestamp()}) + "\n",
+                                          encoding="utf-8")
+    from bot.usage_tracker import KRW_PER_USD
+    t, m, x = (round(v * KRW_PER_USD) for v in (0.001, 0.001, 0.011))
+    assert hn._cost_line(now) == f"₩{t:,} / ₩{m:,} / ₩{x:,}"
+    (tmp_path / "usage.jsonl").unlink()
+    assert hn._cost_line(now) == f"₩0 / ₩0 / ₩{round(0.01 * KRW_PER_USD):,}"
+
+
+# ── 조사 꼬리 · 앞 '&' (리뷰 Low 13 · 생존 M13·M14) ───────────────────────────
+@pytest.mark.parametrize("text, alias, hit", [
+    ("삼성전자株 급등", "삼성전자", True), ("도요타社 리콜", "도요타", True),
+    ("SK&LG 합작", "LG", False), ("LG&SK 합작", "LG", False),
+])
+def test_cjk_suffix_and_left_ampersand(hn, text, alias, hit):
+    assert bool(hn.find_mentions(text, alias, "name")) is hit
+
+
+# ── 버린 줄(리뷰 Low 14) ──────────────────────────────────────────────────────
+def test_dropped_lines_are_counted_and_shown(hn):
+    s = _stock("KR:A", 2)
+    hn.analyze(_rec(s), llm=_llm(json.dumps({"stocks": [{"key": "KR:A", "relevant": [1, 2],
+        "pros": [{"t": "근거 없음", "refs": []}, "문자열"], "cons": [{"t": "없는 번호", "refs": [7]}]}]},
+        ensure_ascii=False)))
+    assert s["dropped_lines"] == 3 and s["pros"] == [] and s["cons"] == []
+    card = hn._card({**s, "sym": "A"})
+    assert "AI 가 쓴 3줄을 근거 번호가 없거나 맞지 않아 버림" in card and "가를 내용이 없음" not in card
+    s2 = _stock("KR:B", 1)
+    hn.analyze(_rec(s2), llm=_llm(json.dumps({"stocks": [{"key": "KR:B", "pros": [
+        {"t": "좋다", "refs": [1]}, {"t": "버림", "refs": []}]}]}, ensure_ascii=False)))
+    assert "근거 번호가 없거나 맞지 않아 버린 줄 1개" in hn._card({**s2, "sym": "B"})
+
+
+# ── last_tick 은 시작할 때(리뷰 Low 15) ───────────────────────────────────────
+def test_last_tick_is_saved_before_the_long_collect(hn, portfolio):
+    during = {}
+
+    def fetch(st):
+        during.setdefault("st", hn.load_state())
+        return _news_for_all(st)
+    hn.tick(_t(_NOW), llm=_llm(_answer_all), fetch=fetch, body=lambda l: "", pace=0)
+    assert during["st"]["last_tick"] == "2026-10-12T07:15:00+09:00"
+    assert hn.status_verdict([], _t("2026-10-12T07:40"), during["st"])[0] == "wait"   # 수집 중엔 '멈춤' 아님
+
+
+def test_successful_tick_clears_a_stale_no_holdings_flag(hn, portfolio):
+    """보유 종목이 없던 날의 표시가 남으면 다음 날 00:00~07:10 내내 '보유 종목 없음' 이다(생존 M10)."""
+    hn._save_state({"no_holdings": True, "reason": "자산 대시보드에 보유 종목이 없음(portfolio.json)"})
+    hn.tick(_t(_NOW), llm=_llm(_answer_all), fetch=_news_for_all, body=lambda l: "", pace=0)
+    st = hn.load_state()
+    assert st["no_holdings"] is False and st["reason"] == ""
+    assert hn.status_verdict([], _t("2026-10-13T06:00"), st)[0] == "wait"
+
+
+# ── 국내 구글 결과도 이름으로 거른다(생존 M11) ─────────────────────────────────
+def test_kr_google_results_are_name_filtered_too(hn):
+    rec = hn.collect(_t(_NOW), model=_model(_h("카카오", "035720", "KR")), records=[], pace=0, us_etf=set(),
+                     fetch=_fetcher({"KR:035720": ([_it("카카오 실적", "2026-10-12T05:00:00+09:00", link="https://g/1"),
+                                                    _it("다른 회사", "2026-10-12T04:00:00+09:00", link="https://g/2")],
+                                                   "google", "네이버 키 없음")}))
+    assert [it["title"] for it in rec["stocks"][0]["items"]] == ["카카오 실적"]
+    assert rec["sources"]["dropped_name"] == 1
+
+
+# ── escape(생존 M2~M7·S2) ────────────────────────────────────────────────────
+def test_every_outside_string_is_escaped(hn):
+    """원천·AI·텔레그램이 준 글은 전부 escape — 칸마다 다른 표식을 둬야 하나만 빠져도 잡힌다(#91c)."""
+    rec = _page_rec()
+    ok = rec["stocks"][0]
+    ok["name"] = "삼성'<q1>"
+    ok["pros"] = [{"t": "호재<x2>", "refs": [1]}]
+    ok["items"][0]["link"] = "https://p/?a='b'&c=<x8>"
+    ok["items"][1]["summary"] = "텔레<x7>그램 글 전체"
+    rec["stocks"][2]["reason"] = "실패<x6>"
+    rec["stocks"][4]["name"] = "조용<x4>"
+    rec["sources"]["fail"] = 1
+    rec["sources"]["fail_reasons"] = {"원천<x3>": 1}
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN")
+    for raw in ("<q1>", "<x2>", "<x3>", "<x4>", "<x6>", "<x7>", "<x8>", "'b'"):
+        assert raw not in html, raw
+    for esc in ("&lt;q1&gt;", "호재&lt;x2&gt;", "원천&lt;x3&gt;", "조용&lt;x4&gt;", "실패&lt;x6&gt;",
+                "텔레&lt;x7&gt;", "a=&#x27;b&#x27;&amp;c=&lt;x8&gt;", "data-q='삼성&#x27;&lt;q1&gt; 005930'"):
+        assert esc in html, esc
+
+
+# ── portfolio_watch 첫 채움 실패(생존 P1·P2) ─────────────────────────────────
+class _SeedFails(_Client):
+    def iter_messages(self, chan, **kw):
+        if "min_id" in kw:
+            return super().iter_messages(chan, **kw)          # 부모가 호출을 센다
+        self.calls.append(kw)
+
+        async def bad():
+            raise RuntimeError("FloodWait 같은 실패")
+            yield                                                   # noqa: unreachable — async 생성기로 만든다
+        return bad()
+
+
+def test_portfolio_watch_seed_failure_neither_aborts_nor_retries(hn, tmp_path, monkeypatch):
+    """첫 채움이 실패해도 (P2) 그 주기는 끝까지 간다 — 예외가 새면 `_save_seen` 전에 빠져 자산 zip 을 다음
+    폴링에 또 적재하고 '✅ 자산 업데이트' 를 다시 보낸다 · (P1) 다시 시도하지 않는다 — 실패를 매 폴링 두드리면
+    FloodWait 를 키운다(#258)."""
+    import bot.portfolio_watch as pw
+    monkeypatch.setattr(pw, "_SEEN_PATH", tmp_path / "seen.json")
+    for k, v in (("TG_USER_API_ID", "123"), ("TG_USER_API_HASH", "h"), ("TG_RAG_CHANNEL", "@rag"),
+                 ("TG_USER_SESSION", str(tmp_path / "sess"))):
+        monkeypatch.setenv(k, v)
+    pw._save_seen({"initialized": True, "ids": [100], "last_msg_id": 100})
+    now = datetime.now(timezone.utc)
+    c = _SeedFails([_Msg(101, "삼성전자 새 글", now)], [])
+    _fake_telethon(monkeypatch, c)
+    assert asyncio.run(pw._run_async()) == 0
+    st = pw._load_seen()
+    assert st["last_msg_id"] == 101 and st["tg_seeded"] is True
+    assert [r["id"] for r in hn._tg_read()[0]] == [101]
+    c2 = _SeedFails([_Msg(102, "카카오 글", now)], [])
+    _fake_telethon(monkeypatch, c2)
+    assert asyncio.run(pw._run_async()) == 0
+    assert c2.calls == [{"min_id": 101, "limit": pw._NEW_MSG_CAP}]    # 첫 채움을 다시 시도하지 않는다
+
+
+def test_probe_searches_with_the_dart_korean_name(hn, monkeypatch):
+    """프로브는 수집과 같은 검색어를 쓴다(#145) — 영문 이름 국내 종목은 DART 한글명으로."""
+    import bot.dart_client as dc
+    import bot.portfolio as pf
+    monkeypatch.setattr(pf, "load", lambda: _model(_h("NAVER", "035420", "KR"), _h("HYBE", "352820", "KR")))
+    monkeypatch.setattr(dc, "get_dart", lambda: types.SimpleNamespace(
+        news_search_name=lambda c: "네이버" if c == "035420" else None))
+    asked = []
+    monkeypatch.setattr(hn, "fetch_stock_news", lambda s: asked.append(hn.search_name(s)) or ([], "naver", ""))
+    out = []
+    assert hn.probe(None, out=out.append) == 0
+    assert asked == ["네이버", "HYBE"]
+    assert any("검색어 '네이버'(DART 한글명 '네이버')" in ln for ln in out)
+    assert any("검색어 'HYBE' · ⚠️ 영문 이름인데 DART 한글명을 못 얻음" in ln for ln in out)
