@@ -45238,6 +45238,22 @@ def _breadth_html(data: dict) -> str:
         _bs._SIGNAL_DIR = old
 
 
+_WORLD_SECTOR_PAGES: dict | None = None
+
+
+def _world_sector_html() -> dict:
+    """🌐 국가별 섹터 3보드 — 공용 픽스처(가짜 원천으로 2주를 실제 수집 경로로 쌓음)가 근사 칸·
+    휴장 칸·신호 약한 업종·ETF 표까지 **전부 그리는** 페이지를 준다(빈 픽스처는 껍데기만, #91c)."""
+    global _WORLD_SECTOR_PAGES
+    if _WORLD_SECTOR_PAGES is None:
+        import pathlib
+        import tempfile
+
+        from tests.world_sectors_fixture import build_pages
+        _WORLD_SECTOR_PAGES = build_pages(pathlib.Path(tempfile.mkdtemp(prefix="wsreg")))
+    return _WORLD_SECTOR_PAGES
+
+
 def _daily_inst_html() -> str:
     """🏦 Daily 기관매수 — 행·재확인 메타·'판정 불가' 사유·'N개뿐' 줄이 **전부
     그려지는** 기록 둘로(빈 기록은 껍데기만 그려 표 클래스를 못 본다, #91c)."""
@@ -45394,6 +45410,10 @@ def _render_all_pages():
         # 하드코딩 목록을 또 늘려야 한다(#24).
         ("bollinger_board", _bollinger_html()),
         ("daily_inst", _daily_inst_html()),
+        # 이름은 모듈 stem(커버리지 대조) — 한 모듈이 세 페이지를 그린다.
+        ("world_sector_pages", _world_sector_html()["map"]),
+        ("world_sector_pages:mix", _world_sector_html()["mix"]),
+        ("world_sector_pages:stocks", _world_sector_html()["stocks"]),
         ("breadth_strategy", _breadth_html({"KR": {
             "market": "KR", "regime": "RECOVERY", "state": "CASH",
             "targets": [], "index_w": 0.0, "total_w": 0.0, "cash_w": 1.0,

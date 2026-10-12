@@ -422,6 +422,33 @@ def _daily_inst_line(records=None, state=None, now=None) -> str:
     return f"   {mark} 기록 {n_real}거래일 · {text}"
 
 
+def _world_sectors_lines(state=None, now=None) -> list[str]:
+    """국가별 섹터 3보드 — 나라마다 한 줄, **화면 상태 줄과 같은 함수**(`market_verdict`)로
+    저장된 상태만 읽는다(원천을 다시 부르지 않는다, #321). 원천이 아직 그 세션을 안 실은
+    것·휴장 추정·수집 시작 전은 ⚠️(우리가 지금 고칠 수 없다, #260), 수집 실패와 **우리 실패로
+    창을 놓친 것**은 ❌. 섹터종목 ETF 보유 목록 줄도 같이(`etf_holdings.holdings_verdict`)."""
+    try:
+        from bot import world_sectors as ws
+        st = ws.load_state() if state is None else state
+        out = []
+        for m in ws.MARKETS:
+            kind, line = ws.market_verdict(m, st, now)
+            out.append(f"   {ws.VERDICT_MARK.get(kind, '❓')} {m} {line}")
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"]
+    # 섹터종목의 ETF 보유 목록 — 목록이 없는 ETF 는 그 칸이 영영 빈다(KRX 로그인 없음 등, #303).
+    # 수집 줄과 따로 잰다: 한쪽이 실패해도 다른 쪽은 찍는다.
+    try:
+        from bot import etf_holdings as eh
+        now_ = ws._now(now)
+        for m in ("KR", "US"):
+            kind, line = eh.holdings_verdict(m, now_)
+            out.append(f"   {ws.VERDICT_MARK.get(kind, '❓')} {m} 섹터 ETF 보유 목록 — {line}")
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"   ❓ 섹터 ETF 보유 목록 조회 실패 {type(exc).__name__}: {exc}")
+    return out
+
+
 def _vol_card_line(key: str, rec: dict) -> str:
     """변동성 카드 한 줄 — **순수 함수**라 회귀가 값으로 잰다(#176·#41).
 
@@ -598,6 +625,11 @@ def main() -> int:
         _p("")
         _p("── 🏦 Daily 기관매수 — 기준일")
         _p(_daily_inst_line())
+
+        _p("")
+        _p("── 🌐 국가별 섹터(섹터혼합·심리지도·섹터종목) — 나라별 수집")
+        for _ln in _world_sectors_lines():
+            _p(_ln)
 
         _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")

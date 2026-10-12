@@ -1100,6 +1100,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 <b>【대시보드】</b> 위 <b>Main</b> 이 단일 entry — 나머지는 전부 Main nav 에서 이동
  🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·★중요표시+중요만 필터·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·거래량상위·장전/장후·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
  📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 🔋Bollinger(볼린저 상단 돌파 종목수 · 5일선 추이 · 에너지 국면) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
+ 🌐 <b>국가별</b>(한·미·일·대·중 · TradingView 업종 · 매일 장 마감 3시간 뒤) — 섹터혼합(2국 이상 겹치는 업종의 시장 대비 %p·이긴 날·판정) · 🗺️심리지도(업종×요일 6갈래·칸 누르면 종목) · 📑섹터종목(한·미 Breadth 섹터 ETF 상위 15종목)
  🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 🏦Daily 기관매수(시총 대비 기관 순매수 TOP10 · 매 거래일 20:30) · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
  ★📝⏰ <b>카드 도구</b>(카드형 보드 공통 · 차트보드 제외) — 카드마다 ★중요·📝메모·⏰알람(서버 저장 → 모바일↔PC 동기화). 검색창 옆 필터로 표시한 것만 보기. ⏰=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 발송, ✅확인 시 종료·미확인 시 다음날 재발송
 
@@ -4305,6 +4306,38 @@ async def _periodic_daily_inst() -> None:
         await asyncio.sleep(_DAILY_INST_TICK_SEC)
 
 
+# 국가별 섹터 3보드(사용자 2026-10-12) — 15분마다 깨어 "장 마감 3시간이 지난 세션 중 아직
+# 안 받은 시장이 있나"만 본다(시장당 하루 1~3콜). 받을 창(다음 세션 장전 거래 전)을 놓친
+# 세션은 다시 받을 수 없으므로(원천이 '지금' 값만 준다) 주기를 늘리지 않는다.
+_WORLD_SECTORS_TICK_SEC = 900
+
+
+async def _periodic_world_sectors() -> None:
+    """첫 바퀴는 페이지부터(네트워크 0 — nav 링크가 배포 즉시 404 가 되지 않게, 실수 #11).
+    수집·렌더는 to_thread(이벤트루프 차단 → getUpdates 침묵 → watchdog 오탐, 실수 #2),
+    기다림엔 `wait_for` 상한."""
+    try:
+        from bot.world_sector_pages import regenerate as _regen_ws
+        await asyncio.to_thread(_regen_ws)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("world sectors initial render failed")
+    await asyncio.sleep(120)
+    while True:
+        try:
+            from bot.world_sectors import TICK_TIMEOUT_SEC as _ws_cap
+            from bot.world_sectors import tick_and_render as _ws_tick
+            await asyncio.wait_for(asyncio.to_thread(_ws_tick), timeout=_ws_cap)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            log.warning("world sectors tick: %s초 안에 안 끝남 — 다음 주기로", _ws_cap)
+        except Exception:
+            log.exception("world sectors tick failed")
+        await asyncio.sleep(_WORLD_SECTORS_TICK_SEC)
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -4928,6 +4961,7 @@ async def _on_startup(application) -> None:
     # 스레드가 방금 생성). to_thread(네트워크 ~120콜, 이벤트루프 차단 금지).
     application._fred_boards_task = asyncio.create_task(_periodic_fred_boards())
     application._daily_inst_task = asyncio.create_task(_periodic_daily_inst())
+    application._world_sectors_task = asyncio.create_task(_periodic_world_sectors())
     application._backlog_review_task = asyncio.create_task(
         _periodic_backlog_review(application))
     application._marketcap_task = asyncio.create_task(_periodic_marketcap())
