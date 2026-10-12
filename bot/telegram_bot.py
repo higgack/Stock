@@ -4299,7 +4299,7 @@ async def _periodic_daily_inst() -> None:
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
-            log.warning("daily inst tick: %s초 안에 안 끝남 — 다음 주기로", _di_cap)
+            log.warning("daily inst tick: %s초 안에 안 끝남(느리거나 멈춤) — 다음 주기로", _di_cap)
         except Exception:
             log.exception("daily inst tick failed")
         await asyncio.sleep(_DAILY_INST_TICK_SEC)
