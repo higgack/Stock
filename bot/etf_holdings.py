@@ -431,23 +431,53 @@ def prior_overdue(now: datetime) -> tuple[bool | None, int | None]:
     지문을 디스크로 재므로, 배포 뒤 봇 재시작이 실패해 옛 봇이 옛 지문으로 실패를 계속 쓰면 그
     약속이 영영 안 지켜진다(#380 · 봇 안의 감사는 같은 기록을 ❌ 로 센다 = 두 표면이 갈린다, #35).
     기준은 실패 시각이 아니라 **이 코드가 놓인 뒤 지난 시간**이다(#435 — 실패 시각으로 재면 배포
-    직전에 하루 상한에 걸린 옛 실패가 배포 직후 곧바로 ❌ 가 된다). 못 재면 (None, None)."""
+    직전에 하루 상한에 걸린 옛 실패가 배포 직후 곧바로 ❌ 가 된다). 못 재면 (None, None).
+    시각대 없는 `now` 는 KST 로 읽는다(`world_sectors._now` 와 같은 규약)."""
     mt = _code_mtime()
     if mt is None:
         return None, None
+    now = now if now.tzinfo else now.replace(tzinfo=_KST)
     age = now.timestamp() - mt
     return age > prior_deadline_sec(), max(0, int(age // 60))
 
 
+_UNKNOWN_TAIL = " (코드 변경 시각을 못 읽어 기한은 재지 못함)"
+
+
+def prior_state(h: dict, now: datetime) -> tuple[str, str]:
+    """옛 판 실패 기록의 처지 — (갈래, 사유). 갈래: '' = 옛 판 기록 아님 · pending = 지금 코드가 곧 다시
+    묻는다 · unknown = 코드 변경 시각을 못 읽음(⏳ 로 두되 그렇다고 말한다) · stuck = 지금 코드가 다시
+    묻지 않는다(❌). stuck 은 두 길로 안다:
+    (a) **직접 증거** — 이 기록이 코드가 놓인 뒤 배포 창(`code_freshness.GRACE_SEC`)이 닫히고 나서
+        쓰였다 = 옛 판 프로세스가 아직 돈다. 기준점이 필요 없어, `etf_holdings.py` 를 바꾸는 배포가
+        기한 안쪽으로 이어져 아래 (b) 의 시계가 매번 다시 시작돼도 흔들리지 않는다(델타 리뷰 · #435).
+    (b) 기한 — 코드가 놓인 지 `prior_deadline_sec` 가 지나도 그대로다."""
+    if not prior_failure(h):
+        return "", ""
+    over, mins = prior_overdue(now)
+    if over is None:
+        return "unknown", ""
+    mt = _code_mtime()
+    last = _tried_at(h)
+    if mt is not None and last is not None:
+        from bot.code_freshness import GRACE_SEC
+        if last.timestamp() > mt + GRACE_SEC:
+            return "stuck", (f"지금 코드가 놓인 뒤({mins}분 전)에도 이전 판 코드가 실패를 썼음 — "
+                             "봇이 옛 코드로 돈다")
+    if over:
+        return "stuck", (f"지금 코드가 놓인 지 {mins}분이 지나도 다시 묻지 않음 — "
+                         "봇이 옛 코드로 돌거나 보유 목록 갱신이 멈춤")
+    return "pending", ""
+
+
 def prior_note(h: dict, now: datetime) -> str:
     """옛 판 실패 기록에 붙이는 한 마디 — 화면·`--why` 가 같이 쓴다(#38). 옛 판 기록이 아니면 ''."""
-    if not prior_failure(h):
+    st, why = prior_state(h, now)
+    if not st:
         return ""
-    over, mins = prior_overdue(now)
-    if over:
-        return (f"이전 판 코드의 기록인데 지금 코드가 놓인 지 {mins}분이 지나도 다시 묻지 않음 — "
-                "봇이 옛 코드로 돌거나 보유 목록 갱신이 멈춤")
-    tail = " (코드 변경 시각을 못 읽어 기한은 재지 못함)" if over is None else ""
+    if st == "stuck":
+        return f"이전 판 코드의 기록인데 {why}"
+    tail = _UNKNOWN_TAIL if st == "unknown" else ""
     return f"이전 판 코드가 남긴 실패 기록 — 다음 주기에 지금 코드로 다시 묻습니다{tail}"
 
 
@@ -537,59 +567,63 @@ def holdings_verdict(market: str, now: datetime) -> tuple[str, str]:
     """한 나라 섹터 ETF 보유 목록 — (갈래, 한 줄). 감사·`--why` 가 같이 쓴다(#35).
 
     fail = 목록이 하나도 없는 ETF 가 있다(그 칸은 영영 빈다 — KRX 로그인 없음 등, 우리가 고칠 것
-    #303). 앞선 판 코드의 실패라도 다시 물었어야 할 기한(`prior_overdue`)이 지났으면 여기다 ·
-    retry = 오늘 실패가 **앞선 판 코드**의 기록뿐이고 기한 안이다(지금 코드가 다음 주기에 묻는다 —
-    목록이 있든 없든, `prior_failure`) · stale = 오늘 갱신은 실패했지만 마지막 목록이 있다 ·
+    #303). 앞선 판 코드의 실패라도 지금 코드가 다시 묻지 않으면(`prior_state` stuck — 기한을 넘겼거나
+    옛 판이 아직 쓰고 있다) 목록이 있어도 여기다 · retry = 실패가 **앞선 판 코드**의 기록뿐이고 지금
+    코드가 다음 주기에 묻는다(목록이 있든 없든) · stale = 오늘 갱신은 실패했지만 마지막 목록이 있다 ·
     none = 아직 한 번도 묻지 않음 · ok = 전부 목록이 있다. 실패 줄의 수는 목록이 없는 ETF **전부**를
     센다(옛 판 기록 포함, #45)."""
     tickers = list(etfs(market))
     if not tickers:
         return "none", "섹터 ETF 목록이 없음"
     today = now.astimezone(_KST).date().isoformat()
-    over, mins = prior_overdue(now)
     have, empty, stuck, pending, old, untried = [], [], [], [], [], []
+    unknown = False
     for t in tickers:
         h = load(t) or {}
-        pr = prior_failure(h)
-        if h.get("rows"):
+        rows = bool(h.get("rows"))
+        if rows:
             have.append(t)
-            if h.get("error") and h.get("tried_day") == today and h.get("fetched_day") != today:
-                if pr and not over:
-                    pending.append((t, h["error"], True))
-                else:
-                    old.append(t)
-        elif h.get("error"):
-            if not pr:
-                empty.append((t, h["error"]))
-            elif over:
-                stuck.append((t, h["error"]))
-            else:
-                pending.append((t, h["error"], False))
-        else:
+            if not (h.get("error") and h.get("tried_day") == today and h.get("fetched_day") != today):
+                continue
+        elif not h.get("error"):
             untried.append(t)
+            continue
+        st, why = prior_state(h, now)
+        item = (t, h["error"], rows, why)
+        if st == "stuck":
+            stuck.append(item)
+        elif st:
+            pending.append(item)
+            unknown = unknown or st == "unknown"
+        elif rows:
+            old.append(t)
+        else:
+            empty.append(item)
     n = len(tickers)
-    pend_empty = [x for x in pending if not x[2]]
+    no_list = [x for x in empty + stuck + pending if not x[2]]     # 지금 판의 실패가 머리(#275)
+    pend_none = [x for x in pending if not x[2]]
+    pend_tail = ((f" · 이전 판 코드의 기록 {len(pending)}개는 다음 주기에 지금 코드로 다시 묻는다"
+                  + (f"(그중 보유 목록이 없는 것 {len(pend_none)}개)" if pend_none else "")) if pending else "")
     if empty or stuck:
-        missing = len(empty) + len(stuck) + len(pend_empty)
-        t, why = (empty or stuck)[0]
-        more = f" 외 {missing - 1}개" if missing > 1 else ""
-        line = f"보유 목록이 없는 ETF {missing}/{n}개 — {t}{more}: {why}"
+        if no_list:
+            t, why, _r, _w = no_list[0]
+            more = f" 외 {len(no_list) - 1}개" if len(no_list) > 1 else ""
+            line = f"보유 목록이 없는 ETF {len(no_list)}/{n}개 — {t}{more}: {why}"
+        else:                                  # 다시 묻지 않는 옛 판 실패가 전부 목록이 있는 ETF
+            t, why, _r, _w = stuck[0]
+            more = f" 외 {len(stuck) - 1}개" if len(stuck) > 1 else ""
+            line = f"오늘 갱신에 실패한 ETF {len(stuck)}/{n}개 — {t}{more}: {why} (마지막으로 받은 목록으로 그린다)"
         if stuck:
-            line += (f" · 그중 {len(stuck)}개는 이전 판 코드의 기록인데 지금 코드가 놓인 지 {mins}분이 "
-                     "지나도 다시 묻지 않음 — 봇이 옛 코드로 돌거나 보유 목록 갱신이 멈춤")
-        if pend_empty:
-            line += f" · 그중 {len(pend_empty)}개는 이전 판 코드의 기록 — 다음 주기에 지금 코드로 다시 묻는다"
-        return "fail", line
+            line += f" · 이전 판 코드의 기록 {len(stuck)}개는 {stuck[0][3]}"
+        return "fail", line + pend_tail
     if old:
         # 지금 판의 실패(⚠️)가 옛 판 기록(⏳)보다 행동할 것이다 — 그쪽이 머리이고 옛 판 수는 꼬리에(#275).
-        tail = (f" · 그 밖에 {len(pending)}개는 이전 판 코드의 기록 — 다음 주기에 지금 코드로 다시 묻는다"
-                if pending else "")
-        return "stale", f"{len(old)}/{n}개 ETF 오늘 갱신 실패 — 마지막으로 받은 목록으로 그린다{tail}"
+        return "stale", f"{len(old)}/{n}개 ETF 오늘 갱신 실패 — 마지막으로 받은 목록으로 그린다{pend_tail}"
     if pending:
-        t, why, _rows = pending[0]
+        t, why, _r, _w = pending[0]
         more = f" 외 {len(pending) - 1}개" if len(pending) > 1 else ""
-        none_ = f" · 그중 보유 목록이 없는 것 {len(pend_empty)}개" if pend_empty else ""
-        tail = " (코드 변경 시각을 못 읽어 기한은 재지 못함)" if over is None else ""
+        none_ = f" · 그중 보유 목록이 없는 것 {len(pend_none)}개" if pend_none else ""
+        tail = _UNKNOWN_TAIL if unknown else ""
         return "retry", (f"ETF {len(pending)}/{n}개의 실패가 이전 판 코드가 남긴 기록"
                          f"({t}{more}: {why}){none_} · 다음 주기에 지금 코드로 다시 묻는다{tail}")
     if len(untried) == n:
