@@ -3,10 +3,13 @@
 
 수집기는 원천(pykrx)을 가짜로 바꿔 **통째로** 태운다 — 헬퍼만 재면 배선을 떼는
 변형을 못 잡는다(#20). 달력도 합성으로 갈아 끼운다(운영 달력 데이터 판에 기대면
-휴장일 표가 바뀌는 날 무관한 빨간불이 난다)."""
+휴장일 표가 바뀌는 날 무관한 빨간불이 난다). 독립 리뷰(2026-10-12)가 찾은 생존
+뮤테이션 자리마다 발화 테스트를 둔다(#91·#291)."""
+import ast
 import json
-import os
+import shutil
 import subprocess
+from datetime import date as _date
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -16,11 +19,20 @@ from bot import daily_inst as di
 from bot import kr_session
 
 K = di._KST
+_HOLIDAYS = {"2026-10-05", "2026-10-09"}   # 합성 달력의 휴장일
 
-# 합성 거래일 — 10/03(토)·10/04(일)·10/05(월, 휴장으로 친다)·10/09(금) 은 거래일이 아니다.
-SESS = ["2026-09-24", "2026-09-25", "2026-09-28", "2026-09-29", "2026-09-30",
-        "2026-10-01", "2026-10-02", "2026-10-06", "2026-10-07", "2026-10-08",
-        "2026-10-12", "2026-10-13"]
+
+def _gen_sessions():
+    d, out = _date(2026, 8, 24), []
+    while d <= _date(2026, 10, 20):
+        s = d.isoformat()
+        if d.weekday() < 5 and s not in _HOLIDAYS:
+            out.append(s)
+        d += timedelta(days=1)
+    return out
+
+
+SESS = _gen_sessions()
 
 
 @pytest.fixture
@@ -55,17 +67,26 @@ def store(monkeypatch, tmp_path):
     return base
 
 
-class FakeKRX:
-    """pykrx.stock 대역 — `nets[날짜][시장] = {코드: (이름, 원)}`, `ready` 에 없는
-    날짜는 '아직 집계 전'(빈 표)으로 답한다."""
+MCAP = {"005930": 4e14, "000660": 1e14, "111111": 6e11, "222222": 3e11,
+        "333333": 8e11}
 
-    def __init__(self, nets, mcap, ready=None):
+
+class FakeKRX:
+    """pykrx.stock 대역. `ready` 에 없는 날짜의 순매수는 빈 표(집계 전·자료 없음).
+    `mcap_mode[날짜]` = ok(기본) · holiday(행은 있는데 전부 0) · empty(빈 응답)."""
+
+    def __init__(self, nets, mcap, ready=None, mcap_mode=None):
         self.nets, self.mcap, self.ready = nets, mcap, ready
+        self.mcap_mode = mcap_mode or {}
         self.calls = []
+
+    @staticmethod
+    def _d(a):
+        return f"{a[:4]}-{a[4:6]}-{a[6:]}"
 
     def get_market_net_purchases_of_equities(self, a, b, mkt, inv):
         self.calls.append(("net", a, mkt, inv))
-        d = f"{a[:4]}-{a[4:6]}-{a[6:]}"
+        d = self._d(a)
         if self.ready is not None and d not in self.ready:
             return pd.DataFrame()
         rows = (self.nets.get(d) or {}).get(mkt, {})
@@ -76,13 +97,12 @@ class FakeKRX:
 
     def get_market_cap_by_ticker(self, d, market="ALL"):
         self.calls.append(("cap", d, market))
-        return pd.DataFrame({"종가": [1] * len(self.mcap),
-                             "시가총액": list(self.mcap.values())},
+        mode = self.mcap_mode.get(self._d(d), "ok")
+        if mode == "empty":
+            return pd.DataFrame()
+        vals = list(self.mcap.values()) if mode == "ok" else [0] * len(self.mcap)
+        return pd.DataFrame({"종가": [1] * len(self.mcap), "시가총액": vals},
                             index=list(self.mcap))
-
-
-MCAP = {"005930": 4e14, "000660": 1e14, "111111": 6e11, "222222": 3e11,
-        "333333": 8e11}
 
 
 def _day(samsung=5e10, hynix=-1e9, a=3e8, b=1e8, c=-5e7):
@@ -93,8 +113,8 @@ def _day(samsung=5e10, hynix=-1e9, a=3e8, b=1e8, c=-5e7):
 
 @pytest.fixture
 def krx(monkeypatch):
-    def make(nets, mcap=MCAP, ready=None):
-        f = FakeKRX(nets, mcap, ready)
+    def make(nets, mcap=MCAP, ready=None, mcap_mode=None):
+        f = FakeKRX(nets, mcap, ready, mcap_mode)
         monkeypatch.setattr(di, "_pykrx_stock", lambda: f)
         import bot.pykrx_client as pc
         monkeypatch.setattr(pc, "krx_login_ready", lambda: True)
@@ -102,19 +122,37 @@ def krx(monkeypatch):
     return make
 
 
-# ── 경계 ────────────────────────────────────────────────────────────────────
+def _at(d, h, m):
+    return datetime.fromisoformat(d).replace(hour=h, minute=m, tzinfo=K)
+
+
+def _want(target):
+    return di.recent_sessions(target, 10)
+
+
+# ── 경계·시각 ───────────────────────────────────────────────────────────────
 def test_settled_session_waits_for_after_market_end_plus_margin(cal):
     """그날은 애프터마켓 종료(표에서 파생, 20:00) + 30분 뒤부터 요구한다 —
     정규장 경계(`last_closed_session`)는 그대로다(#38 같은 규칙, 경계만 다르다)."""
-    t = lambda h, m: datetime(2026, 10, 8, h, m, tzinfo=K)   # noqa: E731
     assert kr_session.day_end("KRX") == (20, 0)
-    assert kr_session.last_settled_session(t(20, 29)) == "2026-10-07"
-    assert kr_session.last_settled_session(t(20, 30)) == "2026-10-08"
-    assert kr_session.last_closed_session(t(15, 29)) == "2026-10-07"
-    assert kr_session.last_closed_session(t(15, 30)) == "2026-10-08"
-    # 휴장일(10/09)엔 직전 거래일
-    assert kr_session.last_settled_session(datetime(2026, 10, 9, 10, 0, tzinfo=K)) == "2026-10-08"
+    assert kr_session.last_settled_session(_at("2026-10-08", 20, 29)) == "2026-10-07"
+    assert kr_session.last_settled_session(_at("2026-10-08", 20, 30)) == "2026-10-08"
+    assert kr_session.last_closed_session(_at("2026-10-08", 15, 29)) == "2026-10-07"
+    assert kr_session.last_closed_session(_at("2026-10-08", 15, 30)) == "2026-10-08"
+    assert kr_session.last_settled_session(_at("2026-10-09", 10, 0)) == "2026-10-08"
     assert di.boundary_hm() == (20, 30)
+    # 모듈 배선 — 여유 상수가 실제로 넘어가는지(기본값만 재면 배선을 못 본다)
+    assert di.settled_session(_at("2026-10-08", 20, 29)) == "2026-10-07"
+    assert di.settled_session(_at("2026-10-08", 20, 30)) == "2026-10-08"
+
+
+def test_naive_times_are_kst_and_recheck_boundary_literal():
+    t = di._now(datetime(2026, 10, 12, 20, 40))
+    assert t.hour == 20 and t.utcoffset() == timedelta(hours=9)
+    assert di.recheck_due_at("2026-10-12") == datetime(2026, 10, 13, 7, 0, tzinfo=K)
+    rec = {"date": "2026-10-12", "collected_at": "2026-10-12T20:40:00+09:00", "recheck": None}
+    assert di.needs_recheck(rec, datetime(2026, 10, 13, 7, 0, tzinfo=K)) is True
+    assert di.needs_recheck(rec, datetime(2026, 10, 13, 6, 59, tzinfo=K)) is False
 
 
 # ── 순수 계산 ────────────────────────────────────────────────────────────────
@@ -127,35 +165,43 @@ def _nets(d):
 
 
 def test_build_record_tiers_lists_and_values():
-    sessions = SESS[:10]   # ... 10-08 까지
+    sessions = _want("2026-10-08")
     nbd = {d: _nets(_day()) for d in sessions[-5:]}
-    # 하이닉스: 직전일 순매도 → 기준일 순매수 = 전환. 연속은 아니다.
-    nbd["2026-10-08"] = _nets(_day(hynix=2e9))
-    # 코닥C: 직전일 0 → 기준일 순매수 = '순매도 → 순매수' 가 아니므로 전환 아님
-    nbd["2026-10-07"]["333333.KQ"][1] = 0
-    nbd["2026-10-08"]["333333.KQ"][1] = 2e8   # 0.025% — 소형A(0.05%) 다음
+    nbd["2026-10-08"] = _nets(_day(hynix=2e9))          # 순매도 → 순매수 = 전환
+    nbd["2026-10-07"]["333333.KQ"][1] = 0               # 직전일 0 은 전환 아님
+    nbd["2026-10-08"]["333333.KQ"][1] = 2e8             # 0.025% — 소형A(0.05%) 다음
     rec = di.build_record("2026-10-08", sessions, nbd, MCAP)
     tiers = {t["key"]: t for t in rec["tiers"]}
     big = tiers["big"]["lists"]
     assert [r["n"] for r in big["strength"]] == ["삼성전자", "SK하이닉스"]
     assert [r["n"] for r in big["turn"]] == ["SK하이닉스"]
     assert [r["n"] for r in big["streak"]] == ["삼성전자"]
-    # 값 = 기준일 순매수 ÷ 기준일 시총 × 100 — 목록이 달라도 같은 값
     assert big["streak"][0]["r"] == pytest.approx(5e10 / 4e14 * 100)
     assert big["strength"][0]["r"] == big["streak"][0]["r"]
     mid = tiers["mid"]["lists"]
     assert [r["n"] for r in mid["strength"]] == ["소형A", "코닥C"]
-    assert mid["turn"] == []                       # 직전일 0 은 전환이 아니다
+    assert mid["turn"] == []
     assert [r["n"] for r in mid["streak"]] == ["소형A"]
     assert tiers["small"]["n"] == 1 and tiers["mid"]["n"] == 2
     assert rec["window"] == sessions[-5:] and rec["prev"] == "2026-10-07"
 
 
+def test_zero_net_is_never_a_buy():
+    """순매수 0 은 순매수가 아니다 — 강도·전환·5일 연속 어디에도 안 들어간다."""
+    sessions = _want("2026-10-08")
+    nbd = {d: {"000001.KS": ["영", 0.0], "000002.KS": ["양", 1e8]} for d in sessions[-5:]}
+    nbd["2026-10-06"]["000002.KS"][1] = 0.0   # 창 안 하루가 0 → 연속 아님
+    nbd["2026-10-07"]["000001.KS"][1] = -1e8
+    rec = di.build_record("2026-10-08", sessions, nbd, {"000001": 2e12, "000002": 2e12})
+    lists = rec["tiers"][0]["lists"]
+    assert [r["n"] for r in lists["strength"]] == ["양"]
+    assert lists["turn"] == [] and lists["streak"] == []
+
+
 def test_tier_boundaries_are_lower_inclusive():
-    sessions = ["2026-10-08"]
     nets = {"2026-10-08": {"000001.KS": ["딱1조", 1.0], "000002.KS": ["딱5천억", 1.0],
                            "000003.KS": ["5천억미만", 1.0]}}
-    rec = di.build_record("2026-10-08", sessions, nets,
+    rec = di.build_record("2026-10-08", ["2026-10-08"], nets,
                           {"000001": 1e12, "000002": 5e11, "000003": 5e11 - 1})
     got = {t["key"]: [r["n"] for r in t["lists"]["strength"]] for t in rec["tiers"]}
     assert got == {"big": ["딱1조"], "mid": ["딱5천억"], "small": ["5천억미만"]}
@@ -163,25 +209,28 @@ def test_tier_boundaries_are_lower_inclusive():
 
 def test_top_n_cut_and_order_ties_by_amount():
     nets = {"2026-10-08": {f"{i:06d}.KS": [f"S{i}", 1e8 * (i % 3 + 1)] for i in range(1, 16)}}
-    mcap = {f"{i:06d}": 1e12 * (i % 3 + 1) for i in range(1, 16)}   # 비율 전부 0.01%
+    mcap = {f"{i:06d}": 1e12 * (i % 3 + 1) for i in range(1, 16)}
     rec = di.build_record("2026-10-08", ["2026-10-08"], nets, mcap)
     top = rec["tiers"][0]["lists"]["strength"]
-    assert len(top) == di.TOP_N
-    # 비율이 같으면 금액이 큰 쪽이 먼저
-    nets_order = [r["net"] for r in top]
-    assert nets_order == sorted(nets_order, reverse=True)
+    assert len(top) == 10
+    assert [r["net"] for r in top] == sorted((r["net"] for r in top), reverse=True)
+
+
+def test_turn_list_is_cut_at_ten():
+    sessions = ["2026-10-07", "2026-10-08"]
+    prev = {f"{i:06d}.KS": [f"S{i}", -1e8] for i in range(1, 16)}
+    cur = {f"{i:06d}.KS": [f"S{i}", 1e8] for i in range(1, 16)}
+    rec = di.build_record("2026-10-08", sessions, {"2026-10-07": prev, "2026-10-08": cur},
+                          {f"{i:06d}": 2e12 for i in range(1, 16)})
+    assert len(rec["tiers"][0]["lists"]["turn"]) == 10
 
 
 def test_missing_prior_days_make_lists_unjudged_not_empty():
-    """앞 거래일 자료가 없으면 전환·연속은 **None**(판정 불가) — 빈 목록은 '해당
-    종목 없음' 으로 읽힌다(#43·#54)."""
-    sessions = SESS[:10]
-    nbd = {"2026-10-08": _nets(_day())}
-    rec = di.build_record("2026-10-08", sessions, nbd, MCAP)
+    sessions = _want("2026-10-08")
+    rec = di.build_record("2026-10-08", sessions, {"2026-10-08": _nets(_day())}, MCAP)
     lists = rec["tiers"][0]["lists"]
     assert lists["turn"] is None and lists["streak"] is None
-    assert lists["strength"]
-    assert len(rec["streak_missing"]) == 4
+    assert lists["strength"] and len(rec["streak_missing"]) == 4
 
 
 def test_mcap_missing_tickers_are_excluded_and_counted():
@@ -193,113 +242,272 @@ def test_mcap_missing_tickers_are_excluded_and_counted():
 # ── 원천 ────────────────────────────────────────────────────────────────────
 def test_fetch_nets_suffixes_and_failure_branches(krx):
     f = krx({"2026-10-08": _day()})
-    nets, why = di.fetch_nets("2026-10-08")
-    assert why == "" and nets["005930.KS"] == ["삼성전자", 5e10]
-    assert nets["222222.KQ"][0] == "코닥B"
-    assert {c[3] for c in f.calls} == {"기관합계"}
-    # 한 시장이라도 비면 통째로 실패(반쪽을 굽지 않는다, #280)
+    nets, why, kind = di.fetch_nets("2026-10-08")
+    assert (why, kind) == ("", "ok") and nets["005930.KS"] == ["삼성전자", 5e10]
+    assert nets["222222.KQ"][0] == "코닥B" and {c[3] for c in f.calls} == {"기관합계"}
     krx({"2026-10-08": {"KOSPI": _day()["KOSPI"], "KOSDAQ": {}}})
-    nets, why = di.fetch_nets("2026-10-08")
-    assert nets is None and "KOSDAQ" in why and "비었다" in why
-    # 전 종목 0 = 집계 전
+    nets, why, kind = di.fetch_nets("2026-10-08")
+    assert nets is None and kind == "empty" and "KOSDAQ" in why
     zero = {m: {k: (n, 0) for k, (n, _v) in rows.items()} for m, rows in _day().items()}
     krx({"2026-10-08": zero})
-    nets, why = di.fetch_nets("2026-10-08")
-    assert nets is None and "집계 전" in why
+    assert di.fetch_nets("2026-10-08")[2] == "empty"
 
 
-def test_fetch_mcap_all_zero_is_failure(krx):
-    krx({}, mcap={"005930": 0, "000660": 0})
-    m, why = di.fetch_mcap("2026-10-08")
-    assert m is None and "0" in why
+def test_fetch_mcap_kinds(krx):
+    krx({}, mcap_mode={"2026-10-08": "holiday"})
+    m, why, kind = di.fetch_mcap("2026-10-08")
+    assert m is None and kind == "holiday" and "휴장" in why
+    krx({}, mcap_mode={"2026-10-08": "empty"})
+    assert di.fetch_mcap("2026-10-08")[2] == "empty"
+    krx({})
+    m, _w, kind = di.fetch_mcap("2026-10-08")
+    assert kind == "ok" and m["005930"] == 4e14
 
 
 # ── 수집 E2E ────────────────────────────────────────────────────────────────
-def test_tick_backfills_past_days_even_when_today_is_not_ready(cal, store, krx):
-    nets = {d: _day() for d in SESS}
-    f = krx(nets, ready=set(SESS[:10]))          # 10-12 은 아직 집계 전
-    now = datetime(2026, 10, 12, 21, 0, tzinfo=K)
+def test_target_not_aggregated_waits_on_fixed_interval_and_backfills(cal, store, krx):
+    """기준일만 집계 전(시총은 옴) = 대기 — 실패가 아니라 15분 고정으로 다시 묻고
+    지난 날은 계속 메운다(독립 리뷰 M4·#171)."""
+    f = krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-12"})
+    now = _at("2026-10-12", 21, 0)
     res = di.tick(now=now, budget=100)
-    assert res["status"] == "fail" and "2026-10-12" in res["reason"]
-    assert "2026-10-08" in res["built"]
+    assert res["status"] == "waiting" and "집계" in res["reason"]
+    assert res["calls"] >= len(f.calls)      # 예산은 실제 호출보다 적게 세지 않는다
+    assert "2026-10-08" in res["built"] and not di.load_record("2026-10-12")
     assert not (store / "raw" / "2026-10-12.json").exists(), "집계 전 날을 구웠다"
-    assert not di.load_record("2026-10-12")
     st = di.load_state()
-    assert st["fails"] == 1 and st["next_try"]
+    assert st["fails"] == 0 and st["waiting"] is True
+    assert di._parse(st["next_try"]) == now + timedelta(minutes=15)
+    assert "running_since" not in st
     # 백오프 안에는 원천을 안 부른다
     n = len(f.calls)
     assert di.tick(now=now + timedelta(minutes=5))["status"] == "backoff"
     assert len(f.calls) == n
-    # 집계가 나오면 받는다 — 앞날 원자료는 캐시를 쓴다(그날 2콜 + 시총 1콜)
+    # 두 번째 대기도 15분(지수 백오프가 아니다)
+    res = di.tick(now=now + timedelta(minutes=15), budget=100)
+    assert res["status"] == "waiting"
+    assert di._parse(di.load_state()["next_try"]) == now + timedelta(minutes=30)
+    # 집계가 나오면 받는다 — 앞날 원자료는 캐시(그날 2콜 + 시총 1콜)
     f.ready = set(SESS)
     n = len(f.calls)
-    res = di.tick(now=now + timedelta(minutes=20), budget=100)
+    res = di.tick(now=now + timedelta(minutes=30), budget=100)
     assert res["status"] == "ok" and res["built"] == ["2026-10-12"]
-    assert len(f.calls) - n == 3
+    assert len(f.calls) - n == 3 == res["calls"]
     st = di.load_state()
-    assert st["fails"] == 0 and not st.get("next_try") and st["last_ok"]
-    assert len(di.load_records()) == di.KEEP_SESSIONS
+    assert (st["fails"], st["reason"], st["waiting"], st["wait_n"]) == (0, "", False, 0)
+    assert not st.get("next_try") and st["last_ok"]
+    recs = di.load_records()
+    assert len(recs) == 10
+    assert all(r["tiers"][0]["lists"]["streak"] is not None for r in recs), \
+        "오래된 기록의 5일 창을 덮을 만큼 거래일을 안 받았다"
 
 
-def test_past_day_failure_stops_the_walk(cal, store, krx):
-    """지난 거래일이 실패하면 원천 장애로 보고 더 걷지 않는다 — 기준일(집계 전일 수
-    있다)만 예외다. 실패한 날 앞의 날까지 계속 두드리면 같은 실패에 호출만 쓴다(#279)."""
+def test_waiting_falls_back_to_ladder_after_cap(cal, store, krx):
+    krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-12"})
+    di._write_json(di._STATE, {"wait_n": 16})
+    now = _at("2026-10-12", 23, 0)
+    di.tick(now=now, budget=100)
+    assert di._parse(di.load_state()["next_try"]) == now + timedelta(minutes=15)
+    di.tick(now=now + timedelta(minutes=15), budget=100)
+    assert di._parse(di.load_state()["next_try"]) == now + timedelta(minutes=15 + 30)
+
+
+def test_source_silence_is_an_outage_with_ladder(cal, store, krx):
+    """순매수도 시총도 비면 KRX 가 답하지 않는 것 — 전체 백오프(15→30분)."""
+    krx({d: _day() for d in SESS}, ready=set(), mcap_mode={d: "empty" for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    res = di.tick(now=now, budget=100)
+    assert res["status"] == "fail" and "답하지 않음" in res["reason"]
+    st = di.load_state()
+    assert st["fails"] == 1 and di._parse(st["next_try"]) == now + timedelta(minutes=15)
+    di.tick(now=now + timedelta(minutes=15), budget=100)
+    st = di.load_state()
+    assert st["fails"] == 2 and di._parse(st["next_try"]) == now + timedelta(minutes=45)
+
+
+def test_one_bad_past_day_does_not_block_others_then_becomes_a_nodata_card(cal, store, krx):
+    """지난 거래일 하나가 영구히 비어도(시장은 열림) 다른 날은 메우고, 몇 번 뒤엔 그날을
+    빼고 주변 기록을 만든다 — 그날 카드는 사유를 말한다(독립 리뷰 H1)."""
     f = krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-06"})
-    res = di.tick(now=datetime(2026, 10, 12, 21, 0, tzinfo=K), budget=100)
-    assert res["status"] == "fail" and "2026-10-06" in res["reason"]
-    # 기준일(10-12) 기록은 앞날 10-06 원자료가 없어 못 만든다 — '기준일 집계 전' 이
-    # 아니므로 더 오래된 날로 넘어가지 않는다
-    assert res["built"] == []
-    assert not [c for c in f.calls if c[1] < "20261002"], "실패 뒤에도 더 걸었다"
-    assert not di.load_record("2026-10-12")
+    now = _at("2026-10-12", 21, 0)
+    res = di.tick(now=now, budget=100)
+    assert res["status"] == "ok"
+    assert not set(res["built"]) & {"2026-10-12", "2026-10-08", "2026-10-07", "2026-10-06"}
+    assert "2026-10-02" in res["built"]
+    assert len([c for c in f.calls if c[1] == "20261006" and c[2] == "KOSPI"]) == 1, \
+        "한 주기에 같은 날을 두 번 물었다"
+    st = di.load_state()
+    assert st["days"]["2026-10-06"]["n"] == 1 and not st.get("next_try")
+    kind, line = di.status_verdict("2026-10-02", now, st)
+    assert kind == "behind" and "2026-10-06 1회 실패" in line
+    t, built = now, []
+    for _ in range(2):
+        t = di._parse(di.load_state()["days"]["2026-10-06"]["next_try"]) + timedelta(minutes=1)
+        built += di.tick(now=t, budget=100)["built"]
+    raw = di.load_raw("2026-10-06")
+    assert raw["nodata"] == "missing"
+    # 확정한 그 주기에 뒤 날짜들이 만들어지고, 그날 실패로 멈췄던 기준일은 다음 주기에
+    built += di.tick(now=t + timedelta(minutes=1), budget=100)["built"]
+    assert {"2026-10-12", "2026-10-08", "2026-10-07", "2026-10-06"} <= set(built)
+    stub = di.load_record("2026-10-06")
+    assert stub["nodata"] and not stub["tiers"]
+    r7 = di.load_record("2026-10-07")
+    assert r7["tiers"][0]["lists"]["turn"] is None          # 직전 거래일 자료 없음
+    assert r7["tiers"][0]["lists"]["streak"] is None
+    assert "2026-10-06" not in di.load_state().get("days", {})
+
+
+def test_krx_holiday_is_removed_from_sessions(cal, store, krx):
+    """달력엔 거래일인데 KRX 가 휴장으로 답하면(시총 전부 0) 거래일에서 뺀다 —
+    직전 거래일·5일 창이 그날을 건너뛴다."""
+    nets = {d: _day() for d in SESS}
+    nets["2026-10-02"] = _day(hynix=-3e9)
+    nets["2026-10-07"] = _day(hynix=2e9)
+    krx(nets, ready=set(SESS) - {"2026-10-06"}, mcap_mode={"2026-10-06": "holiday"})
+    now = _at("2026-10-12", 21, 0)
+    res = di.tick(now=now, budget=100)
+    assert res["holidays"] == ["2026-10-06"] and res["status"] == "ok"
+    di.tick(now=now + timedelta(minutes=15), budget=100)
+    assert not di.load_record("2026-10-06")
+    r7 = di.load_record("2026-10-07")
+    assert r7["prev"] == "2026-10-02" and "2026-10-06" not in r7["window"]
+    assert [x["n"] for x in r7["tiers"][0]["lists"]["turn"]] == ["SK하이닉스"]
+
+
+def test_target_zero_mcap_before_next_morning_waits_not_holiday(cal, store, krx):
+    krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-12"},
+        mcap_mode={"2026-10-12": "holiday"})
+    res = di.tick(now=_at("2026-10-12", 21, 0), budget=100)
+    assert res["status"] == "waiting" and not res["holidays"]
+    assert not di.load_raw("2026-10-12")
+
+
+def test_day_failures_outside_the_window_are_dropped(cal, store, krx):
+    """창을 벗어난 날의 실패 기록이 남으면 화면이 영원히 '⚠️ 실패 중' 이다."""
+    krx({d: _day() for d in SESS})
+    di._write_json(di._STATE, {"days": {"2026-09-01": {"n": 2, "reason": "x"},
+                                        "recheck:2026-09-02": {"n": 1, "reason": "y"}}})
+    di.tick(now=_at("2026-10-12", 21, 0), budget=100)
+    assert di.load_state()["days"] == {}
+
+
+def test_two_bad_past_days_are_an_outage(cal, store, krx):
+    krx({d: _day() for d in SESS}, ready=set(SESS) - {"2026-10-06", "2026-09-30"})
+    res = di.tick(now=_at("2026-10-12", 21, 0), budget=100)
+    assert res["status"] == "fail" and "여러 날" in res["reason"]
+    assert di.load_state()["fails"] == 1
+
+
+def test_partial_mcap_is_not_cached_and_is_asked_again(cal, store, krx):
+    """커버리지 미달 시총은 저장하지 않는다 — 다음 시도가 원천에 다시 묻는다(독립 리뷰 M3)."""
+    f = krx({d: _day() for d in SESS}, mcap={"005930": 4e14})
+    now = _at("2026-10-12", 21, 0)
+    di.tick(now=now, budget=100)
+    assert not di.load_records()
+    assert not (di.load_raw("2026-10-12") or {}).get("mcap")
+    st = di.load_state()
+    assert "반쪽" in (st.get("reason") or "") + json.dumps(st.get("days"), ensure_ascii=False)
+    f.mcap = MCAP
+    later = now + timedelta(hours=4)
+    n = len(f.calls)
+    res = di.tick(now=later, budget=100)
+    assert ("cap", "20261012", "ALL") in f.calls[n:]
+    assert "2026-10-12" in res["built"]
+
+
+def test_unexpected_exception_leaves_state_and_backoff(cal, store, krx, monkeypatch):
+    krx({d: _day() for d in SESS})
+    monkeypatch.setattr(di, "build_record",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    now = _at("2026-10-12", 21, 0)
+    res = di.tick(now=now, budget=100)
+    st = di.load_state()
+    assert res["status"] == "fail" and "OSError" in st["reason"] and "disk full" in st["reason"]
+    assert di._parse(st["next_try"]) == now + timedelta(minutes=15)
+    assert "running_since" not in st
 
 
 def test_budget_exhaustion_is_not_a_failure(cal, store, krx):
-    krx({d: _day() for d in SESS})
-    now = datetime(2026, 10, 12, 21, 0, tzinfo=K)
+    f = krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
     res = di.tick(now=now, budget=5)
-    assert res["status"] == "budget" and res["calls"] <= 5
+    assert res["status"] == "budget" and res["calls"] == len(f.calls) <= 5
     assert not di.load_state().get("next_try"), "예산 소진에 백오프를 걸었다"
+    assert di.tick(now=now + timedelta(minutes=15), budget=100)["status"] == "ok"
+
+
+def test_idle_tick_keeps_last_ok_and_prunes_old_raw(cal, store, krx):
+    krx({d: _day() for d in SESS})
+    now = _at("2026-10-12", 21, 0)
+    di.tick(now=now, budget=100)
+    first = di.load_state()["last_ok"]
+    old = store / "raw" / "2026-07-01.json"
+    old.write_text(json.dumps({"date": "2026-07-01", "nets": {}}), encoding="utf-8")
     res = di.tick(now=now + timedelta(minutes=15), budget=100)
-    assert res["status"] == "ok"
-
-
-def test_partial_mcap_is_not_baked(cal, store, krx):
-    krx({d: _day() for d in SESS}, mcap={"005930": 4e14})   # 5종목 중 1종목만 시총
-    res = di.tick(now=datetime(2026, 10, 12, 21, 0, tzinfo=K), budget=100)
-    assert res["status"] == "fail" and "반쪽" in res["reason"]
-    assert not di.load_records()
+    assert res["status"] == "idle" and di.load_state()["last_ok"] == first
+    assert not old.exists(), f"{di.RAW_KEEP_DAYS}일 넘은 원자료를 안 지웠다"
 
 
 def test_next_morning_recheck_records_the_difference(cal, store, krx):
     nets = {d: _day() for d in SESS}
     f = krx(nets)
-    evening = datetime(2026, 10, 12, 20, 40, tzinfo=K)
+    evening = _at("2026-10-12", 20, 40)
     assert di.tick(now=evening, budget=100)["status"] == "ok"
     rec = di.load_record("2026-10-12")
     assert rec["recheck"] is None and di.needs_recheck(rec, evening + timedelta(hours=2)) is False
-    # 밤사이 한 종목 값이 바뀌었다
     f.nets["2026-10-12"] = _day(samsung=6e10)
-    morning = datetime(2026, 10, 13, 7, 5, tzinfo=K)
-    assert di.needs_recheck(rec, morning)
+    morning = _at("2026-10-13", 7, 5)
+    n = len(f.calls)
     res = di.tick(now=morning, budget=100)
-    assert res["rechecked"] == ["2026-10-12"]
+    assert res["rechecked"] == ["2026-10-12"] and len(f.calls) - n == 2   # 시총은 캐시
     rec = di.load_record("2026-10-12")
     assert rec["recheck"]["changed"] == 1 and rec["recheck"]["max_abs_won"] == int(1e10)
-    assert rec["tiers"][0]["lists"]["strength"][0]["net"] == int(6e10), "표가 재확인 값으로 안 바뀜"
+    assert rec["tiers"][0]["lists"]["strength"][0]["net"] == int(6e10)
+    assert rec["tiers"][0]["lists"]["streak"] is not None, "재확인이 5일 창 원자료를 안 읽었다"
     assert rec["collected_at"].startswith("2026-10-12T20:40")
-    # 한 번만 — 다음 주기엔 안 묻는다
     n = len(f.calls)
     di.tick(now=morning + timedelta(minutes=15), budget=100)
     assert not [c for c in f.calls[n:] if c[1] == "20261012"]
 
 
-def test_recheck_without_evening_raw_says_it_could_not_compare(cal, store, krx):
-    """저녁 원자료가 없으면 대조할 수 없다 — 전 종목을 '바뀜' 으로 세면 거짓이다(#54)."""
+def test_recheck_covers_every_evening_record_not_just_the_last(cal, store, krx):
+    """봇이 이틀 멈췄다 와도 저녁에 받은 기록은 전부 재확인한다(독립 리뷰 Low)."""
     krx({d: _day() for d in SESS})
-    assert di.tick(now=datetime(2026, 10, 12, 20, 40, tzinfo=K), budget=100)["status"] == "ok"
+    for d in ("2026-10-08", "2026-10-07"):
+        r = di.build_record(d, _want(d), {x: _nets(_day()) for x in _want(d)}, MCAP,
+                            collected_at=f"{d}T20:40:00+09:00")
+        di._write_json(di.record_path(d), r)
+        di._write_json(di._raw_path(d), {"date": d, "nets": _nets(_day()), "mcap": MCAP})
+    res = di.tick(now=_at("2026-10-12", 10, 0), budget=100)
+    assert {"2026-10-08", "2026-10-07"} <= set(res["rechecked"])
+
+
+def test_recheck_failure_midway_keeps_the_evening_raw(cal, store, krx):
+    """재확인이 중간에 실패해도 저녁 원자료를 덮지 않는다 — 다음 재시도가 여전히
+    저녁 값과 대조한다(독립 리뷰 M7: 거짓 '바뀐 종목 0')."""
+    f = krx({d: _day() for d in SESS})
+    assert di.tick(now=_at("2026-10-12", 20, 40), budget=100)["status"] == "ok"
+    raw = di.load_raw("2026-10-12")
+    raw.pop("mcap")
+    di._write_json(di._raw_path("2026-10-12"), raw)          # 시총을 다시 받아야 하게
+    f.nets["2026-10-12"] = _day(samsung=6e10)
+    f.mcap_mode["2026-10-12"] = "empty"
+    morning = _at("2026-10-13", 7, 5)
+    res = di.tick(now=morning, budget=100)
+    assert not res["rechecked"]
+    assert di.load_raw("2026-10-12")["nets"]["005930.KS"][1] == 5e10, "저녁 원자료를 덮었다"
+    f.mcap_mode["2026-10-12"] = "ok"
+    t = di._parse(di.load_state()["days"]["recheck:2026-10-12"]["next_try"])
+    res = di.tick(now=t + timedelta(minutes=1), budget=100)
+    assert res["rechecked"] == ["2026-10-12"]
+    assert di.load_record("2026-10-12")["recheck"]["changed"] == 1
+
+
+def test_recheck_without_evening_raw_says_it_could_not_compare(cal, store, krx):
+    krx({d: _day() for d in SESS})
+    assert di.tick(now=_at("2026-10-12", 20, 40), budget=100)["status"] == "ok"
     (store / "raw" / "2026-10-12.json").unlink()
-    res = di.tick(now=datetime(2026, 10, 13, 7, 5, tzinfo=K), budget=100)
+    res = di.tick(now=_at("2026-10-13", 7, 5), budget=100)
     assert res["rechecked"] == ["2026-10-12"]
     rec = di.load_record("2026-10-12")
     assert rec["recheck"]["changed"] is None
@@ -315,7 +523,7 @@ def test_missing_credentials_backs_off_without_calling_source(cal, store, monkey
     import bot.pykrx_client as pc
     monkeypatch.setattr(pc, "krx_login_ready", lambda: False)
     monkeypatch.setattr(di, "_pykrx_stock", lambda: (_ for _ in ()).throw(AssertionError("불렀다")))
-    res = di.tick(now=datetime(2026, 10, 12, 21, 0, tzinfo=K))
+    res = di.tick(now=_at("2026-10-12", 21, 0))
     assert res["status"] == "fail" and "KRX_ID" in res["reason"]
     assert di.load_state()["next_try"]
 
@@ -329,14 +537,28 @@ def test_corrupt_files_never_raise(store):
 
 # ── 판정 ────────────────────────────────────────────────────────────────────
 def test_status_verdict_branches(cal):
-    t = lambda d, h, m: datetime.fromisoformat(d).replace(hour=h, minute=m, tzinfo=K)  # noqa: E731
-    assert di.status_verdict("2026-10-08", t("2026-10-12", 15, 0))[0] == "ok"
-    assert di.status_verdict("2026-10-08", t("2026-10-12", 21, 0))[0] == "wait"
-    kind, line = di.status_verdict("2026-10-08", t("2026-10-12", 21, 31),
+    assert di.status_verdict("2026-10-08", _at("2026-10-12", 15, 0))[0] == "ok"
+    assert di.status_verdict("2026-10-08", _at("2026-10-12", 21, 29))[0] == "wait"
+    kind, line = di.status_verdict("2026-10-08", _at("2026-10-12", 21, 30),
                                    {"reason": "X 실패", "next_try": "2026-10-12T22:00:00+09:00"})
     assert kind == "behind" and "X 실패" in line and "10-12 22:00" in line
-    assert di.status_verdict("2026-10-06", t("2026-10-12", 15, 0))[0] == "behind"
-    assert di.status_verdict(None, t("2026-10-12", 15, 0))[0] == "none"
+    # 2세션 뒤처진 건 경계 안이어도 '받는 중' 이 아니다
+    assert di.status_verdict("2026-10-07", _at("2026-10-12", 21, 0))[0] == "behind"
+    assert di.status_verdict(None, _at("2026-10-12", 15, 0))[0] == "none"
+
+
+def test_status_waiting_and_degraded_and_stuck(cal):
+    w = {"waiting": True, "reason": "기관 순매수가 아직 비었다(시가총액은 나옴)"}
+    kind, line = di.status_verdict("2026-10-08", _at("2026-10-13", 8, 0), w)
+    assert kind == "wait" and "기관 순매수가 아직 비었다(시가총액은 나옴)" in line
+    assert di.status_verdict("2026-10-08", _at("2026-10-13", 8, 31), w)[0] == "behind"
+    d = {"days": {"2026-10-06": {"n": 2, "reason": "빈 응답"}}}
+    kind, line = di.status_verdict("2026-10-12", _at("2026-10-13", 10, 0), d)
+    assert kind == "degraded" and "2026-10-06 2회 실패" in line
+    s = {"running_since": "2026-10-13T09:00:00+09:00"}
+    kind, line = di.status_verdict("2026-10-12", _at("2026-10-13", 10, 0), s)
+    assert kind == "degraded" and "끝나지 않음" in line
+    assert di.status_verdict("2026-10-12", _at("2026-10-13", 9, 20), s)[0] == "ok"
 
 
 def test_status_unknown_without_calendar(monkeypatch):
@@ -346,22 +568,28 @@ def test_status_unknown_without_calendar(monkeypatch):
 
 # ── 화면 ────────────────────────────────────────────────────────────────────
 def _records():
-    sessions = SESS[:10]
+    sessions = _want("2026-10-08")
     nbd = {d: _nets(_day()) for d in sessions}
     nbd["2026-10-08"] = _nets(_day(hynix=2e9))
+    nbd["2026-10-08"]["005930.KS"][0] = "삼성<전자>"
     r1 = di.build_record("2026-10-08", sessions, nbd, MCAP,
                          collected_at="2026-10-08T20:35:00+09:00")
-    r1["recheck"] = {"at": "2026-10-09T07:02:00+09:00", "changed": 0,
-                     "compared": 5, "max_abs_won": 0}
-    r0 = di.build_record("2026-09-30", sessions, {"2026-09-30": _nets(_day())}, MCAP,
-                         collected_at="2026-10-08T21:00:00+09:00")
+    r1["recheck"] = {"at": "2026-10-09T07:02:00+09:00", "changed": 2, "value_changed": 1,
+                     "compared": 5, "max_abs_won": 120000000}
+    r0 = di.build_record("2026-09-30", sessions, {"2026-09-30": _nets(_day())},
+                         {k: v for k, v in MCAP.items() if k != "222222"},
+                         collected_at="2026-09-30T20:40:00+09:00")
     return [r0, r1]
 
 
+def _day_block(html, label):
+    i = html.index(label)
+    return html[html.rindex("<details class='di-day'", 0, i): html.index("</details>", i)]
+
+
 def test_render_shows_the_three_by_three_and_reasons(cal):
-    html = di.render_page(_records(), {}, datetime(2026, 10, 12, 10, 0, tzinfo=K))
-    i = html.index("2026-10-08 (목)")
-    day = html[html.rindex("<details class='di-day'", 0, i): html.index("</details>", i)]
+    html = di.render_page(_records(), {}, _at("2026-10-12", 10, 0))
+    day = _day_block(html, "2026-10-08 (목)")
     assert day.startswith("<details class='di-day' data-open='1' open>")
     assert day.count("<table class='di-tbl'>") == 9
     for _k, title in di.LISTS:
@@ -369,30 +597,81 @@ def test_render_shows_the_three_by_three_and_reasons(cal):
     for _k, label, *_ in di.TIERS:
         assert label in day
     assert "href='lookup/005930.KS'" in day and "href='lookup/222222.KQ'" in day
-    assert "재확인 10-09 07:02 · 바뀐 종목 0" in day
-    # 9/30 은 앞 거래일 자료 없이 만든 기록 — 판정 불가 사유가 보인다
-    j = html.index("2026-09-30 (수)")
-    # 그 **날** 블록만 자른다 — 앞 200자 창은 9월 '월' 블록의 data-open='0' 이 대신
-    # 만족시켜 '모든 날 펼침' 변형이 통과했다(#75 · 뮤테이션 실측).
-    old = html[html.rindex("<details class='di-day'", 0, j): html.index("</details>", j)]
+    assert "삼성&lt;전자&gt;" in day and "삼성<전자>" not in day
+    assert "수집 10-08 20:35" in day
+    assert "재확인 10-09 07:02 · 바뀐 종목 2(최대 1.2억)" in day
+    assert "조건에 맞는 종목이 2개뿐입니다" in day
+    old = _day_block(html, "2026-09-30 (수)")
+    # 날 블록만 자른다 — 앞 창은 9월 '월' 블록의 data-open='0' 이 대신 만족시켰다(#75)
     assert old.startswith("<details class='di-day' data-open='0'>")
-    assert "직전 거래일(2026-09-29) 자료가 없어" in old
-    assert "최근 5거래일 중 4일" in old
-    # 값은 두 자리 % — 원문 표와 같은 표기
-    assert "0.01%" in day
+    assert "직전 거래일(2026-09-29) 자료가 없어" in old and "최근 5거래일 중 4일" in old
+    assert "시총 못 찾음 1종목 제외" in old
+    assert "0.01%" in day and ".di-hit{" in di._DI_CSS
+
+
+def test_render_meta_variants():
+    base = {"date": "2026-10-12", "collected_at": "2026-10-12T20:40:00+09:00",
+            "universe": 5, "tiers": []}
+    assert "재확인 예정 10-13 07:00 이후" in di._day_meta({**base, "recheck": None})
+    rc = {"at": "2026-10-13T07:05:00+09:00", "changed": 3, "value_changed": 0,
+          "max_abs_won": 0}
+    assert "바뀐 종목 3(종목 추가·삭제만)" in di._day_meta({**base, "recheck": rc})
+    rc0 = {"at": "2026-10-13T07:05:00+09:00", "changed": 0, "max_abs_won": 0}
+    assert di._day_meta({**base, "recheck": rc0}).count("바뀐 종목 0") == 1
+
+
+def test_render_nodata_card_and_failure_reason(cal):
+    stub = di.nodata_record("2026-10-06", "KRX 가 그날 기관 순매수를 주지 않음",
+                            "2026-10-12T21:00:00+09:00")
+    html = di.render_page([stub] + _records(), {"reason": "KRX 응답 없음"},
+                          _at("2026-10-13", 10, 0))
+    assert "KRX 자료 없음 — KRX 가 그날 기관 순매수를 주지 않음" in _day_block(html, "2026-10-06 (화)")
+    i = html.index('class="di-status"')
+    assert "KRX 응답 없음" in html[i: html.index("</div>", i)], "실패 사유가 화면에 안 실림"
+
+
+def test_render_caps_history_and_says_so(cal):
+    stub = {"ver": 1, "nodata": "x", "collected_at": "", "tiers": [], "recheck": None}
+    many = [{**stub, "date": f"2025-{m:02d}-{d:02d}"} for m in range(1, 13)
+            for d in range(1, 15)]
+    html = di.render_page(many, {}, _at("2026-10-13", 10, 0))
+    assert html.count("<details class='di-day'") == di.RENDER_DAYS == 120
+    assert f"최근 {di.RENDER_DAYS}거래일 표시" in html
 
 
 def test_render_status_and_empty_page(cal):
-    html = di.render_page([], {}, datetime(2026, 10, 12, 10, 0, tzinfo=K))
+    html = di.render_page([], {}, _at("2026-10-12", 10, 0))
     assert "아직 기록이 없습니다" in html and "20:30" in html
 
 
-def test_regenerate_writes_the_page(monkeypatch, tmp_path, store, cal):
+def test_regenerate_writes_only_when_content_changes(monkeypatch, tmp_path, store, cal):
+    """15분마다 같은 페이지를 다시 쓰면 '새 업데이트' 배너가 상시 뜬다(독립 리뷰 H2)."""
     from bot import dashboard as d
     monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
-    di.regenerate()
+    assert di.regenerate() is True
     out = tmp_path / "daily_inst.html"
     assert out.exists() and "Daily 기관매수" in out.read_text(encoding="utf-8")
+    m1 = out.stat().st_mtime_ns
+    assert di.regenerate() is False and out.stat().st_mtime_ns == m1
+    di._write_json(di.record_path("2026-10-08"), _records()[1])
+    assert di.regenerate() is True
+
+
+def test_tick_and_render_renders_and_skips_when_busy(monkeypatch, tmp_path, store, cal):
+    from bot import dashboard as d
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
+    calls = []
+    monkeypatch.setattr(di, "tick", lambda **k: calls.append(1) or {"status": "idle"})
+    assert di.tick_and_render()["status"] == "idle" and calls == [1]
+    assert (tmp_path / "daily_inst.html").exists()
+    (tmp_path / "daily_inst.html").unlink()
+    (tmp_path / "daily_inst.html.sig").unlink()
+    di._TICK_LOCK.acquire()
+    try:
+        assert di.tick_and_render()["status"] == "busy" and calls == [1]
+    finally:
+        di._TICK_LOCK.release()
+    assert (tmp_path / "daily_inst.html").exists(), "멈춘 주기 동안 재생성도 안 했다"
 
 
 _DOM = r"""
@@ -424,6 +703,7 @@ var document={getElementById:function(id){return id==='di-q'?q:id==='di-st'?st:n
 """
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 없음")
 def test_search_js_runs_and_filters_days(tmp_path):
     """검색 JS 를 **실행**한다 — 파서만 태우면 동작 결함을 못 본다(#253)."""
     js = _DOM + di._DI_JS + r"""
@@ -431,8 +711,10 @@ q.value='스피어'; q._h();
 var out={d1:[d1.style.display,d1.open], d2:d2.style.display, d3:[d3.style.display,d3.open],
   m2:[m2.style.display,m2.open], st:st.textContent,
   hit:d1.kids[0].classList.contains('di-hit'), miss:d1.kids[1].classList.contains('di-hit')};
+q.value='삼성전자'; q._h();
+out.m2gone=m2.style.display;
 q.value=''; q._h();
-out.reset=[d2.style.display, d1.open, d3.open, m2.open, st.textContent,
+out.reset=[d2.style.display, d1.open, d3.open, m2.open, m2.style.display, st.textContent,
   d1.kids[0].classList.contains('di-hit')];
 console.log(JSON.stringify(out));
 """
@@ -444,12 +726,12 @@ console.log(JSON.stringify(out));
     assert out["d1"] == ["", True] and out["d2"] == "none" and out["d3"] == ["", True]
     assert out["m2"] == ["", True] and out["st"] == '"스피어" — 2일에 등장'
     assert out["hit"] is True and out["miss"] is False
-    assert out["reset"] == ["", True, False, False, "총 3거래일 기록", False]
+    assert out["m2gone"] == "none", "일치하는 날이 없는 달을 안 숨겼다"
+    assert out["reset"] == ["", True, False, False, "", "총 3거래일 기록", False]
 
 
 # ── 배선 ────────────────────────────────────────────────────────────────────
 def _help_text():
-    import ast
     src = open("bot/telegram_bot.py", encoding="utf-8").read()
     for node in ast.parse(src).body:
         if (isinstance(node, ast.Assign)
@@ -466,8 +748,9 @@ def test_help_names_the_board_with_the_real_boundary_time():
     assert len(text.encode("utf-16-le")) // 2 < 4096
 
 
-def test_periodic_task_is_registered():
-    import ast
+def test_periodic_task_is_registered_and_shaped():
+    """루프 모양까지 — create_task·import 이름만 재면 sleep 을 지우거나 수집 대신
+    재생성만 부르는 변형이 통과했다(독립 리뷰)."""
     src = open("bot/telegram_bot.py", encoding="utf-8").read()
     tree = ast.parse(src)
     created = [n for n in ast.walk(tree)
@@ -475,38 +758,69 @@ def test_periodic_task_is_registered():
                and n.args and isinstance(n.args[0], ast.Call)
                and getattr(n.args[0].func, "id", "") == "_periodic_daily_inst"]
     assert len(created) == 1
+    tick = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", "") == "_DAILY_INST_TICK_SEC")
+    assert ast.literal_eval(tick.value) == 900
     fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
               and n.name == "_periodic_daily_inst")
-    names = {a.name for n in ast.walk(fn) if isinstance(n, ast.ImportFrom)
-             and n.module == "bot.daily_inst" for a in n.names}
-    assert {"regenerate", "tick_and_render"} <= names
+    loop = next(n for n in fn.body if isinstance(n, ast.While))
+    pre = ast.unparse(ast.Module(body=fn.body[:fn.body.index(loop)], type_ignores=[]))
+    assert "asyncio.to_thread(_regen_di)" in pre, "첫 바퀴 렌더가 없다"
+    body = ast.unparse(loop)
+    assert "asyncio.wait_for(asyncio.to_thread(_di_tick)" in body
+    assert "import tick_and_render as _di_tick" in body
+    assert "await asyncio.sleep(_DAILY_INST_TICK_SEC)" in body
 
 
 def test_nav_links_the_board_from_home_noah_and_daily_byte():
     from bot import dashboard as d
     src = open("bot/dashboard.py", encoding="utf-8").read()
     assert src.count('href="daily_inst.html">🏦 Daily 기관매수</a>') >= 3
-    html = d._render_daily_byte_page([])
-    assert 'href="daily_inst.html"' in html
+    assert 'href="daily_inst.html"' in d._render_daily_byte_page([])
 
 
 def test_board_audit_line_uses_the_screen_verdict(cal):
     from bot.scripts.board_audit import _daily_inst_line
-    now = datetime(2026, 10, 12, 10, 0, tzinfo=K)
+    now = _at("2026-10-12", 10, 0)
     recs = _records()
     assert _daily_inst_line(recs, {}, now).lstrip().startswith("✅")
     assert _daily_inst_line([], {}, now).lstrip().startswith("❌")
-    late = datetime(2026, 10, 13, 9, 0, tzinfo=K)
+    late = _at("2026-10-13", 9, 0)
     line = _daily_inst_line(recs, {"reason": "KRX 응답 없음"}, late)
     assert line.lstrip().startswith("❌") and "KRX 응답 없음" in line
+    waiting = _daily_inst_line(recs, {"waiting": True}, _at("2026-10-12", 23, 0))
+    assert waiting.lstrip().startswith("⚠️")
+    deg = {"days": {"2026-10-06": {"n": 1, "reason": "x"}}}
+    assert _daily_inst_line(recs, deg, now).lstrip().startswith("⚠️")
 
 
-def test_why_is_read_only(cal, store, monkeypatch, capsys):
-    """진단은 아무것도 받지도 쓰지도 않는다(#264·#283)."""
+def test_board_audit_unknown_and_wired_into_main(monkeypatch):
+    from bot.scripts import board_audit as ba
+    monkeypatch.setattr(di, "settled_session", lambda now=None: None)
+    assert ba._daily_inst_line([], {}).lstrip().startswith("❓")
+    tree = ast.parse(open("bot/scripts/board_audit.py", encoding="utf-8").read())
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    assert "_p(_daily_inst_line())" in ast.unparse(main)
+
+
+def test_why_is_read_only_and_exit_code_follows_the_verdict(cal, store, monkeypatch, capsys):
+    """진단은 아무것도 받지도 쓰지도 않는다(#264·#283) · 최신이면 0, 뒤처지면 1."""
     monkeypatch.setattr(di, "_pykrx_stock", lambda: (_ for _ in ()).throw(AssertionError("받았다")))
+    monkeypatch.setattr(di, "_now", lambda now=None: _at("2026-10-12", 10, 0))
     di._write_json(di.record_path("2026-10-08"), _records()[1])
-    before = sorted(p.name for p in store.rglob("*"))
-    rc = di.why()
+    di._write_json(di._STATE, {"reason": "어제 실패 사유"})
+    before = sorted((p.name, p.stat().st_mtime_ns) for p in store.rglob("*"))
+    assert di.why() == 0
     out = capsys.readouterr().out
-    assert sorted(p.name for p in store.rglob("*")) == before
-    assert "최신 2026-10-08" in out and "판정:" in out and rc in (0, 1)
+    assert sorted((p.name, p.stat().st_mtime_ns) for p in store.rglob("*")) == before
+    assert "최신 2026-10-08" in out and "어제 실패 사유" in out and "소스 " in out
+    monkeypatch.setattr(di, "_now", lambda now=None: _at("2026-10-14", 10, 0))
+    assert di.why() == 1
+
+
+def test_probe_writes_nothing_and_counts_rows(cal, store, krx, capsys):
+    krx({"2026-10-08": _day()})
+    assert di.probe("2026-10-08") == 0
+    out = capsys.readouterr().out
+    assert "KOSPI 기관 순매수 3행" in out and "KOSDAQ 기관 순매수 2행" in out
+    assert not store.exists()

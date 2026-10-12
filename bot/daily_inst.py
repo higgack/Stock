@@ -25,8 +25,11 @@ TOP 10)를 매 거래일 같은 모양으로 만든다. 화면은 Daily Byte 처
 뒤부터만 그날을 요구하고(`kr_session.last_settled_session` — 애프터마켓 체결이
 집계에 들어가도 틀리지 않는 쪽), (2) **이튿날 07:00 이후 한 번 더 받아** 저녁
 값과 대조한다(`recheck`). 바뀐 종목 수를 기록에 남기므로 "저녁 집계가 최종이었나"
-를 사람이 아니라 기록이 답한다. 아직 집계 전인 응답(빈 표·전 종목 0)은 굽지 않고
-백오프로 다시 묻는다(#280 부분을 완전본으로 굽지 않는다).
+를 사람이 아니라 기록이 답한다. 아직 집계 전인 응답(빈 표·전 종목 0)은 굽지 않는다
+(#280 부분을 완전본으로 굽지 않는다) — 같은 날 시가총액을 대조군으로 물어(#143) 갈래를
+가른다: 시총 전부 0 = KRX 가 휴장으로 답함(거래일에서 뺀다) · 시총은 옴 = 기준일이면
+집계 대기(15분 고정 재시도), 지난 날이면 그날만 늦추고 여러 번 비면 "자료 없음" 카드 ·
+시총도 빔 = KRX 가 답하지 않음(전체 백오프).
 
 자동 — 봇의 15분 주기 태스크(`tick`)가 "받아야 할 거래일 기록이 있나"를 보고
 없으면 받는다(상태 없는 스케줄: 재시작해도 기준점이 안 밀린다). 최근
@@ -43,6 +46,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,6 +78,13 @@ RECHECK_HOUR = 7          # 이튿날 이 시각 이후 한 번 더 받아 대�
 CALL_BUDGET = 24          # 한 주기 KRX 호출 상한(순매수 1일 = 2콜, 시총 = 1콜)
 RAW_KEEP_DAYS = 45
 MIN_MCAP_COVER = 0.9      # 순매수 종목 중 시총을 찾은 비율이 이보다 낮으면 굽지 않는다
+WAIT_RETRY_MIN = 15       # 기준일 '집계 대기' 는 이 간격 고정으로 다시 묻는다(실패 아님)
+WAIT_MAX = 16             # 그 고정 재시도 횟수 상한(약 4시간) — 넘기면 전체 백오프
+WAIT_GRACE_H = 12         # 집계 대기가 확인된 동안은 이만큼 ⏳(⚠️ 아님)
+MISSING_AFTER = 3         # 시장은 열렸는데 기관 순매수만 이 횟수 비면 그날을 빼고 만든다
+RENDER_DAYS = 120         # 화면에 싣는 최근 기록 수(그 앞은 보관만 — 페이지 크기 상한)
+STUCK_MIN = 30            # 한 주기가 이만큼 안 끝나면 화면이 말한다(원천이 응답 없이 멈춤)
+TICK_TIMEOUT_SEC = 600    # 봇 루프가 한 주기를 기다리는 상한(넘으면 다음 주기로)
 _BACKOFF_MIN = (15, 30, 60, 120, 180)
 
 
@@ -124,8 +135,12 @@ def _raw_path(date: str) -> Path:
 
 
 def load_raw(date: str) -> dict | None:
+    """그날 원자료 — 순매수 표가 있거나, KRX 가 그날 자료를 주지 않는다는 표식
+    (`nodata` = holiday | missing)이 있으면 돌려준다."""
     r = _read_json(_raw_path(date))
-    if isinstance(r, dict) and isinstance(r.get("nets"), dict) and r.get("date") == date:
+    if not isinstance(r, dict) or r.get("date") != date:
+        return None
+    if isinstance(r.get("nets"), dict) or r.get("nodata") in ("holiday", "missing"):
         return r
     return None
 
@@ -196,7 +211,7 @@ def recheck_due_at(date: str) -> datetime:
 def needs_recheck(rec: dict, now: datetime | None = None) -> bool:
     """저녁에 받은 기록인데 아직 재확인 전이고, 지금이 재확인 가능 시각 이후인가.
     재확인 시각 뒤에 처음 받은 기록(백필 등)은 이미 그 시각의 값이라 다시 안 묻는다."""
-    if rec.get("recheck"):
+    if rec.get("recheck") or rec.get("nodata"):
         return False
     due = recheck_due_at(rec["date"])
     got = _parse(rec.get("collected_at"))
@@ -216,28 +231,29 @@ def _col(df, *keys):
     return None
 
 
-def fetch_nets(date: str) -> tuple[dict | None, str]:
-    """{티커(.KS/.KQ): [종목명, 기관 순매수대금(원)]} — KOSPI·KOSDAQ 각 1콜.
+def fetch_nets(date: str) -> tuple[dict | None, str, str]:
+    """({티커(.KS/.KQ): [종목명, 기관 순매수대금(원)]}, 사유, 갈래) — KOSPI·KOSDAQ 각 1콜.
 
-    한 시장이라도 비거나 전 종목 0 이면 **통째로** 실패다(#280 — 반쪽을 완전본으로
-    굽지 않는다). 사유는 갈래를 이름으로 말한다(#82)."""
+    갈래 ok · empty(빈 표·전 종목 0 — 집계 전이거나 자료가 없는 날) · error(예외·열
+    없음). 한 시장이라도 비거나 전 종목 0 이면 **통째로** 실패다(#280 — 반쪽을
+    완전본으로 굽지 않는다). 사유는 갈래를 이름으로 말한다(#82)."""
     ymd = date.replace("-", "")
     try:
         stock = _pykrx_stock()
     except Exception as exc:                                   # noqa: BLE001
-        return None, f"pykrx 없음({type(exc).__name__})"
+        return None, f"pykrx 없음({type(exc).__name__})", "error"
     out: dict = {}
     for mkt, sfx in MARKETS:
         try:
             df = stock.get_market_net_purchases_of_equities(ymd, ymd, mkt, INVESTOR)
         except Exception as exc:                               # noqa: BLE001
-            return None, f"{mkt} 조회 실패({type(exc).__name__}: {str(exc)[:80]})"
+            return None, f"{mkt} 조회 실패({type(exc).__name__}: {str(exc)[:80]})", "error"
         if df is None or len(df) == 0:
-            return None, f"{mkt} 응답이 비었다 — 아직 집계 전이거나 KRX 가 답하지 않음"
+            return None, f"{mkt} 응답이 비었다", "empty"
         net_col = _col(df, "순매수", "대금")
         if net_col is None:
             return None, (f"{mkt} 응답에 순매수거래대금 열이 없다(열: "
-                          f"{', '.join(str(c) for c in list(df.columns)[:8])})")
+                          f"{', '.join(str(c) for c in list(df.columns)[:8])})"), "error"
         name_col = _col(df, "종목명")
         got, nonzero = 0, 0
         for tkr in df.index:
@@ -252,26 +268,29 @@ def fetch_nets(date: str) -> tuple[dict | None, str]:
             got += 1
             nonzero += bool(v)
         if not nonzero:
-            return None, f"{mkt} 전 종목 순매수 0({got}행) — 아직 집계 전으로 보임"
-    return out, ""
+            return None, f"{mkt} 전 종목 순매수 0({got}행)", "empty"
+    return out, "", "ok"
 
 
-def fetch_mcap(date: str) -> tuple[dict | None, str]:
-    """{6자리 코드: 시가총액(원)} — 전 시장 1콜. 전부 0 이면 실패(휴장·집계 전)."""
+def fetch_mcap(date: str) -> tuple[dict | None, str, str]:
+    """({6자리 코드: 시가총액(원)}, 사유, 갈래) — 전 시장 1콜.
+
+    갈래 ok · holiday(행은 있는데 **전부 0** — KRX 가 그날을 휴장으로 답하는 모양,
+    pykrx 자신도 이걸 휴장 신호로 쓴다) · empty(빈 응답) · error(예외·열 없음)."""
     ymd = date.replace("-", "")
     try:
         stock = _pykrx_stock()
     except Exception as exc:                                   # noqa: BLE001
-        return None, f"pykrx 없음({type(exc).__name__})"
+        return None, f"pykrx 없음({type(exc).__name__})", "error"
     try:
         df = stock.get_market_cap_by_ticker(ymd, market="ALL")
     except Exception as exc:                                   # noqa: BLE001
-        return None, f"시가총액 조회 실패({type(exc).__name__}: {str(exc)[:80]})"
+        return None, f"시가총액 조회 실패({type(exc).__name__}: {str(exc)[:80]})", "error"
     if df is None or len(df) == 0:
-        return None, "시가총액 응답이 비었다"
+        return None, "시가총액 응답이 비었다", "empty"
     col = _col(df, "시가총액")
     if col is None:
-        return None, "시가총액 응답에 시가총액 열이 없다"
+        return None, "시가총액 응답에 시가총액 열이 없다", "error"
     out = {}
     for tkr in df.index:
         try:
@@ -281,8 +300,8 @@ def fetch_mcap(date: str) -> tuple[dict | None, str]:
         if v == v and v > 0:
             out[str(tkr).zfill(6)] = v
     if not out:
-        return None, "시가총액이 전부 0 — 휴장일이거나 아직 집계 전"
-    return out, ""
+        return None, f"시가총액이 전부 0({len(df)}행) — KRX 가 그날을 휴장으로 답함", "holiday"
+    return out, "", "ok"
 
 
 # ── 계산(순수) ──────────────────────────────────────────────────────────────
@@ -342,18 +361,26 @@ def build_record(date: str, sessions: list[str], nets_by_date: dict, mcap: dict,
             "tiers": tiers, "recheck": None}
 
 
+def nodata_record(date: str, reason: str, collected_at: str) -> dict:
+    """KRX 가 그날 자료를 주지 않은 날의 기록 — 카드가 비는 대신 사유를 말한다(#43)."""
+    return {"ver": REC_VER, "date": date, "nodata": reason, "collected_at": collected_at,
+            "tiers": [], "recheck": None}
+
+
 def diff_nets(old: dict, new: dict) -> dict:
-    """재확인 대조 — 바뀐(추가·삭제 포함) 종목 수와 가장 큰 차이(원)."""
+    """재확인 대조 — 바뀐 종목 수(값이 바뀐 것 + 추가·삭제)와 가장 큰 값 차이(원)."""
     keys = set(old) | set(new)
-    changed, max_abs = 0, 0.0
+    changed, moved, max_abs = 0, 0, 0.0
     for k in keys:
         a = old.get(k, [None, None])[1]
         b = new.get(k, [None, None])[1]
         if a != b:
             changed += 1
             if a is not None and b is not None:
+                moved += 1
                 max_abs = max(max_abs, abs(float(a) - float(b)))
-    return {"changed": changed, "compared": len(keys), "max_abs_won": int(max_abs)}
+    return {"changed": changed, "value_changed": moved, "compared": len(keys),
+            "max_abs_won": int(max_abs)}
 
 
 # ── 수집 ────────────────────────────────────────────────────────────────────
@@ -371,87 +398,117 @@ class _Budget:
 
 
 class _Stop(Exception):
-    """이번 주기를 멈춘다 — reason 이 있으면 실패(백오프), 없으면 예산 소진.
-    `date` 는 **실패한 원자료의 날짜**다 — 기준일 기록을 만들다 앞 거래일이 실패한
-    것과 기준일 자체가 집계 전인 것은 다른 사실이다(#82)."""
+    """이번 시도를 멈춘다 — reason 이 없으면 예산 소진. `date` 는 **실패한 원자료의
+    날짜**(기준일 기록을 만들다 앞 거래일이 실패한 것과 기준일 자체가 집계 전인 것은
+    다른 사실이다, #82), `kind` 는 갈래(empty·error·mcap_*·coverage·deferred)."""
 
-    def __init__(self, reason: str = "", date: str = ""):
+    def __init__(self, reason: str = "", date: str = "", kind: str = "error"):
         super().__init__(reason)
         self.reason = reason
         self.date = date
+        self.kind = kind
 
 
-def _nets_for(date: str, budget: _Budget, now: datetime) -> dict:
+def _mcap_cached(date: str) -> dict | None:
+    m = (load_raw(date) or {}).get("mcap")
+    return m if isinstance(m, dict) and m else None
+
+
+def _nets_for(date: str, budget: _Budget, now: datetime, deferred=()) -> dict | None:
+    """그날 원자료(캐시 우선). KRX 가 그날 자료를 주지 않는 날(표식)은 None."""
     raw = load_raw(date)
     if raw:
-        return raw["nets"]
+        return None if raw.get("nodata") else raw["nets"]
+    if date in deferred:
+        raise _Stop(f"{date} 재시도 대기 중", date, "deferred")
     if not budget.take(2):
         raise _Stop()
-    nets, why = fetch_nets(date)
+    nets, why, kind = fetch_nets(date)
     if nets is None:
-        raise _Stop(f"{date} 기관 순매수 — {why}", date)
+        raise _Stop(f"{date} 기관 순매수 — {why}", date, kind)
     _write_json(_raw_path(date), {"date": date, "fetched_at": _iso(now), "nets": nets})
     return nets
 
 
-def _mcap_for(date: str, budget: _Budget, now: datetime) -> dict:
-    raw = load_raw(date) or {}
-    if isinstance(raw.get("mcap"), dict) and raw["mcap"]:
-        return raw["mcap"]
+def _mcap_fetch(date: str, budget: _Budget) -> dict:
+    m = _mcap_cached(date)
+    if m:
+        return m
     if not budget.take(1):
         raise _Stop()
-    mcap, why = fetch_mcap(date)
-    if mcap is None:
-        raise _Stop(f"{date} 시가총액 — {why}", date)
+    m, why, kind = fetch_mcap(date)
+    if m is None:
+        raise _Stop(f"{date} 시가총액 — {why}", date, f"mcap_{kind}")
+    return m
+
+
+def _save_mcap(date: str, mcap: dict) -> None:
     raw = load_raw(date)
-    if raw:
+    if raw and not raw.get("nodata") and raw.get("mcap") != mcap:
         raw["mcap"] = mcap
         _write_json(_raw_path(date), raw)
-    return mcap
 
 
-def _build_for(date: str, sessions: list[str], budget: _Budget, now: datetime) -> dict:
+def _build_for(date: str, sessions: list[str], budget: _Budget, now: datetime,
+               deferred=()) -> dict:
     idx = sessions.index(date)
     window = sessions[max(0, idx - STREAK_N + 1): idx + 1]
     # 기준일을 먼저 — 아직 집계 전이면 앞 날짜를 받느라 예산을 쓰지 않는다.
-    nets_by_date = {date: _nets_for(date, budget, now)}
-    mcap = _mcap_for(date, budget, now)
+    cur = _nets_for(date, budget, now, deferred)
+    if cur is None:
+        raw = load_raw(date) or {}
+        rec = nodata_record(date, raw.get("reason") or "KRX 가 그날 자료를 주지 않음",
+                            _iso(now))
+        _write_json(record_path(date), rec)
+        return rec
+    mcap = _mcap_fetch(date, budget)
+    nets_by_date = {date: cur}
     for d in window[:-1]:
-        nets_by_date[d] = _nets_for(d, budget, now)
+        n = _nets_for(d, budget, now, deferred)
+        if n is not None:
+            nets_by_date[d] = n
     rec = build_record(date, sessions, nets_by_date, mcap, collected_at=_iso(now))
     cover = rec["universe"] / max(1, rec["net_rows"])
     if cover < MIN_MCAP_COVER:
+        # 시총은 **저장하지 않는다** — 캐시하면 다음 주기가 원천에 다시 묻지 않고 같은
+        # 반쪽으로 영구히 실패한다(독립 리뷰 실측).
         raise _Stop(f"{date} 시가총액을 찾은 종목이 {rec['universe']}/{rec['net_rows']}"
-                    f"({cover:.0%}) — 반쪽 표는 굽지 않는다")
+                    f"({cover:.0%}) — 반쪽 표는 굽지 않는다", date, "coverage")
+    _save_mcap(date, mcap)
     _write_json(record_path(date), rec)
     return rec
 
 
 def _recheck(rec: dict, sessions: list[str], budget: _Budget, now: datetime) -> dict:
+    """이튿날 다시 받아 저녁 값과 대조. **기록을 먼저 쓰고 원자료를 나중에** 덮는다 —
+    중간에 실패하면 다음 재시도가 여전히 저녁 값과 대조한다(독립 리뷰: 원자료를 먼저
+    덮으면 아침 값끼리 비교해 거짓 '바뀐 종목 0' 이 남았다)."""
     date = rec["date"]
     old = load_raw(date)
+    old_nets = (old or {}).get("nets") if old and not old.get("nodata") else None
     if not budget.take(2):
         raise _Stop()
-    nets, why = fetch_nets(date)
+    nets, why, kind = fetch_nets(date)
     if nets is None:
-        raise _Stop(f"{date} 재확인 — {why}")
+        raise _Stop(f"{date} 재확인 — {why}", date, kind)
     # 저녁 원자료가 없으면 대조할 수 없다 — 전 종목을 '바뀜' 으로 세면 거짓이다(#54).
-    d = (diff_nets(old["nets"], nets) if old
-         else {"changed": None, "compared": 0, "max_abs_won": 0})
-    raw = dict(old or {"date": date})
-    raw.update({"date": date, "nets": nets, "rechecked_at": _iso(now)})
-    _write_json(_raw_path(date), raw)
-    mcap = raw.get("mcap") or _mcap_for(date, budget, now)
+    d = (diff_nets(old_nets, nets) if old_nets is not None
+         else {"changed": None, "value_changed": 0, "compared": 0, "max_abs_won": 0})
+    mcap = _mcap_fetch(date, budget)
     nets_by_date = {date: nets}
     for x in rec.get("window") or []:
         if x != date:
             r = load_raw(x)
-            if r:
+            if r and not r.get("nodata"):
                 nets_by_date[x] = r["nets"]
     new = build_record(date, sessions, nets_by_date, mcap,
                        collected_at=rec.get("collected_at", ""))
     new["recheck"] = {"at": _iso(now), **d}
     _write_json(record_path(date), new)
+    raw = dict(old or {})
+    raw.pop("nodata", None)
+    raw.update({"date": date, "nets": nets, "mcap": mcap, "rechecked_at": _iso(now)})
+    _write_json(_raw_path(date), raw)
     return new
 
 
@@ -462,28 +519,93 @@ def _save_state(st: dict) -> None:
         log.warning("daily_inst: 상태 저장 실패: %s", exc)
 
 
+def _ladder(n: int) -> int:
+    return _BACKOFF_MIN[min(max(n, 1), len(_BACKOFF_MIN)) - 1]
+
+
 def _fail(st: dict, now: datetime, reason: str) -> None:
+    """원천·환경이 통째로 안 되는 실패 — 전체 백오프(15분→최대 3시간)."""
     n = int(st.get("fails") or 0) + 1
-    wait = _BACKOFF_MIN[min(n, len(_BACKOFF_MIN)) - 1]
-    st.update({"fails": n, "reason": reason,
+    wait = _ladder(n)
+    st.update({"fails": n, "reason": reason, "waiting": False,
                "next_try": _iso(now + timedelta(minutes=wait))})
     log.warning("daily_inst: %s — %d분 뒤 다시 시도(연속 %d회)", reason, wait, n)
+
+
+def _day_fail(days: dict, key: str, now: datetime, reason: str, kind: str) -> dict:
+    """한 날짜만의 실패 — 그날만 늦추고 다른 날은 계속 메운다(독립 리뷰 H1)."""
+    n = int((days.get(key) or {}).get("n") or 0) + 1
+    days[key] = {"n": n, "reason": reason, "kind": kind,
+                 "next_try": _iso(now + timedelta(minutes=_ladder(n)))}
+    log.warning("daily_inst: %s — 이 날짜만 %d분 뒤 다시(연속 %d회)", reason, _ladder(n), n)
+    return days[key]
+
+
+def _mark_nodata(date: str, kind: str, reason: str, now: datetime) -> None:
+    _write_json(_raw_path(date), {"date": date, "nodata": kind, "reason": reason,
+                                  "at": _iso(now)})
+
+
+def _is_holiday(date: str) -> bool:
+    return (load_raw(date) or {}).get("nodata") == "holiday"
+
+
+def _classify(stop: _Stop, target: str, budget: _Budget, now: datetime) -> tuple[str, str]:
+    """실패 하나를 갈래로 — (holiday|waiting|day|outage, 사유).
+
+    기관 순매수가 **비었으면** 같은 날 시가총액을 물어 대조군으로 쓴다(#143): 행이
+    있는데 전부 0 이면 KRX 가 그날을 휴장으로 답한 것(달력엔 거래일인 임시공휴일 등),
+    시총은 멀쩡하면 시장은 열렸는데 기관 집계만 아직(기준일) 또는 없음(지난 날),
+    시총도 비면 KRX 가 답하지 않는 것(로그인·장애 — 처방이 정반대, #82)."""
+    bad = stop.date or target
+    if stop.kind == "coverage":
+        return "day", stop.reason
+    if stop.kind != "empty":
+        return "outage", stop.reason
+    if not budget.take(1):
+        raise _Stop()
+    m, why, kind = fetch_mcap(bad)
+    if kind == "holiday":
+        if bad < target or now >= recheck_due_at(bad):
+            return "holiday", f"{bad} {why}"
+        return "waiting", f"{stop.reason} · {why}(이튿날 아침까지 기다린다)"
+    if kind == "ok":
+        if bad == target:
+            return "waiting", (f"{bad} 기관 순매수가 아직 비었다(시가총액은 나옴) — "
+                               "KRX 가 아직 그날 기관 집계를 내지 않은 것으로 보임")
+        return "day", f"{stop.reason}(시가총액은 나옴)"
+    return "outage", f"{stop.reason} · {why} — KRX 가 답하지 않음(로그인·장애)"
 
 
 def tick(*, now: datetime | None = None, budget: int = CALL_BUDGET) -> dict:
     """한 주기 — 받아야 할 기록(재확인 → 빠진 날 최신부터)을 예산 안에서 처리.
 
-    반환 {"built": [...], "rechecked": [...], "status": "ok|budget|fail|backoff|idle",
-    "reason": "", "calls": n}. 상태는 디스크에 남겨 화면·진단이 읽는다(별도
-    프로세스는 이 모듈의 메모리를 못 본다, #343)."""
+    반환 {"built", "rechecked", "holidays", "status"(ok|idle|budget|waiting|fail|backoff),
+    "reason", "calls"}. 상태는 디스크에 남겨 화면·진단이 읽는다(별도 프로세스는 이
+    모듈의 메모리를 못 본다, #343). 어떤 예외도 상태를 남기고 끝난다(독립 리뷰 M5)."""
     now = _now(now)
     st = load_state()
-    res = {"built": [], "rechecked": [], "status": "idle", "reason": "", "calls": 0}
+    res = {"built": [], "rechecked": [], "holidays": [], "status": "idle",
+           "reason": "", "calls": 0}
     nt = _parse(st.get("next_try"))
     if nt and now < nt:
         res.update(status="backoff", reason=st.get("reason", ""))
         return res
     st["last_try"] = _iso(now)
+    st["running_since"] = _iso(now)
+    _save_state(st)
+    try:
+        _tick_body(st, now, budget, res)
+    except Exception as exc:                                   # noqa: BLE001
+        log.exception("daily_inst: 수집 중 예외")
+        _fail(st, now, f"수집 중 예외({type(exc).__name__}: {str(exc)[:120]})")
+        res.update(status="fail", reason=st["reason"])
+    st.pop("running_since", None)
+    _save_state(st)
+    return res
+
+
+def _tick_body(st: dict, now: datetime, budget: int, res: dict) -> None:
     try:
         from bot.pykrx_client import krx_login_ready
         ready = krx_login_ready()
@@ -498,69 +620,141 @@ def tick(*, now: datetime | None = None, budget: int = CALL_BUDGET) -> dict:
                    ".env 에 KRX 로그인 정보를 넣어야 수집된다")
     if not ready:
         _fail(st, now, why)
-        _save_state(st)
         res.update(status="fail", reason=st["reason"])
-        return res
+        return
     target = settled_session(now)
-    sessions = recent_sessions(target, KEEP_SESSIONS + STREAK_N - 1) if target else None
-    if not sessions:
+    cal = recent_sessions(target, KEEP_SESSIONS + STREAK_N + 5) if target else None
+    if not cal:
         _fail(st, now, "거래일 달력(exchange_calendars)이 없어 받을 날짜를 정할 수 없다")
-        _save_state(st)
         res.update(status="fail", reason=st["reason"])
-        return res
+        return
+    # KRX 가 휴장으로 답한 날은 거래일에서 뺀다 — 직전 거래일·5일 창이 그날을 건너뛴다.
+    sessions = [d for d in cal if not _is_holiday(d)]
     want = sessions[-KEEP_SESSIONS:]
+    target = want[-1]
+    days = st.get("days") if isinstance(st.get("days"), dict) else {}
+    # 창(최근 KEEP_SESSIONS 거래일)을 벗어난 날의 실패 기록은 버린다 — 다시 시도할 일이
+    # 없는데 남기면 화면이 영원히 '⚠️ 실패 중' 을 말한다(#25·#260).
+    for k in [k for k in days if k.replace("recheck:", "") not in want]:
+        days.pop(k, None)
+    st["days"] = days
+    deferred = {k for k, v in days.items()
+                if (t := _parse((v or {}).get("next_try"))) and now < t}
     b = _Budget(budget)
-    failed, out_of_budget = "", False
+    outage, waiting, out_of_budget, day_failed = "", "", False, []
     try:
-        for d in reversed(want[-2:]):
+        for d in reversed(want):
             rec = load_record(d)
-            if rec and needs_recheck(rec, now):
+            key = f"recheck:{d}"
+            if not rec or key in deferred or not needs_recheck(rec, now):
+                continue
+            try:
                 _recheck(rec, sessions, b, now)
                 res["rechecked"].append(d)
+                days.pop(key, None)
+            except _Stop as stop:
+                if not stop.reason:
+                    raise
+                _day_fail(days, key, now, stop.reason, stop.kind)
         for d in reversed(want):
             if load_record(d):
                 continue
             try:
-                _build_for(d, sessions, b, now)
+                _build_for(d, sessions, b, now, deferred)
                 res["built"].append(d)
+                days.pop(d, None)
+                continue
             except _Stop as stop:
-                # 기준일(가장 최근) **자체**가 아직 집계 전이어도 지난 거래일은 이미
-                # 확정이다 — 그 하나 때문에 빈 날 메우기를 막지 않는다(#171). 지난
-                # 거래일이 실패했으면(기준일 기록을 만들다 앞날 원자료가 실패한 것
-                # 포함) 원천 장애로 보고 멈춘다 — 같은 실패에 호출만 쓴다(#279).
-                if not stop.reason or failed or stop.date != want[-1]:
+                if not stop.reason:
                     raise
-                failed = stop.reason
+                if stop.kind == "deferred":
+                    continue
+                # `as` 변수는 except 블록을 나가면 지워진다 — 필요한 건 여기서 꺼낸다.
+                bad, kind = stop.date or d, stop.kind
+                verdict, why = _classify(stop, target, b, now)
+            if verdict == "holiday":
+                _mark_nodata(bad, "holiday", why, now)
+                days.pop(bad, None)
+                res["holidays"].append(bad)
+                break               # 거래일 목록이 바뀌었다 — 다음 주기가 새 목록으로 걷는다
+            if verdict == "waiting" and bad == target:
+                waiting = why
+                continue
+            if verdict in ("day", "waiting"):
+                # 'waiting' 이 기준일이 아닌 날에 나오는 경우는 없지만, 나오면 그날만 늦춘다.
+                info = _day_fail(days, bad, now, why, kind)
+                deferred.add(bad)       # 이 주기 안에서 같은 날을 또 묻지 않는다
+                day_failed.append(bad)
+                if info["n"] >= MISSING_AFTER and "시가총액은 나옴" in why:
+                    # 시장은 열렸는데 기관 순매수만 몇 번을 물어도 없다 — 그날을 빼고
+                    # 주변 기록을 만든다(그날 카드는 사유를 말한다, 독립 리뷰 H1).
+                    _mark_nodata(bad, "missing", why, now)
+                    days.pop(bad, None)
+                if len(day_failed) >= 2:
+                    outage = f"지난 거래일 여러 날이 연달아 실패({', '.join(day_failed)}) — {why}"
+                    break
+                continue
+            outage = why
+            break
     except _Stop as stop:
         if stop.reason:
-            # 앞의 '기준일 집계 전' 과 뒤의 실패를 둘 다 남긴다 — 뒤엣것이 원천
-            # 장애라면 그게 더 행동 가능한 사유다(#275·#350).
-            failed = (f"{failed} · 이어서 {stop.reason}"
-                      if failed and failed != stop.reason else stop.reason)
+            outage = outage or stop.reason
         else:
             out_of_budget = True
     res["calls"] = b.used
     if res["built"] or res["rechecked"]:
         st["last_ok"] = _iso(now)
-    if failed:
-        _fail(st, now, failed)
-        res.update(status="fail", reason=failed)
+    if outage:
+        _fail(st, now, outage)
+        res.update(status="fail", reason=outage)
+    elif waiting:
+        # 집계 대기는 실패가 아니다 — 15분 고정으로 다시 묻는다(지수 백오프면 KRX 가
+        # 21:20 에 내도 22시가 넘어서야 받는다, 독립 리뷰 M4). 그래도 끝없이 묻지 않게
+        # `WAIT_MAX` 번을 넘기면 전체 백오프로 넘어간다.
+        n = int(st.get("wait_n") or 0) + 1
+        wait = WAIT_RETRY_MIN if n <= WAIT_MAX else _ladder(n - WAIT_MAX)
+        st.update({"wait_n": n, "waiting": True, "reason": waiting, "fails": 0,
+                   "next_try": _iso(now + timedelta(minutes=wait))})
+        res.update(status="waiting", reason=waiting)
     else:
-        st.update({"fails": 0, "reason": "", "next_try": None})
+        st.update({"fails": 0, "reason": "", "next_try": None, "wait_n": 0,
+                   "waiting": False})
         res["status"] = ("budget" if out_of_budget
-                         else "ok" if res["built"] or res["rechecked"] else "idle")
+                         else "ok" if res["built"] or res["rechecked"] or res["holidays"]
+                         else "idle")
         if not out_of_budget:
             _prune_raw(now)
-    _save_state(st)
-    return res
 
 
 # ── 판정(순수) ──────────────────────────────────────────────────────────────
+def _days_note(st: dict) -> str:
+    """한 날짜만 실패해 늦추고 있는 날 — 최신이어도 그 사실은 말한다(#41)."""
+    items = []
+    for k, v in sorted((st.get("days") or {}).items()):
+        if not isinstance(v, dict):
+            continue
+        label = k.replace("recheck:", "") + (" 재확인" if k.startswith("recheck:") else "")
+        items.append(f"{label} {v.get('n', 1)}회 실패({str(v.get('reason') or '')[:80]})")
+    return " · ".join(items)
+
+
+def _stuck_note(st: dict, now: datetime) -> str:
+    t = _parse(st.get("running_since"))
+    if t and now - t > timedelta(minutes=STUCK_MIN):
+        return f"수집이 {t.strftime('%m-%d %H:%M')} 부터 끝나지 않음(KRX 가 응답 없이 멈춘 것으로 보임)"
+    return ""
+
+
 def status_verdict(latest: str | None, now: datetime | None = None,
                    state: dict | None = None) -> tuple[str, str]:
-    """(갈래, 한 줄) — 갈래 ok·wait·behind·none·unknown. 화면·감사·진단이 같은
-    함수를 쓴다(#35·#38). `wait` 는 그날 경계 뒤 `GRACE_MIN` 안(수집 주기가 아직
-    한 번도 안 돌았을 수 있다) — 늘 뜨는 경보는 아무것도 안 잰다(#25·#260)."""
+    """(갈래, 한 줄) — ok·degraded·wait·behind·none·unknown. 화면·감사·진단이 같은
+    함수를 쓴다(#35·#38).
+
+    `wait` 는 ① 그날 경계 뒤 `GRACE_MIN` 안(수집 주기가 아직 안 돌았을 수 있다) 또는
+    ② 시가총액은 나왔는데 기관 집계만 아직이라고 **원천이 확인해 준** 동안
+    (`WAIT_GRACE_H` 안) — 늘 뜨는 경보는 아무것도 안 잰다(#25·#260). 최신이어도 지난
+    날 하나가 실패해 늦추고 있거나 수집이 멈췄으면 `degraded` 로 그 사실을 말한다
+    (✅ 가 지속 실패를 가리지 않게, #41)."""
     now = _now(now)
     st = state or {}
     exp = settled_session(now)
@@ -569,22 +763,36 @@ def status_verdict(latest: str | None, now: datetime | None = None,
     if st.get("reason"):
         nxt = _parse(st.get("next_try"))
         tail = f" — 사유: {st['reason']}" + (
-            f" · 다음 시도 {nxt.strftime('%m-%d %H:%M')}" if nxt else "")
+            f" · 다음 시도 {nxt.strftime('%m-%d %H:%M')}"
+            if nxt and not st.get("waiting") else "")
+    stuck = _stuck_note(st, now)
     if exp is None:
         return "unknown", "❓ 거래일 달력이 없어 최신 여부를 판정할 수 없습니다"
     if not latest:
-        return "none", "아직 기록이 없습니다" + (tail or " — 첫 수집을 기다리는 중")
+        return "none", "아직 기록이 없습니다" + (tail or " — 첫 수집을 기다리는 중") + (
+            f" · ⚠️ {stuck}" if stuck else "")
     from bot import market_calendar as mc
     behind = mc.sessions_behind("KR", latest, exp)
     if behind is None:
         return "unknown", f"❓ {latest} 기록이 최신인지 판정할 수 없습니다(달력 조회 실패)"
     if behind == 0:
+        notes = [n for n in (stuck, _days_note(st)) if n]
+        if notes:
+            return "degraded", f"✅ 최신 — {exp} 장 마감 집계까지 반영 · ⚠️ " + " · ".join(notes)
         return "ok", f"✅ 최신 — {exp} 장 마감 집계까지 반영"
     ready_at = datetime.fromisoformat(exp).replace(tzinfo=_KST, hour=bh, minute=bm)
-    if behind == 1 and now < ready_at + timedelta(minutes=GRACE_MIN):
-        return "wait", f"⏳ {exp} 집계를 받는 중 — 매 거래일 {bh:02d}:{bm:02d} 이후 수집"
+    if behind == 1 and not stuck:
+        if st.get("waiting") and now < ready_at + timedelta(hours=WAIT_GRACE_H):
+            # 사유는 수집기가 **잰 갈래** 그대로 싣는다 — '시가총액은 나옴' 을 여기서
+            # 단정하면 시총이 0 으로 온 날(이튿날 아침까지 기다리는 갈래)에 거짓이다(#165).
+            why = str(st.get("reason") or "아직 받지 못함")[:160]
+            return "wait", (f"⏳ {exp} 집계 대기 — {why} · {WAIT_RETRY_MIN}분마다 다시 묻는 중")
+        if now < ready_at + timedelta(minutes=GRACE_MIN):
+            return "wait", f"⏳ {exp} 집계를 받는 중 — 매 거래일 {bh:02d}:{bm:02d} 이후 수집"
+    if not tail and _days_note(st):
+        tail = f" — {_days_note(st)}"
     return "behind", (f"⚠️ {exp} 기록이 아직 없습니다(마지막 기록 {latest} · "
-                      f"{behind}거래일 뒤처짐){tail}")
+                      f"{behind}거래일 뒤처짐){tail}" + (f" · {stuck}" if stuck else ""))
 
 
 # ── 화면 ────────────────────────────────────────────────────────────────────
@@ -703,12 +911,17 @@ def _day_meta(rec: dict) -> str:
         when = at.strftime('%m-%d %H:%M') if at else '—'
         if rc.get("changed") is None:
             parts.append(f"재확인 {when} · 저녁 원자료가 없어 대조 못 함")
-        else:
+        elif not rc["changed"]:
+            parts.append(f"재확인 {when} · 바뀐 종목 0")
+        elif rc.get("value_changed", 1) and rc.get("max_abs_won"):
             parts.append(f"재확인 {when} · 바뀐 종목 {rc['changed']}"
-                         + (f"(최대 {rc.get('max_abs_won', 0) / 1e8:,.1f}억)"
-                            if rc["changed"] else ""))
-    elif got and got < recheck_due_at(rec["date"]):
+                         f"(최대 {rc['max_abs_won'] / 1e8:,.1f}억)")
+        else:
+            parts.append(f"재확인 {when} · 바뀐 종목 {rc['changed']}(종목 추가·삭제만)")
+    elif got and got < recheck_due_at(rec["date"]) and not rec.get("nodata"):
         parts.append(f"재확인 예정 {recheck_due_at(rec['date']).strftime('%m-%d %H:%M')} 이후")
+    if rec.get("nodata"):
+        return " · ".join(parts)
     parts.append(f"시총 확인 {rec.get('universe', 0):,}종목")
     if rec.get("mcap_missing"):
         parts.append(f"시총 못 찾음 {rec['mcap_missing']}종목 제외")
@@ -718,30 +931,42 @@ def _day_meta(rec: dict) -> str:
 def _day_html(rec: dict, *, open_: bool) -> str:
     import html as _h
     d = datetime.fromisoformat(rec["date"])
-    tiers = []
-    for t in rec.get("tiers") or []:
-        tables = "".join(_table_html(rec, k, title, (t.get("lists") or {}).get(k))
-                         for k, title in LISTS)
-        tiers.append(
-            f"<div class='di-tier'><div class='di-tier-h'>{_h.escape(t['label'])}"
-            f"<span class='di-n'>{t.get('n', 0):,}종목 중 기관 순매수 "
-            f"{t.get('n_pos', 0):,}종목</span></div>"
-            f"<div class='di-grid'>{tables}</div></div>")
+    if rec.get("nodata"):
+        body = (f"<div class='di-status'>KRX 자료 없음 — {_h.escape(str(rec['nodata']))}"
+                "</div>")
+    else:
+        tiers = []
+        for t in rec.get("tiers") or []:
+            tables = "".join(_table_html(rec, k, title, (t.get("lists") or {}).get(k))
+                             for k, title in LISTS)
+            # 'N종목' 은 그 구간에서 **KRX 가 기관 순매수 행을 준** 종목 수다 — 기관 거래가
+            # 없던 종목도 행으로 오는지는 재지 않았다(`--probe` 가 행 수를 잰다, #165).
+            tiers.append(
+                f"<div class='di-tier'><div class='di-tier-h'>{_h.escape(t['label'])}"
+                f"<span class='di-n'>KRX 기관 집계 {t.get('n', 0):,}종목 중 순매수 "
+                f"{t.get('n_pos', 0):,}종목</span></div>"
+                f"<div class='di-grid'>{tables}</div></div>")
+        body = "".join(tiers)
     return (f"<details class='di-day' data-open='{1 if open_ else 0}'"
             f"{' open' if open_ else ''}><summary>📅 {rec['date']} "
             f"({_WD[d.weekday()]}) 기준<span class='di-meta'>{_h.escape(_day_meta(rec))}"
-            f"</span></summary><div class='di-body'>{''.join(tiers)}</div></details>")
+            f"</span></summary><div class='di-body'>{body}</div></details>")
+
+
+_GEN = "\x00GEN\x00"   # 생성 시각 자리 — 내용 비교에서 빼려고 맨 마지막에 채운다
 
 
 def render_page(records: list[dict], state: dict | None = None,
-                now: datetime | None = None) -> str:
-    """daily_inst.html — 월 → 일 접힘(이번 달·최신일만 펼침, Daily Byte 와 같은 형식)."""
+                now: datetime | None = None, *, gen: str | None = None) -> str:
+    """daily_inst.html — 월 → 일 접힘(이번 달·최신일만 펼침, Daily Byte 와 같은 형식).
+    최근 `RENDER_DAYS` 거래일만 싣고 그 앞은 보관만 한다(그 사실을 적는다, #45)."""
     import html as _h
 
     from bot.fred_boards import _BOARD_CSS, _theme_head
     now = _now(now)
     st = state or {}
-    recs = sorted(records, key=lambda r: r["date"], reverse=True)
+    allrecs = sorted(records, key=lambda r: r["date"], reverse=True)
+    recs = allrecs[:RENDER_DAYS]
     latest = recs[0]["date"] if recs else None
     kind, line = status_verdict(latest, now, st)
     bh, bm = boundary_hm()
@@ -749,7 +974,7 @@ def render_page(records: list[dict], state: dict | None = None,
     stats = (
         "<div class='stat-grid'>"
         f"<div class='stat'><div class='k'>최신 기준일</div><div class='v'>{latest or '—'}</div></div>"
-        f"<div class='stat'><div class='k'>기록</div><div class='v'>{len(recs)}거래일</div></div>"
+        f"<div class='stat'><div class='k'>기록</div><div class='v'>{len(allrecs)}거래일</div></div>"
         f"<div class='stat'><div class='k'>마지막 수집 (KST)</div><div class='v'>"
         f"{last_ok.strftime('%m-%d %H:%M') if last_ok else '—'}</div></div>"
         "</div>")
@@ -767,7 +992,9 @@ def render_page(records: list[dict], state: dict | None = None,
     body = "".join(blocks) or (
         "<div class='di-status'>아직 기록이 없습니다 — 매 거래일 "
         f"{bh:02d}:{bm:02d} 이후 자동으로 수집합니다.</div>")
-    gen = now.strftime("%Y-%m-%d %H:%M KST")
+    shown = (f"총 {len(allrecs)}거래일 기록" if len(allrecs) <= RENDER_DAYS else
+             f"총 {len(allrecs)}거래일 기록 중 최근 {RENDER_DAYS}거래일 표시(그 앞은 보관만)")
+    gen_s = now.strftime("%Y-%m-%d %H:%M KST") if gen is None else gen
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Daily 기관매수</title>{_BOARD_CSS}{_DI_CSS}
@@ -777,7 +1004,7 @@ def render_page(records: list[dict], state: dict | None = None,
 <h1>🏦 <em>Daily 기관매수</em> — 시총 대비 기관 순매수 TOP 10</h1>
 <div class="sub">KRX 투자자별(기관합계) 종목별 순매수대금 ÷ 시가총액 · 코스피+코스닥 ·
 매 거래일 {bh:02d}:{bm:02d} 이후 자동 집계 · 이튿날 {RECHECK_HOUR:02d}:00 이후 한 번 더 받아
-대조 · 페이지 생성 {_h.escape(gen)}</div>
+대조 · 내용이 바뀐 시각 {_h.escape(gen_s)}</div>
 <div class="di-status" data-kind="{kind}">{_h.escape(line)}</div>
 {stats}
 <details class="guide"><summary>ℹ️ 이 보드 읽는 법</summary>
@@ -787,7 +1014,8 @@ def render_page(records: list[dict], state: dict | None = None,
 화면으로 갑니다.<br>
 <b>구간</b> — 기준일 종가 시가총액으로 <b>1조 이상 · 5천억~1조 · 5천억 미만</b>을
 나눕니다. 구간마다 같은 값을 쓰므로 큰 회사의 0.3% 는 작은 회사의 0.3% 보다 훨씬
-큰 금액입니다.<br>
+큰 금액입니다. 구간 제목 옆 "KRX 기관 집계 N종목" 은 그 구간에서 KRX 가 기관 순매수
+행을 준 종목 수입니다(기관 거래가 없던 종목도 행으로 오는지는 재지 않았습니다).<br>
 <b>세 목록</b> — ① <b>순매수 강도</b>: 기준일에 기관이 순매수한 종목을 값 순으로.
 ② <b>순매수 전환</b>: 직전 거래일엔 기관이 <b>순매도</b>했는데 기준일엔 순매수한
 종목(직전 거래일이 0 이면 넣지 않습니다). ③ <b>5일 연속 순매수</b>: 기준일 포함
@@ -801,12 +1029,15 @@ def render_page(records: list[dict], state: dict | None = None,
 기관 집계에 들어가도 틀리지 않게 <b>{bh:02d}:{bm:02d} 이후</b>에만 그날을 받습니다.
 KRX 가 정확히 언제 집계를 끝내는지는 재지 않았으므로, <b>이튿날 {RECHECK_HOUR:02d}:00
 이후 한 번 더 받아</b> 저녁 값과 대조하고 바뀐 종목 수를 날짜 옆 "재확인" 에
-적습니다(0 이면 저녁 값이 최종이었다는 뜻). 아직 집계 전이면 굽지 않고 15분 뒤
-다시 묻습니다.<br>
-<b>휴장일</b> — 주말·공휴일은 기록이 없습니다(거래일만 쌓입니다).
+적습니다(0 이면 저녁 값이 최종이었다는 뜻). 그날 시가총액은 나왔는데 기관 집계만
+아직이면 굽지 않고 {WAIT_RETRY_MIN}분마다 다시 묻습니다.<br>
+<b>휴장일·자료 없는 날</b> — 주말·공휴일은 기록이 없습니다. 달력엔 거래일인데 KRX 가
+휴장으로 답한 날(시가총액이 전부 0)은 거래일에서 빼고, 시장은 열렸는데 기관 순매수만
+여러 번 물어도 없던 날은 "KRX 자료 없음" 카드로 남깁니다.<br>
+<b>표시 범위</b> — 최근 {RENDER_DAYS}거래일만 보여 주고 그 앞은 보관만 합니다.
 </details>
 <div class="di-search"><input id="di-q" type="text" placeholder="종목명 검색 (예: 스피어) — 등장한 날만 펼칩니다" autocomplete="off" spellcheck="false"></div>
-<div id="di-st" class="sub">총 {len(recs)}거래일 기록</div>
+<div id="di-st" class="sub">{shown}</div>
 {body}
 <div class="footer">Daily 기관매수 — KRX 수급 관찰(교육·정보), 투자 권유 아님 · NOAH</div>
 </div>
@@ -814,36 +1045,83 @@ KRX 가 정확히 언제 집계를 끝내는지는 재지 않았으므로, <b>�
 </body></html>"""
 
 
-def regenerate() -> None:
-    """daily_inst.html 재생성(저장된 기록만 읽는다 — 네트워크 0). 실패해도 기존 파일 유지."""
+def _page_sig(html: str) -> str:
+    import hashlib
+    return hashlib.sha1(html.encode("utf-8")).hexdigest()
+
+
+def regenerate() -> bool:
+    """daily_inst.html 재생성(저장된 기록만 읽는다 — 네트워크 0). **내용이 바뀔 때만**
+    쓴다 — 15분마다 생성 시각만 바뀐 같은 페이지를 쓰면 열어 둔 화면에 '새 업데이트'
+    배너가 상시 뜨고 자동 새로고침이 펼쳐 둔 카드를 접는다(독립 리뷰 H2 · #25·#271).
+    썼으면 True. 실패해도 기존 파일 유지."""
     try:
         from bot.dashboard import ARCHIVE_ROOT, _inject_update_banner
-        html = _inject_update_banner(render_page(load_records(), load_state()))
+        recs, st = load_records(), load_state()
+        now = _now()
+        body = _inject_update_banner(render_page(recs, st, now, gen=_GEN))
+        sig = _page_sig(body)
+        out = ARCHIVE_ROOT / "daily_inst.html"
+        sig_path = ARCHIVE_ROOT / "daily_inst.html.sig"
+        try:
+            same = out.exists() and sig_path.read_text(encoding="utf-8").strip() == sig
+        except Exception:                                      # noqa: BLE001
+            same = False
+        if same:
+            return False
+        html = body.replace(_GEN, now.strftime("%Y-%m-%d %H:%M KST"))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        tmp = ARCHIVE_ROOT / "daily_inst.html.tmp"
+        tmp = ARCHIVE_ROOT / f"daily_inst.html.tmp{os.getpid()}"
         tmp.write_text(html, encoding="utf-8")
-        os.replace(tmp, ARCHIVE_ROOT / "daily_inst.html")
+        os.replace(tmp, out)
+        sig_path.write_text(sig, encoding="utf-8")
+        return True
     except Exception as exc:                                   # noqa: BLE001
         log.warning("daily_inst: 페이지 재생성 실패: %s", exc)
+        return False
+
+
+_TICK_LOCK = threading.Lock()
 
 
 def tick_and_render() -> dict:
-    """봇 주기 태스크가 부르는 한 단위 — 수집(예외는 기록) 후 페이지 재생성."""
+    """봇 주기 태스크가 부르는 한 단위 — 수집 후 페이지 재생성.
+
+    앞 주기가 아직 안 끝났으면(pykrx 요청엔 timeout 이 없어 KRX 가 응답 없이 멈추면
+    스레드가 안 돌아온다) 수집은 건너뛰고 **재생성만** 한다 — 화면의 판정 줄이 그
+    시각에 굳지 않고 '수집이 끝나지 않음' 을 말하게(독립 리뷰 M6)."""
+    if not _TICK_LOCK.acquire(blocking=False):
+        log.warning("daily_inst: 앞 주기가 아직 안 끝나 이번 수집은 건너뛴다")
+        regenerate()
+        return {"status": "busy", "reason": "앞 주기가 아직 안 끝남"}
     try:
-        res = tick()
-    except Exception as exc:                                   # noqa: BLE001
-        log.exception("daily_inst: tick 실패")
-        res = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+        try:
+            res = tick()
+        except Exception as exc:                               # noqa: BLE001
+            log.exception("daily_inst: tick 실패")
+            res = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+    finally:
+        _TICK_LOCK.release()
     regenerate()
-    if res.get("built") or res.get("rechecked"):
-        log.info("daily_inst: 기록 %s · 재확인 %s · KRX %d콜", res.get("built"),
-                 res.get("rechecked"), res.get("calls", 0))
+    if res.get("built") or res.get("rechecked") or res.get("holidays"):
+        log.info("daily_inst: 기록 %s · 재확인 %s · 휴장 판정 %s · KRX %d콜",
+                 res.get("built"), res.get("rechecked"), res.get("holidays"),
+                 res.get("calls", 0))
     return res
 
 
 # ── 진단 CLI ────────────────────────────────────────────────────────────────
-_WHY_VER = 1
+_WHY_VER = 2   # 2026-10-12 독립 리뷰 반영(자료 없는 날·한 날짜 실패·집계 대기·멈춤)
 _RUN_HINT = "cd ~/stock && .venv/bin/python -m bot.daily_inst --why"
+
+
+def _src_sig() -> str:
+    """이 파일의 소스 지문 — 진단 출력이 어느 코드에서 나왔는지(#364)."""
+    import hashlib
+    try:
+        return hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:10]
+    except Exception:                                          # noqa: BLE001
+        return "지문불가"
 
 
 def _load_env() -> None:
@@ -855,9 +1133,10 @@ def _load_env() -> None:
 
 
 def why() -> int:
-    """읽기 전용 — 아무것도 받지도 쓰지도 않는다(#264·#283)."""
+    """읽기 전용 — 아무것도 받지도 쓰지도 않는다(#264·#283). 최신(✅)·집계 대기(⏳)면 0."""
     now = _now()
-    print(f"[Daily 기관매수 진단 v{_WHY_VER}] {now.strftime('%Y-%m-%d %H:%M KST')}")
+    print(f"[Daily 기관매수 진단 v{_WHY_VER} · 소스 {_src_sig()}] "
+          f"{now.strftime('%Y-%m-%d %H:%M KST')}")
     print(f"① 인터프리터: {sys.executable}")
     try:
         from bot.env_keys import env_source
@@ -875,6 +1154,8 @@ def why() -> int:
     if recs:
         r = recs[-1]
         print(f"   최신 기록: {_day_meta(r)}")
+        if r.get("nodata"):
+            print(f"   KRX 자료 없음: {r['nodata']}")
         for t in r.get("tiers") or []:
             top = (t.get("lists") or {}).get("strength") or []
             head = ", ".join(f"{x['n']} {x['r']:.2f}%" for x in top[:3]) or "없음"
@@ -882,9 +1163,12 @@ def why() -> int:
     st = load_state()
     print(f"⑤ 수집 상태: 마지막 시도 {st.get('last_try') or '—'} · 마지막 성공 "
           f"{st.get('last_ok') or '—'} · 연속 실패 {st.get('fails') or 0}"
+          + (" · 집계 대기 중" if st.get("waiting") else "")
           + (f" · 다음 시도 {st.get('next_try')}" if st.get("next_try") else ""))
     if st.get("reason"):
         print(f"   사유: {st['reason']}")
+    if _days_note(st):
+        print(f"   한 날짜만 늦추는 중: {_days_note(st)}")
     rc = [r for r in recs if (r.get("recheck") or {}).get("changed") is not None]
     if rc:
         ch = sum(1 for r in rc if r["recheck"].get("changed"))
@@ -895,27 +1179,37 @@ def why() -> int:
         print("⑥ 재확인: 아직 대조한 날이 없다(이튿날 07:00 이후 생긴다)")
     kind, line = status_verdict(latest, now, st)
     print(f"판정: {line}")
+    print(f"다시 보려면: {_RUN_HINT}")
     return 0 if kind in ("ok", "wait") else 1
 
 
 def probe(date: str | None) -> int:
-    """그 날짜를 지금 받아 보기만 한다(쓰지 않는다) — "오늘 집계가 벌써 나왔나" 를 잰다."""
+    """그 날짜를 지금 받아 보기만 한다(쓰지 않는다) — "오늘 집계가 벌써 나왔나" 와
+    "KRX 가 기관 거래가 없던 종목도 행으로 주나" 를 잰다."""
     _load_env()
     now = _now()
     d = date or now.date().isoformat()
-    print(f"[Daily 기관매수 probe] {d} — 지금 {now.strftime('%H:%M KST')} (아무것도 안 씁니다)")
-    nets, why_n = fetch_nets(d)
-    if nets is None:
-        print(f"❌ 기관 순매수: {why_n}")
-        return 1
-    pos = sum(1 for v in nets.values() if v[1] > 0)
-    print(f"✅ 기관 순매수 {len(nets)}종목(순매수 {pos}) · 합 {sum(v[1] for v in nets.values()) / 1e8:+,.0f}억")
-    mcap, why_m = fetch_mcap(d)
+    print(f"[Daily 기관매수 probe · 소스 {_src_sig()}] {d} — 지금 "
+          f"{now.strftime('%H:%M KST')} (아무것도 안 씁니다)")
+    nets, why_n, kind_n = fetch_nets(d)
+    mcap, why_m, kind_m = fetch_mcap(d)
     if mcap is None:
-        print(f"❌ 시가총액: {why_m}")
+        print(f"{'⏸' if kind_m == 'holiday' else '❌'} 시가총액[{kind_m}]: {why_m}")
+    else:
+        print(f"✅ 시가총액 {len(mcap)}종목(코넥스 포함 전 시장)")
+    if nets is None:
+        print(f"❌ 기관 순매수[{kind_n}]: {why_n}")
         return 1
-    print(f"✅ 시가총액 {len(mcap)}종목")
-    return 0
+    for mkt, sfx in MARKETS:
+        rows = [v for t, v in nets.items() if t.endswith(sfx)]
+        zero = sum(1 for v in rows if not v[1])
+        print(f"✅ {mkt} 기관 순매수 {len(rows)}행 · 순매수 {sum(1 for v in rows if v[1] > 0)}"
+              f" · 0 인 행 {zero}(0 인 행이 있으면 기관 거래가 없던 종목도 행으로 온다)")
+    if mcap:
+        codes = {t.split(".")[0] for t in nets}
+        print(f"   시가총액이 있는데 기관 순매수 행이 없는 종목: "
+              f"{len([c for c in mcap if c not in codes])}(코넥스 포함)")
+    return 0 if mcap else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -930,7 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
         _load_env()
         res = tick_and_render()
         print(json.dumps(res, ensure_ascii=False))
-        return 0 if res.get("status") in ("ok", "idle", "budget") else 1
+        return 0 if res.get("status") in ("ok", "idle", "budget", "waiting") else 1
     return why()
 
 

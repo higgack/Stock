@@ -404,7 +404,8 @@ def _audit_home_surfaces(show_all):
 def _daily_inst_line(records=None, state=None, now=None) -> str:
     """Daily 기관매수 판정 한 줄 — **화면과 같은 함수**(`status_verdict`)를 쓰고
     저장된 기록만 읽는다(감사가 KRX 를 다시 받으면 자기가 만든 장애를 보고한다,
-    #321). 갈래 → 판정 글자: ok ✅ · wait ⚠️(경계 뒤 여유 안) · behind/none ❌
+    #321). 갈래 → 판정 글자: ok ✅ · wait ⚠️(집계 대기 — 원천이 아직) · degraded ⚠️
+    (최신이지만 지난 날 하나가 실패해 늦추는 중이거나 수집이 멈춤) · behind/none ❌
     (수집이 멈췄다 — 고칠 것) · unknown ❓(판정 불가). 순수 함수라 값으로 잰다(#41)."""
     try:
         from bot import daily_inst as di
@@ -414,7 +415,8 @@ def _daily_inst_line(records=None, state=None, now=None) -> str:
         kind, line = di.status_verdict(latest, now, st)
     except Exception as exc:                                   # noqa: BLE001
         return f"   ❓ 조회 실패 {type(exc).__name__}: {exc}"
-    mark = {"ok": "✅", "wait": "⚠️", "behind": "❌", "none": "❌"}.get(kind, "❓")
+    mark = {"ok": "✅", "wait": "⚠️", "degraded": "⚠️", "behind": "❌",
+            "none": "❌"}.get(kind, "❓")
     text = line.lstrip("✅⏳⚠️❓ ").strip()
     return f"   {mark} 기록 {len(recs)}거래일 · {text}"
 

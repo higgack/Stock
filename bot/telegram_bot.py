@@ -4277,7 +4277,12 @@ _DAILY_INST_TICK_SEC = 900
 async def _periodic_daily_inst() -> None:
     """첫 바퀴는 페이지부터 — nav 링크는 배포 즉시 살아나므로 렌더(네트워크 0)를
     먼저 해 두지 않으면 수집이 끝날 때까지 404 다(실수 #11). 수집·렌더는
-    to_thread(이벤트루프 차단 시 getUpdates 침묵 → watchdog 오탐, 실수 #2)."""
+    to_thread(이벤트루프 차단 시 getUpdates 침묵 → watchdog 오탐, 실수 #2).
+
+    pykrx 요청엔 timeout 이 없어 KRX 가 응답 없이 멈추면 그 스레드는 안 돌아온다 —
+    `wait_for` 로 기다림에 상한을 두고 다음 주기로 넘어간다. 멈춘 스레드가 잠금을 쥐고
+    있는 동안 다음 주기는 수집을 건너뛰고 재생성만 해 화면이 '수집이 끝나지 않음' 을
+    말한다(`daily_inst.tick_and_render`, 독립 리뷰 2026-10-12)."""
     try:
         from bot.daily_inst import regenerate as _regen_di
         await asyncio.to_thread(_regen_di)
@@ -4288,10 +4293,13 @@ async def _periodic_daily_inst() -> None:
     await asyncio.sleep(90)
     while True:
         try:
+            from bot.daily_inst import TICK_TIMEOUT_SEC as _di_cap
             from bot.daily_inst import tick_and_render as _di_tick
-            await asyncio.to_thread(_di_tick)
+            await asyncio.wait_for(asyncio.to_thread(_di_tick), timeout=_di_cap)
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            log.warning("daily inst tick: %s초 안에 안 끝남 — 다음 주기로", _di_cap)
         except Exception:
             log.exception("daily inst tick failed")
         await asyncio.sleep(_DAILY_INST_TICK_SEC)

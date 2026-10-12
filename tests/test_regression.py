@@ -45258,7 +45258,9 @@ def _daily_inst_html() -> str:
                      "compared": 3, "max_abs_won": 120000000}
     r0 = _di.build_record(sess[0], sess, {sess[0]: prev}, mcap,
                           collected_at="2026-10-08T21:00:00+09:00")
-    return _di.render_page([r0, r1], {"reason": "KRX 응답 없음"},
+    stub = _di.nodata_record("2026-09-30", "KRX 가 그날 기관 순매수를 주지 않음",
+                             "2026-10-08T21:00:00+09:00")
+    return _di.render_page([stub, r0, r1], {"reason": "KRX 응답 없음"},
                            _dt(2026, 10, 12, 21, 40, tzinfo=_di._KST))
 
 
