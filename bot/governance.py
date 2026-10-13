@@ -290,18 +290,21 @@ def build_gov_brief(query: str, with_llm: bool = True) -> str:
 
     discl = _gov_disclosures(code)
     if discl:
-        from bot.dart_feed import significance
+        from bot.dart_feed import SIG_TONES, significance_info
         parts.append("\n📢 <b>최근 거버넌스 공시</b> (90일)")
         for it in discl:
             rn = str(it.get("report_nm", ""))
             try:
-                sig = significance(it)
+                info = significance_info(it)
             except Exception:
-                sig = None
-            fire = f" 🔥{_html.escape(sig)}" if sig else ""
+                info = None
+            # 대시보드 DART 카드와 같은 방향 표기(🔥호재·🚨악재·⚖️판단, #38)
+            sig, tone = info if info else (None, None)
+            em, tnm = SIG_TONES.get(tone, ("🔥", "중요"))
+            fire = f" {em}{_html.escape(sig)}" if sig else ""
             parts.append(f"· {it['_date'][5:]} {_html.escape(rn[:44])}{fire}")
             ctx_lines.append(
-                f"공시 {it['_date']} {rn}" + (f" [중요: {sig}]" if sig else ""))
+                f"공시 {it['_date']} {rn}" + (f" [중요·{tnm}: {sig}]" if sig else ""))
     else:
         parts.append("\n📢 최근 90일 거버넌스 공시 없음 (피드 아카이브 기준)")
 

@@ -272,7 +272,10 @@ def audit_dart() -> None:
     def _n(pat: str) -> int:
         mm = re.search(pat, html)
         return int(mm.group(1)) if mm else 0
-    p_sig = _n(r'data-flag="sig">🔥 중요 (\d+)<')
+    # 🔥 중요는 방향별 필 셋(호재·악재·판단, 2026-10-13) — 합이 'sig' 카드 수.
+    p_tone = {t: _n(rf'data-flag="sig-{t}">[^<]*? (\d+)<')
+              for t in df.SIG_TONES}
+    p_sig = sum(p_tone.values())
     p_unp = _n(r'data-flag="unparsed">⚠️ 미파싱 (\d+)<')
     p_nop = _n(r'data-flag="noparse">미파싱제외 (\d+)<')
     fl: Counter = Counter()
@@ -284,7 +287,10 @@ def audit_dart() -> None:
     for text in [html] + list(frags.values()):
         both += len(re.findall(r'data-flag="[^"]*unparsed[^"]*noparse|'
                                r'data-flag="[^"]*noparse[^"]*unparsed', text))
-    _p(f"{_mark(p_sig == fl['sig'])} 🔥중요 필 {p_sig} vs 카드 {fl['sig']}")
+    _p(f"{_mark(p_sig == fl['sig'])} 🔥중요(방향 필 합) {p_sig} vs 카드 {fl['sig']}")
+    for _t, (_em, _nm) in df.SIG_TONES.items():
+        _p(f"{_mark(p_tone[_t] == fl[f'sig-{_t}'])} {_em}{_nm} 필 {p_tone[_t]} "
+           f"vs 카드 {fl[f'sig-{_t}']}")
     _p(f"{_mark(p_unp == fl['unparsed'])} ⚠️미파싱 필 {p_unp} vs 카드 {fl['unparsed']}")
     _p(f"{_mark(p_nop == fl['noparse'])} 미파싱제외 필 {p_nop} vs 카드 {fl['noparse']}")
     _p(f"{_mark(not both)} 미파싱∧미파싱제외 동시 카드 {both}건 (상호배타여야)")
