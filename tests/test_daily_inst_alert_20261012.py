@@ -240,35 +240,83 @@ def test_no_calendar_means_no_target(monkeypatch):
     assert rec is None and "달력" in why
 
 
-def test_render_draws_the_requested_layout(tmp_path, monkeypatch):
-    """그림이 '있다' 가 아니라 요청 형식이 그려졌는지(독립 리뷰 M3) — 그려진 글자 · 흰 바탕 · 크기 ·
-    한글 폰트가 걸렸는지."""
+def _render_spy(monkeypatch, tmp_path, rec):
     from bot.korean_font import find_font
     if not find_font():
         pytest.skip("한글 폰트 없음")
     import matplotlib
     import matplotlib.axes
-    from matplotlib import font_manager as fm
-    texts = []
-    real = matplotlib.axes.Axes.text
+    texts, patches = [], []
+    real_t, real_p = matplotlib.axes.Axes.text, matplotlib.axes.Axes.add_patch
 
-    def spy(self, x, y, s, *a, **k):
-        texts.append(str(s))
-        return real(self, x, y, s, *a, **k)
-    monkeypatch.setattr(matplotlib.axes.Axes, "text", spy)
-    rec = _rec("2026-10-12")
-    rec["tiers"][0]["lists"]["strength"][0]["n"] = "아주아주긴이름의종목명이들어가면잘리나"
+    def spy_t(self, x, y, s, *a, **k):
+        texts.append((str(s), k.get("color")))
+        return real_t(self, x, y, s, *a, **k)
+
+    def spy_p(self, p):
+        patches.append(p)
+        return real_p(self, p)
+    monkeypatch.setattr(matplotlib.axes.Axes, "text", spy_t)
+    monkeypatch.setattr(matplotlib.axes.Axes, "add_patch", spy_p)
     out = al.render_png(rec, str(tmp_path / "a.png"))
     assert out
-    assert "2026.10.12 기준 · KRX 기관합계 순매수 ÷ 시가총액" in texts
-    assert "시총대비 기관 순매수액: 1조 이상" in texts and "시총대비 기관 순매수액: 5천억 ~ 1조" in texts
-    assert "해당 종목 없음" in texts and "자료 부족 — 판정 안 함" in texts
-    assert "아주아주긴이름의종목명이들어…" in texts, "긴 이름은 15자 안으로 잘라 …"
+    return out, texts, patches
+
+
+def test_render_draws_the_dashboard_card_layout(tmp_path, monkeypatch):
+    """사용자 2026-10-13 "대시보드처럼 이쁘게" — 옛 블로그 흑백 격자 계약(흰 바탕 · '시총대비 기관
+    순매수액:' 제목 · 15자 자르기)을 다시 썼다(#222). 남는 보장 — 기준일·산식 · 구간 셋 · 빈 칸이
+    왜 비었는지 · 긴 이름 자르기 · 한글 폰트 — 은 그대로 재고, 대시보드 카드의 머리줄(무엇을 고른
+    목록인지)·구간 집계 수·순위·빨간 값·배경색을 더 잰다."""
+    from matplotlib import font_manager as fm
+
+    from bot.daily_inst import LIST_SUB, _na_reason
+    from bot.korean_font import find_font
+    from bot.textwidth import vlen
+    rec = _rec("2026-10-12")
+    rec["tiers"][0]["lists"]["strength"][0]["n"] = "아주아주긴이름의종목명이들어가면잘리나"
+    out, texts, _ = _render_spy(monkeypatch, tmp_path, rec)
+    words = [t for t, _c in texts]
+    assert "Daily 기관매수" in words
+    assert "2026.10.12 (월) 기준 · KRX 기관합계 순매수 ÷ 시가총액" in words
+    assert "시가총액 1조 이상" in words and "시가총액 5천억 ~ 1조" in words
+    assert "KRX 기관 집계 300종목 중 순매수 100종목" in words
+    assert all(v in words for v in LIST_SUB.values()), "카드 머리줄이 무엇을 고른 목록인지 말한다"
+    assert "해당 종목 없음" in words
+    assert "조건에 맞는 종목이 4개뿐입니다" in words, "목록이 짧으면 화면처럼 그 사실을 적는다"
+    na = " ".join(w for w in words if w not in LIST_SUB.values())
+    assert _na_reason(rec, "streak").replace(" ", "") in na.replace(" ", ""), "판정 안 한 사유 = 화면과 같은 문장"
+    cut = [w for w in words if w.startswith("아주아주")]
+    assert cut and cut[0].endswith("…") and vlen(cut[0]) <= al._NAME_W, cut
+    assert [w for w in words if w in {str(i) for i in range(1, 11)}].count("10") >= 1, "순위"
+    assert ("1.00%", al._PAL["up"]) in texts, "값은 대시보드 --di-up 빨강"
+    assert "이튿날 재확인 전 저녁 값" not in words, "재확인한 기록엔 경고를 안 단다"
+    import matplotlib
     assert matplotlib.rcParams["font.family"][0] == fm.FontProperties(fname=find_font()).get_name()
     from PIL import Image
-    im = Image.open(out)
-    assert im.size[0] == 1389, "dpi 150 · 폭 926pt"
-    assert im.convert("RGB").getpixel((3, 3)) == (255, 255, 255), "흰 바탕"
+    im = Image.open(out).convert("RGB")
+    assert im.size[0] == 1440, "dpi 150 · 폭 960pt"
+    bg = tuple(int(al._PAL["bg"][i:i + 2], 16) for i in (1, 3, 5))
+    assert im.getpixel((3, 3)) == bg, "대시보드 --bg 바탕"
+
+
+def test_render_bars_follow_the_value_relative_to_the_list_top(tmp_path, monkeypatch):
+    """막대 = 그 표 1위 대비(화면 .di-bar 와 같은 규칙) — 1위가 가장 길고 값에 비례한다."""
+    rec = _rec("2026-10-12")
+    _out, _t, patches = _render_spy(monkeypatch, tmp_path, rec)
+    bars = [p for p in patches if p.get_alpha() == 0.10]
+    # 구간 0: 강도 10 · 전환 4 / 구간 1: 강도 10 · 연속 10 — 값이 있는 칸마다 막대 하나
+    assert len(bars) == 34
+    first = [b.get_width() for b in bars[:10]]
+    assert first == sorted(first, reverse=True)
+    vals = [r["r"] for r in rec["tiers"][0]["lists"]["strength"]]
+    for w, v in zip(first, vals):
+        assert abs(w / first[0] - v / vals[0]) < 1e-6 or v / vals[0] < 0.04
+
+
+def test_render_marks_an_unsettled_evening_record(tmp_path, monkeypatch):
+    _out, texts, _ = _render_spy(monkeypatch, tmp_path, _rec("2026-10-12", recheck=False))
+    assert ("이튿날 재확인 전 저녁 값", al._PAL["up"]) in texts
 
 
 # ── 보내기 ───────────────────────────────────────────────────────────────────
