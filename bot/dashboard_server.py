@@ -1128,6 +1128,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
         if self.path.split("?", 1)[0] == "/api/quote":
             return self._handle_quote_api()
+        # /api/live_pct?t=A,B — 종목명 옆 실시간 등락(보유종목 News · 국가별 종목 표). 네트워크 0(SWR).
+        if self.path.split("?", 1)[0] == "/api/live_pct":
+            return self._handle_live_pct()
         # /api/command_result?id=<hex> — 대시보드 명령 콘솔 결과 폴링.
         if self.path.split("?", 1)[0] == "/api/command_result":
             return self._handle_command_result()
@@ -1883,6 +1886,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("chart_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_live_pct(self) -> None:
+        """GET /api/live_pct?t=A,B,… — `live_pct.lookup` 그대로(요청 경로는 메모리만 읽고, 낡은 티커는
+        뒤에서 받는다). ₩0."""
+        import urllib.parse as _uparse
+        try:
+            qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
+            raw = ",".join(qs.get("t", [])).split(",")
+            from bot.live_pct import lookup
+            self._reply_json(200, {"ok": True, **lookup(raw)})
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("live_pct API failed: %s: %s", type(exc).__name__, exc)
+            self._reply_json(500, {"ok": False, "error": type(exc).__name__})
 
     def _handle_quote_api(self) -> None:
         """Serve a fresh live-quote payload for the detail page. LIGHT

@@ -1632,18 +1632,28 @@ def _prev_missing_why(ws, mk: str, d: str, now) -> str:
     return f"{d} 하루치가 없음"
 
 
-def _prev_html(prev) -> str:
-    """종목명 옆 `(+1.23%)` — 값이 없으면 `(—)` 에 사유를 툴팁으로(빈칸이 '0' 으로 읽히지 않게, #43)."""
+def _prev_html(prev, live: str = "") -> str:
+    """종목명 옆 `(+1.23%)` — 값이 없으면 `(—)` 에 사유를 툴팁으로(빈칸이 '0' 으로 읽히지 않게, #43).
+
+    `live` = 실시간 등락을 받을 티커(최신일 카드만, 사용자 2026-10-13 "가능한 실시간으로"). 화면이
+    `live_pct.LIVE_JS` 로 1분마다 덮어쓰고, 못 받으면 서버가 그린 전날 등락이 그대로 남는다."""
     import html as _h
+    lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn" if live else "")
     if not prev:
-        return ""
+        return f"<span class='hn-chg{lv}' title='실시간 등락 대기'></span>" if live else ""
     v, d, why_ = prev
     if v is None:
-        return f"<span class='hn-chg' title='{_h.escape(why_ or '전날 등락 없음')}'>(—)</span>"
+        return f"<span class='hn-chg{lv}' title='{_h.escape(why_ or '전날 등락 없음')}'>(—)</span>"
     cls = "hn-up" if v > 0 else "hn-dn" if v < 0 else ""
     sign = "+" if v > 0 else ""
     tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
-    return (f"<span class='hn-chg {cls}' title='{_h.escape(tip)}'>({sign}{v:.2f}%)</span>")
+    return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%)</span>")
+
+
+def live_ticker(s: dict) -> str:
+    """실시간 등락을 물을 티커 — 카드 링크와 같은 꼴(`_lookup`, 국내 6자리는 접미 없이 — `live_pct.market_of`
+    가 국내로 읽는다)."""
+    return _lookup(s).split("/", 1)[1]
 
 
 def _hm_after(minutes: int) -> str:
@@ -1661,7 +1671,7 @@ def _pending_reason(s: dict) -> str:
     return f"{r} — 다음 주기에 다시" if s.get("retry") else r
 
 
-def _card(s: dict, *, final: bool = False, prev=None) -> str:
+def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str:
     """종목 카드. `final` = 주기가 더는 이어서 정리하지 않는 날(`_live_dates` 밖) — 그날의 '대기' 를 '다음
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
     import html as _h
@@ -1698,7 +1708,7 @@ def _card(s: dict, *, final: bool = False, prev=None) -> str:
             f"data-pro='{1 if s.get('pros') else 0}' data-con='{1 if s.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
-            f"{_h.escape(s['name'])}</a>{_prev_html(prev)}"
+            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '')}"
             f"<span class='hn-tk'>{_h.escape(s['ticker'])} · 보유 {_krw(float(s.get('value') or 0))}"
             f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}</span></div>"
             f"{pc}<details class='hn-src'><summary>근거 {len(items)}건{offnote}</summary>"
@@ -1746,7 +1756,7 @@ def _day_summary(rec: dict) -> str:
             f"<span class='hn-meta'>{_h.escape(_day_meta(rec))}</span></summary>")
 
 
-def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None) -> str:
+def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, live: bool = False) -> str:
     """하루 칸의 본문(카드 · 새 뉴스 없음 · 뺀 상품) — 최신일은 페이지에, 지난 날은 조각 파일에 같은
     함수로 싣는다(#38). `final` → `_card`."""
     import html as _h
@@ -1754,7 +1764,7 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None) ->
     with_news = [s for s in ss if s.get("items")]
     quiet = [s for s in ss if not s.get("items")]
     look = prev_changes(rec["date"], now)
-    cards = "".join(_card(s, final=final, prev=look(s)) for s in with_news)
+    cards = "".join(_card(s, final=final, prev=look(s), live=live) for s in with_news)
     quiet_html = ""
     if quiet:
         names = ", ".join(_h.escape(s["name"]) for s in quiet[:60])
@@ -1774,9 +1784,11 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None) ->
     return f"{body}{quiet_html}{skip_html}"
 
 
-def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None) -> str:
+def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None,
+              live: bool = False) -> str:
     return (f"<details class='hn-day' data-hnday='1' data-open='{1 if open_ else 0}'"
-            f"{' open' if open_ else ''}>{_day_summary(rec)}{_day_body(rec, final=final, now=now)}</details>")
+            f"{' open' if open_ else ''}>{_day_summary(rec)}"
+            f"{_day_body(rec, final=final, now=now, live=live)}</details>")
 
 
 def frag_name(date: str) -> str:
@@ -1839,6 +1851,7 @@ def render_page(records: list[dict], state: dict | None = None,
                 now: datetime | None = None, *, gen: str | None = None, total: int | None = None) -> str:
     """`records` = 화면에 실을 날들(최근 `RENDER_DAYS` 일이면 충분 — 그 앞은 안 그린다) · `total` = 보관 중인
     날 수(`count_records`, 없으면 `records` 수)."""
+    from bot.live_pct import LIVE_JS as _LIVE_JS
     import html as _h
 
     from bot.fred_boards import _BOARD_CSS, _theme_head
@@ -1863,7 +1876,8 @@ def render_page(records: list[dict], state: dict | None = None,
         f"<div class='stat'><div class='k'>AI 비용 (오늘 / 이번 달 / 누적)</div><div class='v'>"
         f"{_h.escape(_cost_line(now))}</div></div>"
         "</div>")
-    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now) if i == 0 else _day_lazy(r)
+    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True) if i == 0
+                   else _day_lazy(r)
                    for i, r in enumerate(recs)) or (
         f"<div class='hn-status'>아직 기록이 없습니다 — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 "
         "자동으로 모읍니다.</div>")
@@ -1891,10 +1905,13 @@ def render_page(records: list[dict], state: dict | None = None,
 평가금액이 큰 종목부터 보여 줍니다. ETF(국내는 자산 기록이 ETF 로 알아본 상품, 미국은 거래소 목록의 ETF
 표시)와 티커를 못 찾은 상품은 '회사' 뉴스로 가를 수 없어 빼고, 그 이름을 날짜 칸 맨 아래에 적습니다(일본·홍콩·
 대만 ETF 는 가를 목록이 없어 회사로 셉니다).<br>
-<b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 옆 괄호는 <b>전날(그 시장의 직전 거래일) 등락률</b>로,
-「국가별 심리지도」가 받아 둔 TradingView 하루치(장 마감 3시간 뒤 수집)를 씁니다 — 미국은 한국 시각 아침 8~9시에
-받으므로 이른 아침엔 '(—)' 일 수 있고 받으면 다음 갱신에 채워집니다. 휴장이거나 그날을 받지 못했으면 '(—)' 로
-남습니다(마우스를 올리면 사유와 기준일).<br>
+<b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 옆 괄호는 맨 위(최신) 날짜 카드에서
+<b>실시간 등락률</b>(정규장 · 직전 종가 대비 — 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 · 장 중이면 지금 값,
+장이 끝났으면 마지막 세션 값 · 장전·장후 시간외 등락은 넣지 않습니다)이고 화면을 열어 둔 동안 1분마다
+바뀝니다. 실시간을 못 받은 종목은 <b>전날(그 시장의 직전 거래일) 등락률</b>이 그대로 남습니다 — 「국가별
+심리지도」가 받아 둔 TradingView 하루치(장 마감 3시간 뒤 수집)라 미국은 한국 시각 아침 8~9시에 받으므로 이른
+아침엔 '(—)' 일 수 있고, 휴장이거나 그날을 받지 못했어도 '(—)' 입니다. 지난 날 카드의 괄호는 그날 기준
+전날 등락 그대로입니다(마우스를 올리면 무엇의 값인지와 기준 시각).<br>
 <b>뉴스</b> — 종목마다 최대 {MAX_NEWS_PER_STOCK}건입니다(원천이 최신순으로 주는 10건 안에서 — 두 이름으로
 찾는 종목은 두 검색 결과를 합쳐서 — 기사가 많은 날은 최근 것만 담깁니다). 국내는 네이버 뉴스 검색(키가 없으면 구글 뉴스)으로 이름을 찾되, 제목·요약에
 그 이름이 <b>낱말로</b> 나온 기사만 남깁니다(이름이 짧거나 흔하면 다른 회사 기사가 섞일 수 있어 AI 가 한 번 더
@@ -1929,7 +1946,7 @@ AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 �
 {days}
 <div class="footer">보유종목 News — 뉴스 정리(교육·정보), 투자 권유 아님 · NOAH</div>
 </div>
-<script>{_HN_JS}</script>
+<script>{_HN_JS}</script><script>{_LIVE_JS}</script>
 </body></html>"""
 
 
