@@ -74,6 +74,23 @@ def lookup_href(sym: str) -> str:
     return f"lookup/{lk}" if lk else ""
 
 
+# 보유 목록 행의 거래소 — 섹터종목 나라(`STOCK_MARKETS`)마다 보유 목록 코드가 어느 거래소 꼴인지.
+# 미국 셋은 같은 꼴이라 NYSE 하나로 `lookup_ticker` 를 태운다(규칙을 복제하지 않는다, #38).
+_HOLD = {"KR": ("KRX", re.compile(r"\d{6}")),
+         "US": ("NYSE", re.compile(r"[A-Z][A-Z0-9]{0,5}(?:[.-][A-Z]{1,2})?"))}
+
+
+def holding_href(m: str, code: str) -> str:
+    """보유 목록 코드 → 종목분석 링크. 그 주 하루치에 없어 TradingView 기호가 없는 보유종목도
+    누를 수 있게(사용자 2026-10-13 "모든 종목들도 클릭하면"). 나라를 모르거나 코드가 그 나라 꼴이
+    아니면(현금·선물 표기 등) 링크를 걸지 않는다 — 남의 화면을 여는 링크보다 평문이 낫다(#400)."""
+    ex, pat = _HOLD.get(m, ("", None))
+    code = str(code or "").strip().upper()
+    if not pat or not pat.fullmatch(code):
+        return ""
+    return lookup_href(f"{ex}:{code}")
+
+
 def _pp(v, digits: int = 2) -> str:
     """시장 대비 %p — 반올림해 0 이면 부호를 붙이지 않는다('-0.0%p' 는 없는 방향을 말한다)."""
     if v is None:
@@ -689,7 +706,7 @@ def render_map(payloads: dict[str, dict], state: dict, now: datetime, *,
 '휴장 추정'입니다.<br>
 <b>언제 갱신되나</b> — {when_line(now)}.<br>
 <b>종목 표</b> — 그 주 요일별 등락 · 주간(누적) · <b>상승일 거래</b>(그 주 거래대금 중 오른 날의 몫) ·
-<b>거래 몫</b>(그 종목 주간 거래대금 ÷ 시장 전체) · 시총 · 시총 증감. 머리글을 누르면 정렬합니다.
+<b>거래 몫</b>(그 종목 주간 거래대금 ÷ 시장 전체) · 시총 · 시총 증감. 머리글을 누르면 정렬하고, 종목 이름을 누르면 🦉 종목분석으로 갑니다(거래소를 확인할 수 없는 종목은 평문).
 </details>
 <div class="ws-tabs" data-tabs="mkt">{''.join(tabs)}</div>
 {''.join(panes)}
@@ -748,7 +765,7 @@ def render_stocks(payloads: dict[str, dict], state: dict, now: datetime, *,
 지난주 탭도 <b>오늘의 보유 목록</b>으로 그립니다(지난주 보유 목록은 따로 받지 않습니다).<br>
 <b>열</b> — 요일별 등락(%) · 주간(그 주 누적 %) · <b>상승일 거래</b>(그 종목의 그 주 거래대금 중 오른 날의
 몫) · <b>거래 몫</b>(그 종목 주간 거래대금 ÷ 그 나라 시장 전체 주간 거래대금) · 시총 · 시총 증감(그 주
-등락으로 늘거나 준 시가총액). '산업'은 TradingView 업종 이름입니다. 머리글을 누르면 정렬합니다.<br>
+등락으로 늘거나 준 시가총액). '산업'은 TradingView 업종 이름입니다. 머리글을 누르면 정렬하고, 종목 이름을 누르면 🦉 종목분석으로 갑니다(거래소를 확인할 수 없는 종목은 평문).<br>
 <b>값의 출처</b> — 등락·거래대금·시총은 「국가별 심리지도」와 같은 하루치(TradingView)를 씁니다.
 받기 시작한 날 이전 요일과 놓친 날은 비어 있습니다.<br>
 <b>언제 갱신되나</b> — {when_line(now, STOCK_MARKETS)}. 보유 목록(ETF 구성종목)은 하루 한 번 따로 받습니다.
@@ -938,7 +955,7 @@ def _plain(nm: str) -> str:
     return nm[:-3] if nm.endswith("보통주") and len(nm) > 3 else nm
 
 
-def _holding_rows(h: dict, st: dict | None) -> list[dict]:
+def _holding_rows(h: dict, st: dict | None, m: str) -> list[dict]:
     """보유 상위 종목 → 종목 표 행(그 주 하루치에서 찾는다 — 못 찾으면 이름·비중만)."""
     rows = []
     for hold in h.get("rows") or []:
@@ -952,7 +969,8 @@ def _holding_rows(h: dict, st: dict | None) -> list[dict]:
                          "chg": it["chg"], "wk": r["week"], "up": r["upshare"],
                          "sh": r["share"], "dcap": r["dcap"], "w": hold.get("weight")})
         else:
-            rows.append({"c": code, "nm": hold.get("name") or code, "ind": "", "href": "",
+            rows.append({"c": code, "nm": hold.get("name") or code, "ind": "",
+                         "href": holding_href(m, code),
                          "cap": None, "chg": [None] * 5, "wk": None, "up": None,
                          "sh": None, "dcap": None, "w": hold.get("weight")})
     return rows
@@ -999,7 +1017,7 @@ def stocks_payloads(now: datetime, memo: dict | None = None) -> dict:
                 days = st["days"]
                 tables.append({"days": days, "dayLabels": [_md(d) for d in days],
                                "status": [ws.market_day_status(m, d, now, state) for d in days],
-                               "cur": CURRENCY.get(m, ""), "rows": _holding_rows(h, st)})
+                               "cur": CURRENCY.get(m, ""), "rows": _holding_rows(h, st, m)})
             etfs.append({"ticker": t.split(".")[0], "label": label, "meta": " · ".join(meta),
                          "empty": empty, "nodays": nodays, "tables": tables})
         labels = [f"{mm.month}/{mm.day}(월) 주" + week_tag(mm, now) for mm, _st in weeks]

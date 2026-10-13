@@ -1338,9 +1338,46 @@ def test_holding_rows_use_the_korean_name_from_the_etf_list(monkeypatch):
     st = {"stocks": {"005930": {"name": "Samsung Electronics", "sym": "KRX:005930",
                                 "industry": "Semiconductors", "chg": [1.0] * 5, "cap": 1e14}},
           "mval": [1.0] * 5, "labels": {"ind": {"Semiconductors": "세미컨덕터"}}}
-    rows = wp._holding_rows({"rows": [{"code": "005930", "name": "삼성전자", "weight": 20}]}, st)
+    rows = wp._holding_rows({"rows": [{"code": "005930", "name": "삼성전자", "weight": 20}]}, st, "KR")
     assert rows[0]["nm"] == "삼성전자" and rows[0]["ind"] == "세미컨덕터"
     assert rows[0]["href"] == "lookup/005930"
+
+
+@pytest.mark.parametrize("m,code,want", [
+    ("KR", "005930", "lookup/005930"),
+    ("US", "AAPL", "lookup/AAPL"),
+    ("US", "BRK.B", "lookup/BRK-B"),          # 미국 클래스 주식 — 분석 화면은 yfinance 꼴
+    ("US", "brk.b", "lookup/BRK-B"),
+    ("KR", "AAPL", ""),                        # 그 나라 꼴이 아니면 링크를 걸지 않는다(#400)
+    ("KR", "00593", ""),
+    ("US", "005930", ""),                      # 맨 숫자는 국내 리졸버로 풀려 남의 회사 화면을 연다
+    ("US", "CASH_USD", ""),
+    ("US", "", ""),
+    ("JP", "7203", ""),                        # 보유 목록 거래소를 모르는 나라
+])
+def test_holding_href_maps_only_the_markets_code_shape(m, code, want):
+    assert wp.holding_href(m, code) == want
+
+
+def test_holding_rows_missing_from_the_week_still_link(store):
+    """그 주 하루치에 없는 보유종목(사용자 2026-10-13 "모든 종목들도 클릭하면") — 숫자는 비어도
+    이름은 종목분석으로 간다. 옛 판은 `href: ""` 라 평문이었다."""
+    fx.simulate(store, _at(2026, 10, 6, 0), 6)
+    now = _at(2026, 10, 12, 9, 0)
+    store.now = now
+    eh._save("XLK", {"rows": [{"code": "ZQXW", "name": "Not In Snapshot", "weight": 5.0},
+                              {"code": "CASH_USD", "name": "Cash", "weight": 1.0}],
+                     "fetched_day": "2026-10-12"})
+    t = next(x for x in list(eh.etfs("KR")))
+    eh._save(t, {"rows": [{"code": "999998", "name": "없는전자", "weight": 5.0}], "fetched_day": "2026-10-12"})
+    sp = wp.stocks_payloads(now)
+    rows = {r["c"]: r for e in sp["US"]["etfs"] + sp["KR"]["etfs"] for tb in e["tables"] for r in tb["rows"]}
+    assert rows["ZQXW"]["cap"] is None, "하루치에 없는 행이어야 이 갈래를 잰다"
+    assert rows["ZQXW"]["href"] == "lookup/ZQXW"
+    assert rows["999998"]["href"] == "lookup/999998"
+    assert rows["CASH_USD"]["href"] == ""
+    h = wp.render_stocks(sp, ws.load_state(), now)
+    assert '"href": "lookup/ZQXW"' in h or '"href":"lookup/ZQXW"' in h, "화면 JSON 에 링크가 실린다"
 
 
 def test_probe_reports_how_many_names_are_korean(store, capsys):
