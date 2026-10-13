@@ -19,8 +19,10 @@
     해석성 요청 0 — #258). 이 모듈은 그 파일에서 종목 이름·코드가 **낱말로** 나온 글만 고른다.
 - Pros/Cons: 종목마다 모은 항목을 Gemini flash-lite 에 묶어 보내 **그 항목에 쓰인 사실만** 근거로
   호재 관점(Pros)·악재·리스크 관점(Cons)을 최대 3줄씩 받는다. 줄마다 근거 번호가 붙고, 근거 번호가
-  없거나 틀린 줄은 버린다(데이터 vs 환각 — 지어낸 문장을 싣지 않는다). 그 회사 얘기가 아닌 항목은
-  AI 가 relevant 에서 빼고, 화면은 뺀 항목도 따로 보여 준다(#43). 비용은 usage.jsonl 에
+  없거나 틀린 줄은 버린다(데이터 vs 환각 — 지어낸 문장을 싣지 않는다). 그 회사 얘기가 아니거나 회사
+  이름만 나오고 투자와 무관한 항목(이름을 단 스포츠 구단의 경기 소식 등)은 AI 가 relevant 에서 빼고,
+  화면은 뺀 항목도 흐리게 따로 보여 준다(#43). 정리 규칙(프롬프트 틀)의 지문을 종목에 찍어, 규칙이 바뀌면
+  아직 이어서 정리하는 날의 종목은 다시 정리한다(`requeue_stale`). 비용은 usage.jsonl 에
   subsystem `holdings_news` 로 남겨 대시보드 비용 카드·/usage 가 합산한다.
 
 저장: ~/.tradingagents/holdings_news/ — days/YYYY-MM-DD.json(하루 기록) · days/bodies_YYYY-MM-DD.json(아직
@@ -824,16 +826,63 @@ def build_prompt(stocks: list[dict]) -> str:
         "   지어내지 않는다. 수치는 항목에 있는 것만 인용한다.\n"
         "2) pros = 그 종목 주주에게 긍정적으로 읽힐 수 있는 점(호재 관점). cons = 부정적이거나 위험이\n"
         "   될 수 있는 점(악재·리스크 관점). 같은 사실이 양면이면 양쪽에 다른 관점으로 써도 된다.\n"
+        "   둘 다 그 회사의 주가·실적·사업·재무·지배구조·규제·소송·업황처럼 투자 판단에 닿는 내용만 쓴다.\n"
         "3) 각 줄은 한국어 1문장 70자 이내, 근거 항목 번호를 refs 에 단다(예: [1,3]).\n"
         f"4) 근거가 없으면 빈 배열로 둔다. 개수를 맞추려고 일반론('변동성 주의' 등)을 넣지 않는다.\n"
         f"   pros·cons 각각 최대 {MAX_PER_SIDE}개.\n"
-        "5) 그 회사에 관한 내용이 아닌 항목(이름이 같은 다른 회사·여러 종목 시세 나열·광고)은\n"
-        "   relevant 에 넣지 않는다. relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
+        "5) relevant 에는 그 회사의 사업·실적·주가·투자에 관한 항목만 넣는다. 넣지 않는 것: 이름이 같은\n"
+        "   다른 회사 · 여러 종목 시세 나열 · 광고 · 회사 이름이 나오지만 투자와 무관한 소식(그 이름을 단\n"
+        "   스포츠 구단의 경기 결과·순위·선수 기록, 연예·문화 행사 등). 단 구단 매각·운영비처럼 회사의\n"
+        "   재무·사업에 닿는 소식은 관련 있다. relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
         "6) 매수·매도 권유, 목표주가, 주가 예측을 쓰지 않는다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
         '{"stocks":[{"key":"종목 key 그대로","relevant":[1,2],'
         '"pros":[{"t":"한 문장","refs":[1]}],"cons":[{"t":"한 문장","refs":[2]}]}]}\n\n'
         "종목:\n" + "\n\n".join(_stock_block(s) for s in stocks))
+
+
+REQUEUE_REASON = "AI 정리 기준이 바뀌어 새 기준으로 다시 정리"
+
+
+def prompt_sig() -> str:
+    """정리 규칙(종목 칸을 뺀 프롬프트 틀)의 지문 — 정리한 종목에 `pv` 로 찍는다. 규칙을 고쳐도 이미 정리된
+    Pros/Cons 는 안 바뀌므로(#18) 아직 이어서 정리하는 날의 종목은 지문이 다르면 다시 정리한다(`requeue_stale`).
+    손으로 올리는 판 번호가 아니라 틀에서 파생한다 — 손 bump 는 이 레포에서 여섯 번 졌다(#119)."""
+    import hashlib
+    return hashlib.sha1(build_prompt([]).encode("utf-8")).hexdigest()[:10]
+
+
+def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int:
+    """지금 규칙(`prompt_sig`)으로 정리하지 않은 'ok' 종목을 대기로 되돌린다 — 부른 쪽이 아직 이어서 정리하는
+    날(`_live_dates`)에만 부른다(그 앞의 날은 다시 안 돈다). 옛 Pros/Cons·relevant 는 지운다 — 대기 카드에 남기면
+    필터(`data-pro`)가 옛 정리로 걸린다(#45). 본문은 정리가 끝나면 사이드카에서 지워지므로(`_save_bodies`)
+    네이버 사본을 다시 읽어 붙인다(이 호출당 `MAX_BODY_PER_RUN`). 못 읽으면 본문 없이 가고 '읽음' 표시는
+    지운다 — 화면은 이번에 실제로 보낸 것만 '읽음' 으로 적는다(`body_used`). 반환 = 되돌린 종목 수."""
+    body = body or _fetch_body
+    sig = prompt_sig()
+    n = reads = 0
+    for s in rec.get("stocks") or []:
+        if s.get("status") != "ok" or s.get("pv") == sig:
+            continue
+        if beat:
+            beat()
+        for it in s.get("items") or []:
+            it.pop("body_used", None)
+            link = str(it.get("link") or "")
+            blink = it.get("naver_link") or (link if "news.naver.com" in link else "")
+            if (it.get("src") == "telegram" or not it.get("body_chars") or it.get("_body") or not blink
+                    or reads >= MAX_BODY_PER_RUN):
+                continue
+            reads += 1
+            b = body(blink)
+            if pace:
+                time.sleep(pace)
+            if b:
+                it["_body"] = b
+        s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
+                 relevant=None, dropped_lines=0)
+        n += 1
+    return n
 
 
 def _parse_json(text: str) -> dict | None:
@@ -889,6 +938,7 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["pros"], dp = _clean_side(res.get("pros"), valid)
     stock["cons"], dc = _clean_side(res.get("cons"), valid)
     stock["dropped_lines"] = dp + dc
+    stock["pv"] = prompt_sig()
     stock["status"] = "ok"
     stock["reason"] = ""
     stock["retry"] = False
@@ -1246,7 +1296,14 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
             live = _live_dates([r["date"] for r in recs], date)
             todo = ([rec] if rec else []) + [r for r in sorted(recs, key=lambda r: r["date"], reverse=True)
                                              if r["date"] != date and r["date"] in live]
-            res = {"calls": 0, "analyzed": 0, "failed": 0, "no_key": False, "transient": False}
+            res = {"calls": 0, "analyzed": 0, "failed": 0, "no_key": False, "transient": False,
+                   "requeued": 0}
+            for r in todo:
+                nq = requeue_stale(r, body=body, pace=pace, beat=beat)
+                if nq:
+                    log.info("holdings_news: %s — 정리 기준이 바뀌어 %d종목을 다시 정리", r["date"], nq)
+                    res["requeued"] += nq
+                    save_record(r)              # 다시 읽은 본문을 사이드카에 — 일시 오류로 밀려도 남는다
             for r in todo:
                 if not any(s.get("status") == "pending" for s in r.get("stocks") or []):
                     continue
@@ -1685,7 +1742,7 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
         if not s.get("pros") and not s.get("cons"):
             why = (f"AI 가 쓴 {drop}줄을 근거 번호가 없거나 맞지 않아 버림 — 아래 근거 목록에서 확인하세요"
                    if drop else
-                   "관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
+                   "투자와 관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
                    "뉴스는 있지만 호재·악재로 가를 내용이 없음")
             pc = f"<div class='hn-why'>{_h.escape(why)}</div>"
         else:
@@ -1702,7 +1759,7 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
         pc = f"<div class='hn-why'>Pros/Cons 대기 — {_h.escape(_pending_reason(s))}</div>"
     lis = "".join(_item_li(it, it["n"] not in relset) for it in items)
     off = len(items) - len([it for it in items if it["n"] in relset])
-    offnote = f" · 그 회사 얘기가 아니라고 본 {off}건은 흐리게" if off and st == "ok" else ""
+    offnote = f" · 종목·투자와 무관하다고 본 {off}건은 흐리게" if off and st == "ok" else ""
     q = f"{s['name']} {s['ticker']}" + (f" {s['ko']}" if s.get("ko") else "")
     return (f"<div class='hn-card' data-hncard='1' data-mk='{_h.escape(s['market'])}' "
             f"data-pro='{1 if s.get('pros') else 0}' data-con='{1 if s.get('cons') else 0}' "
@@ -1925,9 +1982,13 @@ Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴�
 대목만 AI 에 넘깁니다. 원 출처 채널 이름은 묻지 않습니다(텔레그램 요청 제한 때문) — 포워드였는지만
 적습니다.<br>
 <b>Pros/Cons</b> — AI 가 그 종목 항목에 <b>쓰인 사실만</b> 근거로 호재 관점·악재/리스크 관점을 최대
-{MAX_PER_SIDE}줄씩 씁니다. 줄 끝 [번호]는 근거 항목이고, 근거 번호가 없거나 틀린 줄은 버립니다. 그 회사
-얘기가 아니라고 AI 가 판단한 항목은 근거 목록에서 흐리게 보입니다. 이것은 뉴스 요약이지 투자 판단이
-아닙니다.<br>
+{MAX_PER_SIDE}줄씩 씁니다. 줄 끝 [번호]는 근거 항목이고, 근거 번호가 없거나 틀린 줄은 버립니다. 주가·실적·
+사업·재무·지배구조·규제·소송·업황처럼 투자 판단에 닿는 내용만 씁니다 — 이름이 같은 다른 회사 얘기나, 회사
+이름은 나오지만 투자와 무관한 소식(그 이름을 단 스포츠 구단의 경기 결과·선수 기록, 연예·문화 행사 등)은
+근거로 쓰지 않고 근거 목록에서 흐리게 보입니다(구단 매각·운영비처럼 회사 재무·사업에 닿는 소식은 씁니다 ·
+AI 판단이라 놓치는 항목이 있을 수 있습니다). 이
+기준이 바뀌면 아직 이어서 정리하는 날(오늘·직전 기록)은 새 기준으로 다시 정리합니다 — 그동안 그 종목은
+'대기' 입니다. 이것은 뉴스 요약이지 투자 판단이 아닙니다.<br>
 <b>언제 갱신되나</b> — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 한 번 모읍니다(장 시작 전에 읽도록 · 봇이 {TICK_MIN}분마다
 확인하므로 보통 {_hm_after(TICK_MIN)} 사이에 시작합니다 — 앞선 정리 작업이 길면 그보다 늦을 수 있습니다).
 창은 직전 집계 {WINDOW_OVERLAP_H}시간 전부터 지금까지입니다(직전 집계 뒤에 늦게 들어온 글을 놓치지 않으려고
