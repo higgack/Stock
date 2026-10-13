@@ -2144,7 +2144,8 @@ def test_hub_nav_order_follows_the_user():
     nav = html[html.index('<div class="nav">'):]
     nav = nav[:nav.index("</div>")]
     hrefs = re.findall(r'href="([^"]+)"', nav)
-    want = ["bollinger.html", "sector_mix.html", "sentiment_map.html", "sector_stocks.html",
+    # 홈에선 심리지도가 섹터혼합 앞(사용자 2026-10-13)
+    want = ["bollinger.html", "sentiment_map.html", "sector_mix.html", "sector_stocks.html",
             "marketcap.html", "econ_calendar.html", "daily_inst.html", "daily_byte.html",
             "reddit_insider.html", "blog.html", "trade/", "realestate.html"]
     got = [h for h in hrefs if h in want]
