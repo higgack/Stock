@@ -342,6 +342,27 @@ def _foot(name: str) -> str:
             f'투자 권유 아님 · NOAH</div></div><script>{_WS_JS}</script></body></html>')
 
 
+# ── 언제 받나(세 보드 공용) ──────────────────────────────────────────────────
+def when_line(now: datetime, markets=None) -> str:
+    """나라마다 그 세션을 받기 시작하는 KST 시각 — 세 보드의 가이드가 같은 문장을 쓴다(#38).
+
+    시각은 달력의 실제 마감 + `READY_MIN` 에서 파생한다(미국은 서머타임에 따라 08:00/09:00).
+    봇은 `TICK_MIN` 분마다 확인하므로 실제 반영은 그만큼 늦을 수 있다 — 그 사실도 같이 적는다(#43)."""
+    parts = []
+    for m in markets or ws.MARKETS:
+        r = ws.ready_kst(m, now)
+        if not r:
+            parts.append(f"{market_name(m)} 시각 미확인")
+            continue
+        t, ds = r
+        nxt = "이튿날 " if t.date().isoformat() > ds else ""
+        parts.append(f"{market_name(m)} {nxt}{t.strftime('%H:%M')}")
+    return (f"나라마다 장 마감 {ws.READY_MIN // 60}시간 뒤에 받습니다(한국 시각 · "
+            + " · ".join(_h.escape(x) for x in parts)
+            + f"). 봇이 {ws.TICK_MIN}분마다 확인하므로 화면 반영은 그보다 최대 {ws.TICK_MIN}분 늦을 수 "
+              "있습니다")
+
+
 # ── 수집 상태 줄(세 보드 공용) ───────────────────────────────────────────────
 def status_lines(state: dict, now: datetime, markets=None) -> list[str]:
     """나라마다 한 줄 — `world_sectors.market_verdict`(감사·`--why` 와 같은 판정, #35)."""
@@ -489,8 +510,7 @@ def render_mix(records: list[dict], state: dict, now: datetime, *, gen: str | No
 <b>하루·주간</b> — 하루 = 기준일 하루(처음 열리는 탭) · 주간 = 기준일을 끝으로 한 7일(달력) 안의 그 나라
 거래일. 원래 블로그 표는 주간이고, 매일 갱신하려고 끝날을 하루씩 민 것입니다. 날짜 줄의 계수도 하루 → 주간
 순서입니다.<br>
-<b>언제 갱신되나</b> — 나라마다 장 마감 {ws.READY_MIN // 60}시간 뒤 한 번 받습니다(미국은 한국 시각 이튿날
-아침). 그래서 저녁엔 그날 미국이 '대기'입니다. 받는 창은 다음 거래일 장전 거래(미국 프리마켓·동시호가
+<b>언제 갱신되나</b> — {when_line(now)}. 그래서 저녁엔 그날 미국이 '대기'입니다. 받는 창은 다음 거래일 장전 거래(미국 프리마켓·동시호가
 등)가 시작되기 전까지이고, 원천은 '지금' 값만 주므로 그 창을 놓친 날은 다시 받을 수 없어 '수집 못 함'으로
 남습니다. 창 내내 원천 값이 직전 거래일과 같았던 날은 '휴장 추정'(달력에 없는 휴장 — 태풍 휴장 등)입니다.<br>
 <b>우리가 정한 것</b> — 블로그가 산식을 다 밝히지 않아 가중 방식·하루 기준(±0.5%p)·업종 최소 종목 수·
@@ -668,6 +688,7 @@ def render_map(payloads: dict[str, dict], state: dict, now: datetime, *,
 업종 종목 수, 정렬은 주간 시장 대비 %p 순입니다. 휴장은 '휴장', 그날을 받을 창을 놓쳤으면 '수집 못 함'
 (원천이 '지금' 값만 주므로 지난날은 다시 받을 수 없습니다), 창 내내 원천 값이 직전 거래일과 같았으면
 '휴장 추정'입니다.<br>
+<b>언제 갱신되나</b> — {when_line(now)}.<br>
 <b>종목 표</b> — 그 주 요일별 등락 · 주간(누적) · <b>상승일 거래</b>(그 주 거래대금 중 오른 날의 몫) ·
 <b>거래 몫</b>(그 종목 주간 거래대금 ÷ 시장 전체) · 시총 · 시총 증감. 머리글을 누르면 정렬합니다.
 </details>
@@ -729,8 +750,9 @@ def render_stocks(payloads: dict[str, dict], state: dict, now: datetime, *,
 <b>열</b> — 요일별 등락(%) · 주간(그 주 누적 %) · <b>상승일 거래</b>(그 종목의 그 주 거래대금 중 오른 날의
 몫) · <b>거래 몫</b>(그 종목 주간 거래대금 ÷ 그 나라 시장 전체 주간 거래대금) · 시총 · 시총 증감(그 주
 등락으로 늘거나 준 시가총액). '산업'은 TradingView 업종 이름입니다. 머리글을 누르면 정렬합니다.<br>
-<b>값의 출처</b> — 등락·거래대금·시총은 「국가별 심리지도」와 같은 하루치(TradingView, 장 마감
-{ws.READY_MIN // 60}시간 뒤 수집)를 씁니다. 받기 시작한 날 이전 요일과 놓친 날은 비어 있습니다.
+<b>값의 출처</b> — 등락·거래대금·시총은 「국가별 심리지도」와 같은 하루치(TradingView)를 씁니다.
+받기 시작한 날 이전 요일과 놓친 날은 비어 있습니다.<br>
+<b>언제 갱신되나</b> — {when_line(now, STOCK_MARKETS)}. 보유 목록(ETF 구성종목)은 하루 한 번 따로 받습니다.
 </details>
 <div class="ws-tabs" data-tabs="mkt">{''.join(tabs)}</div>
 {''.join(panes)}
