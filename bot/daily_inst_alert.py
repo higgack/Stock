@@ -210,9 +210,9 @@ def render_png(rec: dict, out_path: str) -> str | None:
     card_h = _HEAD_H + _ROW_H * TOP_N
     tier_h = _TIER_H + card_h + _TIER_GAP
     height = _TOP_H + tier_h * max(len(tiers), 1) + _FOOT_H
-    d = datetime.fromisoformat(rec["date"])
     fig = None
     try:
+        d = datetime.fromisoformat(rec["date"])   # 형식이 어긋나도 None → 글자로(독립 리뷰 L3)
         fig = plt.figure(figsize=(width / 100, height / 100), dpi=150)
         ax = fig.add_axes((0, 0, 1, 1))
         ax.set_xlim(0, width)
@@ -224,6 +224,21 @@ def render_png(rec: dict, out_path: str) -> str | None:
             ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0,rounding_size=7",
                                         facecolor=fc, edgecolor=P["border"], linewidth=0.8,
                                         mutation_aspect=1))
+
+        rend = fig.canvas.get_renderer()
+
+        def name_txt(x0, yy, name, x_max):
+            """종목명 — 폭 추정(`_fit`)으로 먼저 자르고, 실제로 그린 폭이 값 칸을 넘으면 더 자른다
+            (영문 대문자는 `vlen` 의 0.55 보다 넓다 — 독립 리뷰 M1)."""
+            t = ax.text(x0, yy, name, fontsize=8, va="center", ha="left", color=P["fg"])
+            body = name.rstrip("…")
+            while body:
+                bb = t.get_window_extent(renderer=rend).transformed(ax.transData.inverted())
+                if max(bb.x0, bb.x1) <= x_max:
+                    break
+                body = body[:-1]
+                t.set_text(body + "…")
+            return t
 
         # 머리 — 제목 · 기준일 · 산식(대시보드 페이지 머리와 같은 순서)
         ax.text(_MARGIN, 22, "Daily 기관매수", fontsize=14, fontweight="bold",
@@ -268,8 +283,8 @@ def render_png(rec: dict, out_path: str) -> str | None:
                     mid = ry + _ROW_H / 2
                     ax.text(x + _RANK_W - 4, mid, str(ri + 1), fontsize=6.5, va="center",
                             ha="right", color=P["muted"])
-                    ax.text(x + _RANK_W + 6, mid, _fit(str(r.get("n") or r["t"])), fontsize=8,
-                            va="center", ha="left", color=P["fg"])
+                    name_txt(x + _RANK_W + 6, mid, _fit(str(r.get("n") or r["t"])),
+                             x + _W_CARD * (1 - _VAL_FRAC) - 4)
                     if top > 0:
                         bw = (_W_CARD * _VAL_FRAC - 12) * max(0.04, min(1.0, r["r"] / top))
                         ax.add_patch(FancyBboxPatch((x + _W_CARD - 6 - bw, ry + 4), bw, _ROW_H - 8,
