@@ -17326,6 +17326,16 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
   var activeFlags=[];
   var wrap=document.querySelector('.wrap');
 
+  // 플래그 결합 — 방향 필(sig-호재/악재/판단)끼리는 **OR**(한 카드는 방향이
+  // 하나라 AND 면 둘을 고르는 순간 0장이 된다, 독립 리뷰 2026-10-13), 그 밖의
+  // 플래그(⚠️ 미파싱 등)와는 AND. 토큰으로 맞춘다 — 부분문자열이면 'sig' 가
+  // 'sig-bad' 에도 걸린다.
+  function dfFlagMatch(cf,flags){
+    var tone=flags.filter(function(f){return f.indexOf('sig-')===0;});
+    var rest=flags.filter(function(f){return f.indexOf('sig-')!==0;});
+    return rest.every(function(f){return cf.indexOf(f)>=0;})&&
+      (!tone.length||tone.some(function(f){return cf.indexOf(f)>=0;}));
+  }
   function applyFilters(){
     var q=(search?search.value:'').toLowerCase().trim();
     // 텍스트 검색 중에만 접힌 그룹을 펼쳐 전 날짜 매칭을 보인다. 카테고리/플래그
@@ -17346,9 +17356,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     if(anyFilter&&dfPending().length){dfLoadAll().then(applyFilters);return;}
     dfCards().forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
-      // 토큰으로 맞춘다 — 부분문자열이면 'sig' 가 'sig-bad' 에도 걸린다.
-      var cf=(c.dataset.flag||'').split(' ');
-      var flagMatch=activeFlags.every(function(f){return cf.indexOf(f)>=0;});
+      var flagMatch=dfFlagMatch((c.dataset.flag||'').split(' '),activeFlags);
       var markMatch=(!impOnly||c.classList.contains('imp-on'))&&
                     (!memoOnly||c.classList.contains('has-memo'));
       if(!flagMatch||!markMatch){c.classList.add('hidden');return;}

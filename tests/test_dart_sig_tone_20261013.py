@@ -36,14 +36,71 @@ class TestProvisionalEarnings:
             "영업이익: 50억원 (전년동기 100억원 · 전년동기대비 -50.0%)"], "실적"))
         assert dn == ("잠정 영업이익 전년동기 -50.0%", SIG_BAD)
 
-    def test_form_a_monthly_uses_yoy_not_mom(self):
-        # 전월 +80% 는 무시하고 전년동월 +10% 만 본다 → 미발화
+    def test_form_a_shape_line_is_not_read(self):
+        """Form A 의 '영업이익(당월):' 은 칸을 **모양**으로 갈라 억원 표에서
+        금액·비율이 뒤바뀐다(독립 리뷰 2026-10-13) — 규칙은 읽지 않는다."""
         assert significance(_it("영업(잠정)실적(공정공시)", [
-            "구분: 월별 잠정실적 (26.08)",
-            "영업이익(당월): 120억원 (전월 +80.0% · 전년동월 +10.0%)"], "실적")) is None
-        assert significance_info(_it("영업(잠정)실적(공정공시)", [
-            "영업이익(당월): 120억원 (전월 +1.0% · 전년동월 +40.0%)"], "실적")) == (
-            "잠정 영업이익 전년동기 +40.0%", SIG_GOOD)
+            "영업이익(당월): 120억원 (전월 +1.0% · 전년동월 +40.0%)"], "실적")) is None
+
+    @staticmethod
+    def _form_a(row: str, unit: str = "억원") -> list[str]:
+        """실제 파서(Form A)를 태워 카드 줄을 만든다 — 손으로 쓴 줄이 아니라
+        원문 표 → 파서 → 규칙 E2E 로 잰다(리뷰가 놓쳤다고 짚은 축)."""
+        txt = (f"영업(잠정)실적(공정공시) 단위 : {unit}, % "
+               f"매출액 당해실적 (26.06) 3,000 2,800 7.1 - 2,500 20.0 - "
+               f"누계실적 (26.01~26.06) 5,800 - - - 5,000 16.0 - "
+               f"영업이익 당해실적 (26.06) {row} "
+               f"누계실적 (26.01~26.06) 2,000 - - - 1,500 33.3 - 2. 정보제공내역 IR")
+        orig = df._fetch_doc_text
+        df._fetch_doc_text = lambda *a, **k: txt
+        try:
+            return df._parse_earnings_doc("RX", "K", "영업(잠정)실적(공정공시)")["lines"]
+        finally:
+            df._fetch_doc_text = orig
+
+    def test_parser_turnaround_in_eok_table_is_good(self):
+        # 리뷰 재현: −50억 → +1,200억 흑자전환. 옛 판은 '전년동월 −50%' 악재.
+        ls = self._form_a("1,200 900 33.3 - -50 - 흑자전환")
+        assert "영업이익(전년동기): 1,200억원 (전년동기 -50억원 · 흑자전환)" in ls, ls
+        assert significance_info(_it("영업(잠정)실적(공정공시)", ls, "실적")) == (
+            "영업이익 흑자전환(전년동기)", SIG_GOOD)
+
+    def test_flag_without_prior_amount(self):
+        # 전년동기 금액 칸이 '-' 여도 원문이 흑자전환이라 적었으면 그걸 쓴다
+        ls = self._form_a("1,200 900 33.3 - - - 흑자전환")
+        assert "영업이익(전년동기): 1,200억원 (흑자전환)" in ls, ls
+        assert significance_info(_it("영업(잠정)실적(공정공시)", ls, "실적")) == (
+            "영업이익 흑자전환(전년동기)", SIG_GOOD)
+        ls2 = self._form_a("-30 10 - 적자전환 - - 적자전환")
+        assert significance_info(_it("영업(잠정)실적(공정공시)", ls2, "실적")) == (
+            "영업이익 적자전환(전년동기)", SIG_BAD)
+
+    def test_parser_small_eok_amounts_keep_position(self):
+        # 리뷰 재현: 세 자리 금액(567)이 비율로 읽혀 당기가 1,234 로 밀리던 것
+        ls = self._form_a("567 1,234 -54.1 - 980 -42.1 -")
+        assert "영업이익(전년동기): 567억원 (전년동기 980억원 · 전년동기대비 -42.1%)" in ls
+        assert significance_info(_it("영업(잠정)실적(공정공시)", ls, "실적")) == (
+            "잠정 영업이익 전년동기 -42.1%", SIG_BAD)
+
+    def test_parser_five_cell_form(self):
+        ls = self._form_a("1,500 1,400 7.1 1,000 50.0", unit="백만원")
+        # 5칸 서식의 전년동기 금액은 4번째 칸(1,000 백만원 = 10억원)
+        assert "영업이익(전년동기): 15억원 (전년동기 10억원 · 전년동기대비 +50.0%)" in ls, ls
+        assert significance_info(_it("영업(잠정)실적(공정공시)", ls, "실적")) == (
+            "잠정 영업이익 전년동기 +50.0%", SIG_GOOD)
+
+    def test_parser_unknown_shape_makes_no_line(self):
+        ls = self._form_a("1,500 1,400 7.1")
+        assert not any(x.startswith("영업이익(전년동기)") for x in ls)
+        assert significance(_it("영업(잠정)실적(공정공시)", ls, "실적")) is None
+
+    def test_form_c_parser_e2e(self):
+        txt = ("단위 : 억원 구분 당기실적 전기실적 전년동기실적 "
+               "매출액 당해실적 1,500 1,400 7.1 - 1,300 15.4 - "
+               "영업이익 당해실적 300 250 20.0 - 200 50.0 - ")
+        ls = df._provisional_lines(txt, 1e8)
+        assert significance_info(_it("연결재무제표기준영업(잠정)실적(공정공시)",
+                                     ls, "실적")) == ("잠정 영업이익 전년동기 +50.0%", SIG_GOOD)
 
     def test_cumulative_line_is_not_read(self):
         assert significance(_it("영업(잠정)실적(공정공시)", [
@@ -120,7 +177,9 @@ class TestMezzanine:
         for rn, lbl in (("전환가액의조정", "전환가액 조정"),
                         ("신주인수권행사가액의조정", "행사가액 조정"),
                         ("교환가액의조정", "교환가액 조정")):
-            assert significance_info(_it(rn, [], "자금조달")) == (lbl, SIG_BAD), rn
+            # 원문 파서가 없어 방향(시가하락 리픽싱 ↔ 기계적·상향 조정)을 못
+            # 재므로 판단(독립 리뷰 2026-10-13 — 옛 판은 악재 단정)
+            assert significance_info(_it(rn, [], "자금조달")) == (lbl, SIG_WATCH), rn
 
 
 class TestSurvivalRisks:
@@ -151,6 +210,24 @@ class TestSurvivalRisks:
 
     def test_free_text_lines_do_not_fire(self):
         assert significance(_it("기타경영사항(자율공시)", ["비고: 횡령 사실 없음"])) is None
+        # 자율공시 '제목:' 자유 서술은 남의 사건일 수 있다
+        assert significance(_it("기타경영사항(자율공시)",
+                                ["제목: 파산한 거래처에 대한 대손 반영"], "기타")) is None
+
+    @pytest.mark.parametrize("rn,detail", [
+        ("조회공시요구(풍문또는보도)(부도설)", []),
+        ("조회공시요구(부도설)에대한답변(부인)", []),
+        ("조회공시요구(감사의견거절설)에대한답변", []),
+        ("풍문또는보도에대한해명", ["제목: 횡령설"]),
+    ])
+    def test_rumor_titles_are_not_events(self, rn, detail):
+        """확인 요청·부인은 사건이 아니다(독립 리뷰 2026-10-13 재현)."""
+        assert significance(_it(rn, detail, "조회공시")) is None
+
+    def test_background_reason_on_other_report_does_not_fire(self):
+        # 리뷰 재현: 최대주주변경의 '사유: 회생절차에 따른 출자전환'
+        assert significance_info(_it("최대주주변경", ["사유: 회생절차에 따른 출자전환"],
+                                     "회사구조")) == ("최대주주 변경", SIG_WATCH)
 
 
 # ── 중 ────────────────────────────────────────────────────────────────
@@ -199,17 +276,36 @@ class TestMiddleTier:
     def test_capital_reduction_and_merge(self):
         assert significance_info(_it("감자결정", ["사유: 결손보전을 위한 무상감자"],
                                      "자금조달")) == ("무상감자", SIG_BAD)
+        assert significance_info(_it("감자결정", ["사유: 결손금 보전"], "자금조달")) == (
+            "무상감자", SIG_BAD)
+        # 방식을 모르면 단정하지 않는다
         assert significance_info(_it("감자결정", [], "자금조달")) == (
-            "감자 결정", SIG_BAD)
-        assert significance_info(_it("감자결정", ["구분: 유상감자"], "자금조달")) == (
-            "유상감자", SIG_WATCH)
+            "감자 결정(방식 원문 확인)", SIG_WATCH)
+        # 감자 파서는 방식을 '사유:' 로만 남긴다 — 실제 줄 모양으로
+        assert significance_info(_it("감자결정", ["사유: 주주가치 제고를 위한 유상감자"],
+                                     "자금조달")) == ("유상감자", SIG_WATCH)
+        # 정지 공시는 감자·병합 '결정' 이 아니다
+        assert significance(_it("주권매매거래정지(감자)")) is None
+        assert significance(_it("주권매매거래정지(주식병합)")) is None
         assert significance_info(_it("주식병합결정", [], "회사구조")) == (
             "주식병합", SIG_WATCH)
 
     def test_halt(self):
         assert significance_info(_it("주권매매거래정지",
-                                     ["사유: 투자경고종목 지정"])) == (
+                                     ["사유: 횡령 혐의 관련 확인"])) is not None
+        assert significance_info(_it("주권매매거래정지",
+                                     ["사유: 상장적격성 검토"])) == (
             "매매거래정지", SIG_BAD)
+        # 시장경보(급등 과열) 하루 정지는 판단
+        assert significance_info(_it("주권매매거래정지",
+                                     ["사유: 투자경고종목 지정"])) == (
+            "매매거래정지(시장경보)", SIG_WATCH)
+        # 합병·교환·감자 정지는 기계적
+        for why in ("사유: 회사합병", "사유: 주식의 포괄적 교환",
+                    "사유: 자본감소(감자)"):
+            assert significance(_it("주권매매거래정지", [why])) is None, why
+        # 시장 꼬리표 괄호는 사유가 아니다
+        assert significance(_it("주권매매거래정지(코스닥)")) is None
         # 기간 변경 양식은 '변경사유:' 로 온다
         assert significance_info(_it("주권매매거래정지기간변경",
                                      ["변경사유: 상장적격성 검토 연장"])) == (
@@ -222,6 +318,29 @@ class TestMiddleTier:
         # 사유를 모르면 기계적 정지일 수 있어 발화하지 않는다
         assert significance(_it("주권매매거래정지")) is None
         assert significance(_it("주권매매거래정지해제", ["사유: 투자경고 해제"])) is None
+
+    def test_review_lows(self):
+        # 다른 해제가 같이 실린 정지 공시는 관리종목 해제가 아니다
+        assert significance_info(_it("매매거래정지및정지해제(관리종목지정)")) == (
+            "관리종목 관련", SIG_BAD)
+        assert significance_info(_it("기타시장안내(감사의견 비적정)")) is not None
+        assert significance(_it("최대주주변경을수반하는주식담보제공계약체결",
+                                [], "회사구조")) is None
+        assert significance(_it("불성실공시법인지정유예")) is None
+
+    def test_bonus_issue_prefers_stated_ratio(self):
+        # 리뷰 재현: '신주 (+47.5%)'(분모에 자사주)가 '1주당 0.5주' 를 이겼다
+        assert significance_info(_it("무상증자결정", [
+            "구분: 무상증자", "신주: 보통주 4,750,000주 (+47.5%)",
+            "배정: 1주당 0.5주"], "자금조달")) == ("무상증자 1주당 0.5주", SIG_GOOD)
+
+    def test_tender_offer_target_by_filer(self):
+        it = _it("공개매수신고서", [], "회사구조", corp="대상회사")
+        it["flr_nm"] = "매수자홀딩스"
+        assert significance_info(it) == ("공개매수(대상 회사)", SIG_GOOD)
+        it2 = _it("공개매수신고서", [], "회사구조", corp="매수자홀딩스")
+        it2["flr_nm"] = "매수자홀딩스"
+        assert significance_info(it2) == ("공개매수", SIG_WATCH)
 
     def test_unfaithful(self):
         assert significance_info(_it("불성실공시법인지정")) == (
@@ -262,6 +381,17 @@ class TestExistingRuleTones:
                                 "용도: 운영 100억원"], "자금조달")
         assert significance_info(it3, market_cap=1000e8) == (
             "시총대비 10.0% 유상증자(제3자배정)", SIG_WATCH)
+
+    def test_subsidiary_rights_issue_excluded(self):
+        # 리뷰 재현: 종속회사 증자 500억을 모회사 시총 1,000억 대비 50% 악재로
+        it = _it("유상증자결정(종속회사의주요경영사항)",
+                 ["구분: 종속회사(ABC) 유상증자 (제3자배정)", "용도: 운영 500억원"],
+                 "자금조달")
+        assert significance(it, market_cap=1000e8) is None
+
+    def test_third_party_from_api_fallback(self):
+        it = _it("유상증자결정", ["방식: 제3자배정증자", "운영자금: 100억원"], "자금조달")
+        assert significance_info(it, market_cap=1000e8)[1] == SIG_WATCH
 
     def test_rights_amount_from_doc_parser_lines(self):
         """원문 파서 카드('용도:'·'신주: … =')에서도 조달액을 읽는다 — 옛 판은
@@ -375,22 +505,29 @@ class TestDashboardTones:
         assert html.index(".df-card.df-sig-bad{") > gold
         assert html.index(".df-card.df-sig-watch{") > gold
 
-    def test_js_flag_match_is_token_based(self):
-        """'sig' 필터가 부분문자열로 'sig-bad' 에 걸리면 안 된다 —
-        토큰으로 맞춘다. node 로 실제 함수 조각을 태운다."""
+    def test_js_flag_match_or_within_tones_and_tokens(self):
+        """방향 필끼리는 OR(한 카드는 방향이 하나라 AND 면 0장), 다른 플래그와는
+        AND, 부분문자열이 아니라 토큰. 렌더된 페이지의 **실제 함수**를 node 로
+        태운다."""
         import shutil
         import subprocess
         html = self._html()
-        assert "var cf=(c.dataset.flag||'').split(' ');" in html
+        m = re.search(r"function dfFlagMatch\(cf,flags\)\{.*?\n  \}", html, re.S)
+        assert m, "dfFlagMatch 없음"
+        assert "dfFlagMatch((c.dataset.flag||'').split(' '),activeFlags)" in html
         node = shutil.which("node")
         if not node:
             pytest.skip("node 없음")
-        js = ("var cf=('sig sig-bad').split(' ');"
-              "console.log(['sig-bad','sig-good','sig'].map(function(f){"
-              "return cf.indexOf(f)>=0;}).join(','));")
+        js = m.group(0) + """
+var bad=['sig','sig-bad'], good=['sig','sig-good'], unp=['sig','sig-bad','unparsed'];
+console.log([
+  dfFlagMatch(bad,['sig-bad','sig-good']), dfFlagMatch(good,['sig-bad','sig-good']),
+  dfFlagMatch(['x'],['sig-bad','sig-good']), dfFlagMatch(bad,['sig-bad','unparsed']),
+  dfFlagMatch(unp,['sig-bad','unparsed']), dfFlagMatch(bad,[]),
+  dfFlagMatch(['sig-badx'],['sig-bad'])].join(','));"""
         out = subprocess.run([node, "-e", js], capture_output=True, text=True,
                              timeout=30).stdout.strip()
-        assert out == "true,false,true"
+        assert out == "true,true,false,false,true,true,false", out
 
 
 class TestDashboardMezzanineMcapWiring:

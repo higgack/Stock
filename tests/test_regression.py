@@ -14064,7 +14064,10 @@ class TestDartUnparsed6:
         # 🔥/⚠️ 플래그가 카테고리와 독립 토글·동시선택 (사용자 2026-06-12)
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert "var activeFlags=[]" in src           # 다중 플래그 배열
-        assert "activeFlags.every(" in src           # 선택 플래그 전부 AND
+        # 선택 플래그 결합: 방향 필(sig-*) 끼리는 OR, 나머지와는 AND —
+        # 2026-10-13 방향 분리로 계약이 바뀌었다(#222). 동작은
+        # tests/test_dart_sig_tone_20261013.py 가 node 로 실제 함수를 태워 잰다.
+        assert "dfFlagMatch(" in src and "rest.every(" in src
         # 플래그 클릭=토글(다른 pill active 유지), 카테고리=카테고리끼리만 배타
         assert "if(!x.dataset.flag)x.classList.remove('active')" in src
         # 범례 안내문구('함께 선택 가능')는 사용자 요청으로 제거(2026-06-22) — 기능은 유지
