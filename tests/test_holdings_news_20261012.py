@@ -2285,7 +2285,9 @@ def ws_snaps(tmp_path, monkeypatch):
     import gzip
 
     import bot.world_sectors as ws
+    import bot.holdings_news as hnm
     monkeypatch.setattr(ws, "_SNAP", tmp_path / "snap")
+    monkeypatch.setattr(hnm, "_PREV_CACHE", {})
     ws.cache_clear()
 
     def put(market, d, rows):
@@ -2332,7 +2334,7 @@ def test_prev_change_failure_only_empties_that_cell(hn, ws_snaps, monkeypatch, c
 
     def boom(*a, **k):
         raise RuntimeError("disk")
-    monkeypatch.setattr(ws, "load_snapshot", boom)
+    monkeypatch.setattr(ws, "prev_sessions", boom)
     with caplog.at_level("WARNING"):
         v, d, why = hn.prev_changes("2026-10-13")(_hs("KR", "005930"))
     assert v is None and why == "전날 등락 조회 실패" and "전날 등락 조회 실패" in caplog.text
@@ -2382,3 +2384,31 @@ def test_as_of_falls_back_to_the_upload_time(hn):
     assert sk["as_of"] == "업로드 2026-10-12 21:03 KST"
     _, sk = hn.universe({"holdings": []}, us_etf=set())
     assert sk["as_of"] is None
+
+
+def test_prev_change_table_is_cached_by_mtime(hn, ws_snaps, monkeypatch):
+    """재생성(15분)마다 30일 × 시장의 하루치를 다시 풀지 않는다 — 같은 파일이면 한 번만 읽고, 파일이 바뀌면
+    (mtime) 다시 읽는다. 국가별 보드의 원본 캐시는 건드리지 않는다(30일을 훑으면 그 보드 캐시를 밀어낸다)."""
+    import os
+
+    import bot.world_sectors as ws
+    ws_snaps("KR", "2026-10-12", [("KRX:005930", 1.0)])
+    reads = []
+    real = ws._gz_load
+    monkeypatch.setattr(ws, "_gz_load", lambda p: reads.append(p) or real(p))
+    monkeypatch.setattr(ws, "load_snapshot", lambda *a, **k: pytest.fail("국가별 보드 캐시를 쓰면 안 된다"))
+    st = _hs("KR", "005930")
+    assert hn.prev_changes("2026-10-13")(st)[0] == 1.0
+    assert hn.prev_changes("2026-10-13")(st)[0] == 1.0
+    assert len(reads) == 1
+    ws_snaps("KR", "2026-10-12", [("KRX:005930", 2.5)])
+    p = ws.snap_path("KR", "2026-10-12")
+    os.utime(p, ns=(p.stat().st_atime_ns, p.stat().st_mtime_ns + 10**9))
+    assert hn.prev_changes("2026-10-13")(st)[0] == 2.5 and len(reads) == 2
+
+
+def test_prev_change_nan_is_not_a_value(hn, ws_snaps):
+    """원천이 NaN 을 주면(거래정지 등) '(nan%)' 가 아니라 '없음' — 사유와 함께 `(—)`."""
+    ws_snaps("KR", "2026-10-12", [("KRX:005930", float("nan"))])
+    v, d, why = hn.prev_changes("2026-10-13")(_hs("KR", "005930"))
+    assert v is None and "하루치에 이 종목이 없음" in why

@@ -1529,6 +1529,41 @@ def _side(label: str, cls: str, lines: list[dict]) -> str:
 _PREV_MK = {"KR": "KR", "US": "US", "JP": "JP", "TW": "TW", "CN": "CN_A", "CN_A": "CN_A"}
 
 
+_PREV_CACHE: dict = {}     # (시장, 날짜) → (파일 mtime, {티커: 등락}) — 15분마다 30일치를 다시 풀지 않게
+_PREV_CACHE_MAX = 80       # 화면 30일 × 시장 몇 개 — 넘으면 오래된 것부터
+
+
+def _prev_table(ws, lookup_ticker, mk: str, d: str) -> dict | None:
+    """그 날 하루치의 {티커: 등락%} — 파일이 없으면 None. 하루치 원본은 미국 한 장이 수 MB 라 재생성마다
+    (지난 날 조각까지 30일 × 시장) 다시 풀면 낭비다 → mtime 으로 무효화하는 작은 표만 남긴다(#61). 국가별
+    보드의 원본 캐시(`world_sectors._cached_load`, 6장)는 쓰지 않는다 — 30일을 훑으면 그 보드의 캐시를 밀어낸다."""
+    path = ws.snap_path(mk, d)
+    try:
+        mt = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    hit = _PREV_CACHE.get((mk, d))
+    if hit and hit[0] == mt:
+        return hit[1]
+    snap = ws._gz_load(path)
+    rows = snap.get("rows") if isinstance(snap, dict) else None
+    if not isinstance(rows, list):
+        return None
+    tbl = {}
+    for r in rows:
+        try:
+            k = lookup_ticker(r[0]).upper()
+            v = r[4]
+        except Exception:                                      # noqa: BLE001
+            continue
+        if k and isinstance(v, (int, float)) and v == v:
+            tbl[k] = float(v)
+    while len(_PREV_CACHE) >= _PREV_CACHE_MAX:
+        _PREV_CACHE.pop(next(iter(_PREV_CACHE)))
+    _PREV_CACHE[(mk, d)] = (mt, tbl)
+    return tbl
+
+
 def prev_changes(date: str):
     """전날 등락률 조회기 — `look(stock) -> (등락%, 세션 날짜, 사유)`.
 
@@ -1549,19 +1584,9 @@ def prev_changes(date: str):
             if not ss:
                 out = (None, None, "전날 거래일을 달력에서 못 찾음")
             else:
-                snap = ws.load_snapshot(mk, ss[0])
-                if snap is None:
-                    out = (None, ss[0], f"{ss[0]} 하루치를 아직 받지 않음(장 마감 {ws.READY_MIN // 60}시간 뒤 수집)")
-                else:
-                    tbl = {}
-                    for r in snap["rows"]:
-                        try:
-                            k = lookup_ticker(r[0]).upper()
-                        except Exception:                      # noqa: BLE001
-                            continue
-                        if k and isinstance(r[4], (int, float)):
-                            tbl[k] = float(r[4])
-                    out = (tbl, ss[0], "")
+                tbl = _prev_table(ws, lookup_ticker, mk, ss[0])
+                out = ((None, ss[0], f"{ss[0]} 하루치를 아직 받지 않음(장 마감 {ws.READY_MIN // 60}시간 뒤 수집)")
+                       if tbl is None else (tbl, ss[0], ""))
         except Exception as exc:                               # noqa: BLE001
             log.warning("holdings_news: 전날 등락 조회 실패(%s %s): %s", mk, date, exc)
             out = (None, None, "전날 등락 조회 실패")
