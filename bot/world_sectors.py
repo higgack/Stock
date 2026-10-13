@@ -42,6 +42,7 @@ _STATE = _DIR / "state.json"
 MARKETS = ("KR", "US", "JP", "TW", "CN_A")
 HOLD_MARKETS = ("KR", "US")      # 섹터종목 — Breadth 전략 섹터 ETF 가 있는 나라(사용자 지정)
 READY_MIN = 180            # 마감 뒤 이만큼 지나서 받는다(지연 15분 + 시간외 단일가·정산 여유)
+TICK_MIN = 15              # 봇이 '받을 때가 됐나' 를 보는 주기(분) — telegram_bot 주기가 이걸 쓴다
 RETRY_MIN = (30, 60, 120, 180)   # 같은 세션 연속 실패 시 다음 시도까지(분)
 KEEP_SNAP_DAYS = 45        # 종목별 원자료(gz) 보관 — 주간 표·20거래일 평균에 충분
 KEEP_AGG_DAYS = 120        # 섹터·업종 집계(작다) 보관
@@ -150,6 +151,25 @@ def due_session(market: str, now: datetime | None = None) -> str | None:
         if t and now_u >= t[1] + timedelta(minutes=READY_MIN):
             return ds
     return None
+
+
+def ready_kst(market: str, now: datetime | None = None) -> tuple[datetime, str] | None:
+    """그 시장의 **다음에 받을** 세션(마감+`READY_MIN` 이 아직 안 지난 첫 세션)의 받는 시각(KST)과 날짜 —
+    다음 세션 기준이라 서머타임 전환 주말엔 바뀐 시각을 적는다(리뷰 2026-10-13).
+
+    화면의 '언제 갱신되나' 가 쓴다 — 달력의 실제 마감에서 파생하므로 서머타임(미국)·단축장을 따른다
+    (나라별 시각을 문구에 리터럴로 적으면 마감·`READY_MIN` 이 바뀔 때 갈린다, #38·#55)."""
+    n = _now(now)
+    d = n.date()
+    last = None
+    for i in range(-3, 15):                  # 다음에 받을 세션 — 마감+READY_MIN 이 아직 안 지난 첫 세션
+        ds = (d + timedelta(days=i)).isoformat()
+        t = session_times(market, ds)
+        if t:
+            last = ((t[1] + timedelta(minutes=READY_MIN)).astimezone(_KST), ds)
+            if last[0] >= n:
+                return last
+    return last
 
 
 def next_open(market: str, d: str) -> datetime | None:

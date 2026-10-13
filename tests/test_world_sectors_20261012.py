@@ -2112,3 +2112,61 @@ def test_hub_nav_order_follows_the_user():
             "reddit_insider.html", "blog.html", "trade/", "realestate.html"]
     got = [h for h in hrefs if h in want]
     assert got == want, got
+
+
+# ── '언제 갱신되나'(사용자 2026-10-13 "이 보드는 언제 업데이트되는거야?") ──────────────
+def test_ready_kst_follows_the_calendar_close_and_dst():
+    """시각은 달력의 실제 마감 + READY_MIN — 미국은 서머타임이면 이튿날 08:00, 아니면 09:00. 나라별
+    시각을 리터럴로 적으면 마감이나 READY_MIN 이 바뀔 때 문구만 남는다(#38·#55)."""
+    t, d = ws.ready_kst("US", _at(2026, 10, 13, 11))
+    assert (d, t.strftime("%m-%d %H:%M")) == ("2026-10-13", "10-14 08:00")
+    t, d = ws.ready_kst("US", _at(2026, 12, 14, 11))
+    assert t.strftime("%H:%M") == "09:00"
+    t, d = ws.ready_kst("KR", _at(2026, 10, 12, 11))               # 오늘 이하 마지막 세션(10-09 휴장)
+    assert (d, t.strftime("%H:%M")) == ("2026-10-12", "18:30")
+    t, d = ws.ready_kst("TW", _at(2026, 10, 13, 11))
+    assert t.strftime("%H:%M") == "17:30"
+
+
+def test_when_line_names_every_market_and_the_tick(monkeypatch):
+    line = wp.when_line(_at(2026, 10, 13, 11))
+    assert "장 마감 3시간 뒤" in line and f"{ws.TICK_MIN}분마다" in line
+    assert "미국 이튿날 08:00" in line and "한국 18:30" in line and "대만 17:30" in line
+    assert "중국 19:00" in line and "일본 18:30" in line
+    only = wp.when_line(_at(2026, 10, 13, 11), ("KR", "US"))
+    assert "대만" not in only and "미국 이튿날 08:00" in only
+    monkeypatch.setattr(ws, "READY_MIN", 120)
+    assert "한국 17:30" in wp.when_line(_at(2026, 10, 13, 11)) and "장 마감 2시간 뒤" in wp.when_line(
+        _at(2026, 10, 13, 11))
+    monkeypatch.setattr(ws, "ready_kst", lambda m, now=None: None)
+    assert "한국 시각 미확인" in wp.when_line(_at(2026, 10, 13, 11))
+
+
+def test_all_three_guides_say_when(store):
+    now = _at(2026, 10, 13, 11)
+    want = wp.when_line(now)
+    mix = wp.render_mix([], ws.load_state(), now)
+    smap = wp.render_map({}, ws.load_state(), now)
+    stk = wp.render_stocks({}, ws.load_state(), now)
+    for h in (mix, smap):
+        g = h[h.index("ℹ️ 이 보드 읽는 법"):h.index("</details>", h.index("ℹ️ 이 보드 읽는 법"))]
+        assert f"<b>언제 갱신되나</b> — {want}" in g
+    g = stk[stk.index("ℹ️ 이 보드 읽는 법"):]
+    assert f"<b>언제 갱신되나</b> — {wp.when_line(now, wp.STOCK_MARKETS)}" in g
+
+
+def test_world_tick_matches_what_the_guide_says():
+    import ast
+    tree = ast.parse(open("bot/telegram_bot.py", encoding="utf-8").read())
+    v = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+         and any(getattr(t, "id", "") == "_WORLD_SECTORS_TICK_SEC" for t in n.targets)][0]
+    assert ast.literal_eval(v.value) == ws.TICK_MIN * 60
+
+
+def test_ready_kst_uses_the_next_session_across_dst():
+    """다음에 받을 세션 기준 — 2026-11-01(일) 에는 월요일(서머타임 끝) 세션이라 09:00. 지난 금요일
+    세션(08:00)을 적으면 그 주말 내내 틀린 시각이다(리뷰 2026-10-13)."""
+    t, d = ws.ready_kst("US", _at(2026, 11, 1, 11))
+    assert (d, t.strftime("%m-%d %H:%M")) == ("2026-11-02", "11-03 09:00")
+    t, d = ws.ready_kst("KR", _at(2026, 10, 12, 19))               # 그날 18:30 이 지났으면 다음 세션
+    assert d == "2026-10-13"

@@ -30,6 +30,10 @@ def hn(tmp_path, monkeypatch):
     import bot.holdings_news as m
     import bot.usage_tracker as ut
     d = tmp_path / "hn"
+    # 이 파일의 시계(07:15 tick · 06:00 대기 등)는 집계 시각 07:10 을 두고 짰다. 사용자가 시각을 바꾸는 것
+    # (2026-10-13 07:10→08:00)은 값이지 계약이 아니므로, 시각에 걸린 계약은 그 시각에 묶어 잰다(#425).
+    monkeypatch.setattr(m, "RUN_HOUR", 7)
+    monkeypatch.setattr(m, "RUN_MIN", 10)
     monkeypatch.setattr(m, "_DIR", d)
     monkeypatch.setattr(m, "_DAYS", d / "days")
     monkeypatch.setattr(m, "_STATE", d / "state.json")
@@ -834,7 +838,7 @@ def test_day_fragments_hold_only_the_past_days_in_view(hn, monkeypatch):
     fr = hn.day_fragments(recs, _t("2026-10-12T09:00"))
     assert sorted(fr) == ["hn_d_2026-10-10.html", "hn_d_2026-10-11.html"]     # 최신일·창 밖은 없다
     body = fr["hn_d_2026-10-11.html"]
-    assert body == hn._day_body(recs[2]) and "data-q='삼성전자 005930'" in body and "<details" not in body[:20]
+    assert body == hn._day_body(recs[2], now=_t("2026-10-12T09:00")) and "data-q='삼성전자 005930'" in body and "<details" not in body[:20]
 
 
 def test_regenerate_writes_fragments_once_and_prunes_old_ones(hn, tmp_path, monkeypatch):
@@ -1152,15 +1156,16 @@ def test_main_dispatches(hn, monkeypatch):
 
 
 # ── 배선 ─────────────────────────────────────────────────────────────────────
-def test_nav_puts_it_right_after_asia_on_the_hub():
+def test_nav_puts_it_right_before_asia_on_the_hub():
+    """사용자 2026-10-12 'ASIA 옆' → 2026-10-13 'ASIA 앞으로'(#222 다시 쓴다 — 남는 보장: 사이에 다른 링크 없음)."""
     from bot.dashboard import _render_index, _render_market_page, _render_portfolio_page
     hub = _render_market_page({})
-    asia = 'href="asia.html">🏯 ASIA</a>'
-    a = hub.index(asia) + len(asia)
-    b = hub.index('<a href="holdings_news.html">🗞️ 보유종목 News</a>')
-    assert a < b and "<a" not in hub[a:b], hub[a:b]                      # ASIA 바로 다음(사이에 다른 링크 없음)
+    me = '<a href="holdings_news.html">🗞️ 보유종목 News</a>'
+    a = hub.index(me) + len(me)
+    b = hub.index('<a href="asia.html">🏯 ASIA</a>')
+    assert a < b and "<a" not in hub[a:b], hub[a:b]                      # ASIA 바로 앞(사이에 다른 링크 없음)
     idx = _render_index([])[0]
-    assert idx.index("asia.html") < idx.index("holdings_news.html") < idx.index("screener.html")
+    assert idx.index("holdings_news.html") < idx.index("asia.html") < idx.index("screener.html")
     assert 'href="holdings_news.html"' in _render_portfolio_page(None)
 
 
@@ -1201,7 +1206,13 @@ def test_help_and_periodic_task_are_wired():
     tree = ast.parse(src)
     help_txt = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
                 and any(getattr(t, "id", "") == "_HELP_TEXT" for t in n.targets)][0]
-    assert "🗞️보유종목 News(매일 07:10" in ast.literal_eval(help_txt.value)
+    import bot.holdings_news as m
+    # 도움말의 시각은 제품 상수에서 — 리터럴로 박으면 사용자가 시각을 바꿀 때마다 무관한 빨간불(#67).
+    assert f"🗞️보유종목 News(매일 {m.RUN_HOUR:02d}:{m.RUN_MIN:02d}" in ast.literal_eval(help_txt.value)
+    # 가이드의 '15분마다 확인' 은 봇의 실제 주기와 같아야 한다(#55).
+    tick = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+            and any(getattr(t, "id", "") == "_HOLDINGS_NEWS_TICK_SEC" for t in n.targets)][0]
+    assert ast.literal_eval(tick.value) == m.TICK_MIN * 60
     starts = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
               and ast.unparse(n.func) == "asyncio.create_task"]
     assert "asyncio.create_task(_periodic_holdings_news())" in starts
@@ -2265,3 +2276,186 @@ def test_sidecar_survives_a_save_of_a_reloaded_record(hn, caplog):
     reloaded["stocks"][0]["status"] = "ok"                              # 다 정리되면 지운다
     hn.save_record(reloaded)
     assert not side.exists()
+
+
+# ── 카드 머리: 종목분석 링크 · 전날 등락(사용자 2026-10-13) ────────────────────────
+@pytest.fixture
+def ws_snaps(tmp_path, monkeypatch):
+    """`world_sectors` 하루치 저장소를 임시로 — 원천(TradingView) 형식 그대로 `KRX:005930` 기호·ROW 순서."""
+    import gzip
+
+    import bot.world_sectors as ws
+    import bot.holdings_news as hnm
+    monkeypatch.setattr(ws, "_SNAP", tmp_path / "snap")
+    monkeypatch.setattr(hnm, "_PREV_CACHE", {})
+    ws.cache_clear()
+
+    def put(market, d, rows):
+        p = ws.snap_path(market, d)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        full = [[sym, sym, None, None, chg, 1.0, 1.0, None, 1.0, 0] for sym, chg in rows]
+        with gzip.open(p, "wt", encoding="utf-8") as fh:
+            json.dump({"rows": full}, fh)
+        ws.cache_clear()
+    yield put
+    ws.cache_clear()
+
+
+def _hs(market, ticker, sym=None, name="X"):
+    return {"key": f"{market}:{ticker}", "market": market, "ticker": ticker, "sym": sym or ticker,
+            "name": name, "value": 1.0, "items": [], "status": "pending"}
+
+
+def test_prev_change_reads_the_previous_session_of_each_market(hn, ws_snaps):
+    """'전날' = 기록 날짜 **앞** 그 시장의 마지막 거래일 — 2026-10-12(월) 기록이면 한국은 10-09 한글날
+    휴장이라 10-08, 미국은 10-09. 날짜를 하루 빼는 식이면 한국은 휴장일(빈 하루치)을 찾는다."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.234), ("KRX:000660", -2.0)])
+    ws_snaps("KR", "2026-10-09", [("KRX:005930", 99.0)])          # 있어선 안 될 날 — 집으면 틀린다
+    ws_snaps("US", "2026-10-09", [("NASDAQ:NVDA", -0.5), ("NYSE:BRK.B", 0.0)])
+    look = hn.prev_changes("2026-10-12")
+    assert look(_hs("KR", "005930", "005930.KS")) == (1.234, "2026-10-08", "")
+    assert look(_hs("KR", "000660")) == (-2.0, "2026-10-08", "")
+    assert look(_hs("US", "NVDA")) == (-0.5, "2026-10-09", "")
+    assert look(_hs("US", "BRK-B")) == (0.0, "2026-10-09", "")     # 기호 BRK.B ↔ 자산 기록 BRK-B
+    v, d, why = look(_hs("US", "AAPL"))
+    assert v is None and "2026-10-09 하루치에 이 종목이 없음" in why
+
+
+def test_prev_change_missing_day_and_market_say_why(hn, ws_snaps):
+    look = hn.prev_changes("2026-10-13")                            # 미국 10-12 하루치는 아직 없음
+    v, d, why = look(_hs("US", "NVDA"))
+    assert v is None and d == "2026-10-12" and "아직 받지 않음" in why and "3시간" in why
+    v, d, why = look(_hs("HK", "0700.HK"))
+    assert v is None and "HK 시장은 전날 등락 원천이 없음" in why
+
+
+def test_prev_change_failure_only_empties_that_cell(hn, ws_snaps, monkeypatch, caplog):
+    import bot.world_sectors as ws
+
+    def boom(*a, **k):
+        raise RuntimeError("disk")
+    monkeypatch.setattr(ws, "prev_sessions", boom)
+    with caplog.at_level("WARNING"):
+        v, d, why = hn.prev_changes("2026-10-13")(_hs("KR", "005930"))
+    assert v is None and why == "전날 등락 조회 실패" and "전날 등락 조회 실패" in caplog.text
+
+
+def test_card_header_shows_link_and_prev_change(hn, ws_snaps):
+    """카드 머리 — 이름 = 종목분석 링크(접미 없는 국내 6자리, #399), 괄호 = 전날 등락(색은 한국 관례),
+    값이 없으면 `(—)` + 사유 툴팁. 배선은 `_day_body` 로 태운다(#20 — 헬퍼만 재면 떼어도 통과)."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.234), ("KRX:000660", -2.0), ("KRX:035720", 0.0)])
+    s1 = {**_stock("KR:005930"), "name": "삼성전자"}
+    s2 = {**_stock("KR:000660"), "name": "SK하이닉스"}
+    s3 = {**_stock("KR:035720"), "name": "카카오"}
+    s4 = {**_stock("KR:999999"), "name": "없음"}
+    body = hn._day_body(_rec(s1, s2, s3, s4))
+    assert ("<a class='hn-nm' href='lookup/005930' title='종목분석 화면으로'>삼성전자</a>"
+            "<span class='hn-chg hn-up' title='2026-10-08 종가 기준") in body
+    assert "<span class='hn-chg hn-dn'" in body and "(-2.00%)</span>" in body
+    assert "(+1.23%)</span>" in body and "(0.00%)</span>" in body and "(+0.00%)" not in body
+    assert "<span class='hn-chg ' title='2026-10-08" in body                       # 보합은 색 없음
+    assert "title='2026-10-08 하루치에 이 종목이 없음'>(—)</span>" in body
+
+
+def test_prev_change_css_uses_defined_tokens(hn):
+    css = hn._HN_CSS
+    for tok in ("--hn-up", "--hn-dn"):
+        assert css.count(f"{tok}:") == 2                    # 라이트·다크 둘 다 정의
+    assert ".hn-chg.hn-up{color:var(--hn-up)}" in css and ".hn-chg.hn-dn{color:var(--hn-dn)}" in css
+
+
+def test_guide_run_window_derives_from_run_time(hn, monkeypatch):
+    monkeypatch.setattr(hn, "RUN_HOUR", 8)
+    monkeypatch.setattr(hn, "RUN_MIN", 0)
+    assert hn._hm_after(hn.TICK_MIN) == "08:00~08:15"
+    assert hn._hm_after(30) == "08:00~08:30"                  # 인자를 따른다(주기를 바꾸면 구간도)
+    monkeypatch.setattr(hn, "RUN_HOUR", 23)
+    monkeypatch.setattr(hn, "RUN_MIN", 50)
+    assert hn._hm_after(15) == "23:50~00:05"
+    page = hn.render_page([], None, _t("2026-10-13T09:00"))
+    assert "매일 23:50 KST 이후" in page and "23:50~00:05 사이" in page
+
+
+def test_as_of_falls_back_to_the_upload_time(hn):
+    """자산 기록은 `as_of` 를 안 싣는다(파서가 안 채운다 — 옛 픽스처가 지어낸 키, #155). 자산 대시보드의
+    '마지막 업데이트' 와 같은 `_saved_ts` 로 말한다."""
+    ts = datetime(2026, 10, 12, 21, 3, tzinfo=timezone(timedelta(hours=9))).timestamp()
+    _, sk = hn.universe({"holdings": [], "_saved_ts": ts}, us_etf=set())
+    assert sk["as_of"] == "업로드 2026-10-12 21:03 KST"
+    _, sk = hn.universe({"holdings": []}, us_etf=set())
+    assert sk["as_of"] is None
+
+
+def test_prev_change_table_is_cached_by_mtime(hn, ws_snaps, monkeypatch):
+    """재생성(15분)마다 30일 × 시장의 하루치를 다시 풀지 않는다 — 같은 파일이면 한 번만 읽고, 파일이 바뀌면
+    (mtime) 다시 읽는다. 국가별 보드의 원본 캐시는 건드리지 않는다(30일을 훑으면 그 보드 캐시를 밀어낸다)."""
+    import os
+
+    import bot.world_sectors as ws
+    ws_snaps("KR", "2026-10-12", [("KRX:005930", 1.0)])
+    reads = []
+    real = ws._gz_load
+    monkeypatch.setattr(ws, "_gz_load", lambda p: reads.append(p) or real(p))
+    monkeypatch.setattr(ws, "load_snapshot", lambda *a, **k: pytest.fail("국가별 보드 캐시를 쓰면 안 된다"))
+    st = _hs("KR", "005930")
+    assert hn.prev_changes("2026-10-13")(st)[0] == 1.0
+    assert hn.prev_changes("2026-10-13")(st)[0] == 1.0
+    assert len(reads) == 1
+    ws_snaps("KR", "2026-10-12", [("KRX:005930", 2.5)])
+    p = ws.snap_path("KR", "2026-10-12")
+    os.utime(p, ns=(p.stat().st_atime_ns, p.stat().st_mtime_ns + 10**9))
+    assert hn.prev_changes("2026-10-13")(st)[0] == 2.5 and len(reads) == 2
+
+
+def test_prev_change_nan_is_not_a_value(hn, ws_snaps):
+    """원천이 NaN 을 주면(거래정지 등) '(nan%)' 가 아니라 '없음' — 사유와 함께 `(—)`."""
+    ws_snaps("KR", "2026-10-12", [("KRX:005930", float("nan"))])
+    v, d, why = hn.prev_changes("2026-10-13")(_hs("KR", "005930"))
+    assert v is None and "하루치에 이 종목이 없음" in why
+
+
+def test_prev_change_missing_reason_follows_the_board_status(hn, ws_snaps, monkeypatch):
+    """하루치가 없을 때 '아직' 은 받을 창이 남았을 때만 — 창을 놓친 날·휴장·보관 기간 밖이면 그렇게 말한다
+    (영원히 안 채워질 칸에 '다음 갱신에 채워짐' 이라 적으면 #380). 판정은 국가별 보드의 것을 그대로(#35)."""
+    import bot.world_sectors as ws
+    seen = []
+
+    def status(mk, d, now, state=None):
+        seen.append((mk, d, now.isoformat()))
+        return box["st"]
+    monkeypatch.setattr(ws, "market_day_status", status)
+    box = {}
+    want = {"pending": "아직 받지 않음", "missing": "받을 창을 놓쳐", "holiday": "휴장(추정)",
+            "closed": "휴장(추정)", "ok": "보관 기간(45일) 밖", "": "2026-10-12 하루치가 없음"}
+    for st, txt in want.items():
+        box["st"] = st
+        v, d, why = hn.prev_changes("2026-10-13", _t("2026-10-13T08:05"))(_hs("KR", "005930"))
+        assert v is None and txt in why, (st, why)
+        assert ("다음 갱신에 채워짐" in why) == (st == "pending"), (st, why)
+    assert seen[0] == ("KR", "2026-10-12", "2026-10-13T08:05:00+09:00")         # 호출부의 now 를 넘긴다
+
+
+def test_prev_cache_cap_covers_every_rendered_day_and_market(hn):
+    """재생성은 화면의 날 × 시장을 매번 같은 순서로 훑는다 — 상한이 그보다 작으면 FIFO 가 매 패스 전부 밀어내
+    15분마다 모두 다시 푼다(리뷰 2026-10-13: JP 보유가 생기면 30×3=90 > 80)."""
+    assert hn._PREV_CACHE_MAX >= hn.RENDER_DAYS * len(set(hn._PREV_MK.values()))
+
+
+def test_prev_cache_evicts_when_full(hn, ws_snaps, monkeypatch):
+    monkeypatch.setattr(hn, "_PREV_CACHE_MAX", 2)
+    for d, c in (("2026-10-07", 1.0), ("2026-10-08", 2.0), ("2026-10-12", 3.0)):
+        ws_snaps("KR", d, [("KRX:005930", c)])
+    for day in ("2026-10-08", "2026-10-12", "2026-10-13"):
+        hn.prev_changes(day)(_hs("KR", "005930"))
+    assert len(hn._PREV_CACHE) == 2 and ("KR", "2026-10-07") not in hn._PREV_CACHE
+
+
+def test_prev_change_us_dot_class_shares(hn, ws_snaps):
+    """자산 기록이 BRK.B 로 줘도 표 키(lookup_ticker 꼴 BRK-B)와 맞는다."""
+    ws_snaps("US", "2026-10-12", [("NYSE:BRK.B", 0.7)])
+    assert hn.prev_changes("2026-10-13")(_hs("US", "BRK.B"))[0] == 0.7
+
+
+def test_as_of_broken_saved_ts_does_not_raise(hn):
+    for bad in (float("inf"), 1e300, "x", None):
+        assert hn.universe({"holdings": [], "_saved_ts": bad}, us_etf=set())[1]["as_of"] is None

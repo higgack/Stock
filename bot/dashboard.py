@@ -2251,8 +2251,8 @@ def _render_index(records: list[dict]) -> tuple[str, dict[str, str]]:
     # 도메인 목록은 제거(사용자 2026-06-10) — Screener 페이지 nav 에서 접근.
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
+        ' · <a href="holdings_news.html">🗞️ 보유종목 News</a>'   # ASIA 앞(사용자 2026-10-13)
         ' · <a href="asia.html">🏯 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
-        ' · <a href="holdings_news.html">🗞️ 보유종목 News</a>'   # ASIA 옆(사용자 2026-10-12)
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="dart_feed.html">📋 DART</a>'
@@ -19361,8 +19361,8 @@ def _render_market_page(data: dict) -> str:
     <a href="portfolio.html">💼 자산</a>
     &middot; <a href="budget.html">📒 가계부</a>
     &nbsp;|&nbsp;
-    <a href="asia.html">🏯 ASIA</a>
-    &middot; <a href="holdings_news.html">🗞️ 보유종목 News</a>
+    <a href="holdings_news.html">🗞️ 보유종목 News</a>
+    &middot; <a href="asia.html">🏯 ASIA</a>
     &middot; <a href="index.html">🦉 종목분석</a>
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="dart_feed.html">📋 DART</a>
