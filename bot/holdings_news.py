@@ -19,8 +19,10 @@
     해석성 요청 0 — #258). 이 모듈은 그 파일에서 종목 이름·코드가 **낱말로** 나온 글만 고른다.
 - Pros/Cons: 종목마다 모은 항목을 Gemini flash-lite 에 묶어 보내 **그 항목에 쓰인 사실만** 근거로
   호재 관점(Pros)·악재·리스크 관점(Cons)을 최대 3줄씩 받는다. 줄마다 근거 번호가 붙고, 근거 번호가
-  없거나 틀린 줄은 버린다(데이터 vs 환각 — 지어낸 문장을 싣지 않는다). 그 회사 얘기가 아닌 항목은
-  AI 가 relevant 에서 빼고, 화면은 뺀 항목도 따로 보여 준다(#43). 비용은 usage.jsonl 에
+  없거나 틀린 줄은 버린다(데이터 vs 환각 — 지어낸 문장을 싣지 않는다). 그 회사 얘기가 아니거나 회사
+  이름만 나오고 투자와 무관한 항목(이름을 단 스포츠 구단의 경기 소식 등)은 AI 가 relevant 에서 빼고,
+  화면은 뺀 항목도 흐리게 따로 보여 준다(#43). 정리 규칙(프롬프트 틀)의 지문을 종목에 찍어, 규칙이 바뀌면
+  아직 이어서 정리하는 날의 종목은 다시 정리한다(`requeue_stale`). 비용은 usage.jsonl 에
   subsystem `holdings_news` 로 남겨 대시보드 비용 카드·/usage 가 합산한다.
 
 저장: ~/.tradingagents/holdings_news/ — days/YYYY-MM-DD.json(하루 기록) · days/bodies_YYYY-MM-DD.json(아직
@@ -817,6 +819,11 @@ def _stock_block(s: dict) -> str:
     return "\n".join(lines)
 
 
+# 투자 판단에 닿는 주제 — 규칙 2(Pros·Cons)와 규칙 5(relevant)·가이드가 같이 쓴다. 두 규칙이 목록을 따로 들면
+# relevant 에서 빠진 항목을 근거로 단 줄이 `_clean_side` 에서 조용히 버려진다(리뷰 2026-10-13, #38).
+INVEST_TOPICS = "주가·실적·사업·재무·지배구조·규제·소송·업황"
+
+
 def build_prompt(stocks: list[dict]) -> str:
     return (
         "너는 개인 투자자의 보유 종목 뉴스를 정리하는 보조다. 아래 규칙을 어기면 실패다.\n"
@@ -824,16 +831,96 @@ def build_prompt(stocks: list[dict]) -> str:
         "   지어내지 않는다. 수치는 항목에 있는 것만 인용한다.\n"
         "2) pros = 그 종목 주주에게 긍정적으로 읽힐 수 있는 점(호재 관점). cons = 부정적이거나 위험이\n"
         "   될 수 있는 점(악재·리스크 관점). 같은 사실이 양면이면 양쪽에 다른 관점으로 써도 된다.\n"
+        f"   둘 다 규칙 5 의 relevant 항목만 근거로, 그 회사의 {INVEST_TOPICS}처럼 투자 판단에 닿는 내용만 쓴다.\n"
         "3) 각 줄은 한국어 1문장 70자 이내, 근거 항목 번호를 refs 에 단다(예: [1,3]).\n"
         f"4) 근거가 없으면 빈 배열로 둔다. 개수를 맞추려고 일반론('변동성 주의' 등)을 넣지 않는다.\n"
         f"   pros·cons 각각 최대 {MAX_PER_SIDE}개.\n"
-        "5) 그 회사에 관한 내용이 아닌 항목(이름이 같은 다른 회사·여러 종목 시세 나열·광고)은\n"
-        "   relevant 에 넣지 않는다. relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
+        f"5) relevant 에는 그 회사의 {INVEST_TOPICS}처럼 투자 판단에 닿는 항목만 넣는다. 넣지 않는 것:\n"
+        "   이름이 같은 다른 회사 · 여러 종목 시세 나열 · 광고 · 회사 이름이 나오지만 투자와 무관한 소식(그 이름을\n"
+        "   단 스포츠 구단의 경기 결과·순위·선수 기록, 연예·문화 행사 등). 단 스포츠·연예·콘텐츠·게임이 그 회사의\n"
+        "   본업이거나, 회사의 수입·지출에 닿는 일(후원·마케팅 계약, 흥행 수입, 구단 매각·운영비)이면 관련 있다.\n"
+        "   relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
         "6) 매수·매도 권유, 목표주가, 주가 예측을 쓰지 않는다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
         '{"stocks":[{"key":"종목 key 그대로","relevant":[1,2],'
         '"pros":[{"t":"한 문장","refs":[1]}],"cons":[{"t":"한 문장","refs":[2]}]}]}\n\n'
         "종목:\n" + "\n\n".join(_stock_block(s) for s in stocks))
+
+
+REQUEUE_REASON = "AI 정리 기준이 바뀜"   # 약속('다시 정리')은 저장하지 않는다 — 화면이 붙인다(#447)
+
+
+def prompt_sig() -> str:
+    """정리 규칙(종목 칸을 뺀 프롬프트 틀)의 지문 — 정리한 종목에 `pv` 로 찍는다. 규칙을 고쳐도 이미 정리된
+    Pros/Cons 는 안 바뀌므로(#18) 아직 이어서 정리하는 날의 종목은 지문이 다르면 다시 정리한다(`requeue_stale`).
+    손으로 올리는 판 번호가 아니라 틀에서 파생한다 — 손 bump 는 이 레포에서 여섯 번 졌다(#119)."""
+    import hashlib
+    return hashlib.sha1(build_prompt([]).encode("utf-8")).hexdigest()[:10]
+
+
+def requeue_note(rec: dict, now: datetime | None = None) -> str:
+    """`--why` 한 줄 — 이 기록(가장 최근 기록)에서 지금 기준(지문)으로 정리되지 않은 종목 수와 그게 어떻게 되나.
+    '다시 정리' 는 그 기록이 다음 주기에도 가장 최근 기록일 때만 약속한다 — 집계 시각이 지났는데 오늘 기록이
+    없으면 다음 주기가 오늘 기록을 모아 그게 가장 최근이 된다(델타 리뷰 2026-10-13)."""
+    now = _now(now)
+    sig = prompt_sig()
+    oks = [s for s in rec.get("stocks") or [] if s.get("status") == "ok"]
+    if not oks:
+        return f"정리 기준 지문 {sig} · 정리된 종목 없음"          # 대조 0건을 '전부 이 기준' 이라 적지 않는다
+    old = sum(1 for s in oks if s.get("pv") != sig)
+    if not old:
+        return f"정리 기준 지문 {sig} · 정리된 종목 {len(oks)} 전부 이 기준"
+    if sig in (rec.get("requeued_for") or []):
+        tail = ("이 기록은 이 기준으로 이미 한 번 되돌렸음 — 다른 판의 프로세스가 다시 정리했거나 이 판으로 "
+                "되돌아온 배포(옛 지문이 목록에 이미 있음)일 수 있음")
+    elif rec.get("date") == now.date().isoformat() or not due(now):
+        tail = "AI 키가 있으면 다음 주기에 새 기준으로 다시 정리"
+    else:
+        tail = "다음 주기가 오늘 기록을 새 기준으로 정리하고, 이 기록은 옛 정리 그대로"
+    return f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 {old}/{len(oks)} — {tail}"
+
+
+def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int:
+    """지금 규칙(`prompt_sig`)으로 정리하지 않은 'ok' 종목을 대기로 되돌린다 — 부른 쪽이 **가장 최근 기록**에만
+    부른다(`tick` — 그날은 적어도 24 − `RUN_HOUR` 시간 더 이어서 정리되므로(`RUN_HOUR` 뒤엔 오늘 기록을 먼저
+    모으니 가장 최근 기록이 곧 오늘 기록이다), 다시 정리를 마치기 전에 '마치지 못함' 으로 굳지 않는다). 한 기록을
+    같은 지문으로는 한 번만 되돌린다(`requeued_for`) — 판이 다른 두 프로세스가 겹치면 서로의 정리를 끝없이
+    되돌린다(리뷰 2026-10-13 · 못 보는 축: 옛 판으로 되돌린 배포는 그 지문이 목록에 이미 있어 다시 안 돈다).
+    옛 Pros/Cons·relevant 는 카드에서 지우되 `prev_pc` 에 보관한다 — 대기 카드에 남기면 필터(`data-pro`)가 옛
+    정리로 걸리고(#45), 버리면 다시 정리가 실패하거나 그날 안에 못 끝났을 때 멀쩡하던 정리가 흔적 없이 사라진다
+    (그때 카드가 '옛 기준 정리' 라벨을 달고 보여 준다, 델타 리뷰 2026-10-13). 본문은 정리가 끝나면 사이드카에서 지워지므로(`_save_bodies`)
+    네이버 사본을 다시 읽어 붙인다(이 호출당 `MAX_BODY_PER_RUN`). 못 읽으면 본문 없이 가고 '읽음' 표시는
+    지운다 — 화면은 이번에 실제로 보낸 것만 '읽음' 으로 적는다(`body_used`). 반환 = 되돌린 종목 수."""
+    body = body or _fetch_body
+    sig = prompt_sig()
+    if sig in (rec.get("requeued_for") or []):
+        return 0
+    n = reads = 0
+    for s in rec.get("stocks") or []:
+        if s.get("status") != "ok" or s.get("pv") == sig:
+            continue
+        if beat:
+            beat()
+        for it in s.get("items") or []:
+            it.pop("body_used", None)
+            link = str(it.get("link") or "")
+            blink = it.get("naver_link") or (link if "news.naver.com" in link else "")
+            if (it.get("src") == "telegram" or not it.get("body_chars") or it.get("_body") or not blink
+                    or reads >= MAX_BODY_PER_RUN):
+                continue
+            reads += 1
+            b = body(blink)
+            if pace:
+                time.sleep(pace)
+            if b:
+                it["_body"] = b
+        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
+        s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
+                 relevant=None, dropped_lines=0)
+        n += 1
+    if n:
+        rec["requeued_for"] = [*(rec.get("requeued_for") or []), sig]
+    return n
 
 
 def _parse_json(text: str) -> dict | None:
@@ -889,6 +976,8 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["pros"], dp = _clean_side(res.get("pros"), valid)
     stock["cons"], dc = _clean_side(res.get("cons"), valid)
     stock["dropped_lines"] = dp + dc
+    stock["pv"] = prompt_sig()
+    stock.pop("prev_pc", None)              # 새 기준으로 정리됐다 — 옛 정리는 더 쓸 데가 없다
     stock["status"] = "ok"
     stock["reason"] = ""
     stock["retry"] = False
@@ -1199,6 +1288,15 @@ def _live_dates(dates, today: str) -> set:
 _TICK = threading.Lock()
 
 
+def _llm_ready() -> bool:
+    """AI 키가 있나(조회 실패 = 없음 — 그때 옛 정리를 지우면 되살릴 길이 없다)."""
+    try:
+        from bot.genai_factory import effective_key
+        return bool(effective_key())
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
 def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
          body=_fetch_body, pace: float = 0.25) -> dict:
     """오늘 기록이 없고 집계 시각이 지났으면 모으고, 대기 종목이 있으면 AI 에 보낸다 — 오늘 먼저, 남은 상한으로
@@ -1246,7 +1344,17 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
             live = _live_dates([r["date"] for r in recs], date)
             todo = ([rec] if rec else []) + [r for r in sorted(recs, key=lambda r: r["date"], reverse=True)
                                              if r["date"] != date and r["date"] in live]
-            res = {"calls": 0, "analyzed": 0, "failed": 0, "no_key": False, "transient": False}
+            res = {"calls": 0, "analyzed": 0, "failed": 0, "no_key": False, "transient": False,
+                   "requeued": 0}
+            # 가장 최근 기록만 — 직전 기록까지 되돌리면 밤늦은 배포가 자정에 그날을 이어서 정리하는 날 밖으로 밀어
+            # 옛 정리만 잃고 '마치지 못함' 으로 굳는다(리뷰 2026-10-13). AI 키가 없으면 다시 정리할 수 없으니
+            # 지우지 않는다(지우면 멀쩡한 카드가 '키 미설정 — 뉴스만' 이 된다).
+            if todo and _llm_ready():
+                nq = requeue_stale(todo[0], body=body, pace=pace, beat=beat)
+                if nq:
+                    log.info("holdings_news: %s — 정리 기준이 바뀌어 %d종목을 다시 정리", todo[0]["date"], nq)
+                    res["requeued"] = nq
+                    save_record(todo[0])        # 다시 읽은 본문을 사이드카에 — 일시 오류로 밀려도 남는다
             for r in todo:
                 if not any(s.get("status") == "pending" for s in r.get("stocks") or []):
                     continue
@@ -1358,7 +1466,9 @@ def status_verdict(records: list[dict], now: datetime | None = None,
         reason = _pending_reason(pend[0]) if pend[0].get("reason") else "다음 주기에 이어서"
         return "pending", f"{head} · Pros/Cons 대기 {len(pend)}종목 — {reason}"
     if failed:
-        return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목(뉴스만 표시) — "
+        n_old = sum(1 for s in failed if isinstance(s.get("prev_pc"), dict))   # 카드가 옛 기준 정리를 보여 준다
+        shown = "뉴스만 표시" if not n_old else f"그중 {n_old}종목은 옛 기준 정리 표시"
+        return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목({shown}) — "
                         f"{failed[0].get('reason') or '사유 미기록'}")
     if src.get("fail"):          # 장애 기준 밑 — 판정은 ✅ 이되 사실은 말한다(#41)
         return "ok", f"{head} · 원천 못 받은 종목 {src['fail']}"
@@ -1668,6 +1778,8 @@ def _pending_reason(s: dict) -> str:
     r = s.get("reason") or ""
     if not r:
         return "다음 주기에 정리"
+    if r == REQUEUE_REASON:
+        return f"{r} — 새 기준으로 다시 정리"
     return f"{r} — 다음 주기에 다시" if s.get("retry") else r
 
 
@@ -1676,16 +1788,30 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
     import html as _h
     items = s.get("items") or []
-    rel = s.get("relevant")
+    st = s.get("status")
+    # 새 기준으로 다시 정리하려다 실패했거나 그날 안에 못 끝낸 종목 — 옛 정리를 라벨을 달고 보여 준다
+    # (지우기만 하면 멀쩡하던 정리가 흔적 없이 사라진다, 델타 리뷰 2026-10-13). 대기 중엔 안 보인다(곧 바뀐다).
+    old = s.get("prev_pc") if isinstance(s.get("prev_pc"), dict) and (st == "failed" or (final and st != "ok")) \
+        else None
+    shown = old or s
+    rel = shown.get("relevant")
     relset = set(rel) if isinstance(rel, list) else {it["n"] for it in items}
     n_tg = sum(1 for it in items if it["src"] == "telegram")
-    st = s.get("status")
     drop = int(s.get("dropped_lines") or 0)
-    if st == "ok":
+    if old:
+        r = s.get("reason") or "사유 미기록"
+        why = ("이어서 정리하는 기간 안에 차례가 오지 않음" if r == REQUEUE_REASON else r)
+        pc = (f"<div class='hn-why'>⚠️ 새 기준으로 다시 정리하지 못해 옛 기준 정리를 보여 줍니다 — "
+              f"{_h.escape(why)}</div>"
+              + ("<div class='hn-pc'>" + _side("👍 Pros · 호재 관점(옛 기준)", "hn-pro", old.get("pros") or [])
+                 + _side("👎 Cons · 악재·리스크 관점(옛 기준)", "hn-con", old.get("cons") or []) + "</div>"
+                 if old.get("pros") or old.get("cons") else
+                 "<div class='hn-why'>옛 기준 정리에도 호재·악재로 가른 줄이 없었음</div>"))
+    elif st == "ok":
         if not s.get("pros") and not s.get("cons"):
             why = (f"AI 가 쓴 {drop}줄을 근거 번호가 없거나 맞지 않아 버림 — 아래 근거 목록에서 확인하세요"
                    if drop else
-                   "관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
+                   "투자와 관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
                    "뉴스는 있지만 호재·악재로 가를 내용이 없음")
             pc = f"<div class='hn-why'>{_h.escape(why)}</div>"
         else:
@@ -1702,10 +1828,10 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
         pc = f"<div class='hn-why'>Pros/Cons 대기 — {_h.escape(_pending_reason(s))}</div>"
     lis = "".join(_item_li(it, it["n"] not in relset) for it in items)
     off = len(items) - len([it for it in items if it["n"] in relset])
-    offnote = f" · 그 회사 얘기가 아니라고 본 {off}건은 흐리게" if off and st == "ok" else ""
+    offnote = f" · 종목·투자와 무관하다고 본 {off}건은 흐리게" if off and (st == "ok" or old) else ""
     q = f"{s['name']} {s['ticker']}" + (f" {s['ko']}" if s.get("ko") else "")
     return (f"<div class='hn-card' data-hncard='1' data-mk='{_h.escape(s['market'])}' "
-            f"data-pro='{1 if s.get('pros') else 0}' data-con='{1 if s.get('cons') else 0}' "
+            f"data-pro='{1 if shown.get('pros') else 0}' data-con='{1 if shown.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
             f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '')}"
@@ -1925,9 +2051,13 @@ Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴�
 대목만 AI 에 넘깁니다. 원 출처 채널 이름은 묻지 않습니다(텔레그램 요청 제한 때문) — 포워드였는지만
 적습니다.<br>
 <b>Pros/Cons</b> — AI 가 그 종목 항목에 <b>쓰인 사실만</b> 근거로 호재 관점·악재/리스크 관점을 최대
-{MAX_PER_SIDE}줄씩 씁니다. 줄 끝 [번호]는 근거 항목이고, 근거 번호가 없거나 틀린 줄은 버립니다. 그 회사
-얘기가 아니라고 AI 가 판단한 항목은 근거 목록에서 흐리게 보입니다. 이것은 뉴스 요약이지 투자 판단이
-아닙니다.<br>
+{MAX_PER_SIDE}줄씩 씁니다. 줄 끝 [번호]는 근거 항목이고, 근거 번호가 없거나 틀린 줄은 버립니다.
+{INVEST_TOPICS}처럼 투자 판단에 닿는 내용만 씁니다 — 이름이 같은 다른 회사 얘기나, 회사 이름은 나오지만
+투자와 무관한 소식(그 이름을 단 스포츠 구단의 경기 결과·선수 기록, 연예·문화 행사 등)은 근거로 쓰지 않고 근거
+목록에서 흐리게 보입니다. 스포츠·연예·콘텐츠·게임이 그 회사의 본업이거나 회사의 수입·지출에 닿는 일(후원·마케팅
+계약, 흥행 수입, 구단 매각·운영비)은 씁니다. AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니다. 이
+기준이 바뀌면 가장 최근 기록은 새 기준으로 다시 정리합니다(AI 키가 있을 때 · 그동안 그 종목은 '대기' · 그 앞의
+기록은 옛 정리 그대로). 이것은 뉴스 요약이지 투자 판단이 아닙니다.<br>
 <b>언제 갱신되나</b> — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 한 번 모읍니다(장 시작 전에 읽도록 · 봇이 {TICK_MIN}분마다
 확인하므로 보통 {_hm_after(TICK_MIN)} 사이에 시작합니다 — 앞선 정리 작업이 길면 그보다 늦을 수 있습니다).
 창은 직전 집계 {WINDOW_OVERLAP_H}시간 전부터 지금까지입니다(직전 집계 뒤에 늦게 들어온 글을 놓치지 않으려고
@@ -2030,6 +2160,7 @@ def why(now: datetime | None = None, out=print) -> int:
         out(f"④ 마지막 기록 {r['date']} · 수집 {str(r.get('collected_at', ''))[:16]} · {_day_meta(r)}")
         out(f"   AI {llm.get('calls', 0)}회 · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · "
             f"${llm.get('cost_usd', 0):.4f}")
+        out("   " + requeue_note(r, now))
     else:
         out("④ 기록 없음 — 봇이 아직 한 번도 모으지 않음")
     kind, line = status_verdict(recs, now, st)
@@ -2096,7 +2227,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.probe is not None:
         return probe(a.probe)
     if a.run:
-        print("⚠️ AI(Gemini) 호출 비용이 듭니다 — 오늘 기록이 이미 있으면 대기 종목만 정리합니다.")
+        print("⚠️ AI(Gemini) 호출 비용이 듭니다 — 오늘 기록이 이미 있으면 대기 종목만 정리합니다(정리 기준이 "
+              "바뀌었고 AI 키가 있으면 가장 최근 기록을 새 기준으로 다시 정리 — 그 종목의 본문도 다시 읽습니다).")
         print(json.dumps(tick_and_render(), ensure_ascii=False))
         return 0
     return why()

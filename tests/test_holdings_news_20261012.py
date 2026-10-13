@@ -732,10 +732,10 @@ def test_render_cards_and_status(hn):
     card = html.split("data-q='삼성전자 005930'")[1].split("data-hncard")[0]
     assert "👍 Pros · 호재 관점" in card and "HBM 공급 확대<span class='hn-ref'>[1]</span>" in card
     assert "노조 리스크" in card and "<li class='hn-off'>[3]" in card       # relevant 밖은 흐리게
-    assert "그 회사 얘기가 아니라고 본 1건은 흐리게" in card
+    assert "종목·투자와 무관하다고 본 1건은 흐리게" in card              # 2026-10-13: 다른 회사 + 투자와 무관한 소식
     assert "본문 앞부분을 AI 가 읽음" in card and "📨 텔레그램" in card
     assert "<script>alert(1)" not in html and "&lt;script&gt;alert(1)" in html
-    assert "관련 있다고 본 항목이 없음" in html.split("data-q='엔비디아 NVDA'")[1].split("data-hncard")[0]
+    assert "투자와 관련 있다고 본 항목이 없음" in html.split("data-q='엔비디아 NVDA'")[1].split("data-hncard")[0]
     assert "Pros/Cons 못 만듦(3회 실패) — AI 응답을 못 읽음" in html
     assert "Pros/Cons 대기 — 다음 주기에" in html
     assert "새 뉴스 없음 1종목: 카카오" in html
@@ -2462,3 +2462,257 @@ def test_prev_change_us_dot_class_shares(hn, ws_snaps):
 def test_as_of_broken_saved_ts_does_not_raise(hn):
     for bad in (float("inf"), 1e300, "x", None):
         assert hn.universe({"holdings": [], "_saved_ts": bad}, us_etf=set())[1]["as_of"] is None
+
+
+# ── 투자와 무관한 소식은 Pros/Cons 에 모으지 않는다(사용자 2026-10-13 두산우 · 야구단 경기 기사) ─────────
+def test_prompt_keeps_only_investment_relevant_items(hn):
+    """'두산' 이름을 단 야구단의 와일드카드·홈런 기사가 Cons 에 실렸다 — 옛 규칙 5 는 '이름이 같은 **다른 회사**'
+    만 빼라고 해서, 그 회사 이름이 나오는 비투자 소식은 통과했다. 기준은 '그 회사 얘기인가' 가 아니라 '투자
+    판단에 닿나' 다. 구단 매각처럼 재무에 닿는 소식은 예외로 남아야 한다(뺄 것을 지우면 그것도 사라진다)."""
+    p = hn.build_prompt([])
+    assert "투자 판단에 닿는 내용만" in p and "투자 판단에 닿는 항목만" in p
+    assert "둘 다 규칙 5 의 relevant 항목만 근거로" in p                  # 본업 예외가 Pros/Cons 에도 닿는다
+    assert "스포츠 구단의 경기 결과" in p and "구단 매각" in p
+    # 본업이 스포츠·연예·게임인 회사(HYBE·MANU·TKO)는 그 소식이 곧 사업이다 — 예외가 빠지면 다 지워진다(리뷰 M2)
+    assert "본업이거나" in p and "후원·마케팅 계약" in p
+    # 규칙 2(Pros·Cons)와 규칙 5(relevant)가 같은 주제 목록 — 따로 들면 5 에서 빠진 근거를 단 줄이 버려진다
+    assert p.count(hn.INVEST_TOPICS) == 2
+
+
+def test_prompt_sig_follows_the_template_and_is_stamped(hn, monkeypatch):
+    """지문은 틀에서 파생한다 — 상수를 돌려주는 변형이면 규칙을 고쳐도 아무것도 다시 안 정리된다(#91b·#119)."""
+    a = hn.prompt_sig()
+    assert a == hn.prompt_sig() and len(a) == 10
+    monkeypatch.setattr(hn, "MAX_PER_SIDE", hn.MAX_PER_SIDE + 1)
+    assert hn.prompt_sig() != a
+    monkeypatch.undo()
+    real = hn.build_prompt                      # 규칙 **문구**만 바뀌어도 지문이 바뀐다(상수만 해싱하면 못 본다)
+    monkeypatch.setattr(hn, "build_prompt", lambda st: real(st) + "7) 새 규칙\n")
+    assert hn.prompt_sig() != a
+    monkeypatch.undo()
+    s = _stock("KR:A", 2)
+    hn.analyze(_rec(s), llm=_llm(json.dumps({"stocks": [{"key": "KR:A", "pros": [{"t": "x", "refs": [1]}]}]})))
+    assert s["status"] == "ok" and s["pv"] == hn.prompt_sig()
+
+
+def _ok(key, *, pv="old", body_link=True):
+    s = _stock(key, 3, status="ok")
+    for it in s["items"]:
+        it["k"] = f"{key}#{it['n']}"                    # 수집이 늘 붙이는 항목 키 — 사이드카가 이걸로 본문을 찾는다
+    s.update(pv=pv, relevant=[1, 2], pros=[{"t": "옛 호재", "refs": [1]}], cons=[{"t": "야구 경기 패배", "refs": [2]}],
+             dropped_lines=1, tries=2, reason="옛 사유")
+    it = s["items"][0]
+    it.update(body_chars=500, body_used=True)
+    if body_link:
+        it["naver_link"] = f"https://n.news.naver.com/{key}/1"
+    s["items"][1].update(src="telegram", body_chars=300, naver_link="https://n.news.naver.com/tg")   # 텔레그램은 안 읽는다
+    s["items"][2]["link"] = "https://n.news.naver.com/nobody"                                     # body_chars 없음 = 원래 안 읽은 것
+    return s
+
+
+def test_requeue_stale_resets_old_analyses_and_rereads_bodies(hn):
+    cur = hn.prompt_sig()
+    stale, fresh = _ok("KR:A"), _ok("KR:B", pv=cur)
+    failed, pend, empty = _stock("KR:C", status="failed"), _stock("KR:D"), _stock("KR:E", 0, status="empty")
+    reads, beats = [], []
+    rec = _rec(stale, fresh, failed, pend, empty)
+    n = hn.requeue_stale(rec, body=lambda l: reads.append(l) or f"다시 읽은 {l}", pace=0,
+                         beat=lambda: beats.append(1))
+    assert n == 1 and reads == ["https://n.news.naver.com/KR:A/1"] and beats == [1]   # 되돌린 종목마다 생존 표시
+    assert rec["requeued_for"] == [cur]
+    assert stale["status"] == "pending" and stale["reason"] == hn.REQUEUE_REASON
+    assert stale["pros"] == [] and stale["cons"] == [] and stale["relevant"] is None
+    assert stale["tries"] == 0 and stale["retry"] is False and stale["dropped_lines"] == 0
+    assert stale["items"][0]["_body"] == "다시 읽은 https://n.news.naver.com/KR:A/1"
+    assert all("body_used" not in it for it in stale["items"])           # 이번에 보낸 것만 '읽음' 이 된다
+    assert fresh["status"] == "ok" and fresh["pros"] and fresh["items"][0]["body_used"] is True
+    assert failed["status"] == "failed" and pend["status"] == "pending" and empty["status"] == "empty"
+    assert hn.requeue_stale(rec, body=lambda l: 1 / 0, pace=0) == 0      # 두 번째엔 되돌릴 것이 없다
+
+
+def test_requeue_stale_reads_a_naver_link_without_a_naver_copy(hn):
+    """수집은 `naver_link` 가 없으면 원문 링크가 네이버 호스트일 때 그걸 읽는다 — 되돌릴 때도 같아야 한다."""
+    s = _ok("KR:A", body_link=False)
+    s["items"][0]["link"] = "https://n.news.naver.com/orig"
+    reads = []
+    hn.requeue_stale(_rec(s), body=lambda l: reads.append(l) or "본문", pace=0)
+    assert reads == ["https://n.news.naver.com/orig"] and s["items"][0]["_body"] == "본문"
+
+
+def test_requeue_stale_runs_once_per_rule_per_record(hn, monkeypatch):
+    """판이 다른 두 프로세스가 겹치면(재시작 실패 + 수동 --run) 서로의 정리를 끝없이 되돌린다 — 한 기록은 같은
+    지문으로 한 번만 되돌린다(리뷰 L1)."""
+    rec = _rec(_ok("KR:A", pv="B판"))
+    monkeypatch.setattr(hn, "prompt_sig", lambda: "A판")
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1
+    rec["stocks"][0].update(status="ok", pv="B판")                     # B판 프로세스가 다시 정리해 덮었다
+    assert hn.requeue_stale(rec, body=lambda l: 1 / 0, pace=0) == 0
+    assert rec["stocks"][0]["status"] == "ok" and rec["requeued_for"] == ["A판"]
+    monkeypatch.setattr(hn, "prompt_sig", lambda: "C판")                 # 새 기준이면 다시 한 번
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == ["A판", "C판"]
+
+
+def test_requeue_reason_promises_only_on_live_days(hn):
+    """저장 사유는 중립 — '다시 정리' 는 이어서 정리하는 날의 화면만 붙인다(지킬 수 없는 약속을 굽지 않는다 #447)."""
+    s = _ok("KR:A")
+    hn.requeue_stale(_rec(s), body=lambda l: "", pace=0)
+    assert "다시" not in s["reason"]
+    live = hn._card(s)
+    assert "Pros/Cons 대기 — AI 정리 기준이 바뀜 — 새 기준으로 다시 정리" in live and "야구 경기 패배" not in live
+    # 그날 안에 차례가 안 왔으면 — 옛 정리를 라벨을 달고 보여 준다(지우기만 하면 흔적 없이 사라진다, 델타 리뷰)
+    fin = hn._card(s, final=True)
+    assert "옛 기준 정리를 보여 줍니다 — 이어서 정리하는 기간 안에 차례가 오지 않음" in fin
+    assert "Cons · 악재·리스크 관점(옛 기준)" in fin and "야구 경기 패배" in fin and "Pros/Cons 대기" not in fin
+    assert "data-pro='1' data-con='1'" in fin                           # 필터도 보여 준 정리를 따른다
+    assert "종목·투자와 무관하다고 본 1건은 흐리게" in fin                  # 옛 relevant 로 흐리게
+    s["prev_pc"].update(pros=[], cons=[])                                # 옛 정리에 줄이 없었으면 그렇다고 말한다
+    assert "옛 기준 정리에도 호재·악재로 가른 줄이 없었음" in hn._card(s, final=True)
+    s.pop("prev_pc")                                                     # 보관본이 없는 옛 기록
+    assert "Pros/Cons 정리를 마치지 못함 — AI 정리 기준이 바뀜 · 뉴스만 표시" in hn._card(s, final=True)
+
+
+def test_failed_reanalysis_shows_the_old_analysis_labelled(hn):
+    """다시 정리가 거부로 끝나도(3회) 멀쩡하던 정리가 사라지지 않는다 — 라벨을 달고 보여 주고, 판정 줄도 '뉴스만
+    표시' 라고 거짓말하지 않는다. 다시 정리가 성공하면 보관본은 버린다(델타 리뷰 2026-10-13)."""
+    s = _ok("KR:A")
+    rec = _rec(s)
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    for _ in range(hn.MAX_ANALYZE_TRIES):
+        hn.analyze(rec, llm=_llm("이건 JSON 이 아님"))
+    assert s["status"] == "failed" and s["cons"] == []
+    card = hn._card(s)
+    assert "옛 기준 정리를 보여 줍니다 — AI 응답을 못 읽음" in card and "야구 경기 패배" in card
+    assert "Pros/Cons 못 만듦" not in card
+    kind, line = hn.status_verdict([rec], _t("2026-10-12T09:00"), {})
+    assert kind == "fail" and "Pros/Cons 실패 1종목(그중 1종목은 옛 기준 정리 표시)" in line
+    s2 = _ok("KR:B")
+    rec2 = _rec(s2)
+    hn.requeue_stale(rec2, body=lambda l: "", pace=0)
+    hn.analyze(rec2, llm=_llm(_answer_all))
+    assert s2["status"] == "ok" and "prev_pc" not in s2 and "옛 기준" not in hn._card(s2)
+
+
+def test_why_says_how_many_carry_the_old_rule(hn, monkeypatch):
+    sig = hn.prompt_sig()
+    rec = _rec(_ok("KR:A"), _ok("KR:B", pv=sig), _stock("KR:C"))           # 2026-10-12 기록
+    head = f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 1/2 — "
+    promise = head + "AI 키가 있으면 다음 주기에 새 기준으로 다시 정리"
+    assert hn.requeue_note(rec, _t("2026-10-12T09:00")) == promise          # 오늘 기록
+    assert hn.requeue_note(rec, _t("2026-10-13T06:00")) == promise          # 집계 시각 전 — 아직 가장 최근
+    # 집계 시각이 지났는데 오늘 기록이 없다 — 다음 주기가 오늘을 모으므로 이 기록은 다시 정리되지 않는다
+    assert hn.requeue_note(rec, _t("2026-10-13T09:00")) == head + "다음 주기가 오늘 기록을 새 기준으로 정리하고, 이 기록은 옛 정리 그대로"
+    rec["requeued_for"] = [sig]
+    assert "이미 한 번 되돌렸음" in hn.requeue_note(rec, _t("2026-10-12T09:00"))
+    assert hn.requeue_note(_rec(_ok("KR:B", pv=sig)), _t("2026-10-12T09:00")) == \
+        f"정리 기준 지문 {sig} · 정리된 종목 1 전부 이 기준"
+    # 대조할 정리가 0건이면 '전부 이 기준' 이라 하지 않는다(#54)
+    assert hn.requeue_note(_rec(_stock("KR:C")), _t("2026-10-12T09:00")) == f"정리 기준 지문 {sig} · 정리된 종목 없음"
+    hn.save_record({**_rec(_ok("KR:A")), "date": "2026-10-13"})
+    # 인자 없이 부르면 실제 시계(먼 미래로 고정)를 본다 — why 가 자기 now 를 넘기는지 시계와 무관하게 잰다(#425)
+    real_now = hn._now
+    monkeypatch.setattr(hn, "_now", lambda now=None: real_now(now) if now else _t("2030-01-02T09:00"))
+    lines = []
+    hn.why(_t("2026-10-13T09:00"), out=lines.append)
+    assert any(ln.startswith("   정리 기준 지문 ") and "옛 기준으로 정리된 종목 1/1 — AI 키가 있으면" in ln
+               for ln in lines)
+
+
+def test_requeue_stale_marks_the_record_only_when_it_requeued(hn):
+    """되돌린 게 없으면 '이 지문으로 되돌렸음' 을 남기지 않는다 — 남기면 나중에 옛 기준 종목이 생겨도 영영 안
+    돈다(델타 리뷰 L2)."""
+    rec = _rec(_stock("KR:A"), _ok("KR:B", pv=hn.prompt_sig()))
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 0 and "requeued_for" not in rec
+    rec["stocks"].append(_ok("KR:C"))
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == [hn.prompt_sig()]
+
+
+def test_requeue_stale_unread_body_and_budget(hn, monkeypatch):
+    """본문을 못 읽으면 본문 없이 간다 · 다시 읽기는 호출당 상한까지(원천을 몰아 치지 않게)."""
+    monkeypatch.setattr(hn, "MAX_BODY_PER_RUN", 1)
+    a, b = _ok("KR:A"), _ok("KR:B")
+    reads = []
+    assert hn.requeue_stale(_rec(a, b), body=lambda l: reads.append(l) or "", pace=0) == 2
+    assert len(reads) == 1 and "_body" not in a["items"][0] and "body_used" not in a["items"][0]
+    assert b["status"] == "pending" and "_body" not in b["items"][0]
+
+
+def test_requeue_pending_card_does_not_show_old_pros(hn):
+    s = _ok("KR:A")
+    s.update(market="KR", ticker="005930", name="두산우", key="KR:000155")
+    hn.requeue_stale(_rec(s), body=lambda l: "", pace=0)
+    html = hn.render_page([{**_rec(s), "date": "2026-10-13"}], {}, _t("2026-10-13T09:00"), gen="GEN")
+    card = html.split("data-q='두산우")[1].split("data-hncard")[0]
+    assert "Pros/Cons 대기 — " + hn.REQUEUE_REASON + " — 새 기준으로 다시 정리" in card and "야구 경기 패배" not in card
+    assert html.split("data-q='두산우")[0].rsplit("<div class='hn-card'", 1)[1].count("data-pro='0' data-con='0'") == 1
+
+
+def test_tick_reanalyzes_only_the_newest_record_with_the_new_rule(hn, monkeypatch):
+    """규칙이 바뀌면 **가장 최근 기록**의 'ok' 종목을 다시 정리한다 — 본문을 다시 읽어 프롬프트에 싣는다. 직전
+    기록은 건드리지 않는다: 밤늦게 되돌리면 자정에 그날이 이어서 정리하는 날 밖으로 밀려 옛 정리만 잃는다(리뷰 M1).
+    한 번 다시 정리하면 다음 주기엔 AI 를 안 부른다."""
+    monkeypatch.setattr(hn, "_llm_ready", lambda: True)
+    for d in ("2026-10-10", "2026-10-12", "2026-10-13"):
+        hn.save_record({**_rec(_ok("KR:A"), _ok("KR:B", pv=hn.prompt_sig()), _ok("KR:D")), "date": d})
+    llm = _llm(_answer_all)
+    res = hn.tick(_t("2026-10-13T09:00"), llm=llm, fetch=_news_for_all, body=lambda l: f"본문 {l}", pace=0)
+    assert res["status"] == "ok" and res["requeued"] == 2 and res["analyzed"] == 2
+    assert len(llm.calls) == 1 and "본문: 본문 https://n.news.naver.com/KR:A/1" in llm.calls[0]
+    assert "본문: 본문 https://n.news.naver.com/KR:D/1" in llm.calls[0]
+    assert "KR:B" not in llm.calls[0]                                   # 지금 규칙으로 정리된 종목은 그대로
+    recs = {r["date"]: r for r in hn.load_records()}
+    a = recs["2026-10-13"]["stocks"][0]
+    assert a["status"] == "ok" and a["pv"] == hn.prompt_sig() and a["pros"][0]["t"] == "좋은 소식"
+    assert a["cons"] == [] and a["items"][0]["body_used"] is True
+    for d in ("2026-10-10", "2026-10-12"):                              # 그 앞의 기록은 옛 정리 그대로
+        old = recs[d]["stocks"][0]
+        assert old["status"] == "ok" and old["pv"] == "old" and old["cons"][0]["t"] == "야구 경기 패배"
+    again = _llm(_answer_all)
+    assert hn.tick(_t("2026-10-13T09:15"), llm=again, fetch=_news_for_all, pace=0)["requeued"] == 0
+    assert again.calls == []
+
+
+def test_tick_before_collect_requeues_the_previous_record(hn, monkeypatch):
+    """오늘 기록이 아직 없으면(집계 시각 전) 가장 최근 기록은 직전 기록이다 — 그날은 오늘 자정까지 이어서 정리된다."""
+    monkeypatch.setattr(hn, "_llm_ready", lambda: True)
+    hn.save_record({**_rec(_ok("KR:A")), "date": "2026-10-12"})
+    res = hn.tick(_t("2026-10-13T06:00"), llm=_llm(_answer_all), fetch=_news_for_all, body=lambda l: "", pace=0)
+    assert res["status"] == "wait" and res["requeued"] == 1 and res["analyzed"] == 1
+
+
+def test_tick_without_ai_key_keeps_the_old_analysis(hn, monkeypatch):
+    """키가 없으면 다시 정리할 수 없다 — 지우면 멀쩡한 카드가 '키 미설정 — 뉴스만' 이 된다(리뷰 M1)."""
+    monkeypatch.setattr(hn, "_llm_ready", lambda: False)
+    hn.save_record({**_rec(_ok("KR:A")), "date": "2026-10-13"})
+    llm = _llm(_answer_all)
+    res = hn.tick(_t("2026-10-13T09:00"), llm=llm, fetch=_news_for_all, body=lambda l: 1 / 0, pace=0)
+    assert res["requeued"] == 0 and llm.calls == []
+    a = hn.load_records()[0]["stocks"][0]
+    assert a["status"] == "ok" and a["cons"][0]["t"] == "야구 경기 패배"
+
+
+def test_llm_ready_reads_the_key_and_fails_closed(hn, monkeypatch):
+    import bot.genai_factory as gf
+    monkeypatch.setattr(gf, "effective_key", lambda: "k")
+    assert hn._llm_ready() is True
+    monkeypatch.setattr(gf, "effective_key", lambda: "")
+    assert hn._llm_ready() is False
+    monkeypatch.setattr(gf, "effective_key", lambda: 1 / 0)
+    assert hn._llm_ready() is False
+
+
+def test_tick_saves_the_requeue_before_asking_the_ai(hn, monkeypatch):
+    """AI 를 부르기 전에 되돌린 상태와 다시 읽은 본문을 저장한다 — 정리가 예외로 끝나도 화면이 옛 정리를 계속
+    보여 주지 않고, 다음 주기는 본문을 또 읽지 않는다(사이드카)."""
+    monkeypatch.setattr(hn, "_llm_ready", lambda: True)
+    hn.save_record({**_rec(_ok("KR:A")), "date": "2026-10-13"})
+
+    def boom(prompt):
+        raise RuntimeError("AI 경로 예외")
+    with pytest.raises(RuntimeError):
+        hn.tick(_t("2026-10-13T09:00"), llm=boom, fetch=_news_for_all, body=lambda l: f"본문 {l}", pace=0)
+    prev = hn.load_records()[0]["stocks"][0]
+    assert prev["status"] == "pending" and prev["reason"] == hn.REQUEUE_REASON and prev["cons"] == []
+    reads = []
+    llm = _llm(_answer_all)
+    hn.tick(_t("2026-10-13T09:15"), llm=llm, fetch=_news_for_all, body=lambda l: reads.append(l) or "", pace=0)
+    assert reads == [] and "본문: 본문 https://n.news.naver.com/KR:A/1" in llm.calls[0]
