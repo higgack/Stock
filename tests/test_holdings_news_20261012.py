@@ -2471,6 +2471,7 @@ def test_prompt_keeps_only_investment_relevant_items(hn):
     판단에 닿나' 다. 구단 매각처럼 재무에 닿는 소식은 예외로 남아야 한다(뺄 것을 지우면 그것도 사라진다)."""
     p = hn.build_prompt([])
     assert "투자 판단에 닿는 내용만" in p and "투자 판단에 닿는 항목만" in p
+    assert "둘 다 규칙 5 의 relevant 항목만 근거로" in p                  # 본업 예외가 Pros/Cons 에도 닿는다
     assert "스포츠 구단의 경기 결과" in p and "구단 매각" in p
     # 본업이 스포츠·연예·게임인 회사(HYBE·MANU·TKO)는 그 소식이 곧 사업이다 — 예외가 빠지면 다 지워진다(리뷰 M2)
     assert "본업이거나" in p and "후원·마케팅 계약" in p
@@ -2556,23 +2557,73 @@ def test_requeue_reason_promises_only_on_live_days(hn):
     s = _ok("KR:A")
     hn.requeue_stale(_rec(s), body=lambda l: "", pace=0)
     assert "다시" not in s["reason"]
-    assert "Pros/Cons 대기 — AI 정리 기준이 바뀌어 옛 정리를 지움 — 새 기준으로 다시 정리" in hn._card(s)
+    live = hn._card(s)
+    assert "Pros/Cons 대기 — AI 정리 기준이 바뀜 — 새 기준으로 다시 정리" in live and "야구 경기 패배" not in live
+    # 그날 안에 차례가 안 왔으면 — 옛 정리를 라벨을 달고 보여 준다(지우기만 하면 흔적 없이 사라진다, 델타 리뷰)
     fin = hn._card(s, final=True)
-    assert "정리를 마치지 못함 — AI 정리 기준이 바뀌어 옛 정리를 지움 · 뉴스만 표시" in fin and "다시 정리" not in fin
+    assert "옛 기준 정리를 보여 줍니다 — 이어서 정리하는 기간 안에 차례가 오지 않음" in fin
+    assert "Cons · 악재·리스크 관점(옛 기준)" in fin and "야구 경기 패배" in fin and "Pros/Cons 대기" not in fin
+    assert "data-pro='1' data-con='1'" in fin                           # 필터도 보여 준 정리를 따른다
+    assert "종목·투자와 무관하다고 본 1건은 흐리게" in fin                  # 옛 relevant 로 흐리게
+    s["prev_pc"].update(pros=[], cons=[])                                # 옛 정리에 줄이 없었으면 그렇다고 말한다
+    assert "옛 기준 정리에도 호재·악재로 가른 줄이 없었음" in hn._card(s, final=True)
+    s.pop("prev_pc")                                                     # 보관본이 없는 옛 기록
+    assert "Pros/Cons 정리를 마치지 못함 — AI 정리 기준이 바뀜 · 뉴스만 표시" in hn._card(s, final=True)
 
 
-def test_why_says_how_many_carry_the_old_rule(hn):
+def test_failed_reanalysis_shows_the_old_analysis_labelled(hn):
+    """다시 정리가 거부로 끝나도(3회) 멀쩡하던 정리가 사라지지 않는다 — 라벨을 달고 보여 주고, 판정 줄도 '뉴스만
+    표시' 라고 거짓말하지 않는다. 다시 정리가 성공하면 보관본은 버린다(델타 리뷰 2026-10-13)."""
+    s = _ok("KR:A")
+    rec = _rec(s)
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    for _ in range(hn.MAX_ANALYZE_TRIES):
+        hn.analyze(rec, llm=_llm("이건 JSON 이 아님"))
+    assert s["status"] == "failed" and s["cons"] == []
+    card = hn._card(s)
+    assert "옛 기준 정리를 보여 줍니다 — AI 응답을 못 읽음" in card and "야구 경기 패배" in card
+    assert "Pros/Cons 못 만듦" not in card
+    kind, line = hn.status_verdict([rec], _t("2026-10-12T09:00"), {})
+    assert kind == "fail" and "Pros/Cons 실패 1종목(그중 1종목은 옛 기준 정리 표시)" in line
+    s2 = _ok("KR:B")
+    rec2 = _rec(s2)
+    hn.requeue_stale(rec2, body=lambda l: "", pace=0)
+    hn.analyze(rec2, llm=_llm(_answer_all))
+    assert s2["status"] == "ok" and "prev_pc" not in s2 and "옛 기준" not in hn._card(s2)
+
+
+def test_why_says_how_many_carry_the_old_rule(hn, monkeypatch):
     sig = hn.prompt_sig()
-    rec = _rec(_ok("KR:A"), _ok("KR:B", pv=sig), _stock("KR:C"))
-    assert hn.requeue_note(rec) == (f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 1 — 가장 최근 기록이면 AI 키가 "
-                                    "있을 때 다음 주기에 새 기준으로 다시 정리(그 앞의 기록은 옛 정리 그대로)")
+    rec = _rec(_ok("KR:A"), _ok("KR:B", pv=sig), _stock("KR:C"))           # 2026-10-12 기록
+    head = f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 1/2 — "
+    promise = head + "AI 키가 있으면 다음 주기에 새 기준으로 다시 정리"
+    assert hn.requeue_note(rec, _t("2026-10-12T09:00")) == promise          # 오늘 기록
+    assert hn.requeue_note(rec, _t("2026-10-13T06:00")) == promise          # 집계 시각 전 — 아직 가장 최근
+    # 집계 시각이 지났는데 오늘 기록이 없다 — 다음 주기가 오늘을 모으므로 이 기록은 다시 정리되지 않는다
+    assert hn.requeue_note(rec, _t("2026-10-13T09:00")) == head + "다음 주기가 오늘 기록을 새 기준으로 정리하고, 이 기록은 옛 정리 그대로"
     rec["requeued_for"] = [sig]
-    assert "이미 한 번 되돌렸음" in hn.requeue_note(rec)
-    assert hn.requeue_note(_rec(_ok("KR:B", pv=sig))) == f"정리 기준 지문 {sig} · 정리된 종목 전부 이 기준"
+    assert "이미 한 번 되돌렸음" in hn.requeue_note(rec, _t("2026-10-12T09:00"))
+    assert hn.requeue_note(_rec(_ok("KR:B", pv=sig)), _t("2026-10-12T09:00")) == \
+        f"정리 기준 지문 {sig} · 정리된 종목 1 전부 이 기준"
+    # 대조할 정리가 0건이면 '전부 이 기준' 이라 하지 않는다(#54)
+    assert hn.requeue_note(_rec(_stock("KR:C")), _t("2026-10-12T09:00")) == f"정리 기준 지문 {sig} · 정리된 종목 없음"
     hn.save_record({**_rec(_ok("KR:A")), "date": "2026-10-13"})
+    # 인자 없이 부르면 실제 시계(먼 미래로 고정)를 본다 — why 가 자기 now 를 넘기는지 시계와 무관하게 잰다(#425)
+    real_now = hn._now
+    monkeypatch.setattr(hn, "_now", lambda now=None: real_now(now) if now else _t("2030-01-02T09:00"))
     lines = []
     hn.why(_t("2026-10-13T09:00"), out=lines.append)
-    assert any(ln.startswith("   정리 기준 지문 ") and "옛 기준으로 정리된 종목 1" in ln for ln in lines)
+    assert any(ln.startswith("   정리 기준 지문 ") and "옛 기준으로 정리된 종목 1/1 — AI 키가 있으면" in ln
+               for ln in lines)
+
+
+def test_requeue_stale_marks_the_record_only_when_it_requeued(hn):
+    """되돌린 게 없으면 '이 지문으로 되돌렸음' 을 남기지 않는다 — 남기면 나중에 옛 기준 종목이 생겨도 영영 안
+    돈다(델타 리뷰 L2)."""
+    rec = _rec(_stock("KR:A"), _ok("KR:B", pv=hn.prompt_sig()))
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 0 and "requeued_for" not in rec
+    rec["stocks"].append(_ok("KR:C"))
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == [hn.prompt_sig()]
 
 
 def test_requeue_stale_unread_body_and_budget(hn, monkeypatch):
@@ -2601,11 +2652,12 @@ def test_tick_reanalyzes_only_the_newest_record_with_the_new_rule(hn, monkeypatc
     한 번 다시 정리하면 다음 주기엔 AI 를 안 부른다."""
     monkeypatch.setattr(hn, "_llm_ready", lambda: True)
     for d in ("2026-10-10", "2026-10-12", "2026-10-13"):
-        hn.save_record({**_rec(_ok("KR:A"), _ok("KR:B", pv=hn.prompt_sig())), "date": d})
+        hn.save_record({**_rec(_ok("KR:A"), _ok("KR:B", pv=hn.prompt_sig()), _ok("KR:D")), "date": d})
     llm = _llm(_answer_all)
     res = hn.tick(_t("2026-10-13T09:00"), llm=llm, fetch=_news_for_all, body=lambda l: f"본문 {l}", pace=0)
-    assert res["status"] == "ok" and res["requeued"] == 1 and res["analyzed"] == 1
+    assert res["status"] == "ok" and res["requeued"] == 2 and res["analyzed"] == 2
     assert len(llm.calls) == 1 and "본문: 본문 https://n.news.naver.com/KR:A/1" in llm.calls[0]
+    assert "본문: 본문 https://n.news.naver.com/KR:D/1" in llm.calls[0]
     assert "KR:B" not in llm.calls[0]                                   # 지금 규칙으로 정리된 종목은 그대로
     recs = {r["date"]: r for r in hn.load_records()}
     a = recs["2026-10-13"]["stocks"][0]

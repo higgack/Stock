@@ -831,7 +831,7 @@ def build_prompt(stocks: list[dict]) -> str:
         "   지어내지 않는다. 수치는 항목에 있는 것만 인용한다.\n"
         "2) pros = 그 종목 주주에게 긍정적으로 읽힐 수 있는 점(호재 관점). cons = 부정적이거나 위험이\n"
         "   될 수 있는 점(악재·리스크 관점). 같은 사실이 양면이면 양쪽에 다른 관점으로 써도 된다.\n"
-        f"   둘 다 그 회사의 {INVEST_TOPICS}처럼 투자 판단에 닿는 내용만 쓴다.\n"
+        f"   둘 다 규칙 5 의 relevant 항목만 근거로, 그 회사의 {INVEST_TOPICS}처럼 투자 판단에 닿는 내용만 쓴다.\n"
         "3) 각 줄은 한국어 1문장 70자 이내, 근거 항목 번호를 refs 에 단다(예: [1,3]).\n"
         f"4) 근거가 없으면 빈 배열로 둔다. 개수를 맞추려고 일반론('변동성 주의' 등)을 넣지 않는다.\n"
         f"   pros·cons 각각 최대 {MAX_PER_SIDE}개.\n"
@@ -847,7 +847,7 @@ def build_prompt(stocks: list[dict]) -> str:
         "종목:\n" + "\n\n".join(_stock_block(s) for s in stocks))
 
 
-REQUEUE_REASON = "AI 정리 기준이 바뀌어 옛 정리를 지움"   # 약속('다시 정리')은 저장하지 않는다(#447)
+REQUEUE_REASON = "AI 정리 기준이 바뀜"   # 약속('다시 정리')은 저장하지 않는다 — 화면이 붙인다(#447)
 
 
 def prompt_sig() -> str:
@@ -858,25 +858,37 @@ def prompt_sig() -> str:
     return hashlib.sha1(build_prompt([]).encode("utf-8")).hexdigest()[:10]
 
 
-def requeue_note(rec: dict) -> str:
-    """`--why` 한 줄 — 이 기록에서 지금 기준(지문)으로 정리되지 않은 종목 수와 그게 어떻게 되나."""
+def requeue_note(rec: dict, now: datetime | None = None) -> str:
+    """`--why` 한 줄 — 이 기록(가장 최근 기록)에서 지금 기준(지문)으로 정리되지 않은 종목 수와 그게 어떻게 되나.
+    '다시 정리' 는 그 기록이 다음 주기에도 가장 최근 기록일 때만 약속한다 — 집계 시각이 지났는데 오늘 기록이
+    없으면 다음 주기가 오늘 기록을 모아 그게 가장 최근이 된다(델타 리뷰 2026-10-13)."""
+    now = _now(now)
     sig = prompt_sig()
-    old = sum(1 for s in rec.get("stocks") or [] if s.get("status") == "ok" and s.get("pv") != sig)
+    oks = [s for s in rec.get("stocks") or [] if s.get("status") == "ok"]
+    if not oks:
+        return f"정리 기준 지문 {sig} · 정리된 종목 없음"          # 대조 0건을 '전부 이 기준' 이라 적지 않는다
+    old = sum(1 for s in oks if s.get("pv") != sig)
     if not old:
-        return f"정리 기준 지문 {sig} · 정리된 종목 전부 이 기준"
+        return f"정리 기준 지문 {sig} · 정리된 종목 {len(oks)} 전부 이 기준"
     if sig in (rec.get("requeued_for") or []):
-        tail = "이 기록은 이 기준으로 이미 한 번 되돌렸음 — 다른 판의 프로세스가 다시 정리했을 수 있음"
+        tail = ("이 기록은 이 기준으로 이미 한 번 되돌렸음 — 다른 판의 프로세스가 다시 정리했거나 이 판으로 "
+                "되돌아온 배포(옛 지문이 목록에 이미 있음)일 수 있음")
+    elif rec.get("date") == now.date().isoformat() or not due(now):
+        tail = "AI 키가 있으면 다음 주기에 새 기준으로 다시 정리"
     else:
-        tail = "가장 최근 기록이면 AI 키가 있을 때 다음 주기에 새 기준으로 다시 정리(그 앞의 기록은 옛 정리 그대로)"
-    return f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 {old} — {tail}"
+        tail = "다음 주기가 오늘 기록을 새 기준으로 정리하고, 이 기록은 옛 정리 그대로"
+    return f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 {old}/{len(oks)} — {tail}"
 
 
 def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int:
     """지금 규칙(`prompt_sig`)으로 정리하지 않은 'ok' 종목을 대기로 되돌린다 — 부른 쪽이 **가장 최근 기록**에만
-    부른다(`tick` — 그날은 적어도 16시간 더 이어서 정리되므로, 다시 정리를 마치기 전에 '마치지 못함' 으로 굳지
-    않는다). 한 기록을 같은 지문으로는 한 번만 되돌린다(`requeued_for`) — 판이 다른 두 프로세스가 겹치면 서로의
-    정리를 끝없이 되돌린다(리뷰 2026-10-13). 옛 Pros/Cons·relevant 는 지운다 — 대기 카드에 남기면
-    필터(`data-pro`)가 옛 정리로 걸린다(#45). 본문은 정리가 끝나면 사이드카에서 지워지므로(`_save_bodies`)
+    부른다(`tick` — 그날은 적어도 24 − `RUN_HOUR` 시간 더 이어서 정리되므로(`RUN_HOUR` 뒤엔 오늘 기록을 먼저
+    모으니 가장 최근 기록이 곧 오늘 기록이다), 다시 정리를 마치기 전에 '마치지 못함' 으로 굳지 않는다). 한 기록을
+    같은 지문으로는 한 번만 되돌린다(`requeued_for`) — 판이 다른 두 프로세스가 겹치면 서로의 정리를 끝없이
+    되돌린다(리뷰 2026-10-13 · 못 보는 축: 옛 판으로 되돌린 배포는 그 지문이 목록에 이미 있어 다시 안 돈다).
+    옛 Pros/Cons·relevant 는 카드에서 지우되 `prev_pc` 에 보관한다 — 대기 카드에 남기면 필터(`data-pro`)가 옛
+    정리로 걸리고(#45), 버리면 다시 정리가 실패하거나 그날 안에 못 끝났을 때 멀쩡하던 정리가 흔적 없이 사라진다
+    (그때 카드가 '옛 기준 정리' 라벨을 달고 보여 준다, 델타 리뷰 2026-10-13). 본문은 정리가 끝나면 사이드카에서 지워지므로(`_save_bodies`)
     네이버 사본을 다시 읽어 붙인다(이 호출당 `MAX_BODY_PER_RUN`). 못 읽으면 본문 없이 가고 '읽음' 표시는
     지운다 — 화면은 이번에 실제로 보낸 것만 '읽음' 으로 적는다(`body_used`). 반환 = 되돌린 종목 수."""
     body = body or _fetch_body
@@ -902,6 +914,7 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
                 time.sleep(pace)
             if b:
                 it["_body"] = b
+        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
         s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
                  relevant=None, dropped_lines=0)
         n += 1
@@ -964,6 +977,7 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["cons"], dc = _clean_side(res.get("cons"), valid)
     stock["dropped_lines"] = dp + dc
     stock["pv"] = prompt_sig()
+    stock.pop("prev_pc", None)              # 새 기준으로 정리됐다 — 옛 정리는 더 쓸 데가 없다
     stock["status"] = "ok"
     stock["reason"] = ""
     stock["retry"] = False
@@ -1452,7 +1466,9 @@ def status_verdict(records: list[dict], now: datetime | None = None,
         reason = _pending_reason(pend[0]) if pend[0].get("reason") else "다음 주기에 이어서"
         return "pending", f"{head} · Pros/Cons 대기 {len(pend)}종목 — {reason}"
     if failed:
-        return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목(뉴스만 표시) — "
+        n_old = sum(1 for s in failed if isinstance(s.get("prev_pc"), dict))   # 카드가 옛 기준 정리를 보여 준다
+        shown = "뉴스만 표시" if not n_old else f"그중 {n_old}종목은 옛 기준 정리 표시"
+        return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목({shown}) — "
                         f"{failed[0].get('reason') or '사유 미기록'}")
     if src.get("fail"):          # 장애 기준 밑 — 판정은 ✅ 이되 사실은 말한다(#41)
         return "ok", f"{head} · 원천 못 받은 종목 {src['fail']}"
@@ -1772,12 +1788,26 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
     import html as _h
     items = s.get("items") or []
-    rel = s.get("relevant")
+    st = s.get("status")
+    # 새 기준으로 다시 정리하려다 실패했거나 그날 안에 못 끝낸 종목 — 옛 정리를 라벨을 달고 보여 준다
+    # (지우기만 하면 멀쩡하던 정리가 흔적 없이 사라진다, 델타 리뷰 2026-10-13). 대기 중엔 안 보인다(곧 바뀐다).
+    old = s.get("prev_pc") if isinstance(s.get("prev_pc"), dict) and (st == "failed" or (final and st != "ok")) \
+        else None
+    shown = old or s
+    rel = shown.get("relevant")
     relset = set(rel) if isinstance(rel, list) else {it["n"] for it in items}
     n_tg = sum(1 for it in items if it["src"] == "telegram")
-    st = s.get("status")
     drop = int(s.get("dropped_lines") or 0)
-    if st == "ok":
+    if old:
+        r = s.get("reason") or "사유 미기록"
+        why = ("이어서 정리하는 기간 안에 차례가 오지 않음" if r == REQUEUE_REASON else r)
+        pc = (f"<div class='hn-why'>⚠️ 새 기준으로 다시 정리하지 못해 옛 기준 정리를 보여 줍니다 — "
+              f"{_h.escape(why)}</div>"
+              + ("<div class='hn-pc'>" + _side("👍 Pros · 호재 관점(옛 기준)", "hn-pro", old.get("pros") or [])
+                 + _side("👎 Cons · 악재·리스크 관점(옛 기준)", "hn-con", old.get("cons") or []) + "</div>"
+                 if old.get("pros") or old.get("cons") else
+                 "<div class='hn-why'>옛 기준 정리에도 호재·악재로 가른 줄이 없었음</div>"))
+    elif st == "ok":
         if not s.get("pros") and not s.get("cons"):
             why = (f"AI 가 쓴 {drop}줄을 근거 번호가 없거나 맞지 않아 버림 — 아래 근거 목록에서 확인하세요"
                    if drop else
@@ -1798,10 +1828,10 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
         pc = f"<div class='hn-why'>Pros/Cons 대기 — {_h.escape(_pending_reason(s))}</div>"
     lis = "".join(_item_li(it, it["n"] not in relset) for it in items)
     off = len(items) - len([it for it in items if it["n"] in relset])
-    offnote = f" · 종목·투자와 무관하다고 본 {off}건은 흐리게" if off and st == "ok" else ""
+    offnote = f" · 종목·투자와 무관하다고 본 {off}건은 흐리게" if off and (st == "ok" or old) else ""
     q = f"{s['name']} {s['ticker']}" + (f" {s['ko']}" if s.get("ko") else "")
     return (f"<div class='hn-card' data-hncard='1' data-mk='{_h.escape(s['market'])}' "
-            f"data-pro='{1 if s.get('pros') else 0}' data-con='{1 if s.get('cons') else 0}' "
+            f"data-pro='{1 if shown.get('pros') else 0}' data-con='{1 if shown.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
             f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '')}"
@@ -2130,7 +2160,7 @@ def why(now: datetime | None = None, out=print) -> int:
         out(f"④ 마지막 기록 {r['date']} · 수집 {str(r.get('collected_at', ''))[:16]} · {_day_meta(r)}")
         out(f"   AI {llm.get('calls', 0)}회 · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · "
             f"${llm.get('cost_usd', 0):.4f}")
-        out("   " + requeue_note(r))
+        out("   " + requeue_note(r, now))
     else:
         out("④ 기록 없음 — 봇이 아직 한 번도 모으지 않음")
     kind, line = status_verdict(recs, now, st)
@@ -2198,7 +2228,7 @@ def main(argv: list[str] | None = None) -> int:
         return probe(a.probe)
     if a.run:
         print("⚠️ AI(Gemini) 호출 비용이 듭니다 — 오늘 기록이 이미 있으면 대기 종목만 정리합니다(정리 기준이 "
-              "바뀌었으면 가장 최근 기록을 새 기준으로 다시 정리 — 그 종목의 본문도 다시 읽습니다).")
+              "바뀌었고 AI 키가 있으면 가장 최근 기록을 새 기준으로 다시 정리 — 그 종목의 본문도 다시 읽습니다).")
         print(json.dumps(tick_and_render(), ensure_ascii=False))
         return 0
     return why()
