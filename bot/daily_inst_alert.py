@@ -1,8 +1,8 @@
 """Daily 기관매수 텔레그램 알림 — KR 개장일(월~금) 아침 08:00 KST 부터(사용자 2026-10-12).
 
-사용자가 준 형식(블로그 「기관 순매수 테이블」 이미지) 그대로 — 흰 바탕에 시총 구간 셋 × 목록 셋
-(순매수 강도 · 순매수 전환 · 5일 연속 순매수 TOP 10) 표를 한 장의 PNG 로 그려 채널에 사진으로
-보낸다. 표의 숫자·이름은 대시보드(`daily_inst.html`)와 **같은 기록**에서 온다(#38) — 이 모듈은
+대시보드(`daily_inst.html`) 카드 모양 그대로(사용자 2026-10-13 "대시보드처럼 이쁘게" — 옛 판은
+블로그 「기관 순매수 테이블」 흑백 격자) 시총 구간 셋 × 목록 셋(순매수 강도 · 순매수 전환 · 5일 연속
+순매수 TOP 10)을 한 장의 PNG 로 그려 채널에 사진으로 보낸다. 표의 숫자·이름은 대시보드(`daily_inst.html`)와 **같은 기록**에서 온다(#38) — 이 모듈은
 그리기와 보내기만 한다.
 
 언제 무엇을 보내나
@@ -147,18 +147,50 @@ def _tier_title(label: str) -> str:
     return "시총대비 기관 순매수액: " + label.replace("시가총액 ", "")
 
 
-# ── 그림(블로그 형식) ───────────────────────────────────────────────────────────
-_W_TBL, _GAP, _MARGIN = 290.0, 12.0, 16.0
-_ROW_H, _HEAD_H, _TITLE_H, _TIER_GAP = 19.0, 23.0, 30.0, 14.0
-_NAME_CHARS = 15
+# ── 그림(대시보드 카드 형식) ─────────────────────────────────────────────────────
+# 사용자 2026-10-13 "대시보드처럼 이쁘게" — `daily_inst.html` 카드(.di-tier · .di-card · .di-tbl)를
+# 그대로 옮긴다: 구간 머리(파란 세로줄 + 집계 종목 수) · 둥근 카드 · 회색 머리줄(목록 이름 + 무엇을
+# 고른 것인지) · 순위 · 종목 · 빨간 값과 그 표 1위 대비 막대. 색은 대시보드 라이트 팔레트와 **같은
+# 값**이다(`fred_boards._BOARD_CSS` :root · `daily_inst._DI_CSS` --di-up) — 그림은 테마를 못 따르므로
+# 라이트로 고정한다. 빈 목록 사유도 화면과 같은 문장(`daily_inst._na_reason`)을 쓴다(#38).
+_PAL = {"bg": "#f7f8f9", "card": "#ffffff", "surface2": "#f0f1f3", "border": "#e4e5e9",
+        "fg": "#282a30", "muted": "#696e78", "accent": "#276ae5", "up": "#b71c1c"}
+_W_CARD, _GAP, _MARGIN = 300.0, 12.0, 18.0
+_ROW_H, _HEAD_H, _TIER_H, _TOP_H, _FOOT_H, _TIER_GAP = 21.0, 26.0, 30.0, 52.0, 24.0, 12.0
+_RANK_W, _VAL_FRAC = 24.0, 0.36       # 순위 칸 폭 · 값 칸 비율(화면 .di-v 38% 에 맞춤)
+_NAME_W = 12.5                        # 종목명 최대 폭(전각 환산 — 글자수가 아니라 폭, #98)
 
 
 def _fit(name: str) -> str:
-    return name if len(name) <= _NAME_CHARS else name[:_NAME_CHARS - 1] + "…"
+    """종목명을 칸 폭 안으로 — 넘치면 자르고 `…`."""
+    from bot.textwidth import vlen, vtrim
+    return name if vlen(name) <= _NAME_W else vtrim(name, _NAME_W - 1.0) + "…"
+
+
+def _list_note(rec: dict, key: str, rows) -> str:
+    """빈 칸이 왜 비었는지 — 대시보드와 같은 문장."""
+    from bot.daily_inst import _na_reason
+    if rows is None:
+        return _na_reason(rec, key)
+    return "해당 종목 없음" if not rows else f"조건에 맞는 종목이 {len(rows)}개뿐입니다"
+
+
+def _wrap(text: str, width: float) -> list[str]:
+    """폭(전각 환산) 기준 줄바꿈 — 사유 문장이 카드 밖으로 나가지 않게."""
+    from bot.textwidth import vlen
+    out, cur = [], ""
+    for word in text.split(" "):
+        cand = f"{cur} {word}" if cur else word
+        if cur and vlen(cand) > width:
+            out.append(cur)
+            cur = word
+        else:
+            cur = cand
+    return out + ([cur] if cur else [])
 
 
 def render_png(rec: dict, out_path: str) -> str | None:
-    """기록 → PNG(블로그 표 형식). 성공하면 경로, 못 그리면 None(사유는 로그)."""
+    """기록 → PNG(대시보드 카드 형식). 성공하면 경로, 못 그리면 None(사유는 로그)."""
     from bot.korean_font import find_font, setup_matplotlib
     if not find_font() or not setup_matplotlib():
         log.warning("daily_inst_alert: 한글 폰트가 없어 그림을 못 그림 — 글자로 보낸다")
@@ -167,65 +199,115 @@ def render_png(rec: dict, out_path: str) -> str | None:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.patches import Rectangle
+        from matplotlib.patches import FancyBboxPatch, Rectangle
     except Exception as exc:                                   # noqa: BLE001
         log.warning("daily_inst_alert: matplotlib 없음(%s) — 글자로 보낸다", exc)
         return None
-    from bot.daily_inst import LISTS, TOP_N
+    from bot.daily_inst import LIST_SUB, LISTS, TOP_N
+    P = _PAL
     tiers = rec.get("tiers") or []
-    width = _MARGIN * 2 + _W_TBL * 3 + _GAP * 2
-    tier_h = _TITLE_H + _HEAD_H + _ROW_H * TOP_N + _TIER_GAP
-    height = _MARGIN + tier_h * max(len(tiers), 1) + _MARGIN / 2
+    width = _MARGIN * 2 + _W_CARD * 3 + _GAP * 2
+    card_h = _HEAD_H + _ROW_H * TOP_N
+    tier_h = _TIER_H + card_h + _TIER_GAP
+    height = _TOP_H + tier_h * max(len(tiers), 1) + _FOOT_H
     fig = None
     try:
+        d = datetime.fromisoformat(rec["date"])   # 형식이 어긋나도 None → 글자로(독립 리뷰 L3)
         fig = plt.figure(figsize=(width / 100, height / 100), dpi=150)
         ax = fig.add_axes((0, 0, 1, 1))
         ax.set_xlim(0, width)
         ax.set_ylim(height, 0)
         ax.axis("off")
-        fig.patch.set_facecolor("white")
-        black, grid = "#111111", "#9a9a9a"
-        y = _MARGIN
-        for ti, t in enumerate(tiers):
-            ax.text(_MARGIN, y + _TITLE_H * 0.55, _tier_title(t["label"]), fontsize=10.5,
-                    fontweight="bold", va="center", ha="left", color=black)
-            if ti == 0:
-                ax.text(width - _MARGIN, y + _TITLE_H * 0.55,
-                        f"{rec['date'].replace('-', '.')} 기준 · {SOURCE_LINE}",
-                        fontsize=6.5, va="center",
-                        ha="right", color="#555555")
-            ty = y + _TITLE_H
+        fig.patch.set_facecolor(P["bg"])
+
+        def card(x, y, w, h, fc):
+            ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0,rounding_size=7",
+                                        facecolor=fc, edgecolor=P["border"], linewidth=0.8,
+                                        mutation_aspect=1))
+
+        rend = fig.canvas.get_renderer()
+
+        def name_txt(x0, yy, name, x_max):
+            """종목명 — 폭 추정(`_fit`)으로 먼저 자르고, 실제로 그린 폭이 값 칸을 넘으면 더 자른다
+            (영문 대문자는 `vlen` 의 0.55 보다 넓다 — 독립 리뷰 M1)."""
+            t = ax.text(x0, yy, name, fontsize=8, va="center", ha="left", color=P["fg"])
+            body = name.rstrip("…")
+            while body:
+                bb = t.get_window_extent(renderer=rend).transformed(ax.transData.inverted())
+                if max(bb.x0, bb.x1) <= x_max:
+                    break
+                body = body[:-1]
+                t.set_text(body + "…")
+            return t
+
+        # 머리 — 제목 · 기준일 · 산식(대시보드 페이지 머리와 같은 순서)
+        ax.text(_MARGIN, 22, "Daily 기관매수", fontsize=14, fontweight="bold",
+                va="center", ha="left", color=P["fg"])
+        ax.text(_MARGIN, 40, f"{rec['date'].replace('-', '.')} ({_WEEKDAY[d.weekday()]}) 기준 · "
+                f"{SOURCE_LINE}", fontsize=7.5, va="center", ha="left", color=P["muted"])
+        if not _settled(rec):
+            ax.text(width - _MARGIN, 22, "이튿날 재확인 전 저녁 값", fontsize=7.5,
+                    fontweight="bold", va="center", ha="right", color=P["up"])
+        y = _TOP_H
+        for t in tiers:
+            ax.add_patch(Rectangle((_MARGIN, y + 7), 3, _TIER_H - 16, facecolor=P["accent"],
+                                   edgecolor="none"))
+            ax.text(_MARGIN + 10, y + _TIER_H / 2 - 1, t["label"], fontsize=10.5,
+                    fontweight="bold", va="center", ha="left", color=P["fg"])
+            ax.text(width - _MARGIN, y + _TIER_H / 2 - 1,
+                    f"KRX 기관 집계 {t.get('n', 0):,}종목 중 순매수 {t.get('n_pos', 0):,}종목",
+                    fontsize=7, va="center", ha="right", color=P["muted"])
+            cy = y + _TIER_H
             for li, (key, title) in enumerate(LISTS):
-                x = _MARGIN + li * (_W_TBL + _GAP)
+                x = _MARGIN + li * (_W_CARD + _GAP)
                 rows = (t.get("lists") or {}).get(key)
-                body_h = _ROW_H * TOP_N
-                ax.add_patch(Rectangle((x, ty), _W_TBL, _HEAD_H, facecolor="#f2f2f2",
-                                       edgecolor=black, linewidth=1.0))
-                ax.text(x + _W_TBL / 2, ty + _HEAD_H / 2, title, fontsize=7.5,
-                        fontweight="bold", ha="center", va="center", color=black)
-                by = ty + _HEAD_H
-                ax.add_patch(Rectangle((x, by), _W_TBL, body_h, facecolor="white",
-                                       edgecolor=black, linewidth=0.8))
-                if not rows:
-                    msg = "해당 종목 없음" if rows == [] else "자료 부족 — 판정 안 함"
-                    ax.text(x + _W_TBL / 2, by + body_h / 2, msg, fontsize=7, ha="center",
-                            va="center", color="#666666")
-                    continue
-                split = x + _W_TBL * 0.68
-                ax.plot([split, split], [by, by + body_h], color=grid, linewidth=0.5)
-                for ri in range(TOP_N):
+                card(x, cy, _W_CARD, card_h, P["card"])
+                # 회색 머리줄 — 둥근 윗모서리는 카드가, 아래 직선은 사각형이 맡는다
+                ax.add_patch(FancyBboxPatch((x, cy), _W_CARD, _HEAD_H,
+                                            boxstyle="round,pad=0,rounding_size=7",
+                                            facecolor=P["surface2"], edgecolor="none"))
+                ax.add_patch(Rectangle((x, cy + _HEAD_H - 8), _W_CARD, 8,
+                                       facecolor=P["surface2"], edgecolor="none"))
+                ax.plot([x, x + _W_CARD], [cy + _HEAD_H] * 2, color=P["border"], linewidth=0.8)
+                ax.text(x + 10, cy + _HEAD_H / 2, title, fontsize=8.5, fontweight="bold",
+                        va="center", ha="left", color=P["fg"])
+                ax.text(x + _W_CARD - 10, cy + _HEAD_H / 2, LIST_SUB.get(key, ""), fontsize=6.5,
+                        va="center", ha="right", color=P["muted"])
+                by = cy + _HEAD_H
+                shown = rows or []
+                top = max((r["r"] for r in shown), default=0.0)
+                for ri, r in enumerate(shown[:TOP_N]):
                     ry = by + ri * _ROW_H
                     if ri:
-                        ax.plot([x, x + _W_TBL], [ry, ry], color=grid, linewidth=0.4)
-                    if ri >= len(rows):
-                        continue
-                    r = rows[ri]
-                    ax.text(x + 5, ry + _ROW_H / 2, _fit(str(r.get("n") or r["t"])),
-                            fontsize=7, ha="left", va="center", color=black)
-                    ax.text(x + _W_TBL - 5, ry + _ROW_H / 2, f"{r['r']:.2f}%", fontsize=7,
-                            ha="right", va="center", color=black)
+                        ax.plot([x + 8, x + _W_CARD - 8], [ry, ry], color=P["border"], linewidth=0.5)
+                    mid = ry + _ROW_H / 2
+                    ax.text(x + _RANK_W - 4, mid, str(ri + 1), fontsize=6.5, va="center",
+                            ha="right", color=P["muted"])
+                    name_txt(x + _RANK_W + 6, mid, _fit(str(r.get("n") or r["t"])),
+                             x + _W_CARD * (1 - _VAL_FRAC) - 4)
+                    if top > 0:
+                        bw = (_W_CARD * _VAL_FRAC - 12) * max(0.04, min(1.0, r["r"] / top))
+                        ax.add_patch(FancyBboxPatch((x + _W_CARD - 6 - bw, ry + 4), bw, _ROW_H - 8,
+                                                    boxstyle="round,pad=0,rounding_size=3",
+                                                    facecolor=P["up"], alpha=0.10,
+                                                    edgecolor="none"))
+                    ax.text(x + _W_CARD - 10, mid, f"{r['r']:.2f}%", fontsize=8,
+                            fontweight="bold", va="center", ha="right", color=P["up"])
+                if rows is None or len(shown) < TOP_N:
+                    ny = by + len(shown) * _ROW_H
+                    lines = _wrap(_list_note(rec, key, rows), 24)
+                    mid = ny + (card_h - _HEAD_H - len(shown) * _ROW_H) / 2 if not shown \
+                        else ny + _ROW_H / 2
+                    if shown:
+                        ax.plot([x + 8, x + _W_CARD - 8], [ny, ny], color=P["border"], linewidth=0.5)
+                    for k, ln in enumerate(lines):
+                        ax.text(x + _W_CARD / 2, mid + (k - (len(lines) - 1) / 2) * 12, ln,
+                                fontsize=7, va="center", ha="center", color=P["muted"])
             y += tier_h
-        fig.savefig(out_path, dpi=150, facecolor="white")
+        ax.text(_MARGIN, height - _FOOT_H / 2 - 2,
+                "숫자 = 기준일 기관 순매수 ÷ 시가총액 · 막대 = 그 표 1위 대비 · 종목별 순매수액·시총은 "
+                "대시보드 Daily 기관매수", fontsize=6.5, va="center", ha="left", color=P["muted"])
+        fig.savefig(out_path, dpi=150, facecolor=P["bg"])
         return out_path
     except Exception as exc:                                   # noqa: BLE001
         log.warning("daily_inst_alert: 그림 실패(%s: %s) — 글자로 보낸다", type(exc).__name__, exc)
