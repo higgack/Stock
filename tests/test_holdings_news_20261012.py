@@ -2322,7 +2322,10 @@ def test_prev_change_reads_the_previous_session_of_each_market(hn, ws_snaps):
 
 
 def test_prev_change_missing_day_and_market_say_why(hn, ws_snaps):
-    look = hn.prev_changes("2026-10-13")                            # 미국 10-12 하루치는 아직 없음
+    # 시계를 그날 아침에 묶는다 — 실제 시계면 미국 10-12 창이 닫힌 뒤 '놓침' 갈래로 바뀐다(#425)
+    from datetime import datetime, timezone, timedelta
+    now = datetime(2026, 10, 13, 9, 0, tzinfo=timezone(timedelta(hours=9)))
+    look = hn.prev_changes("2026-10-13", now=now)                   # 미국 10-12 하루치는 아직 없음
     v, d, why = look(_hs("US", "NVDA"))
     assert v is None and d == "2026-10-12" and "아직 받지 않음" in why and "3시간" in why
     v, d, why = look(_hs("HK", "0700.HK"))
