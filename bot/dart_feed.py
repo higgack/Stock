@@ -4675,92 +4675,207 @@ def display_category(item: dict, sig: str | None = None) -> str:
     return cat
 
 
+# 🔥 판정의 **방향**(사용자 2026-10-13 "호재 악재 색 나눠줘"). 같은 '중요'
+# 라도 매수 검토(호재)와 보유 점검(악재)은 할 일이 달라서 화면이 색을 가른다.
+# 방향이 **사건 내용**에 달려 공시 한 장으로는 정할 수 없는 것(활동주의·
+# 최대주주 변경·주식병합 등)은 지어내지 않고 '판단' 으로 따로 둔다(#165).
+SIG_GOOD, SIG_BAD, SIG_WATCH = "good", "bad", "watch"
+# 톤 → (이모지, 이름) — 화면(배지·필·범례)과 거버넌스 카드가 같은 표를 쓴다(#38).
+SIG_TONES: dict[str, tuple[str, str]] = {
+    SIG_GOOD: ("🔥", "호재"),
+    SIG_BAD: ("🚨", "악재"),
+    SIG_WATCH: ("⚖️", "판단"),
+}
+# 범례·도움말에 싣는 톤별 기준 — **아래 `significance_info` 의 규칙과 같이
+# 고칠 것**(회귀가 기준마다 그 문구가 실제로 발화하는 픽스처를 갖는지 잰다).
+SIG_CRITERIA: dict[str, str] = {
+    SIG_GOOD: ("손익(연간 매출+20%/영업익+30%·흑자전환) · 잠정실적 영업익 "
+               "전년동기 +30%/흑자전환 · 계약 매출10% · 시설 자기자본15% · "
+               "소각/자사주 발행주식3% · 신규 5% 대량보유 · 배당 시가배당률3% · "
+               "무상증자 1주당 0.5주↑ · 공개매수 대상 · 관리종목 해제 · "
+               "물적분할 철회 · 회생절차 종결"),
+    SIG_BAD: ("잠정실적 영업익 전년동기 −30%/적자전환 · 유상증자 시총5% · "
+              "CB/BW 잠재희석(주식총수 또는 시총 5%) · 전환/행사/교환가액 조정 · "
+              "감사의견 비적정 · 횡령/배임 · 회생/부도/해산/파산 · 상장폐지 · "
+              "관리종목 · 물적분할 · 감자 · 매매거래정지(병합·분할·중요내용 등 "
+              "기계적 정지 제외) · 불성실공시법인"),
+    SIG_WATCH: ("활동주의(경영참가 목적 보유·주주제안·주총 소집허가) · 최대주주 "
+                "변경 · 공개매수(사는 쪽) · 제3자배정 유상증자 · EB 발행 · "
+                "유상감자 · 주식병합 — 방향이 내용에 달려 원문 확인"),
+}
+# 제목처럼 읽어도 되는 파싱 줄 — 자유 서술('비고: …아님')의 오발을 막는
+# 화이트리스트(상장폐지 규칙과 같은 목록, #38).
+_SIG_LINE_PREFIX = ("제목:", "사건:", "사유:", "해제·만료:", "결론:")
+# 매매거래정지 중 **기계적** 정지 — 중요내용 공시 30분 정지·조회공시 정지·
+# 병합/분할/합병에 따른 구주권 정지는 악재가 아니다(에코마케팅 230360 류).
+_HALT_ROUTINE = ("중요내용", "조회공시", "병합", "분할", "변경상장",
+                 "전자등록", "구주권", "주권제출", "기업결합")
+_AUDIT_BAD = ("의견거절", "부적정", "한정의견", "감사의견한정")
+
+
+def _signed_won(s: str) -> float | None:
+    """'-12억원'/'1.2조원' → 부호 있는 원 단위 float(`_won` 의 역, 순수)."""
+    m = re.search(r"(-)?\s*([\d,]+(?:\.\d+)?)\s*(조|억|만)?\s*원", str(s))
+    if not m:
+        return None
+    try:
+        v = float(m.group(2).replace(",", ""))
+    except ValueError:
+        return None
+    v *= {"조": 1e12, "억": 1e8, "만": 1e4}.get(m.group(3), 1.0)
+    return -v if m.group(1) else v
+
+
+def _rights_amount(lines: list[str]) -> float:
+    """유상증자 조달액(원). 구조화 API 폴백 줄('시설자금: X' 류)이 있으면 그 합,
+    없으면 원문 파서 줄 — '용도: 운영 X · 시설 Y' 의 합, 그것도 없으면
+    '신주: … = X'.
+
+    ⚠️ 옛 판은 앞의 라벨형만 읽어서, 원문 파서가 만든 카드(`용도:`)에서는
+    시총대비 5% 규칙이 **한 번도 발화할 수 없었다**(2026-10-13 방향 분리
+    작업 중 픽스처로 발각)."""
+    amt = _detail_amount_sum(
+        lines, ("증자금액", "시설자금", "운영자금", "채무상환", "타법인"))
+    if amt > 0:
+        return amt
+    amt_re = r"[\d,]+(?:\.\d+)?\s*(?:조|억|만)?\s*원"
+    for s in lines:
+        if s.startswith("용도:"):
+            amt = sum(_won_str_to_float(a) or 0.0 for a in re.findall(amt_re, s))
+            if amt > 0:
+                return amt
+    for s in lines:
+        if s.startswith("신주:") and "=" in s:
+            return _won_str_to_float(s.rsplit("=", 1)[1]) or 0.0
+    return 0.0
+
+
+def _norm_corp(s: str) -> str:
+    return re.sub(r"\(주\)|㈜|주식회사|\s", "", str(s or ""))
+
+
 def significance(item: dict, shares_outstanding: float | None = None,
                  market_cap: float | None = None) -> str | None:
-    """중요 공시 8규칙 판정(사용자 2026-06-12) → 발화 사유 문자열 or None.
-    전부 렌더타임 순수 판정(과거 아카이브 카드 소급, 파서 개선 즉시 반영).
-    detail 의존 규칙(2·4·5·6·8)은 enrich 후에만 발화 — 미파싱 카드는 ⚠️.
+    """중요 공시 판정 → 발화 사유 문자열 or None. 방향(호재·악재·판단)이
+    필요하면 `significance_info` 를 쓴다 — 규칙은 거기 한 곳에 있다."""
+    info = significance_info(item, shares_outstanding, market_cap)
+    return info[0] if info else None
 
+
+def significance_info(item: dict, shares_outstanding: float | None = None,
+                      market_cap: float | None = None) -> tuple[str, str] | None:
+    """중요 공시 판정 → (사유, 톤) or None. 톤 = SIG_GOOD/SIG_BAD/SIG_WATCH.
+
+    전부 렌더타임 순수 판정(과거 아카이브 카드 소급, 파서 개선 즉시 반영).
+    detail 의존 규칙은 enrich 후에만 발화 — 미파싱 카드는 ⚠️.
+
+    사용자 기준(2026-06-12~07-05):
     1. 손익구조 변동 — 매출액 +20%↑ OR 영업이익 +30%↑ OR 영업이익
        흑자전환 (사용자 2026-06-12 — Or 기준·**증가만**·적자전환 제외,
-       정정 제외, detail 필요)
-    2. 단일판매·공급계약 매출액대비 10%↑ (기재정정 제외)
-    3. 주식소각 발행주식 3%↑ (사용자 2026-06-12 '소각·자사주 3% 이상만' —
-       detail 의 '발행주식의 X%' 우선, 없으면 소각주식수÷shares 계산)
-    4. 자기주식취득결정 발행주식 3%↑ (기재정정 제외, shares 필요)
-    5. 신규시설투자 자기자본대비 15%↑ (사용자 2026-06-13 20→15)
-    6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
-    7. 상장폐지 관련 (사용자 2026-06-12 '중요에 상장폐지도') — 제목 또는
-       파싱된 제목/사건 라인에 상장폐지 (효력정지 가처분 포함)
-       7b. 관리종목 지정우려/지정/해제 — 상폐 전단계 경고 (사용자 2026-07-05)
-    8. 유상증자 시총대비 5%↑ (사용자 2026-06-12, 기재정정 제외, market_cap
-       필요 — 증자금액/시설·운영·채무상환·타법인 자금 합 ÷ FSC 시총)
-    9. 배당 시가배당률 3%↑ (사용자 2026-06-13, detail 의 '시가배당률 N%')
-    10. 활동주의/경영권 분쟁 (사용자 2026-07-04 승인 — open-proxy-mcp 검토
-        '활동주의 🔥승격' 채택): (a) 지분공시 대량보유의 보고사유/보유목적에
-        경영참가·경영권 (부정 서술 '없' 포함 라인 제외) (b) 제목/파싱 제목에
-        주주제안 또는 주주총회소집허가(법원 소집허가 = 표대결 개시).
-        의결권대리행사권유는 회사 측 routine 권유가 대부분이라 제외(오발 방지).
+       detail 필요) → 호재
+    2. 단일판매·공급계약 매출액대비 10%↑ → 호재
+    3. 주식소각 발행주식 3%↑ (detail 의 '발행주식의 X%' 우선, 없으면
+       소각주식수÷shares) → 호재
+    4. 자기주식취득결정 발행주식 3%↑ (shares 필요) → 호재
+    5. 신규시설투자 자기자본대비 15%↑ (사용자 2026-06-13 20→15) → 호재
+    6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재) → 호재
+    7. 상장폐지 관련(제목 또는 파싱된 제목/사건 라인) → 악재
+       7b. 관리종목 지정우려/지정 → 악재, 지정 **해제** → 호재
+    8. 유상증자 시총대비 5%↑ (market_cap 필요) → 악재(희석), 단
+       제3자배정은 대상·가격에 따라 갈려 판단
+    9. 배당 시가배당률 3%↑ → 호재
+    10. 활동주의/경영권 분쟁 — 경영참가 목적 보유·주주제안·주총 소집허가
+        → 판단(분쟁의 승패가 방향을 정한다)
+
+    추가(사용자 2026-10-13 "상 중 우선순위 추가"):
+    [상] 11. 잠정실적 영업이익 전년동기 ±30% / 흑자·적자 전환
+         12. CB·BW·EB 발행 — 주식총수 대비 잠재 희석 5%↑ 또는 시총대비
+             5%↑ → 악재(EB 는 교환 대상이 자사주인지 몰라 판단),
+             전환·행사·교환가액 조정 → 악재
+         13. 감사의견 비적정(거절·부적정·한정) → 악재
+         14. 횡령·배임 → 악재
+         15. 회생절차·부도·해산·파산·채권은행 관리절차 → 악재
+             (회생절차 종결 → 호재)
+    [중] 16. 최대주주 변경·최대주주 지분 양수도 → 판단
+         17. 물적분할 → 악재 (철회 → 호재)
+         18. 공개매수 — 이 회사가 대상이면 호재, 아니면 판단
+         19. 무상증자 1주당 0.5주↑ → 호재
+         20. 감자 → 악재(유상감자는 판단), 주식병합 → 판단
+         21. 매매거래정지(기계적 정지 제외) → 악재
+         22. 불성실공시법인 지정·지정예고 → 악재
     """
     rn = item.get("report_nm", "")
+    n = str(rn).replace(" ", "")
     cat = item.get("category", "")
     detail = item.get("detail") or []
+    lines = [str(dl) for dl in detail]
+    sig_lines = [s for s in lines if s.startswith(_SIG_LINE_PREFIX)]
+    titled = [n] + [s.replace(" ", "") for s in sig_lines]
     correction = "정정" in rn   # [기재정정] 등
     # 기재정정은 중요 미발화 (사용자 2026-06-15 '기재정정은 중요로 안들어가.
     # 알고 있지?'). 원 공시가 이미 중요를 발화했으므로 정정 wrapper 의 중복·
-    # 오발 방지 — 전 9규칙 일괄(개별 not-correction 가드 누락된 rule 3 소각·
-    # rule 7 상장폐지까지 커버). 이하 규칙들의 not correction 검사는 중복이나 무해.
+    # 오발 방지 — 전 규칙 일괄.
     if correction:
         return None
 
-    # 7 — 상장폐지 (최우선: 생존 이벤트). 발화 라인 화이트리스트 —
-    # 제목/사건(소송·자율공시) + 사유/해제·만료/결론(매매거래정지·
-    # 기타시장안내) — '비고: 상장폐지 아님' 류 자유 서술 오발 차단.
-    # '실질심사'(상장적격성 실질심사 대상 = 상폐 전단계)도 포함 (리스크-2).
-    # ⚠️ '상장폐지시까지' 는 기간 boilerplate — 병합/분할 전자등록 변경의
-    # 기계적 거래정지(에코마케팅 230360, 2026-06-12 오발)가 '구주권
-    # 상장폐지시까지 정지' 문구만으로 발화하던 것 차단. 실제 상폐
-    # 신호(상장폐지결정/상장폐지일/상장폐지 우려/사유의 상장폐지)는 유지.
+    # 7 — 상장폐지 (최우선: 생존 이벤트). 발화 라인 화이트리스트·'상장폐지
+    # 시까지' boilerplate 차단은 `is_delisting_related` 한 곳(칩과 공유).
     if is_delisting_related(item):
-        return "상장폐지 관련"
-    # 7b — 관리종목(지정우려/지정/해제) = 상장폐지 전단계 경고, 시총·매출
-    # 요건 미달 시그널이라 반드시 확인 대상(사용자 2026-07-05 수성웹툰
-    # 지정우려 사례). 상장폐지/실질심사가 위에서 선점(더 심각한 쪽 라벨).
-    # 렌더타임 순수 판정 — 과거 아카이브 카드 자동 소급(백필 불요).
-    if ("관리종목" in rn or any(
-            "관리종목" in s
-            for dl in detail
-            if (s := str(dl)).startswith(("제목:", "사건:", "사유:",
-                                          "해제·만료:", "결론:")))):
-        return "관리종목 관련"
+        return "상장폐지 관련", SIG_BAD
+    # 7b — 관리종목(지정우려/지정/해제) = 상장폐지 전단계 경고(사용자
+    # 2026-07-05 수성웹툰). **해제**는 반대 방향이다 — 제목·결론 줄로만
+    # 가른다('해제·만료:' 줄은 정지 기간 칸이라 '해제' 를 늘 품는다).
+    if ("관리종목" in rn or any("관리종목" in s for s in sig_lines)):
+        rel = (("해제" in n and "관리종목" in n)
+               or any(s.startswith(("제목:", "결론:")) and "관리종목" in s
+                      and "해제" in s for s in sig_lines))
+        return ("관리종목 해제", SIG_GOOD) if rel else ("관리종목 관련", SIG_BAD)
+    # 13 — 감사의견 비적정. 대개 상장폐지·관리종목 사유라 위에서 선점되지만
+    # 매매거래정지·감사보고서 제출 제목에 먼저 실리는 경우가 있다.
+    for t in titled:
+        if "감사의견" in t or "의견거절" in t:
+            if any(k in t for k in _AUDIT_BAD):
+                return "감사의견 비적정", SIG_BAD
+    # 14 — 횡령·배임
+    if any("횡령" in t or "배임" in t for t in titled):
+        return "횡령·배임", SIG_BAD
+    # 15 — 회생·부도·해산·파산 (생존)
+    for t in titled:
+        if "회생절차" in t:
+            if "종결" in t:
+                return "회생절차 종결", SIG_GOOD
+            return "회생절차", SIG_BAD
+        if "부도" in t:
+            return "부도 발생", SIG_BAD
+        if "해산사유" in t:
+            return "해산사유 발생", SIG_BAD
+        if "파산" in t:
+            return "파산", SIG_BAD
+        if "관리절차개시" in t:
+            return "채권은행 관리절차", SIG_BAD
     # 10 — 활동주의/경영권 분쟁 (사용자 2026-07-04 승인). 5거래일 horizon 의
-    # 강한 catalyst — 경영참가 목적 5% 진입/보유목적 변경, 주주제안, 법원
-    # 소집허가 신청(표대결 개시). 기재정정은 위 일괄 가드가 이미 차단.
+    # 강한 catalyst 이지만 방향은 분쟁 결과가 정한다 → 판단.
     if "주주제안" in rn:
-        return "주주제안"
+        return "주주제안", SIG_WATCH
     if "주주총회소집허가" in rn:
-        return "주총 소집허가 신청"
-    for dl in detail:
-        s = str(dl)
+        return "주총 소집허가 신청", SIG_WATCH
+    for s in lines:
         if (s.startswith(("제목:", "사건:"))
                 and ("주주제안" in s or "주주총회소집허가" in s)):
-            return "주주제안·표대결"
+            return "주주제안·표대결", SIG_WATCH
         # 보고사유/보유목적 라인만 검사(지분공시 한정) — 다른 파서의 자유
         # 서술('경영권 이전' 등 M&A 문맥) 오발 차단. '없'(경영권에 영향을
         # 주기 위한 목적 없음 류 부정 서술) 포함 라인은 미발화 — 정밀 우선.
         if (cat == "지분공시"
                 and (s.startswith("보고사유") or "보유목적" in s)
                 and ("경영참가" in s or "경영권" in s) and "없" not in s):
-            return "경영참가 목적 보유"
-    # 1 — 손익구조 변동: 제목만으로 무조건 발화하던 것을 본문 변동률
-    # 게이트로 (사용자 2026-06-12): **매출액 |20%|↑ OR 영업이익 |30%|↑**
-    # (And 아님 Or, 증가·감소 모두 — 급감도 중요). 영업이익 흑자/적자전환
-    # = 부호 반전이라 항상 발화. detail 미파싱이면 미발화(⚠️ 대기 —
-    # 규칙 2·4·5·8 과 동일 정책).
-    if "매출액또는손익구조" in rn and not correction:
+            return "경영참가 목적 보유", SIG_WATCH
+    # 1 — 손익구조 변동(연간): 매출액 +20%↑ OR 영업이익 +30%↑ OR 흑자전환.
+    # **증가만**(사용자 2026-06-12 3차 '손익 30%는 + 일때만') · 적자전환 제외
+    # (2차). detail 미파싱이면 미발화(⚠️ 대기).
+    if "매출액또는손익구조" in rn:
         def _line_pct(prefix: str) -> float | None:
-            for dl in detail:
-                s = str(dl)
+            for s in lines:
                 if s.startswith(prefix):
                     m = re.search(r"([+\-][\d,.]+)\s*%", s)
                     if m:
@@ -4772,31 +4887,53 @@ def significance(item: dict, shares_outstanding: float | None = None,
             return None
         sp = _line_pct("매출액:")
         op = _line_pct("영업이익:")
-        # +(증가)만 발화 (사용자 2026-06-12 3차 — '손익 30%는 + 일때만')
         if sp is not None and sp >= 20.0:
-            return f"매출액 {sp:+.1f}%"
+            return f"매출액 {sp:+.1f}%", SIG_GOOD
         if op is not None and op >= 30.0:
-            return f"영업이익 {op:+.1f}%"
-        # 흑자전환만 (사용자 2026-06-12 2차 — 적자전환 제외; 적자전환의
-        # 급감은 위 영업이익 |30%| 게이트가 % 있으면 잡음)
-        if any(str(dl).startswith("영업이익:") and "흑자전환" in str(dl)
-               for dl in detail):
-            return "영업이익 흑자전환"
+            return f"영업이익 {op:+.1f}%", SIG_GOOD
+        if any(s.startswith("영업이익:") and "흑자전환" in s for s in lines):
+            return "영업이익 흑자전환", SIG_GOOD
+    # 11 — 잠정실적(분기·월간 공정공시) 영업이익 전년동기 ±30% · 흑자/적자
+    # 전환. 연간 손익구조(규칙 1)와 달리 **양방향** — 시장이 실제로 반응하는
+    # 쪽은 이 공시다(연간 공시는 감사 뒤라 늦다). 적자 구간의 증감률은
+    # 뜻이 없어 부호 전환만 본다(전년동기 금액이 줄에 있을 때만 잴 수 있다).
+    elif "영업(잠정)실적" in rn or "잠정실적" in n:
+        for s in lines:
+            if not re.match(r"영업이익(?:\(당월\))?\s*:", s):
+                continue
+            cur = _signed_won(s.split(":", 1)[1])
+            pm = re.search(r"전년동(?:기|월)\s+(-?[\d,.]+\s*(?:조|억|만)?\s*원)", s)
+            prev = _signed_won(pm.group(1)) if pm else None
+            if cur is None or cur == 0:
+                break
+            if prev and (cur > 0) != (prev > 0):
+                return (("영업이익 흑자전환(전년동기)", SIG_GOOD) if cur > 0
+                        else ("영업이익 적자전환(전년동기)", SIG_BAD))
+            pp = re.search(r"전년동(?:기|월)(?:대비)?\s*([+\-][\d,.]+)\s*%", s)
+            if cur > 0 and (prev is None or prev > 0) and pp:
+                try:
+                    p = float(pp.group(1).replace(",", ""))
+                except ValueError:
+                    break
+                if p >= 30.0:
+                    return f"잠정 영업이익 전년동기 {p:+.1f}%", SIG_GOOD
+                if p <= -30.0:
+                    return f"잠정 영업이익 전년동기 {p:+.1f}%", SIG_BAD
+            break
     # 2
-    if ("공급계약" in rn or "단일판매" in rn) and not correction:
+    if "공급계약" in rn or "단일판매" in rn:
         p = _sig_pct(detail, r"매출액\s*대비")
         if p is not None and p >= 10.0:
-            return f"매출대비 {p:g}% 계약"
+            return f"매출대비 {p:g}% 계약", SIG_GOOD
     # 3 — 소각도 발행주식 3%↑만 (신도기연 1.21% 류 미발화, 2026-06-12)
     if "소각" in rn:
-        for dl in detail:
-            s = str(dl)
+        for s in lines:
             m = re.search(r"발행주식의\s*([\d.]+)\s*%", s)
             if m:
                 try:
                     pct = float(m.group(1))
                     if pct >= 3.0:
-                        return f"발행주식 {pct:g}% 소각"
+                        return f"발행주식 {pct:g}% 소각", SIG_GOOD
                 except ValueError:
                     pass
                 break  # % 명시 케이스 — 3% 미만이면 미발화 확정
@@ -4806,48 +4943,143 @@ def significance(item: dict, shares_outstanding: float | None = None,
                     pct = (int(m2.group(1).replace(",", ""))
                            / shares_outstanding * 100)
                     if pct >= 3.0:
-                        return f"발행주식 {pct:.1f}% 소각"
+                        return f"발행주식 {pct:.1f}% 소각", SIG_GOOD
                 except (ValueError, ZeroDivisionError):
                     pass
                 break
         return None  # detail 부재/미달 — 미발화 (3%↑ 확인된 것만)
     # 4
     if ("자기주식" in rn and "취득" in rn and "결정" in rn
-            and "처분" not in rn and not correction and shares_outstanding):
-        for dl in detail:
-            m = re.search(r"취득예정[^0-9]*([\d,]+)\s*주", str(dl))
+            and "처분" not in rn and shares_outstanding):
+        for s in lines:
+            m = re.search(r"취득예정[^0-9]*([\d,]+)\s*주", s)
             if m:
                 try:
-                    n = int(m.group(1).replace(",", ""))
-                    pct = n / shares_outstanding * 100
+                    pct = int(m.group(1).replace(",", "")) / shares_outstanding * 100
                     if pct >= 3.0:
-                        return f"발행주식 {pct:.1f}% 취득"
+                        return f"발행주식 {pct:.1f}% 취득", SIG_GOOD
                 except (ValueError, ZeroDivisionError):
                     pass
     # 5
     if "신규시설투자" in rn or "투자결정" in rn:
         p = _sig_pct(detail, r"자기자본\s*대비")
         if p is not None and p >= 15.0:
-            return f"자기자본대비 {p:g}% 투자"
-    # 8 — 유상증자 시총대비 5%↑ (유무상증자 포함, 무상은 자금 0 이라 자연 미발화)
-    if "유상증자" in rn and not correction and market_cap:
-        amt = _detail_amount_sum(
-            detail, ("증자금액", "시설자금", "운영자금", "채무상환", "타법인"))
+            return f"자기자본대비 {p:g}% 투자", SIG_GOOD
+    # 8 — 유상증자 시총대비 5%↑ (유무상증자 포함, 무상은 자금 0 이라 자연
+    # 미발화). 방식은 원문 '구분:' 줄 괄호 — 제3자배정은 대상(전략적 투자자
+    # 인가)·가격에 따라 시장 반응이 갈려 판단으로 둔다.
+    if "유상증자" in rn and market_cap:
+        amt = _rights_amount(lines)
         if amt > 0:
             pct = amt / market_cap * 100
             if pct >= 5.0:
-                return f"시총대비 {pct:.1f}% 유상증자"
+                third = any(s.startswith("구분:") and "제3자" in s for s in lines)
+                return ((f"시총대비 {pct:.1f}% 유상증자(제3자배정)", SIG_WATCH)
+                        if third else (f"시총대비 {pct:.1f}% 유상증자", SIG_BAD))
+    # 12 — 메자닌(CB·BW·EB) 발행 / 가액 조정. 종속회사 발행은 이 회사 주식을
+    # 희석하지 않으므로 제외.
+    if "종속회사" not in n:
+        kind = ("전환사채" if "전환사채" in n
+                else "신주인수권부사채" if "신주인수권부사채" in n
+                else "교환사채" if "교환사채" in n else "")
+        if kind and "발행" in n and "취득" not in n:
+            tone = SIG_WATCH if kind == "교환사채" else SIG_BAD
+            for s in lines:
+                m = re.search(r"주식총수의\s*([\d.]+)\s*%", s)
+                if m:
+                    try:
+                        d = float(m.group(1))
+                    except ValueError:
+                        d = 0.0
+                    if d >= 5.0:
+                        return f"주식총수 {d:g}% 잠재희석 {kind}", tone
+                    return None   # 희석률을 원문이 밝혔고 5% 미만
+            if market_cap:
+                amt = 0.0
+                for s in lines:
+                    if s.startswith("권면총액:"):
+                        amt = _won_str_to_float(s) or 0.0
+                    elif s.startswith("구분:") and "—" in s:
+                        amt = _won_str_to_float(s.split("—", 1)[1]) or 0.0
+                    if amt:
+                        break
+                if amt and amt / market_cap * 100 >= 5.0:
+                    return f"시총대비 {amt / market_cap * 100:.1f}% {kind}", tone
+        for k in ("전환가액", "행사가액", "교환가액"):
+            if k in n and "조정" in n:
+                return f"{k} 조정", SIG_BAD
+    # 19 — 무상증자 1주당 0.5주↑ (유무상은 유상 규칙이 본다)
+    if "무상증자" in n and "유무상" not in n:
+        ratio = None
+        for s in lines:
+            m = re.search(r"1주당\s*(?:배정)?\s*[:：]?\s*([\d.]+)", s)
+            if m:
+                try:
+                    ratio = float(m.group(1))
+                except ValueError:
+                    ratio = None
+                break
+            m = re.search(r"^신주:.*\(\+([\d.]+)%\)", s)
+            if m:
+                try:
+                    ratio = float(m.group(1)) / 100
+                except ValueError:
+                    ratio = None
+                break
+        if ratio is not None and ratio >= 0.5:
+            return f"무상증자 1주당 {ratio:g}주", SIG_GOOD
+    # 20 — 감자 / 주식병합
+    if "감자" in n:
+        txt = " ".join([n] + lines)
+        if "유상감자" in txt:
+            return "유상감자", SIG_WATCH
+        return ("무상감자" if "무상" in txt else "감자 결정"), SIG_BAD
+    if "주식병합" in n or "액면병합" in n:
+        return "주식병합", SIG_WATCH
+    # 17 — 물적분할 (분할합병은 합병 성격이라 제외)
+    if ("회사분할" in n or "물적분할" in n) and "합병" not in n:
+        phys = "물적분할" in n or any(
+            "물적분할" in s for s in lines
+            if s.startswith(("분할방법:", "물적분할")))
+        if phys:
+            if "철회" in n or any("물적분할 철회" in s for s in lines):
+                return "물적분할 철회", SIG_GOOD
+            return "물적분할", SIG_BAD
+    # 16 — 최대주주 변경·지분 양수도 (방향은 새 주인이 정한다)
+    if "최대주주변경" in n or ("최대주주" in n and "양수도" in n):
+        return "최대주주 변경", SIG_WATCH
+    # 18 — 공개매수: 이 회사가 대상(또는 자사주 공개매수)이면 프리미엄 매수라
+    # 호재, 사는 쪽이면 판단.
+    if "공개매수" in n:
+        tgt = next((s.split(":", 1)[1] for s in lines if s.startswith("대상:")), "")
+        if "의견표명" in n or (tgt and _norm_corp(tgt) == _norm_corp(
+                item.get("corp_name"))):
+            return "공개매수(대상 회사)", SIG_GOOD
+        return "공개매수", SIG_WATCH
+    # 21 — 매매거래정지. 사유를 모르면(미파싱·제목에 괄호 없음) 기계적
+    # 정지일 수 있어 발화하지 않는다.
+    if "매매거래정지" in n and "해제" not in n:
+        why = [s for s in lines
+               if s.startswith(("사유:", "변경사유:", "비고:"))]
+        paren = re.search(r"\(([^)]+)\)", n)
+        basis = " ".join(why + ([paren.group(1)] if paren else []))
+        if basis and not any(k in basis.replace(" ", "")
+                             for k in _HALT_ROUTINE):
+            return "매매거래정지", SIG_BAD
+    # 22 — 불성실공시법인
+    if "불성실공시" in n and "취소" not in n:
+        return (("불성실공시법인 지정예고" if "예고" in n
+                 else "불성실공시법인 지정"), SIG_BAD)
     # 9 — 배당 시가배당률 3%↑ (사용자 2026-06-13). 보통주/우선주 복수
     # 라인 시 첫 매칭(_sig_pct) — 통상 보통주가 먼저.
-    if "배당" in rn and not correction:
+    if "배당" in rn:
         p = _sig_pct(detail, r"시가\s*배당[률율]")
         if p is not None and p >= 3.0:
-            return f"시가배당률 {p:g}%"
+            return f"시가배당률 {p:g}%", SIG_GOOD
     # 6
     if cat == "지분공시" and "대량보유" in rn:
-        new_reason = any("신규" in str(dl) for dl in detail if "보고사유" in str(dl))
-        for dl in detail:
-            s = str(dl)
+        new_reason = any("신규" in s for s in lines if "보고사유" in s)
+        for s in lines:
             if "지분율" not in s:
                 continue
             nums = re.findall(r"([\d.]+)\s*%(?!p)", s)
@@ -4855,13 +5087,13 @@ def significance(item: dict, shares_outstanding: float | None = None,
                 try:
                     before, after = float(nums[0]), float(nums[1])
                     if before < 5.0 <= after:
-                        return f"신규 {after:g}% 대량보유"
+                        return f"신규 {after:g}% 대량보유", SIG_GOOD
                 except ValueError:
                     pass
             elif nums and new_reason:
                 try:
                     if float(nums[0]) >= 5.0:
-                        return f"신규 {float(nums[0]):g}% 대량보유"
+                        return f"신규 {float(nums[0]):g}% 대량보유", SIG_GOOD
                 except ValueError:
                     pass
     return None

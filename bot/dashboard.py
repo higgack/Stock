@@ -16627,6 +16627,8 @@ def _load_dart_feed_data(days_back: int = 30) -> dict[str, list[dict]]:
 # 상장폐지는 **리스크 바로 앞**(사용자 2026-08-31) — 생존 이벤트라 리스크
 # 안에 섞여 있으면 눈에 안 띈다. 저장 카테고리는 그대로 '리스크' 이고 화면에서
 # `dart_feed.display_category` 가 파생한다(옛 아카이브 자동 백필).
+# 🔥 범례의 톤별 색 이름 — 아래 CSS(.df-sig-*) 와 같이 고칠 것.
+_SIG_TONE_COLOR = {"good": "금색", "bad": "빨강", "watch": "보라"}
 _DART_CATEGORIES = ["전체", "실적", "정기보고서", "계약", "신규시설투자",
                     "주주환원", "자금조달", "지분공시", "배당",
                     "상장폐지", "리스크", "소송",
@@ -16709,11 +16711,20 @@ _DART_FEED_CSS = """
    테두리로 표시안되는거야?"). 점선/파선 `border-style` 은 위 규칙이 계속
    담당하므로 두 신호가 **같이** 보인다(금색 점선 = 중요 + 미파싱제외). */
 .df-card.df-significant{border-color:#d4a017;box-shadow:inset 0 0 0 1px #d4a01755}
+/* 방향(사용자 2026-10-13 '호재 악재 색 나눠줘') — 호재는 종전 금색 그대로,
+   악재는 빨강, 방향이 내용에 달린 판단은 보라. 같은 명시도라 df-significant
+   **뒤**에 둬야 금색을 이긴다(위 #300 주석과 같은 이유). */
+.df-card.df-sig-bad{border-color:#e5484d;box-shadow:inset 0 0 0 1px #e5484d55}
+.df-card.df-sig-watch{border-color:#8e6fd8;box-shadow:inset 0 0 0 1px #8e6fd855}
 .df-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;align-self:flex-start;line-height:1.5}
 .df-badge-sig{background:#d4a01726;color:#b8860b;border:1px solid #d4a01766}
+.df-badge-sig-bad{background:#e5484d1f;color:#d4373c;border-color:#e5484d66}
+.df-badge-sig-watch{background:#8e6fd81f;color:#7a5cc7;border-color:#8e6fd866}
 .df-badge-unp{background:#5c9ce618;color:#3b82c4;border:1px solid #5c9ce655}
 .df-badge-noparse{background:#6b727e18;color:#8b919b;border:1px solid #6b727e55}
 .df-pill-sig.active{background:#d4a017;border-color:#d4a017}
+.df-pill-sig-bad.active{background:#e5484d;border-color:#e5484d}
+.df-pill-sig-watch.active{background:#8e6fd8;border-color:#8e6fd8}
 .df-pill-unp.active{background:#5c9ce6;border-color:#5c9ce6}
 .df-pill-noparse.active{background:#6b727e;border-color:#6b727e}
 .df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
@@ -16918,23 +16929,26 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     def _annotate(it: dict) -> None:
         if "_sig" in it:
             return
-        sig = None
+        info = None
         try:
             rn0 = it.get("report_nm", "")
             # 자사주취득·소각 = 발행주식 3% 비율 판정 → shares 필요
             if (("자기주식" in rn0 and "취득" in rn0 and "결정" in rn0)
                     or "소각" in rn0):
-                sig = _dart_feed.significance(
+                info = _dart_feed.significance_info(
                     it, shares_outstanding=_shares_for(it.get("stock_code", "")))
-            elif "유상증자" in rn0:
-                # 시총대비 5% 판정 → mcap 필요 (FSC 12h 캐시 공유)
-                sig = _dart_feed.significance(
+            elif "유상증자" in rn0 or (
+                    "사채" in rn0 and "발행" in rn0 and "취득" not in rn0):
+                # 시총대비 5% 판정(유상증자·CB/BW/EB) → mcap 필요 (FSC 12h
+                # 캐시 공유). 메자닌은 원문이 희석률을 밝히면 그걸 먼저 쓴다.
+                info = _dart_feed.significance_info(
                     it, market_cap=_mcap_for(it.get("stock_code", "")))
             else:
-                sig = _dart_feed.significance(it)
+                info = _dart_feed.significance_info(it)
         except Exception:
-            sig = None
-        it["_sig"] = sig
+            info = None
+        # 사유(_sig)와 방향(_sig_tone)은 **한 판정**에서 — 따로 부르면 갈린다.
+        it["_sig"], it["_sig_tone"] = info if info else (None, None)
         # 미파싱 = 파싱 대상인데 의미있는 detail 부재(시총/주요사업 줄 제외).
         # '의도된 미파싱'(미파싱제외 — freeform/첨부정정)과 '진짜 미파싱'(파서 갭)
         # 분리 (사용자 2026-06-14). 진짜만 _unparsed, 의도는 _noparse.
@@ -16997,12 +17011,15 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
 
     cat_counts: dict[str, int] = {}
     _sig_total = _unp_total = _noparse_total = 0
+    _tone_total: dict[str, int] = {}
     _filtered_total = 0
     for items in _vis.values():
         for it in items:
             _annotate(it)
             if it.get("_sig"):
                 _sig_total += 1
+                _t = it.get("_sig_tone") or ""
+                _tone_total[_t] = _tone_total.get(_t, 0) + 1
             if it.get("_unparsed"):
                 _unp_total += 1
             if it.get("_noparse"):
@@ -17014,8 +17031,12 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     pills: list[str] = []
     pills.append(f'<button class="df-pill active" data-cat="전체">전체 {_filtered_total}</button>')
     # 특수 플래그 필터(사용자 2026-06-12) — data-flag 기준, 카테고리와 별개.
-    if _sig_total:
-        pills.append(f'<button class="df-pill df-pill-sig" data-flag="sig">🔥 중요 {_sig_total}</button>')
+    # 🔥 중요는 방향별 필 셋으로(사용자 2026-10-13 '호재 악재 색 나눠줘') —
+    # 합은 `_sig_total` 과 같다(감사가 잰다).
+    for _t, (_em, _nm) in _dart_feed.SIG_TONES.items():
+        if _tone_total.get(_t):
+            pills.append(f'<button class="df-pill df-pill-sig df-pill-sig-{_t}" '
+                         f'data-flag="sig-{_t}">{_em} {_nm} {_tone_total[_t]}</button>')
     if _unp_total:
         pills.append(f'<button class="df-pill df-pill-unp" data-flag="unparsed">⚠️ 미파싱 {_unp_total}</button>')
     if _noparse_total:
@@ -17102,9 +17123,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     # 카드가 하나라도 있을 때만 노출(노이즈 방지).
     if _sig_total or _unp_total or _noparse_total:
         _lg = []
-        if _sig_total:
-            _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
-                       '금색 — 손익(매출+20%/영업익+30%)·계약 매출10%·시설 자기자본15%·소각/자사주 발행주식3%·유상증자 시총5%·신규 5% 대량보유·배당 시가배당률3%·상장폐지·관리종목·활동주의(경영참가 목적 보유·주주제안·주총 소집허가)')
+        for _t, (_em, _nm) in _dart_feed.SIG_TONES.items():
+            if _tone_total.get(_t):
+                _lg.append(f'<span class="df-badge df-badge-sig df-badge-sig-{_t}">'
+                           f'{_em} {_nm}</span> {_SIG_TONE_COLOR[_t]} — '
+                           + _html.escape(_dart_feed.SIG_CRITERIA[_t]))
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '파란 점선 — 우리 파서 갭(제목·원문 공유 시 파서 추가)')
@@ -17205,20 +17228,25 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
                 if stock_code and len(stock_code) == 6 and stock_code.isdigit():
                     ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
 
-                # 중요(🔥)/미파싱(⚠️) 색상 구별 — 사전 패스 주석 사용
-                # (사용자 2026-06-12). 중요는 금색 테두리 + 사유 배지, 미파싱은
+                # 중요/미파싱(⚠️) 색상 구별 — 사전 패스 주석 사용
+                # (사용자 2026-06-12). 중요는 방향별 테두리(🔥호재 금색·🚨악재
+                # 빨강·⚖️판단 보라, 2026-10-13) + 사유 배지, 미파싱은
                 # 주황 점선 테두리 + 배지. data-flag 로 pill 필터.
                 _annotate(it)
                 _sig = it.get("_sig")
+                _tone = it.get("_sig_tone") or _dart_feed.SIG_GOOD
                 _unp = it.get("_unparsed")
                 _nop = it.get("_noparse")
                 _card_cls = "df-card"
                 _flags: list[str] = []
                 _badges = ""
                 if _sig:
-                    _card_cls += " df-significant"
-                    _flags.append("sig")
-                    _badges += (f'<span class="df-badge df-badge-sig">🔥 '
+                    _card_cls += f" df-significant df-sig-{_tone}"
+                    _flags += ["sig", f"sig-{_tone}"]
+                    _em, _tnm = _dart_feed.SIG_TONES.get(
+                        _tone, _dart_feed.SIG_TONES[_dart_feed.SIG_GOOD])
+                    _badges += (f'<span class="df-badge df-badge-sig df-badge-sig-{_tone}" '
+                                f'title="{_tnm}">{_em} '
                                 f'{_html.escape(str(_sig))}</span>')
                 if _unp:
                     _card_cls += " df-unparsed"
@@ -17318,7 +17346,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     if(anyFilter&&dfPending().length){dfLoadAll().then(applyFilters);return;}
     dfCards().forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
-      var cf=(c.dataset.flag||'');
+      // 토큰으로 맞춘다 — 부분문자열이면 'sig' 가 'sig-bad' 에도 걸린다.
+      var cf=(c.dataset.flag||'').split(' ');
       var flagMatch=activeFlags.every(function(f){return cf.indexOf(f)>=0;});
       var markMatch=(!impOnly||c.classList.contains('imp-on'))&&
                     (!memoOnly||c.classList.contains('has-memo'));

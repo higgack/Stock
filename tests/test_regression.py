@@ -14753,8 +14753,10 @@ class TestDartDividendCategoryAndCapitalRaise:
         assert callable(reclassify_v5_once_if_needed)
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "reclassify_v5_once_if_needed" in src
-        leg = open("bot/dashboard.py", encoding="utf-8").read()
-        assert "유상증자 시총5%" in leg   # 범례 동기
+        # 범례 동기 — 범례 문구는 2026-10-13 부터 방향별 단일 출처
+        # (`SIG_CRITERIA`)에서 나온다(옛 판은 dashboard.py 리터럴을 읽었다).
+        from bot.dart_feed import SIG_BAD, SIG_CRITERIA
+        assert "유상증자 시총5%" in SIG_CRITERIA[SIG_BAD]
 
 
 class TestDelistBoilerplateNoFire:
@@ -15626,13 +15628,17 @@ class TestLegendOrderMatchesChips:
     (신규 대량보유)→배당→리스크(상장폐지)."""
 
     def test_order_and_threshold(self):
-        src = open("bot/dashboard.py", encoding="utf-8").read()
-        i = src.index("금색 — 손익")
-        seg = src[i:i + 200]
+        """2026-10-13 부터 범례가 방향별(호재·악재·판단) 셋으로 갈렸다
+        (사용자 '호재 악재 색 나눠줘'). 칩 순서 계약은 **각 방향 안에서**
+        지킨다 — 옛 판은 dashboard.py 의 한 줄 리터럴을 읽었다(#222)."""
+        from bot.dart_feed import SIG_BAD, SIG_CRITERIA, SIG_GOOD
+        good = SIG_CRITERIA[SIG_GOOD]
         order = ["손익", "계약", "시설 자기자본15%", "소각/자사주",
-                 "유상증자", "대량보유", "배당", "상장폐지"]
-        pos = [seg.index(k) for k in order]
-        assert pos == sorted(pos), seg
+                 "대량보유", "배당"]
+        pos = [good.index(k) for k in order]
+        assert pos == sorted(pos), good
+        bad = SIG_CRITERIA[SIG_BAD]
+        assert bad.index("유상증자") < bad.index("상장폐지"), bad
 
 
 class TestTangibleAssetCategory:
@@ -21167,9 +21173,12 @@ class TestActivistSignificance20260704:
             "detail": ["보고사유: 단순투자 변동"],
         }) is None
         # 지분공시 외 카테고리의 '경영권' 자유 서술(M&A 문맥) — 카테고리
-        # 게이트로 미발화
+        # 게이트로 **활동주의로는** 미발화. ⚠️ 옛 픽스처 제목('최대주주변경')
+        # 은 2026-10-13 부터 그 자체로 규칙 16(최대주주 변경 → 판단)에 걸린다
+        # (사용자 "상 중 우선순위 추가") — 이 테스트가 재는 것은 카테고리
+        # 게이트이므로 다른 규칙에 안 걸리는 제목으로 옮겼다(#222).
         assert significance({
-            "report_nm": "최대주주변경",
+            "report_nm": "기타경영사항(자율공시)",
             "category": "회사구조",
             "detail": ["보유목적: 경영권 이전"],
         }) is None
@@ -21338,8 +21347,10 @@ class TestAdminIssueSignificance20260705:
         from bot.dart_feed import significance
         assert significance({"report_nm": "기타시장안내(관리종목지정우려종목)",
                              "category": "리스크", "detail": []}) == "관리종목 관련"
+        # 해제는 2026-10-13 부터 **반대 방향**으로 따로 말한다(사용자 '호재
+        # 악재 색 나눠줘') — 옛 판은 지정과 같은 '관리종목 관련' 이었다(#222).
         assert significance({"report_nm": "관리종목지정해제",
-                             "category": "리스크", "detail": []}) == "관리종목 관련"
+                             "category": "리스크", "detail": []}) == "관리종목 해제"
         assert significance({"report_nm": "기타시장안내", "category": "리스크",
                              "detail": ["제목: 관리종목 지정우려 안내"]}) == "관리종목 관련"
 
@@ -21353,8 +21364,10 @@ class TestAdminIssueSignificance20260705:
         # 화이트리스트 외 자유 서술 라인은 미발화
         assert significance({"report_nm": "기타시장안내", "category": "리스크",
                              "detail": ["비고: 관리종목 아님"]}) is None
-        # 🔥범례 동시 갱신 계약
-        assert "·관리종목·" in open("bot/dashboard.py", encoding="utf-8").read()
+        # 🔥범례 동시 갱신 계약 — 범례는 방향별 단일 출처(`SIG_CRITERIA`)
+        from bot.dart_feed import SIG_BAD, SIG_CRITERIA, SIG_GOOD
+        assert "관리종목" in SIG_CRITERIA[SIG_BAD]
+        assert "관리종목 해제" in SIG_CRITERIA[SIG_GOOD]
 
 
 class TestCostCardThreeWindows20260705:
