@@ -278,6 +278,10 @@ class TestMiddleTier:
                                      "자금조달")) == ("무상감자", SIG_BAD)
         assert significance_info(_it("감자결정", ["사유: 결손금 보전"], "자금조달")) == (
             "무상감자", SIG_BAD)
+        # 델타 리뷰 재현: 무상감자 뒤 유상증자 — '유상' 낱말에 속지 않는다
+        assert significance_info(_it("감자결정",
+                                     ["사유: 결손금 보전 및 유상증자를 위한 재무구조 개선"],
+                                     "자금조달")) == ("무상감자", SIG_BAD)
         # 방식을 모르면 단정하지 않는다
         assert significance_info(_it("감자결정", [], "자금조달")) == (
             "감자 결정(방식 원문 확인)", SIG_WATCH)
@@ -341,6 +345,22 @@ class TestMiddleTier:
         it2 = _it("공개매수신고서", [], "회사구조", corp="매수자홀딩스")
         it2["flr_nm"] = "매수자홀딩스"
         assert significance_info(it2) == ("공개매수", SIG_WATCH)
+
+    def test_krx_notice_lines_and_listing_review_halt(self):
+        # 기타시장안내는 '기타' 로 분류돼도 제목·결론 줄이 사건이다
+        assert significance_info(_it("기타시장안내", ["제목: 회생절차개시 신청 관련"],
+                                     "기타")) == ("회생절차", SIG_BAD)
+        assert significance_info(_it("기타시장안내",
+                                     ["결론: 거래소는 감사의견 거절에 따라 조치"],
+                                     "기타")) == ("감사의견 비적정", SIG_BAD)
+        # 정지 사유 횡령은 그대로 잡힌다(리스크 분류)
+        assert significance_info(_it("주권매매거래정지",
+                                     ["사유: 횡령ㆍ배임 혐의 발생"])) == (
+            "횡령·배임", SIG_BAD)
+        # 우회상장 심사 정지는 '합병' 이 있어도 기계적이 아니다
+        assert significance_info(_it("주권매매거래정지",
+                                     ["사유: 우회상장 관련 합병 심사"])) == (
+            "매매거래정지", SIG_BAD)
 
     def test_unfaithful(self):
         assert significance_info(_it("불성실공시법인지정")) == (

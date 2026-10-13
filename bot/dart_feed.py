@@ -4863,9 +4863,13 @@ def significance_info(item: dict, shares_outstanding: float | None = None,
     #     자유 서술('파산한 거래처 대손')이나 최대주주변경의 '사유: 회생절차에
     #     따른 출자전환' 이 남의 사건·배경을 이 회사 사건으로 만든다.
     rumor = any(k in n for k in ("조회공시", "풍문", "해명", "설)"))
+    # 기타시장안내는 거래소가 쓴 안내라 '제목:'·'결론:' 이 곧 사건이다(분류는
+    # '기타' 로 온다 — 델타 리뷰 2026-10-13).
+    krx_notice = "기타시장안내" in n
     titled = [] if rumor else [n] + [
         s.replace(" ", "") for s in lines
-        if cat in ("리스크", "소송") and s.startswith(("사유:", "사건:", "결론:"))]
+        if (cat in ("리스크", "소송") and s.startswith(("사유:", "사건:", "결론:")))
+        or (krx_notice and s.startswith(("제목:", "결론:", "사유:")))]
     correction = "정정" in rn   # [기재정정] 등
     # 기재정정은 중요 미발화 (사용자 2026-06-15 '기재정정은 중요로 안들어가.
     # 알고 있지?'). 원 공시가 이미 중요를 발화했으므로 정정 wrapper 의 중복·
@@ -5112,10 +5116,13 @@ def significance_info(item: dict, shares_outstanding: float | None = None,
     halt = "매매거래정지" in n
     if "감자" in n and not halt:
         txt = " ".join([n] + lines)
-        if any(k in txt for k in ("유상", "환급", "주주환원")):
-            return "유상감자", SIG_WATCH
+        # ⚠️ 결손·무상을 먼저 — '결손금 보전 및 유상증자를 위한 재무구조
+        # 개선' 은 무상감자 뒤 증자(주주에겐 최악)인데 '유상' 낱말만 보면
+        # 유상감자로 읽힌다(독립 리뷰 2026-10-13).
         if "무상" in txt or "결손" in txt:
             return "무상감자", SIG_BAD
+        if any(k in txt for k in ("유상감자", "환급", "주주환원")):
+            return "유상감자", SIG_WATCH
         return "감자 결정(방식 원문 확인)", SIG_WATCH
     if ("주식병합" in n or "액면병합" in n) and not halt:
         return "주식병합", SIG_WATCH
@@ -5154,7 +5161,10 @@ def significance_info(item: dict, shares_outstanding: float | None = None,
                  if p not in ("유가증권", "유가증권시장", "코스닥", "코스닥시장",
                               "코넥스", "코넥스시장")]
         basis = " ".join(why + paren).replace(" ", "")
-        if basis and not any(k in basis for k in _HALT_ROUTINE):
+        # 우회상장 심사·상장 심사 정지는 합병 낱말이 있어도 길고 불리한 정지다
+        routine = (any(k in basis for k in _HALT_ROUTINE)
+                   and not any(k in basis for k in ("우회상장", "심사")))
+        if basis and not routine:
             if any(k in basis for k in _HALT_WARNING):
                 return "매매거래정지(시장경보)", SIG_WATCH
             return "매매거래정지", SIG_BAD
