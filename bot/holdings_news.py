@@ -266,9 +266,9 @@ def _as_of(model: dict) -> str | None:
         return str(model["as_of"])
     try:
         ts = float(model.get("_saved_ts"))
-    except (TypeError, ValueError):
+        return "업로드 " + datetime.fromtimestamp(ts, _KST).strftime("%Y-%m-%d %H:%M KST")
+    except (TypeError, ValueError, OverflowError, OSError):   # 깨진 값이 tick 전체를 멈추지 않게(#424)
         return None
-    return "업로드 " + datetime.fromtimestamp(ts, _KST).strftime("%Y-%m-%d %H:%M KST")
 
 
 def _us_etf(*, cache_only: bool = False) -> set:
@@ -1530,7 +1530,9 @@ _PREV_MK = {"KR": "KR", "US": "US", "JP": "JP", "TW": "TW", "CN": "CN_A", "CN_A"
 
 
 _PREV_CACHE: dict = {}     # (시장, 날짜) → (파일 mtime, {티커: 등락}) — 15분마다 30일치를 다시 풀지 않게
-_PREV_CACHE_MAX = 80       # 화면 30일 × 시장 몇 개 — 넘으면 오래된 것부터
+# 화면에 싣는 날 × 시장 전부 + 여유 — 재생성은 30일을 매번 같은 순서로 훑으므로 상한이 그보다 작으면 FIFO 가
+# 매 패스 전부 밀어내 15분마다 모두 다시 푼다(리뷰 2026-10-13).
+_PREV_CACHE_MAX = RENDER_DAYS * len(set(_PREV_MK.values())) + 10
 
 
 def _prev_table(ws, lookup_ticker, mk: str, d: str) -> dict | None:
@@ -1564,7 +1566,7 @@ def _prev_table(ws, lookup_ticker, mk: str, d: str) -> dict | None:
     return tbl
 
 
-def prev_changes(date: str):
+def prev_changes(date: str, now: datetime | None = None):
     """전날 등락률 조회기 — `look(stock) -> (등락%, 세션 날짜, 사유)`.
 
     값은 「국가별 심리지도」가 이미 받아 둔 TradingView 하루치(`world_sectors` 스냅샷)에서 읽는다 —
@@ -1585,8 +1587,7 @@ def prev_changes(date: str):
                 out = (None, None, "전날 거래일을 달력에서 못 찾음")
             else:
                 tbl = _prev_table(ws, lookup_ticker, mk, ss[0])
-                out = ((None, ss[0], f"{ss[0]} 하루치를 아직 받지 않음(장 마감 {ws.READY_MIN // 60}시간 뒤 수집)")
-                       if tbl is None else (tbl, ss[0], ""))
+                out = (tbl, ss[0], "") if tbl is not None else (None, ss[0], _prev_missing_why(ws, mk, ss[0], now))
         except Exception as exc:                               # noqa: BLE001
             log.warning("holdings_news: 전날 등락 조회 실패(%s %s): %s", mk, date, exc)
             out = (None, None, "전날 등락 조회 실패")
@@ -1601,12 +1602,34 @@ def prev_changes(date: str):
         if tbl is None:
             return None, d, why_
         key = (st["ticker"] if mk == "KR" else (st.get("sym") or st["ticker"])).upper()
+        if mk == "US":
+            key = key.replace(".", "-")        # 표 키는 `lookup_ticker` 꼴(BRK.B → BRK-B)
         v = tbl.get(key)
         if v is None:
             return None, d, f"{d} 하루치에 이 종목이 없음"
         return v, d, ""
 
     return look
+
+
+def _prev_missing_why(ws, mk: str, d: str, now) -> str:
+    """하루치가 없는 갈래 — 국가별 보드의 판정(`market_day_status`)을 그대로 쓴다(#35·#38). '아직' 은 정말
+    받을 창이 남았을 때만 — 창을 놓친 날·보관 기간 밖 날에 '다음 갱신에 채워짐' 이라 적으면 영원히 안 지켜지는
+    약속이다(#380, 리뷰 2026-10-13)."""
+    try:
+        st = ws.market_day_status(mk, d, _now(now))
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 전날 하루치 상태 판정 실패(%s %s): %s", mk, d, exc)
+        st = ""
+    if st == "pending":
+        return f"{d} 하루치를 아직 받지 않음(장 마감 {ws.READY_MIN // 60}시간 뒤 수집 — 받으면 다음 갱신에 채워짐)"
+    if st == "missing":
+        return f"{d} 하루치를 받을 창을 놓쳐 이 날은 비어 있음(원천은 '지금' 값만 줌)"
+    if st in ("holiday", "closed"):
+        return f"{d} 휴장(추정)이라 하루치가 없음"
+    if st == "ok":
+        return f"{d} 원본 하루치가 보관 기간({ws.KEEP_SNAP_DAYS}일) 밖이거나 없음"
+    return f"{d} 하루치가 없음"
 
 
 def _prev_html(prev) -> str:
@@ -1723,14 +1746,14 @@ def _day_summary(rec: dict) -> str:
             f"<span class='hn-meta'>{_h.escape(_day_meta(rec))}</span></summary>")
 
 
-def _day_body(rec: dict, *, final: bool = False) -> str:
+def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None) -> str:
     """하루 칸의 본문(카드 · 새 뉴스 없음 · 뺀 상품) — 최신일은 페이지에, 지난 날은 조각 파일에 같은
     함수로 싣는다(#38). `final` → `_card`."""
     import html as _h
     ss = rec.get("stocks") or []
     with_news = [s for s in ss if s.get("items")]
     quiet = [s for s in ss if not s.get("items")]
-    look = prev_changes(rec["date"])
+    look = prev_changes(rec["date"], now)
     cards = "".join(_card(s, final=final, prev=look(s)) for s in with_news)
     quiet_html = ""
     if quiet:
@@ -1751,9 +1774,9 @@ def _day_body(rec: dict, *, final: bool = False) -> str:
     return f"{body}{quiet_html}{skip_html}"
 
 
-def _day_html(rec: dict, *, open_: bool, final: bool = False) -> str:
+def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None) -> str:
     return (f"<details class='hn-day' data-hnday='1' data-open='{1 if open_ else 0}'"
-            f"{' open' if open_ else ''}>{_day_summary(rec)}{_day_body(rec, final=final)}</details>")
+            f"{' open' if open_ else ''}>{_day_summary(rec)}{_day_body(rec, final=final, now=now)}</details>")
 
 
 def frag_name(date: str) -> str:
@@ -1773,7 +1796,7 @@ def day_fragments(records: list[dict], now: datetime) -> dict[str, str]:
     필수 — 어느 날이 '마치지 못함' 인지 오늘에 달렸다(기본값을 두면 테스트가 날짜에 묶인다, #425)."""
     recs = sorted(records, key=lambda r: r["date"], reverse=True)[:RENDER_DAYS]
     live = _live_dates([r["date"] for r in records], _now(now).date().isoformat())
-    return {frag_name(r["date"]): _day_body(r, final=r["date"] not in live) for r in recs[1:]}
+    return {frag_name(r["date"]): _day_body(r, final=r["date"] not in live, now=now) for r in recs[1:]}
 
 
 def _cost_line(now: datetime) -> str:
@@ -1840,7 +1863,7 @@ def render_page(records: list[dict], state: dict | None = None,
         f"<div class='stat'><div class='k'>AI 비용 (오늘 / 이번 달 / 누적)</div><div class='v'>"
         f"{_h.escape(_cost_line(now))}</div></div>"
         "</div>")
-    days = "".join(_day_html(r, open_=True, final=r["date"] not in live) if i == 0 else _day_lazy(r)
+    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now) if i == 0 else _day_lazy(r)
                    for i, r in enumerate(recs)) or (
         f"<div class='hn-status'>아직 기록이 없습니다 — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 "
         "자동으로 모읍니다.</div>")
@@ -1870,7 +1893,8 @@ def render_page(records: list[dict], state: dict | None = None,
 대만 ETF 는 가를 목록이 없어 회사로 셉니다).<br>
 <b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 옆 괄호는 <b>전날(그 시장의 직전 거래일) 등락률</b>로,
 「국가별 심리지도」가 받아 둔 TradingView 하루치(장 마감 3시간 뒤 수집)를 씁니다 — 미국은 한국 시각 아침 8~9시에
-받으므로 이른 아침엔 '(—)' 일 수 있고 다음 갱신에 채워집니다(마우스를 올리면 사유와 기준일).<br>
+받으므로 이른 아침엔 '(—)' 일 수 있고 받으면 다음 갱신에 채워집니다. 휴장이거나 그날을 받지 못했으면 '(—)' 로
+남습니다(마우스를 올리면 사유와 기준일).<br>
 <b>뉴스</b> — 종목마다 최대 {MAX_NEWS_PER_STOCK}건입니다(원천이 최신순으로 주는 10건 안에서 — 두 이름으로
 찾는 종목은 두 검색 결과를 합쳐서 — 기사가 많은 날은 최근 것만 담깁니다). 국내는 네이버 뉴스 검색(키가 없으면 구글 뉴스)으로 이름을 찾되, 제목·요약에
 그 이름이 <b>낱말로</b> 나온 기사만 남깁니다(이름이 짧거나 흔하면 다른 회사 기사가 섞일 수 있어 AI 가 한 번 더
@@ -1888,7 +1912,7 @@ Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴�
 얘기가 아니라고 AI 가 판단한 항목은 근거 목록에서 흐리게 보입니다. 이것은 뉴스 요약이지 투자 판단이
 아닙니다.<br>
 <b>언제 갱신되나</b> — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 한 번 모읍니다(장 시작 전에 읽도록 · 봇이 {TICK_MIN}분마다
-확인하므로 실제 시작은 {_hm_after(TICK_MIN)} 사이).
+확인하므로 보통 {_hm_after(TICK_MIN)} 사이에 시작합니다 — 앞선 정리 작업이 길면 그보다 늦을 수 있습니다).
 창은 직전 집계 {WINDOW_OVERLAP_H}시간 전부터 지금까지입니다(직전 집계 뒤에 늦게 들어온 글을 놓치지 않으려고
 겹치며, 이미 실린 항목은 빼고 싣습니다). 봇이 며칠 멈췄어도 {MAX_WINDOW_H}시간보다 오래된 뉴스는 싣지 않습니다.
 AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 뒤 이어서 합니다('대기' — 바로 전 날의 대기분도

@@ -838,7 +838,7 @@ def test_day_fragments_hold_only_the_past_days_in_view(hn, monkeypatch):
     fr = hn.day_fragments(recs, _t("2026-10-12T09:00"))
     assert sorted(fr) == ["hn_d_2026-10-10.html", "hn_d_2026-10-11.html"]     # 최신일·창 밖은 없다
     body = fr["hn_d_2026-10-11.html"]
-    assert body == hn._day_body(recs[2]) and "data-q='삼성전자 005930'" in body and "<details" not in body[:20]
+    assert body == hn._day_body(recs[2], now=_t("2026-10-12T09:00")) and "data-q='삼성전자 005930'" in body and "<details" not in body[:20]
 
 
 def test_regenerate_writes_fragments_once_and_prunes_old_ones(hn, tmp_path, monkeypatch):
@@ -2412,3 +2412,50 @@ def test_prev_change_nan_is_not_a_value(hn, ws_snaps):
     ws_snaps("KR", "2026-10-12", [("KRX:005930", float("nan"))])
     v, d, why = hn.prev_changes("2026-10-13")(_hs("KR", "005930"))
     assert v is None and "하루치에 이 종목이 없음" in why
+
+
+def test_prev_change_missing_reason_follows_the_board_status(hn, ws_snaps, monkeypatch):
+    """하루치가 없을 때 '아직' 은 받을 창이 남았을 때만 — 창을 놓친 날·휴장·보관 기간 밖이면 그렇게 말한다
+    (영원히 안 채워질 칸에 '다음 갱신에 채워짐' 이라 적으면 #380). 판정은 국가별 보드의 것을 그대로(#35)."""
+    import bot.world_sectors as ws
+    seen = []
+
+    def status(mk, d, now, state=None):
+        seen.append((mk, d, now.isoformat()))
+        return box["st"]
+    monkeypatch.setattr(ws, "market_day_status", status)
+    box = {}
+    want = {"pending": "아직 받지 않음", "missing": "받을 창을 놓쳐", "holiday": "휴장(추정)",
+            "closed": "휴장(추정)", "ok": "보관 기간(45일) 밖", "": "2026-10-12 하루치가 없음"}
+    for st, txt in want.items():
+        box["st"] = st
+        v, d, why = hn.prev_changes("2026-10-13", _t("2026-10-13T08:05"))(_hs("KR", "005930"))
+        assert v is None and txt in why, (st, why)
+        assert ("다음 갱신에 채워짐" in why) == (st == "pending"), (st, why)
+    assert seen[0] == ("KR", "2026-10-12", "2026-10-13T08:05:00+09:00")         # 호출부의 now 를 넘긴다
+
+
+def test_prev_cache_cap_covers_every_rendered_day_and_market(hn):
+    """재생성은 화면의 날 × 시장을 매번 같은 순서로 훑는다 — 상한이 그보다 작으면 FIFO 가 매 패스 전부 밀어내
+    15분마다 모두 다시 푼다(리뷰 2026-10-13: JP 보유가 생기면 30×3=90 > 80)."""
+    assert hn._PREV_CACHE_MAX >= hn.RENDER_DAYS * len(set(hn._PREV_MK.values()))
+
+
+def test_prev_cache_evicts_when_full(hn, ws_snaps, monkeypatch):
+    monkeypatch.setattr(hn, "_PREV_CACHE_MAX", 2)
+    for d, c in (("2026-10-07", 1.0), ("2026-10-08", 2.0), ("2026-10-12", 3.0)):
+        ws_snaps("KR", d, [("KRX:005930", c)])
+    for day in ("2026-10-08", "2026-10-12", "2026-10-13"):
+        hn.prev_changes(day)(_hs("KR", "005930"))
+    assert len(hn._PREV_CACHE) == 2 and ("KR", "2026-10-07") not in hn._PREV_CACHE
+
+
+def test_prev_change_us_dot_class_shares(hn, ws_snaps):
+    """자산 기록이 BRK.B 로 줘도 표 키(lookup_ticker 꼴 BRK-B)와 맞는다."""
+    ws_snaps("US", "2026-10-12", [("NYSE:BRK.B", 0.7)])
+    assert hn.prev_changes("2026-10-13")(_hs("US", "BRK.B"))[0] == 0.7
+
+
+def test_as_of_broken_saved_ts_does_not_raise(hn):
+    for bad in (float("inf"), 1e300, "x", None):
+        assert hn.universe({"holdings": [], "_saved_ts": bad}, us_etf=set())[1]["as_of"] is None

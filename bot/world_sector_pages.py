@@ -359,8 +359,7 @@ def when_line(now: datetime, markets=None) -> str:
         parts.append(f"{market_name(m)} {nxt}{t.strftime('%H:%M')}")
     return (f"나라마다 장 마감 {ws.READY_MIN // 60}시간 뒤에 받습니다(한국 시각 · "
             + " · ".join(_h.escape(x) for x in parts)
-            + f"). 봇이 {ws.TICK_MIN}분마다 확인하므로 화면 반영은 그보다 최대 {ws.TICK_MIN}분 늦을 수 "
-              "있습니다")
+            + f"). 봇이 {ws.TICK_MIN}분마다 확인하므로 화면 반영은 그보다 보통 {ws.TICK_MIN}분 안쪽으로 늦습니다")
 
 
 # ── 수집 상태 줄(세 보드 공용) ───────────────────────────────────────────────

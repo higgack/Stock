@@ -2161,3 +2161,12 @@ def test_world_tick_matches_what_the_guide_says():
     v = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
          and any(getattr(t, "id", "") == "_WORLD_SECTORS_TICK_SEC" for t in n.targets)][0]
     assert ast.literal_eval(v.value) == ws.TICK_MIN * 60
+
+
+def test_ready_kst_uses_the_next_session_across_dst():
+    """다음에 받을 세션 기준 — 2026-11-01(일) 에는 월요일(서머타임 끝) 세션이라 09:00. 지난 금요일
+    세션(08:00)을 적으면 그 주말 내내 틀린 시각이다(리뷰 2026-10-13)."""
+    t, d = ws.ready_kst("US", _at(2026, 11, 1, 11))
+    assert (d, t.strftime("%m-%d %H:%M")) == ("2026-11-02", "11-03 09:00")
+    t, d = ws.ready_kst("KR", _at(2026, 10, 12, 19))               # 그날 18:30 이 지났으면 다음 세션
+    assert d == "2026-10-13"
