@@ -806,7 +806,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
 def _stock_block(s: dict) -> str:
     mk = {"KR": "한국", "US": "미국"}.get(s["market"], s["market"])
     nm = s["name"] + (f" / {s['ko']}" if s.get("ko") else "")      # 'NAVER / 네이버' — 한글 기사도 그 회사다
-    lines = [f"### key={s['key']} · {nm}({s['ticker']}, {mk})"]
+    ind = f" · 업종: {s['ind']}" if s.get("ind") else ""
+    lines = [f"### key={s['key']} · {nm}({s['ticker']}, {mk}){ind}"]
     for it in s["items"]:
         kind = "텔레그램" if it["src"] == "telegram" else f"뉴스·{it.get('source') or it['src']}"
         summ = it.get("summary") or ""
@@ -840,6 +841,8 @@ def build_prompt(stocks: list[dict]) -> str:
         "   이름이 같은 다른 회사 · 여러 종목 시세 나열 · 광고 · 회사 이름이 나오지만 투자와 무관한 소식(그 이름을\n"
         "   단 스포츠 구단의 경기 결과·순위·선수 기록, 연예·문화 행사 등). 단 스포츠·연예·콘텐츠·게임이 그 회사의\n"
         "   본업이거나, 회사의 수입·지출에 닿는 일(후원·마케팅 계약, 흥행 수입, 구단 매각·운영비)이면 관련 있다.\n"
+        "   종목 머리에 '업종' 이 있으면 그 업종의 회사로 읽는다 — 이름만 같고 다른 사업을 다루는 항목(예: 반도체\n"
+        "   장비 회사와 이름이 같은 게임·영화·상품, 같은 이름의 다른 회사)은 넣지 않는다.\n"
         "   relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
         "6) 매수·매도 권유, 목표주가, 주가 예측을 쓰지 않는다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
@@ -857,7 +860,10 @@ def build_prompt(stocks: list[dict]) -> str:
 # 구기 종목명이 같이 잡는다).
 OFFTOPIC_HINT = re.compile(
     r"야구|축구|농구|배구|골프|테니스|e스포츠|이스포츠|구단|선수|감독|리그|시즌|홈런|투수|타자|득점|우승|"
-    r"KBO|K리그|MLB|NBA|EPL|올림픽|월드컵|콘서트|공연|드라마|예능|아이돌|팬미팅|배우|가수|시상식|영화제")
+    r"KBO|K리그|MLB|NBA|EPL|올림픽|월드컵|콘서트|공연|드라마|예능|아이돌|팬미팅|배우|가수|시상식|영화제|"
+    # 게임·콘텐츠 — 같은 이름의 게임·작품이 섞인다(제우스 079370 반도체 장비 ↔ 컴투스 신작 게임 '제우스', 2026-10-14).
+    # 게임이 본업인 회사의 줄은 확인 단계가 업종을 보고 남긴다.
+    r"게임|MMORPG|RPG|구글 ?플레이|앱스토어|웹툰|OTT")
 CHECK_MAX = 40                     # 한 번의 확인 호출에 묻는 줄 상한(넘으면 그 묶음의 다음 호출로)
 MAX_CHECK_REVERTS = 3              # 확인 일시 오류로 '대기' 로 되돌리는 상한 — 넘으면 줄을 남기고 그렇게 적는다
 
@@ -887,13 +893,16 @@ def build_check_prompt(cands: list[tuple[str, dict, str, int]]) -> str:
                           for r in ln.get("refs") or [] if r in by_n)
         nm = st["name"] + (f" / {st['ko']}" if st.get("ko") else "")
         kind = "Pros(호재 관점)" if side == "pros" else "Cons(악재·리스크 관점)"
-        rows.append(f"### id={cid} · {nm}({st['ticker']}) · {kind}\n줄: {ln.get('t', '')}\n근거: {refs[:600]}")
+        ind = f" · 업종: {st['ind']}" if st.get("ind") else ""
+        rows.append(f"### id={cid} · {nm}({st['ticker']}){ind} · {kind}\n줄: {ln.get('t', '')}\n근거: {refs[:600]}")
     return (
         "너는 개인 투자자의 보유 종목 Pros/Cons 를 검수하는 보조다. 아래 각 줄이 그 회사 주주의 투자 판단에\n"
         f"닿는지({INVEST_TOPICS}) 판정한다.\n"
         "- keep=false: 회사 이름만 나오고 회사의 사업·수입·지출과 이어지지 않는 소식. 그 이름을 단 스포츠\n"
-        "  구단의 경기 결과·순위·선수 기록·선수 부상·감독 교체, 연예·문화 행사 소식 등.\n"
-        "- keep=true: 스포츠·연예·콘텐츠·게임이 그 회사의 본업인 경우, 또는 회사 돈에 닿는 일(후원·마케팅\n"
+        "  구단의 경기 결과·순위·선수 기록·선수 부상·감독 교체, 연예·문화 행사 소식 등. 그리고 머리의 '업종' 과\n"
+        "  다른 사업을 다루는 소식(이름만 같은 게임·작품·상품·다른 회사 — 예: 반도체 장비 회사인데 근거가 같은\n"
+        "  이름의 모바일 게임 순위).\n"
+        "- keep=true: 스포츠·연예·콘텐츠·게임이 그 회사의 본업(업종)인 경우, 또는 회사 돈에 닿는 일(후원·마케팅\n"
         "  계약의 금액·조건, 흥행 수입, 구단 매각·운영비)이 근거에 **쓰여 있는** 경우.\n"
         "- 근거에 쓰이지 않은 연결(예: '선수 부상이 브랜드 이미지에 영향')을 지어내 keep=true 로 하지 않는다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
@@ -1221,6 +1230,22 @@ def _apply_drops(stocks: list[dict], drop: dict) -> None:
         st["offtopic_lines"] = len(gone)
 
 
+def _attach_industry(rec: dict, stocks: list[dict]) -> None:
+    """업종을 종목에 적는다(프롬프트·확인 단계·카드가 같이 쓴다). 이미 있으면 그대로 · 모르면 비워 둔다(지어내지
+    않는다 — 프롬프트도 업종 줄을 빼고 보낸다, #165). 실패는 업종만 비운다(#315)."""
+    if not stocks:
+        return
+    try:
+        ind = industry_lookup(rec.get("date") or _now(None).date().isoformat())
+        for s in stocks:
+            if not s.get("ind"):
+                v = ind(s)
+                if v:
+                    s["ind"] = v
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 업종 붙이기 실패: %s", exc)
+
+
 def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             on_progress=None) -> dict:
     """대기 중인 종목을 묶어 AI 에 보낸다(한 주기 `max_calls` 회까지). 묶음마다 `on_progress(rec)`
@@ -1232,6 +1257,7 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
     pend = [s for s in rec.get("stocks") or [] if s.get("status") == "pending"]
     done = {"calls": 0, "analyzed": 0, "failed": 0, "no_key": False, "transient": False}
     _attach_bodies(rec, pend)
+    _attach_industry(rec, pend)
     for grp in batches(pend):
         if done["calls"] >= max_calls:
             break
@@ -1664,6 +1690,7 @@ _HN_CSS = """
 .hn-chg.hn-up{color:var(--hn-up)}.hn-chg.hn-dn{color:var(--hn-dn)}  /* 한국 관례: 상승 빨강 · 하락 파랑(심리지도와 같다) */
 .hn-nm:hover{text-decoration:underline}
 .hn-tk{font-size:12px;color:var(--muted)}
+.hn-ind{font-weight:600}
 .hn-pc{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 @media (max-width:560px){.hn-pc{grid-template-columns:1fr}}
 .hn-side{border-radius:8px;padding:6px 8px;background:var(--surface2)}
@@ -2018,34 +2045,48 @@ _PREV_CACHE_MAX = RENDER_DAYS * len(set(_PREV_MK.values())) + 10
 
 
 def _prev_table(ws, lookup_ticker, mk: str, d: str) -> dict | None:
-    """그 날 하루치의 {티커: 등락%} — 파일이 없으면 None. 하루치 원본은 미국 한 장이 수 MB 라 재생성마다
-    (지난 날 조각까지 30일 × 시장) 다시 풀면 낭비다 → mtime 으로 무효화하는 작은 표만 남긴다(#61). 국가별
-    보드의 원본 캐시(`world_sectors._cached_load`, 6장)는 쓰지 않는다 — 30일을 훑으면 그 보드의 캐시를 밀어낸다."""
+    """그 날 하루치의 {티커: 등락%} — 파일이 없으면 None(`_snap_tables` 의 앞 절반)."""
+    t = _snap_tables(ws, lookup_ticker, mk, d)
+    return None if t is None else t[0]
+
+
+def _snap_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[dict, dict] | None:
+    """그 날 하루치의 ({티커: 등락%}, {티커: 업종 한국어}) — 파일이 없으면 None. 하루치 원본은 미국 한 장이 수 MB
+    라 재생성마다(지난 날 조각까지 30일 × 시장) 다시 풀면 낭비다 → mtime 으로 무효화하는 작은 표만 남긴다(#61).
+    국가별 보드의 원본 캐시(`world_sectors._cached_load`, 6장)는 쓰지 않는다 — 30일을 훑으면 그 보드의 캐시를
+    밀어낸다. 업종 이름은 하루치가 실은 원천 한국어 라벨(`labels.ind` — 「국가별 섹터혼합」 과 같은 이름, #38)이고
+    없으면 원천 영문 그대로다."""
     path = ws.snap_path(mk, d)
     try:
         mt = path.stat().st_mtime_ns
     except OSError:
         return None
     hit = _PREV_CACHE.get((mk, d))
-    if hit and hit[0] == mt:
+    if hit and hit[0] == mt and isinstance(hit[1], tuple):
         return hit[1]
     snap = ws._gz_load(path)
     rows = snap.get("rows") if isinstance(snap, dict) else None
     if not isinstance(rows, list):
         return None
-    tbl = {}
+    lab = ((snap.get("labels") or {}).get("ind") or {}) if isinstance(snap.get("labels"), dict) else {}
+    tbl, ind = {}, {}
     for r in rows:
         try:
             k = lookup_ticker(r[0]).upper()
             v = r[4]
+            en = r[3]
         except Exception:                                      # noqa: BLE001
             continue
-        if k and isinstance(v, (int, float)) and v == v:
+        if not k:
+            continue
+        if isinstance(v, (int, float)) and v == v:
             tbl[k] = float(v)
+        if en:
+            ind[k] = str(lab.get(en) or en)
     while len(_PREV_CACHE) >= _PREV_CACHE_MAX:
         _PREV_CACHE.pop(next(iter(_PREV_CACHE)))
-    _PREV_CACHE[(mk, d)] = (mt, tbl)
-    return tbl
+    _PREV_CACHE[(mk, d)] = (mt, (tbl, ind))
+    return tbl, ind
 
 
 def prev_changes(date: str, now: datetime | None = None):
@@ -2083,15 +2124,53 @@ def prev_changes(date: str, now: datetime | None = None):
         tbl, d, why_ = _table(mk)
         if tbl is None:
             return None, d, why_
-        key = (st["ticker"] if mk == "KR" else (st.get("sym") or st["ticker"])).upper()
-        if mk == "US":
-            key = key.replace(".", "-")        # 표 키는 `lookup_ticker` 꼴(BRK.B → BRK-B)
-        v = tbl.get(key)
+        v = tbl.get(_snap_key(st, mk))
         if v is None:
             return None, d, f"{d} 하루치에 이 종목이 없음"
         return v, d, ""
 
     return look
+
+
+def _snap_key(st: dict, mk: str) -> str:
+    """하루치 표의 키 — 표는 `lookup_ticker` 꼴(국내 6자리 · 미국 BRK.B → BRK-B)."""
+    key = (st["ticker"] if mk == "KR" else (st.get("sym") or st["ticker"])).upper()
+    return key.replace(".", "-") if mk == "US" else key
+
+
+# 업종(사용자 2026-10-14 "종목코드에 따른 업종을 같이 명시하고 그거에 맞게 뉴스를") — 제우스(079370, 반도체
+# 장비) 카드에 컴투스 신작 게임 '제우스' 기사가 실렸다. 이름 검색이라 같은 이름의 게임·작품·다른 회사가 섞인다.
+# 업종은 「국가별 심리지도」가 받아 둔 TradingView 하루치에서 읽는다(디스크만 · 전시장 · #38). 업종은 거의 안
+# 바뀌므로 기록 날짜 앞 거래일 하루치가 없으면 몇 거래일 앞까지 본다.
+IND_LOOKBACK = 5
+
+
+def industry_lookup(date: str):
+    """업종 조회기 — `ind(stock) -> 업종 한국어 이름` (모르면 ''). 실패는 빈칸만 남긴다(#315)."""
+    memo: dict = {}
+
+    def _tbl(mk: str) -> dict:
+        if mk in memo:
+            return memo[mk]
+        out: dict = {}
+        try:
+            from bot import world_sectors as ws
+            from bot.world_sector_pages import lookup_ticker
+            for d in ws.prev_sessions(mk, date, IND_LOOKBACK) or []:
+                t = _snap_tables(ws, lookup_ticker, mk, d)
+                if t is not None and t[1]:
+                    out = t[1]
+                    break
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("holdings_news: 업종 조회 실패(%s %s): %s", mk, date, exc)
+        memo[mk] = out
+        return out
+
+    def ind(st: dict) -> str:
+        mk = _PREV_MK.get(str(st.get("market") or "").upper())
+        return _tbl(mk).get(_snap_key(st, mk), "") if mk else ""
+
+    return ind
 
 
 def _prev_missing_why(ws, mk: str, d: str, now) -> str:
@@ -2172,8 +2251,14 @@ def _pending_reason(s: dict) -> str:
     return f"{r} — 다음 주기에 다시" if s.get("retry") else r
 
 
+def _ind_html(ind: str) -> str:
+    import html as _h
+    return f" · <span class='hn-ind' title='업종 · TradingView(「국가별 섹터혼합」과 같은 분류)'>{_h.escape(ind)}</span>" \
+        if ind else ""
+
+
 def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value: float | None = None,
-          fx: dict | None = None) -> str:
+          fx: dict | None = None, ind: str = "") -> str:
     """종목 카드. `final` = 주기가 더는 이어서 정리하지 않는 날(`_live_dates` 밖) — 그날의 '대기' 를 '다음
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
     import html as _h
@@ -2236,7 +2321,7 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value:
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
             f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', val, ccy=currency_of(s.get('market') or ''), fx=fx)}"
-            f"<span class='hn-tk'>{_h.escape(s['ticker'])} · 보유 {_krw(val)}"
+            f"<span class='hn-tk'>{_h.escape(s['ticker'])}{_ind_html(s.get('ind') or ind)} · 보유 {_krw(val)}"
             f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}</span></div>"
             f"{pc}<details class='hn-src'><summary>근거 {len(items)}건{offnote}</summary>"
             f"<ol>{lis}</ol></details></div>")
@@ -2294,8 +2379,10 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
     with_news = [s for s in ss if s.get("items")]
     quiet = [s for s in ss if not s.get("items")]
     look = prev_changes(rec["date"], now)
+    indl = industry_lookup(rec["date"])          # 업종을 적어 두지 않은 옛 기록도 렌더 때 채운다(#270)
     vals = values or {}
-    cards = "".join(_card(s, final=final, prev=look(s), live=live, value=vals.get(s.get("key")), fx=fx) for s in with_news)
+    cards = "".join(_card(s, final=final, prev=look(s), live=live, value=vals.get(s.get("key")), fx=fx,
+                          ind="" if s.get("ind") else indl(s)) for s in with_news)
     quiet_html = ""
     if quiet:
         names = ", ".join(_h.escape(s["name"]) for s in quiet[:60])
@@ -2453,7 +2540,9 @@ def render_page(records: list[dict], state: dict | None = None,
 평가금액이 큰 종목부터 보여 줍니다. ETF(국내는 자산 기록이 ETF 로 알아본 상품, 미국은 거래소 목록의 ETF
 표시)와 티커를 못 찾은 상품은 '회사' 뉴스로 가를 수 없어 빼고, 그 이름을 날짜 칸 맨 아래에 적습니다(일본·홍콩·
 대만 ETF 는 가를 목록이 없어 회사로 셉니다).<br>
-<b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 옆 괄호는 맨 위(최신) 날짜 카드에서
+<b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 티커 옆은 그 종목의 <b>업종</b>입니다(「국가별
+섹터혼합」과 같은 TradingView 분류 · 그 시장 하루치가 없으면 비어 있습니다). AI 는 이 업종을 보고 이름만 같은
+다른 사업 기사(예: 반도체 장비 회사 '제우스' 에 섞인 같은 이름의 게임 기사)를 근거에서 뺍니다. 옆 괄호는 맨 위(최신) 날짜 카드에서
 <b>실시간 등락률</b>(정규장 · 직전 종가 대비 — 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 · 장 중이면 지금 값,
 장이 끝났으면 마지막 세션 값 · 장전·장후 시간외 등락은 넣지 않습니다)이고 화면을 열어 둔 동안 1분마다
 바뀝니다. 등락률 옆 금액은 <b>보유 평가금액 × 등락률</b>로 추정한 전일대비 금액입니다(자산 기록에 수량이 없어
