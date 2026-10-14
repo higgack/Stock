@@ -1894,10 +1894,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
             raw = ",".join(qs.get("t", [])).split(",")
-            from bot.live_pct import fx_lookup, lookup
+            from bot.live_pct import fx_lookup, fx_pending, lookup
             body = {"ok": True, **lookup(raw)}
             if qs.get("fx"):                       # 보유종목 News 해외 원화 손익 — 원화 환율 전일대비(메모리만)
                 body["fx"] = fx_lookup()
+                if not body["fx"]:                 # 빈 표 — 받는 중(재시작 직후)인지 못 받은 것인지 화면이 가르게
+                    body["fx_pending"] = fx_pending()
             self._reply_json(200, body)
         except Exception as exc:                               # noqa: BLE001
             log.warning("live_pct API failed: %s: %s", type(exc).__name__, exc)

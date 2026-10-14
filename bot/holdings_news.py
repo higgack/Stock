@@ -1644,6 +1644,13 @@ def tick_and_render(now: datetime | None = None) -> dict:
         st["no_holdings"] = False
         _save_state(st)
         res = {"status": "error"}
+    try:                                 # 하루치에 없는 보유의 종가 — 실패는 그 칸만 비운다(#315)
+        cr = refresh_closes(now)
+        if cr["asked"]:
+            log.info("holdings_news: Yahoo 일봉 종가 %d/%d종목%s", cr["got"], cr["asked"],
+                     f" — {cr['why']}" if cr["why"] else "")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 종가 보충 실패: %s", exc)
     regenerate(now)
     return res
 
@@ -1780,8 +1787,9 @@ _HN_CSS = """
 </style>
 """
 
-# 전일대비 요약을 실시간 등락률로 다시 센다 — 1분마다(카드의 `LIVE_JS` 와 같은 주기·같은 엔드포인트). 실시간을
-# 못 받은 종목은 서버가 넣은 전날 등락을 쓰고, 둘 다 없으면 세지 않는다(`pnl_summary` 와 같은 규칙, #38).
+# 전일대비 요약·해외 카드 금액을 원화 환율로 다시 센다 — 등락은 서버가 구운 장종료가 누적(종목 시세는 묻지 않는다,
+# 사용자 2026-10-14 "부하가 크면 기준을 장종료가격으로"). 해외 보유가 있을 때만 1분마다 환율 하나(`api/live_pct?fx=1`
+# — 서버 메모리 값 풀)를 묻는다. 규칙은 서버 `pnl_summary`·`_prev_html` 과 같다(#38).
 _PNL_JS = r"""
 (function(){
   // 파이썬 `_signed_krw` 와 같은 반올림(절댓값 반올림 올림 · 반올림해 0 이면 부호 없음)
@@ -1790,7 +1798,7 @@ _PNL_JS = r"""
     else if(x>=1e4){n=Math.floor(x/1e4+0.5); body=n.toLocaleString('en-US')+'만원';}
     else{n=Math.floor(x+0.5); body=n.toLocaleString('en-US')+'원';}
     return (n===0?'':a>0?'+':'-')+body;}
-  window.hnAmt=amt;     // 카드 칸(`LIVE_JS` paint)도 쓴다 — 요약 재료가 없어도 정의한다
+  window.hnAmt=amt;    // 회귀가 파이썬 `_signed_krw` 와 값으로 대조한다
   // 원화 환율 전일대비(통화 → %) — 서버가 넣은 값으로 시작하고 1분마다 `fx=1` 로 갱신. 파이썬 `krw_pct` 와 같은 식.
   var fx={}; try{var fe=document.getElementById('hn-fx-data'); if(fe) fx=JSON.parse(fe.textContent)||{};}catch(e){fx={};}
   // `fb` = 그 종목 기준 업로드 무렵의 원화 환율 수준 — 있으면 환율 변동도 기준 대비 누적(지금 ÷ 기준), 없으면 오늘 하루치
@@ -1800,62 +1808,65 @@ _PNL_JS = r"""
     else if(fx[c]!==undefined&&fx[c]!==null){fac=1+fx[c]/100; day=true;}
     if(fac===null) return {pct:p,fx:null,day:false};
     return {pct:((1+p/100)*fac-1)*100,fx:(fac-1)*100,day:day};}
-  window.hnKrw=krw;
-  // 기준 대비 누적 등락 — 파이썬 `cum_lookup` 의 재료(ka 마감 전부 · kx 마지막 마감 뺀 것 · sw 새 세션 시각)
-  // 위에 실시간 등락을 곱한다. 못 세면 null(서버 값이 남는다).
-  function cum(c,lp){
-    if(!c) return lp;
-    if(Date.now()>=(c.sw||0)) return (c.ka===null||c.ka===undefined)?null:(c.ka*(1+lp/100)-1)*100;
-    if(c.kx===null||c.kx===undefined) return c.n===0?0:null;   // 기준 뒤 마감 없음 → 실시간은 기준 앞 세션
-    return (c.kx*(1+lp/100)-1)*100;}
-  window.hnCum=cum;
-  var el=document.getElementById('hn-pnl-data'); if(!el) return;
-  var pos; try{pos=JSON.parse(el.textContent)||[];}catch(e){return;}
-  var live={};
+  var el=document.getElementById('hn-pnl-data'), pos=[], basis='';
+  if(el){basis=el.getAttribute('data-basis')||''; try{pos=JSON.parse(el.textContent)||[];}catch(e){pos=[];}}
   function draw(){
-    var G={all:[0,0,0,0,0,0],KR:[0,0,0,0,0,0],XX:[0,0,0,0,0,0]};   // 금액·분모·실시간·전날·전체·환율 미확인
+    var G={all:[0,0,0,0,0],KR:[0,0,0,0,0],XX:[0,0,0,0,0]};   // 금액·분모·값 있음·전체·환율 미확인
     pos.forEach(function(p){
-      var lv=live[p.t], pct=null;
-      if(lv){pct=(p.ka!==undefined)?cum(p,lv.pct):lv.pct; if(pct===null) lv=null;}
-      if(pct===null) pct=p.p;
-      ['all',p.g].forEach(function(g){var o=G[g]; o[4]++;
-        if(pct===null||pct===undefined) return;
-        var k=p.c?krw(pct,p.c,p.fb):{pct:pct,fx:0};
-        o[0]+=p.v*k.pct/100; o[1]+=p.v; if(lv) o[2]++; else o[3]++; if(k.fx===null) o[5]++;});
+      ['all',p.g].forEach(function(g){var o=G[g]; o[3]++;
+        if(p.p===null||p.p===undefined) return;
+        var k=p.c?krw(p.p,p.c,p.fb):{pct:p.p,fx:0};
+        o[0]+=p.v*k.pct/100; o[1]+=p.v; o[2]++; if(k.fx===null) o[4]++;});
     });
     Object.keys(G).forEach(function(g){
       var o=G[g], v=document.getElementById('hn-pnl-'+g), s=document.getElementById('hn-pnl-'+g+'-sub');
       if(!v||!s) return;
-      if(!o[4]){v.textContent='—'; s.textContent='보유 없음'; return;}
+      if(!o[3]){v.textContent='—'; s.textContent='보유 없음'; return;}
       if(!o[1]){v.textContent='—';}
       else{var pc=o[0]/o[1]*100, sp=document.createElement('span');
         sp.className=o[0]>0?'hn-up':o[0]<0?'hn-dn':'';
         sp.textContent=amt(o[0])+' ('+(pc>0?'+':'')+pc.toFixed(2)+'%)';
         v.textContent=''; v.appendChild(sp);}
-      // 서버 칸과 같은 이름 — 실시간을 못 받은 종목은 기준 뒤 마지막 마감까지의 누적이다(리뷰 2026-10-14)
-      var parts=[]; if(o[2]) parts.push('실시간 '+o[2]); if(o[3]) parts.push('기준 뒤 마감 등락 '+o[3]);
-      var miss=o[4]-o[2]-o[3]; if(miss) parts.push('미확인 '+miss);
-      s.textContent=parts.join(' · ')+' / '+o[4]+'종목'+(o[5]?' · 환율 미확인 '+o[5]:'');
+      s.textContent=basis+' '+o[2]+'/'+o[3]+'종목'+(o[4]?' · 환율 미확인 '+o[4]:'');   // 서버 칸과 같은 꼴
     });
   }
+  // 해외 최신일 카드(`js-hn-amt`) — 서버가 구운 등락·기준 금액에 환율만 곱해 금액·툴팁을 다시 쓴다
+  function cards(){
+    [].slice.call(document.querySelectorAll('.js-hn-amt')).forEach(function(e){
+      var p=parseFloat(e.getAttribute('data-p')), v=parseFloat(e.getAttribute('data-v')), c=e.getAttribute('data-c');
+      if(!isFinite(p)||!isFinite(v)||!c) return;
+      var k=krw(p,c,parseFloat(e.getAttribute('data-fb')||'')||null);
+      e.textContent='('+(p>0?'+':'')+p.toFixed(2)+'% · '+(k.fx!==null?'원화 ':'')+amt(v*k.pct/100)+')';
+      e.setAttribute('title',(e.getAttribute('data-tip')||'')+(k.fx===null?' · '+c+' 환율 미확인 — 현지통화 등락만'
+        :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+c+(k.day?' 오늘 하루 ':' 기준 대비 ')+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));
+    });
+  }
+  // 해외 카드(`js-hn-amt`)는 값이 있는 해외 보유에만 붙으므로 요약 재료로 충분하다 — 값이 없는 해외(전부 '(—)')면
+  // 다시 그릴 것이 없으니 묻지 않는다
+  var need=pos.some(function(p){return !!p.c&&p.p!==null&&p.p!==undefined;});
+  // 서버가 환율 값 풀을 아직 받는 중(`fx_pending` — 대시보드 재시작 직후 등)이면 빈 응답을 '미확인' 으로 그리지 않고
+  // 갖고 있던 환율을 둔 채 5초 뒤 다시 묻는다. 상태는 아는 쪽(서버)이 말한다 — '받는 중' 은 재시작 뒤 **첫 시도가 끝나기
+  // 전**뿐이다(`live_pct.fx_pending`). 1분(12번)을 넘기면 1분 주기로 돌아가되 갖고 있던 환율은 지우지 않고, 처음부터 없던
+  // 화면은 '대기' 를 영원히 약속하지 않게 그때 '미확인' 으로 그린다(델타 리뷰 2026-10-14)
+  var quick=0;
   function poll(){
-    var ts=pos.map(function(p){return p.t;}), chunks=[];
-    for(var i=0;i<ts.length;i+=300) chunks.push(ts.slice(i,i+300));
-    var left=chunks.length, again=false;
-    if(!left){return;}
-    chunks.forEach(function(c,i){
-      fetch('api/live_pct?t='+encodeURIComponent(c.join(','))+(i===0?'&fx=1':''),{cache:'no-store'})
-        .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
-        .then(function(js){var q=(js&&js.q)||{}; for(var k in q) live[k]=q[k]; if(js&&js.pending) again=true;
-          // 응답이 환율을 실었으면 통째로 바꾼다 — 서버가 낡아서 버린 통화가 화면에 남지 않게(리뷰 2026-10-14)
-          var f=js&&js.fx; if(f&&typeof f==='object'){var nf={}, nl={};
-            for(var cc in f){ if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
-              if(f[cc]&&typeof f[cc].close==='number') nl[cc]=f[cc].close; }
-            fx=nf; fxNow=nl; if(window.liveRepaint) window.liveRepaint();}})
-        .catch(function(){})
-        .then(function(){if(--left===0){draw(); setTimeout(poll, again?5000:60000);}});
-    });
+    fetch('api/live_pct?fx=1',{cache:'no-store'})
+      .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
+      .then(function(js){
+        // 응답이 환율을 실었으면 통째로 바꾼다 — 서버가 낡아서 버린 통화가 화면에 남지 않게(리뷰 2026-10-14)
+        var f=js&&js.fx; if(!f||typeof f!=='object') return;
+        var pend=js.fx_pending&&!Object.keys(f).length;
+        if(pend&&quick<12){quick++; return 'soon';}
+        if(pend&&Object.keys(fx).length) return;       // 상한 뒤에도 받는 중 — 갖고 있던 환율은 둔다
+        if(!pend) quick=0;
+        var nf={}, nl={};
+        for(var cc in f){ if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
+          if(f[cc]&&typeof f[cc].close==='number') nl[cc]=f[cc].close; }
+        fx=nf; fxNow=nl; draw(); cards();})
+      .catch(function(){})
+      .then(function(r){setTimeout(poll,r==='soon'?5000:60000);});
   }
+  if(!need) return;                    // 국내만 들고 있으면 환율도 묻지 않는다 — 서버가 그린 값이 전부다
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',poll); else poll();
 })();
 """
@@ -2141,9 +2152,9 @@ def pnl_summary(positions: list[dict], look, fx: dict | None = None) -> dict:
 
 def pnl_context(pos: list[dict], now: datetime | None = None, model: dict | None = None) -> dict:
     """전일대비의 기준과 누적 등락 — 요약·최신일 카드·화면 JS 가 같은 값을 쓴다(#38).
-    {pos: 기준 금액으로 바꾼 보유, look: 누적 등락 조회(pnl_summary 꼴), cum: key→누적 재료(None = 누적 원천 없음 →
-     실시간 하루 등락), base: key→기준 금액, fb: key→기준 환율 수준, at: 기준 라벨, today: 기준이 오늘 기록인가,
-     new: 기준 날 뒤 새로 생긴 종목 수}
+    {pos: 기준 금액으로 바꾼 보유, look: 장종료가 누적 등락 조회(pnl_summary 꼴), cum: key→`cum_lookup` 결과(None =
+     거래소 달력을 몰라 장종료가를 못 세는 시장), base: key→기준 금액, fb: key→기준 환율 수준, at: 기준 라벨, today: 기준이 오늘 기록인가,
+     new: 기준 날 뒤 새로 생긴 종목 수, asof: 시장별 반영한 마지막 종가(`close_asof`)}
     기준 날 뒤 새로 생긴 종목은 **지금 기록의 업로드 시각**부터 센다 — 기준 날부터 세면 들고 있지 않던 날의 손익을
     지어낸다(리뷰 2026-10-14 High)."""
     now = _now(now)
@@ -2176,12 +2187,46 @@ def pnl_context(pos: list[dict], now: datetime | None = None, model: dict | None
     def look(p):
         c = cmap.get(p["key"])
         if c is None:
-            return None, None, f"{p.get('market')} 시장은 세션별 하루치가 없어 기준 대비 누적을 못 셈 — 화면이 실시간 하루 등락만"
+            return None, None, no_close_why(p.get("market"))
         ka = c.get("ka")
         return ((ka - 1) * 100 if ka is not None else None), None, c.get("why") or ""
 
     return {"pos": bpos, "look": look, "cum": cmap, "base": bmap, "fb": fbmap, "at": at, "today": today,
-            "new": new}
+            "new": new, "asof": close_asof(pos, cmap)}
+
+
+def no_close_why(market) -> str:
+    """장종료가 등락을 못 세는 시장(거래소 달력을 모르는 시장)의 사유 — 요약·카드가 같은 문장을 쓴다(#38)."""
+    return f"{_mk_name(market)} 시장은 거래소 달력을 몰라 장종료가 기준 등락을 못 셈"
+
+
+def _mk_name(market) -> str:
+    try:
+        from bot.market import MARKET_CONFIG
+        return (MARKET_CONFIG.get(str(market or "")) or {}).get("name") or str(market or "?")
+    except Exception:                                          # noqa: BLE001
+        return str(market or "?")
+
+
+def close_asof(pos: list[dict], cmap: dict) -> dict:
+    """시장별 {asof: 반영한 마지막 종가 세션, wait: 마감했지만 아직 안 받은 세션} — 요약 아래 줄이 시장마다 '어느 날
+    종가까지인가' 를 말한다(장이 닫히는 시각이 시장마다 달라 한 칸에 섞인다, #34·#43). 새로 생긴 종목은 기준이 달라
+    asof 가 다를 수 있다 — 시장마다 **가장 이른** 것을 적는다(새 종목은 그 업로드 무렵 종가가 asof 라, 막 닫혀 아직
+    안 받은 세션 날짜가 될 수 있다 — 늦은 것을 적으면 '10-08 종가 반영 · 10-08 종가는 수집 대기' 처럼 한 줄이 제
+    말을 뒤집는다, 독립 리뷰 2026-10-14). 값을 못 센 종목(`ka` None · 달력을 모르는 시장)은 날짜에 넣지 않는다 —
+    한 종목도 못 센 시장은 '—' 로 남긴다(날짜를 적으면 그날 종가를 반영한 척하고, 빼면 그 시장이 조용히 사라진다)."""
+    out: dict = {}
+    for p in pos:
+        o = out.setdefault(p["market"], {"asof": None, "wait": []})
+        c = cmap.get(p["key"])
+        if not c or c.get("ka") is None:
+            continue
+        if c.get("asof") and (o["asof"] is None or c["asof"] < o["asof"]):
+            o["asof"] = c["asof"]
+        o["wait"] = sorted(set(o["wait"]) | set(c.get("wait") or []))
+        if c.get("wait"):                # 그 시장의 종가를 마감 뒤 몇 분에 받나(하루치 3시간 · Yahoo 만 받는 시장 30분)
+            o["lag"] = max(int(o.get("lag") or 0), int(c.get("lag") or 0))
+    return out
 
 
 def _load_model_safe() -> dict:
@@ -2192,10 +2237,29 @@ def _load_model_safe() -> dict:
         return {}
 
 
-def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict | None = None,
-              ctx: dict | None = None) -> str:
-    """요약 칸 3개 + 화면 JS 가 실시간으로 다시 셀 재료(JSON). 서버 값은 전날 등락 기준이고 화면을 열면
-    1분마다 실시간 등락률로 다시 센다(`_PNL_JS`)."""
+_MK_ORDER = ("KR", "US", "JP", "TW", "CN_A", "HK")
+
+
+def asof_note(asof: dict) -> str:
+    """'반영한 마지막 종가: 한국 10-14 · 미국 10-13(10-14 종가는 마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)'. 장이
+    닫히는 시각이 시장마다 달라 한 요약 칸에 서로 다른 날의 종가가 섞인다 — 그 사실을 보이는 줄로(#34·#43·#228)."""
+    parts = []
+    for mk in sorted(asof, key=lambda m: (_MK_ORDER.index(m) if m in _MK_ORDER else 99, m)):
+        o = asof[mk]
+        x = f"{_mk_name(mk)} {o['asof'][5:] if o.get('asof') else '—'}"
+        if o.get("wait"):
+            x += (f"({', '.join(d[5:] for d in o['wait'])} 종가는 마감 {_lag_txt(o.get('lag'))} 뒤 수집 — 받으면 "
+                  "다음 갱신에 반영)")
+        parts.append(x)
+    return ("반영한 마지막 종가: " + " · ".join(parts)) if parts else ""
+
+
+PNL_BASIS = "종가 기준"
+
+
+def _pnl_html(positions: list[dict], skip: dict, look, *, fx: dict | None = None, ctx: dict | None = None) -> str:
+    """요약 칸 3개 + 화면 JS 가 환율을 받아 다시 셀 재료(JSON). 등락은 장종료가 기준(`cum_lookup`)이고 서버가 굽는다 —
+    종목별 실시간 시세는 묻지 않는다(사용자 2026-10-14). 화면은 해외 원화 금액에 곱할 환율만 1분마다 받는다(`_PNL_JS`)."""
     import html as _h
     if not positions:
         return ""
@@ -2211,37 +2275,36 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict |
             v = f"<span class='{cls}'>{_signed_krw(o['amt'])} ({'+' if pct > 0 else ''}{pct:.2f}%)</span>"
         else:
             v = "—"
-        sub = (f"{basis} {o['n_priced']}/{o['n']}종목" + (f" · 환율 {'대기' if wait else '미확인'} {o['n_nofx']}" if o["n_nofx"] else "")
+        sub = (f"{PNL_BASIS} {o['n_priced']}/{o['n']}종목" + (f" · 환율 {'대기' if wait else '미확인'} {o['n_nofx']}" if o["n_nofx"] else "")
                if o["n"] else "보유 없음")
         cells.append(f"<div class='stat'><div class='k'>전일대비 · {lab}</div>"
                      f"<div class='v' id='hn-pnl-{g}'>{v}</div>"
                      f"<div class='hn-pnl-sub' id='hn-pnl-{g}-sub'>{_h.escape(sub)}</div></div>")
-    cum = (ctx or {}).get("cum") or {}
     fbm = (ctx or {}).get("fb") or {}
-    data = [{"t": live_ticker(p), "v": round(p["value"]), "g": "KR" if p["market"] == "KR" else "XX",
+    data = [{"k": p["key"], "v": round(p["value"]), "g": "KR" if p["market"] == "KR" else "XX",
              "p": look(p)[0], **({"c": currency_of(p["market"])} if currency_of(p["market"]) else {}),
-             **({k: cum[p["key"]][k] for k in ("ka", "kx", "sw", "n")} if cum.get(p["key"]) is not None else {}),
              **({"fb": fbm[p["key"]]} if p["key"] in fbm else {})}
             for p in positions]
     if ctx:
         bl = (f"기준 = 오늘 자산 기록({ctx['at']} 업로드 — 앞선 날짜의 기록이 아직 없음)" if ctx.get("today") else
               f"기준 = 오늘보다 앞선 가장 최근 날짜의 마지막 자산 기록({ctx['at']} 업로드 · KST 날짜 기준 — 하루에 "
               "여러 번 올려도 그날 마지막 것)")
-        bl += (" · 그 평가금액 × 그 뒤 누적 등락(그 뒤 마감한 세션마다의 등락을 곱하고, 화면에선 지금 세션의 실시간 "
-               "등락까지)")
+        bl += (" · 그 평가금액 × 그 뒤 장종료가 누적 등락(그 뒤 마감한 세션마다의 종가 등락을 곱함 · 하루치에 없는 ETF·"
+               "우선주·홍콩은 Yahoo 일봉 종가 · 실시간 시세는 안 씀)")
         if ctx.get("new"):
             bl += f" · 기준 날 이후 새로 생긴 {ctx['new']}종목은 지금 기록 금액"
     else:
         bl = "평가금액 × 등락률"
     note = (bl + "로 추정한 금액입니다 — 자산 기록에 수량이 없어 평가금액을 씁니다 · 해외는 "
-            "원화 기준(주가 등락에 그 통화의 원화 환율 전일대비를 곱함 · 네이버 원화 환율 · 화면이 1분마다 받음 — 두 "
-            "등락의 날짜·시각이 다를 수 있어 추정치입니다)"
+            "원화 기준(주가 등락에 그 통화의 원화 환율 변동을 곱함 · 네이버 원화 환율 · 화면이 1분마다 받음 — 종가와 "
+            "환율의 시각이 달라 추정치입니다)"
             + (f" · 티커를 못 찾은 상품 {skip['n']}개({_krw(skip['value'])})는 뺌" if skip.get("n") else ""))
+    an = asof_note((ctx or {}).get("asof") or {})
     return (f"<div class='stat-grid hn-pnl'>{''.join(cells)}</div>"
             f"<div class='hn-pnl-note'>{_h.escape(note)}</div>"
-            "<script type='application/json' id='hn-pnl-data'>"
+            + (f"<div class='hn-pnl-note' id='hn-pnl-asof'>{_h.escape(an)}</div>" if an else "")
+            + f"<script type='application/json' id='hn-pnl-data' data-basis='{_h.escape(PNL_BASIS)}'>"
             + json.dumps(data, ensure_ascii=False).replace("</", "<\\/") + "</script>"
-
             + ("" if wait else "<script type='application/json' id='hn-fx-data'>"
                + json.dumps(fx, ensure_ascii=False).replace("</", "<\\/") + "</script>"))
 
@@ -2393,91 +2456,340 @@ def prev_changes(date: str, now: datetime | None = None):
     return look
 
 
-_SW_NEVER = 2 ** 53 - 1                # JS Number.MAX_SAFE_INTEGER — '새 세션으로 바뀌지 않는다'
+# ── 하루치에 없는 종목의 종가(독립 리뷰 2026-10-14 High) ───────────────────────────────────────────────────
+# TradingView 하루치(`tv_scanner`)는 **보통주·DR 만** 싣는다 — ETF·우선주는 구조적으로 없고, 홍콩은 하루치를 아예 받지
+# 않는다. 그 종목들은 Yahoo 일봉 종가로 같은 식('기준 무렵 마지막 종가 → 같은 asof 세션 종가')을 센다. 받는 일은 봇
+# 15분 주기(`refresh_closes`)가 하고 디스크(`closes.json`)에 남긴다 — 렌더는 네트워크 0 그대로다.
+YCLOSE_RETRY_MIN = 30              # 못 받았거나 그날 봉이 아직 없을 때 다시 묻는 간격 — 실패마다 두 배(상한 `YCLOSE_RETRY_CAP`)
+YCLOSE_RETRY_CAP = 8 * 60
+YCLOSE_MARGIN_MIN = 30             # 하루치가 없는 시장의 세션 종가를 '받을 수 있다' 고 볼 마감 뒤 여유 — 장중 봉을 종가로 굽지 않게
+YCLOSE_KEEP_DAYS = 60
+YCLOSE_CHUNK = 50                  # 한 번에 묻는 종목 수
+YCLOSE_BASE_SLACK_DAYS = 7         # 기준 세션 날 봉이 없을 때 그 앞 봉을 쓸 수 있는 거리(연휴 한 번은 넘는다)
 
 
-def cum_lookup(base_ts: float, now: datetime | None = None):
-    """기준 시각(전일 자산 기록의 업로드 시각) 뒤의 누적 등락 조회기 — `cum(stock) -> dict`.
+def _closes_path() -> Path:
+    return _DIR / "closes.json"
 
-    사용자 2026-10-14 "오늘이 10/9 이고 그전 자산이 10/5 기준이면 10/5 와 비교" — 기준 뒤에 **마감한** 세션마다
-    그날 등락(「국가별 심리지도」 하루치)을 곱해 '마지막 마감까지' 를 만들고, 화면은 그 위에 지금 세션의 실시간
-    등락을 곱한다. 반환 키:
-      ka  = 기준 뒤 마감한 세션 전부의 곱(1+r) — 하나라도 하루치가 없으면 None
-      kx  = 마지막 마감 세션을 뺀 곱 — 장이 닫혀 있을 때 실시간 등락이 곧 그 마지막 세션이라 그걸 뺀다.
-            기준 뒤 마감한 세션이 없으면 None(그때의 실시간은 기준 **앞** 세션이라 쓰면 안 된다)
-      sw  = 이 시각(epoch ms)부터는 실시간이 새 세션 → ka 위에 곱한다(장이 열려 있으면 0)
-      n   = 기준 뒤 마감한 세션 수 · why = 못 셀 때 사유
-    ⚠️ 기준 업로드가 장중이었으면 그 세션의 등락을 통째로 센다(업로드 시각의 가격을 모른다 — 화면이 추정이라 밝힌다)."""
+
+def load_closes() -> dict:
+    """{보유 키: {y: Yahoo 심볼, bars: {날짜: 종가}, at: 받은 epoch, tried: 물은 epoch, fails, why}} — 디스크만."""
+    try:
+        d = json.loads(_closes_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        log.warning("holdings_news: 종가 캐시 읽기 실패: %s", exc)
+        return {}
+
+
+def yahoo_symbol(st: dict, *, alt: bool = False) -> str:
+    """Yahoo 일봉 심볼 — 국내는 자산 기록이 준 접미(.KS/.KQ)가 있으면 그대로, 없으면 .KS(ETF 는 전부 유가증권 시장)
+    → 못 받으면 `alt` 로 .KQ 를 한 번 더. 미국은 BRK.B → BRK-B. 그 밖 시장은 자산 기록 심볼 그대로(Yahoo 꼴로 푼다)."""
+    mk = str(st.get("market") or "").upper()
+    tk = str(st.get("ticker") or "").upper()
+    sym = str(st.get("sym") or tk).strip().upper()
+    if mk == "KR":
+        return sym if sym.endswith((".KS", ".KQ")) else f"{tk}.{'KQ' if alt else 'KS'}"
+    return sym.replace(".", "-") if mk == "US" else sym
+
+
+def yahoo_ratio(ent, need: dict) -> tuple[float | None, str]:
+    """(지금 종가 ÷ 기준 무렵 종가, 사유). `need` = {from: 기준 무렵 세션, to: asof 세션, ready: 그 세션 종가가 확정된
+    epoch}. to 세션 봉은 **그 세션이 끝난 뒤에 받은 것**만 쓴다 — 장중에 받아 둔 봉을 종가로 쓰면 지어낸 값이다."""
+    if not isinstance(ent, dict) or not ent.get("bars"):
+        return None, (str(ent.get("why")) if isinstance(ent, dict) and ent.get("why") else "아직 안 받음(봇 주기가 받는다)")
+    bars = ent["bars"]
+    if need["to"] not in bars or float(ent.get("at") or 0) < float(need.get("ready") or 0):
+        if ent.get("why"):               # 마지막 물음이 실패했다(받기 실패·일시정지) — 그 사유가 '아직' 보다 행동 가능하다(#82)
+            return None, str(ent["why"])
+        return None, (f"Yahoo 일봉에 {need['to']} 종가가 아직 없음(봇 주기가 다시 묻는다 — 못 받으면 "
+                      f"{YCLOSE_RETRY_MIN}분부터 두 배씩 쉬었다가)")
+    prior = [d for d in bars if d <= need["from"]]
+    # 기준 세션 날 봉이 없으면(원천 결측) 그 앞 가장 늦은 봉 — 단 `YCLOSE_BASE_SLACK_DAYS` 안에서만. 더 옛 봉이면 그
+    # 사이 등락이 섞인 값을 지어낸다(델타 리뷰 2026-10-14 High: 짧은 응답 뒤 09-25 봉으로 +102%)
+    if not prior or (datetime.fromisoformat(need["from"]) - datetime.fromisoformat(max(prior))).days > YCLOSE_BASE_SLACK_DAYS:
+        return None, f"Yahoo 일봉에 {need['from']} 무렵 종가가 없음"
+    b, t = bars[max(prior)], bars[need["to"]]
+    if not (isinstance(b, (int, float)) and isinstance(t, (int, float)) and b > 0 and t > 0):
+        return None, "Yahoo 종가가 0 이하"
+    return t / b, ""
+
+
+def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | None = None):
+    """기준 시각(전일 자산 기록의 업로드 시각) 뒤의 **장종료가** 누적 등락 조회기 — `cum(stock) -> dict | None`.
+
+    사용자 2026-10-14 "오늘이 10/9 이고 그전 자산이 10/5 기준이면 10/5 와 비교" + 같은 날 "실시간으로 가져오는게 부하가
+    크면 기준을 장종료가격으로" — 기준 업로드 뒤에 **마감한** 세션마다 그날 종가 등락(「국가별 심리지도」 하루치 = 직전
+    종가 대비 종가)을 곱한다 = '기준 무렵 마지막 종가 → 받아 둔 마지막 종가'. 하루치에 없는 종목(ETF·우선주 등 —
+    하루치는 보통주·DR 만)과 하루치를 받지 않는 시장(홍콩)은 같은 식을 Yahoo 일봉 종가(`closes` — 봇 주기가 받아 둔
+    디스크 캐시)로 센다. 렌더는 디스크만 읽는다(네트워크 0 — 옛 화면은 열려 있는 동안 1분마다 보유 전 종목 시세를
+    물었다). 반환 키:
+      ka   = 곱(1+r) 또는 종가 비 — 빠진 세션·종가가 있으면 None(지어내지 않는다)
+      n    = 기준 뒤 마감해 센 세션 수 · asof = 반영한 마지막 종가 세션(센 세션이 없으면 기준 무렵 마지막 종가 세션)
+      wait = 마감했지만 아직 안 받은 세션(하루치는 장 마감 `READY_MIN` 뒤 · 하루치 없는 시장은 `YCLOSE_MARGIN_MIN` 뒤) —
+             그 종가는 빼고 앞까지만 센다
+      hol  = 휴장 추정으로 0 으로 센 세션(카드 툴팁이 이름을 댄다) · src = 'tv'(하루치) / 'yahoo'(일봉 종가)
+      need = Yahoo 종가가 필요하면 {key, y, from, to, ready}(봇 주기 `refresh_closes` 가 모아 받는다) · why = 못 셀 때 사유
+    휴장 추정 세션(`market_day_status` 'holiday' — 받을 창 내내 원천 값이 직전 세션과 같았다)은 등락 0 으로 센다.
+    ⚠️ 원천이 그 세션을 끝내 안 실은 경우도 같은 갈래라 그때는 그날 등락이 빠진다(재지 못함, #165 — 그래서 이름을 댄다).
+    ⚠️ 기준 업로드가 장중이었으면 그 세션 종가까지를 통째로 센다(업로드 시각의 가격을 모른다 — 화면이 추정이라 밝힌다)."""
     now = _now(now)
     memo: dict = {}
     now_utc = now.astimezone(timezone.utc)
     base_utc = datetime.fromtimestamp(float(base_ts), timezone.utc)
+    cache = {"v": closes}
 
-    def _plan(mk: str):
-        if mk in memo:
-            return memo[mk]
+    def _closes() -> dict:
+        if cache["v"] is None:
+            cache["v"] = load_closes()
+        return cache["v"]
+
+    def _plan(cal: str, snap: bool):
+        """(기준 무렵 세션, [(세션, 표 | None=휴장 0 | '' = Yahoo 로 셀 세션)], 대기, 깨진 사유, {세션: 마감 epoch})."""
+        if (cal, snap) in memo:
+            return memo[(cal, snap)]
         out = None
         try:
             from bot import world_sectors as ws
             from bot.world_sector_pages import lookup_ticker
-            d0 = base_utc.astimezone(_KST).date() - timedelta(days=3)
-            closed, cur_open, nxt = [], False, None
-            for i in range((now.date() - d0).days + 10):
+            state = ws.load_state() if snap else None
+            d0 = base_utc.astimezone(_KST).date() - timedelta(days=14)
+            bsess, days, wait, broken, ctime = None, [], [], [], {}
+            for i in range((now.date() - d0).days + 2):
                 d = (d0 + timedelta(days=i)).isoformat()
-                t = ws.session_times(mk, d)
-                if not t:
+                t = ws.session_times(cal, d)
+                if not t or t[1] > now_utc:
                     continue
-                op, cl = t
-                if cl <= base_utc:
+                if t[1] <= base_utc:
+                    bsess = d
                     continue
-                if cl <= now_utc:
-                    closed.append(d)
-                elif op <= now_utc:
-                    cur_open = True
-                elif nxt is None:
-                    nxt = op
-            tbls = {d: _snap_tables(ws, lookup_ticker, mk, d) for d in closed}
-            out = (closed, cur_open, nxt, tbls)
+                ctime[d] = t[1].timestamp()
+                if wait:                     # 아직 안 받은 세션 뒤는 하루치가 있어도 곱하지 않는다 — 가운데 하루를 빼먹은
+                    # 값이 된다. 평소엔 날짜 순으로 받아 이 상태가 안 나오지만 조용히 틀리지 않게(회귀가 스텁으로 잰다)
+                    wait.append(d)
+                    continue
+                if not snap:                 # 하루치를 받지 않는 시장 — 마감 뒤 여유가 지나면 Yahoo 종가로 센다
+                    if t[1] + timedelta(minutes=YCLOSE_MARGIN_MIN) <= now_utc:
+                        days.append((d, ""))
+                    else:
+                        wait.append(d)
+                    continue
+                tb = _snap_tables(ws, lookup_ticker, cal, d)
+                if tb is not None:
+                    days.append((d, tb[0]))
+                    continue
+                st = ws.market_day_status(cal, d, now, state)
+                if st == "pending":
+                    wait.append(d)
+                elif st == "holiday":
+                    days.append((d, None))   # 휴장 추정 — 등락 0(원천 값이 직전 세션과 같았다)
+                else:
+                    broken.append((d, _prev_missing_why(ws, cal, d, now)))
+            out = (bsess, days, wait, broken, ctime)
         except Exception as exc:                               # noqa: BLE001
-            log.warning("holdings_news: 누적 등락 계획 실패(%s): %s", mk, exc)
-        memo[mk] = out
+            log.warning("holdings_news: 누적 등락 계획 실패(%s): %s", cal, exc)
+        memo[(cal, snap)] = out
         return out
 
     def cum(st: dict) -> dict | None:
-        """None = 이 시장은 세션별 하루치가 없어 누적을 셀 수 없다 — 부른 쪽이 종전대로 실시간 하루 등락만 쓴다
-        (홍콩 등 · 계획 실패 — 곁들이가 실시간 본체를 지우지 않게, 리뷰 2026-10-14 High)."""
-        mk = _PREV_MK.get(str(st.get("market") or "").upper())
-        plan = _plan(mk) if mk else None
+        """None = 이 시장은 거래소 달력을 몰라 장종료가 등락을 셀 수 없다(부른 쪽이 '(—)' 에 `no_close_why` 를 단다).
+        하루치를 받는 시장인데 계산이 깨지면 None 이 아니라 `ka` None + 사유(두 갈래의 처방이 다르다, #82)."""
+        market = str(st.get("market") or "").upper()
+        snap = _PREV_MK.get(market)
+        plan = _plan(snap or market, bool(snap))
         if plan is None:
-            return None
-        closed, cur_open, nxt, tbls = plan
-        key = _snap_key(st, mk)
-        fac, miss_day, miss_tk = [], [], []
-        for d in closed:
-            t = tbls.get(d)
-            v = t[0].get(key) if t else None
-            fac.append(None if v is None else 1 + v / 100)
-            if v is None:
-                (miss_tk if t else miss_day).append(d)
-        ka = None if (miss_day or miss_tk) else math.prod(fac)
-        kx = None
-        if closed and None not in fac[:-1]:
-            kx = math.prod(fac[:-1])
-        # 장이 닫혀 있으면 실시간 = 마지막 마감 세션 → 새 세션이 열리기 전까지 kx. 다음 세션을 달력에서 못 찾으면
-        # (긴 연휴 · 달력 공백) 끝까지 kx — 0 으로 두면 마지막 세션을 두 번 센다(리뷰 2026-10-14)
-        sw = 0 if cur_open else (int(nxt.timestamp() * 1000) if nxt is not None else _SW_NEVER)
-        why = []
-        try:
-            from bot import world_sectors as ws
-            for d in miss_day:
-                why.append(_prev_missing_why(ws, mk, d, now))
-        except Exception:                                      # noqa: BLE001
-            why += [f"{d} 하루치가 없음" for d in miss_day]
-        if miss_tk:
-            why.append(f"{', '.join(miss_tk)} 하루치에 이 종목이 없음(거래정지·신규상장 등)")
-        return {"ka": ka, "kx": kx, "sw": sw, "n": len(closed), "why": " · ".join(why)}
+            if not snap:
+                return None
+            # 하루치를 받는 시장인데 계산이 깨졌다 — '받지 않는 시장' 이라 적으면 거짓 사유다
+            return {"ka": None, "n": 0, "asof": None, "wait": [], "hol": [], "src": "tv", "need": None,
+                    "why": "장종료가 등락 계산 실패(봇 로그 참고)"}
+        bsess, days, wait, broken, ctime = plan
+        lag = _ws_ready_min() if snap else YCLOSE_MARGIN_MIN         # 마감 뒤 몇 분에 그 세션 종가를 받나
+        out = {"ka": 1, "n": len(days), "asof": days[-1][0] if days else bsess, "wait": list(wait),
+               "hol": [d for d, tbl in days if tbl is None], "src": "tv", "need": None, "lag": lag,
+               "nosnap": not snap, "why": ""}
+        if not days and not broken:      # 기준 뒤 마감해 센 세션이 없다 — 기준 무렵 종가 그대로(0)
+            return out
+        fac, miss_tk = [], []
+        if snap and not broken:
+            key = _snap_key(st, snap)
+            for d, tbl in days:
+                v = 0.0 if tbl is None else tbl.get(key)
+                if v is None:
+                    miss_tk.append(d)
+                else:
+                    fac.append(1 + v / 100)
+            if not miss_tk:
+                out["ka"] = math.prod(fac)
+                return out
+        # 하루치에 없는 종목(ETF·우선주 등) · 하루치를 놓친 세션이 있는 시장 · 하루치를 받지 않는 시장(홍콩) —
+        # Yahoo 일봉 종가로 같은 asof 까지. 휴장 추정 세션엔 Yahoo 봉이 없으므로 그 앞 실제 세션까지(독립 리뷰 2026-10-14)
+        if not bsess:
+            out.update(ka=None, why="기준 무렵 세션을 달력에서 못 찾음(14일 안)")
+            return out
+        # 비지 않는다 — 여기 오려면 놓친 세션이 있거나(`broken`), 하루치에 이 종목이 없는 실제 세션이 있거나(`miss_tk`),
+        # 하루치를 받지 않는 시장의 세션('' 표)이 있다
+        to = max([d for d, tbl in days if tbl is not None] + [d for d, _ in broken])
+        k = st.get("key") or f"{market}:{st.get('ticker')}"
+        ent = _closes().get(k)
+        need = {"key": k, "y": (ent or {}).get("y") or yahoo_symbol(st), "from": bsess, "to": to,
+                "ready": ctime.get(to, 0) + YCLOSE_MARGIN_MIN * 60}
+        r, why = yahoo_ratio(ent, need)
+        if not snap:
+            head = f"{_mk_name(market)} 시장은 TradingView 하루치를 받지 않음"
+        elif broken:
+            ws_ = [w for _, w in broken]  # 기준이 오래되면 수십 세션이 놓친 세션이 된다 — 둘만 적고 수를 말한다(#45)
+            head = ("TradingView 하루치를 놓친 세션이 있음(" + " · ".join(ws_[:2])
+                    + (f" 외 {len(ws_) - 2}세션" if len(ws_) > 2 else "") + ")")
+        else:
+            head = (f"이 종목이 {', '.join(miss_tk)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
+                    "거래정지·신규상장도)")
+        out.update(src="yahoo", need=need, ka=r, asof=to, hol=[], broken=[d for d, _ in broken],  # 휴장 0 은 하루치 곱의 일
+                   why="" if r is not None else f"{head} — Yahoo 일봉 종가로 채우는데 {why}")
+        return out
 
     return cum
+
+
+def _yf_daily(syms: list[str], start: str, end: str) -> tuple[dict, str]:
+    """({심볼: {날짜: 종가}}, 사유) — Yahoo 일봉 한 묶음(`auto_adjust=False` — 배당·분할 소급 조정을 섞지 않은 그날
+    종가). 행 단위로 거른다(컬럼별 dropna 는 날짜를 갈라 놓는다 — `bollinger_board` 와 같은 처방)."""
+    try:
+        import yfinance as yf
+        df = yf.download(syms, start=start, end=end, interval="1d", group_by="ticker", auto_adjust=False,
+                         threads=True, progress=False, timeout=20)
+    except Exception as exc:                                   # noqa: BLE001
+        return {}, f"Yahoo 일봉 실패({type(exc).__name__}: {_exc_msg(exc, 60)})"
+    if df is None or getattr(df, "empty", True):
+        return {}, "Yahoo 일봉 응답 비어 있음"
+    multi = getattr(df.columns, "nlevels", 1) > 1
+    lv0 = set(df.columns.get_level_values(0)) if multi else set()
+    out: dict = {}
+    for y in syms:
+        try:
+            if multi and y not in lv0:
+                continue
+            sub = (df[y] if multi else df).dropna(subset=["Close"])
+            bars = {ix.strftime("%Y-%m-%d"): round(float(v), 6) for ix, v in sub["Close"].items() if float(v) > 0}
+        except Exception:                                      # noqa: BLE001
+            continue
+        if bars:
+            out[y] = bars
+    return out, ""
+
+
+def refresh_closes(now: datetime | None = None, *, model: dict | None = None, download=None) -> dict:
+    """하루치에 없는 보유(ETF·우선주 등)·하루치 없는 시장(홍콩)의 Yahoo 일봉 종가를 받아 `closes.json` 에 둔다 — 봇
+    15분 주기가 렌더 **앞에** 부른다(네트워크는 여기만 · 렌더는 디스크만). 렌더와 같은 `pnl_context` 로 필요한 종목과
+    날짜를 정하고(#35), 이미 그 종가가 있으면 묻지 않는다. 못 받으면 `YCLOSE_RETRY_MIN` 부터 두 배씩 쉬었다 묻는다
+    (상한 `YCLOSE_RETRY_CAP`, #303) — 쉬는 간격은 **그 목표 세션**의 실패만 센다(목표가 다음 세션으로 넘어가면 처음부터:
+    어제의 실패가 오늘 종가를 8시간 붙잡지 않게, 독립 리뷰 2026-10-14). 반환 = {asked, got, why}.
+
+    봉은 종가가 확정된 것(`sure` — 그 물음의 목표 세션까지: 목표는 마감 뒤에만 정해진다)만 다음 물음에 남긴다. 그 뒤의
+    봉(장중에 받았을 수 있다)은 다음 응답이 갈아 끼우거나 버린다 — 응답에 그날 봉이 없다고 옛 장중 값이 종가로 남으면
+    안 되고(3차 리뷰 High), 응답이 짧다고 확정된 종가까지 버리면 기준 무렵 종가가 사라진다(델타 리뷰 2026-10-14 High)."""
+    now = _now(now)
+    pos, _ = pnl_positions(model)
+    if not pos:
+        return {"asked": 0, "got": 0, "why": ""}
+    ctx = pnl_context(pos, now, model)
+    needs = {n["key"]: n for n in ((c or {}).get("need") for c in (ctx.get("cum") or {}).values()) if n}
+    cache = load_closes()
+    t = now.timestamp()
+    old = t - YCLOSE_KEEP_DAYS * 86400   # 판 종목의 줄은 60일 뒤 버린다 — 파일이 보유 이력만큼 자라지 않게
+    gone = [k for k, e in cache.items() if k not in needs and float((e or {}).get("tried") or 0) < old]
+
+    def _due(k, n):
+        ent = cache.get(k)
+        if yahoo_ratio(ent, n)[0] is not None:
+            return False
+        if not isinstance(ent, dict) or not ent.get("tried") or ent.get("for") != n["to"]:
+            return True
+        wait_min = min(YCLOSE_RETRY_MIN * 2 ** min(max(int(ent.get("fails") or 0), 1) - 1, 8), YCLOSE_RETRY_CAP)
+        return t - float(ent["tried"]) >= wait_min * 60
+
+    def _save():
+        for k in gone:
+            cache.pop(k, None)
+        try:
+            path = _closes_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            log.warning("holdings_news: 종가 캐시 저장 실패: %s", exc)
+
+    due = {k: n for k, n in needs.items() if _due(k, n)}
+    if not due:
+        if gone:                         # 물을 게 없어도 판 종목 줄은 정리한다(쓰는 건 그때만)
+            _save()
+        return {"asked": 0, "got": 0, "why": ""}
+    try:
+        from bot.finviz_client import yf_paused
+        paused = yf_paused()
+    except Exception:                                          # noqa: BLE001
+        paused = False
+    if paused:                           # 묻지 않았다는 사실을 카드가 말하게 — 안 남기면 '아직 안 받음' 이 이유를 숨긴다
+        why = "yfinance 일시정지(YF_PAUSE) — 종가를 묻지 않음"
+        for k, n in needs.items():       # 쉬는 중인 종목도 — 옛 실패 사유가 지금 상태를 가리지 않게
+            if yahoo_ratio(cache.get(k), n)[0] is None:
+                cache.setdefault(k, {})["why"] = why
+        _save()
+        return {"asked": 0, "got": 0, "why": why}
+    fetch = download or _yf_daily
+    start = (datetime.fromisoformat(min(n["from"] for n in due.values())) - timedelta(days=10)).date().isoformat()
+    end = (now.date() + timedelta(days=1)).isoformat()
+    # 기준은 장부의 가장 최근 앞선 날이라 오래될 수 있다(그날이 60일 전이어도 남긴다) — 창 시작보다 앞은 버리지 않는다
+    keep = min((now.date() - timedelta(days=YCLOSE_KEEP_DAYS)).isoformat(), start)
+    got, why_all = 0, ""
+
+    def _ask(items: dict, *, count: bool = True) -> list:
+        """`count` = 이번 바퀴의 실패로 세나 — 코스닥 접미로 한 번 더 묻는 건 같은 바퀴라 두 번 세지 않는다(그 사유는
+        앞 사유 뒤에 붙인다 — .KS 가 일시 오류로 못 받은 사유를 '.KQ 가 없음' 이 덮지 않게)."""
+        nonlocal got, why_all
+        miss = []
+        keys = list(items)
+        for i in range(0, len(keys), YCLOSE_CHUNK):
+            chunk = keys[i:i + YCLOSE_CHUNK]
+            bars_by, why = fetch([items[k] for k in chunk], start, end)
+            why_all = why or why_all
+            for k in chunk:
+                ent = cache.setdefault(k, {})
+                if ent.get("for") != due[k]["to"]:
+                    ent.update({"fails": 0, "for": due[k]["to"]})
+                ent["tried"] = t
+                bars = bars_by.get(items[k])
+                if bars:
+                    sure = str(ent.get("sure") or "")
+                    merged = {**{d: v for d, v in (ent.get("bars") or {}).items() if d < start or d <= sure}, **bars}
+                    ent.update(y=items[k], at=t, bars={d: v for d, v in merged.items() if d >= keep}, why="",
+                               sure=max(sure, due[k]["to"]))
+                    ok = yahoo_ratio(ent, {**due[k], "y": items[k]})[0] is not None
+                    if not ok:           # 받았지만 그날 봉이 아직 없다 — 같은 목표의 실패로 센다(받으면 목표가 바뀔 때 0 으로)
+                        ent["fails"] = int(ent.get("fails") or 0) + count
+                    got += ok
+                else:
+                    miss.append(k)
+                    ent["fails"] = int(ent.get("fails") or 0) + count
+                    w = why or f"Yahoo 일봉에 {items[k]} 가 없음"
+                    ent["why"] = w if count or not ent.get("why") else f"{ent['why']} · {w}"
+        return miss
+
+    miss = _ask({k: n["y"] for k, n in due.items()})
+    # 국내는 접미를 모르면 .KS 로 먼저 묻는다 — 없으면 코스닥(.KQ)으로 한 번 더. 자산 기록이 접미를 줬거나 한 번이라도
+    # 받아 심볼을 배운 종목은 다시 갈아 보지 않는다(그때 못 받은 건 날짜 문제다 — 다른 심볼을 물으면 헛요청)
+    alt = {k: f"{k.split(':', 1)[1]}.KQ" for k in miss if k.startswith("KR:") and due[k]["y"].endswith(".KS")
+           and not (cache.get(k) or {}).get("y")
+           and not str(next((p.get("sym") for p in pos if p["key"] == k), "")).upper().endswith(".KS")}
+    if alt:
+        _ask(alt, count=False)
+    _save()
+    if why_all:
+        log.warning("holdings_news: Yahoo 일봉 %s", why_all)
+    return {"asked": len(due), "got": got, "why": why_all}
 
 
 def _snap_key(st: dict, mk: str) -> str:
@@ -2541,54 +2853,62 @@ def _prev_missing_why(ws, mk: str, d: str, now) -> str:
     return f"{d} 하루치가 없음"
 
 
-def _prev_html(prev, live: str = "", value: float | None = None, *, ccy: str | None = None,
-               fx: dict | None = None, cum: dict | None = None, fb: float | None = None) -> str:
+def _close_tip(d: dict) -> str:
+    """최신일 카드 괄호의 툴팁 — 무엇의 값인지(기준 시각·반영한 마지막 종가·아직 안 받은 종가)."""
+    at, n, asof, wait = d.get("at") or "", int(d.get("n") or 0), d.get("asof"), d.get("wait") or []
+    base = f"{asof} 종가 그대로" if asof else "기준 무렵 종가 그대로"
+    if d.get("src") == "yahoo":          # 종가 비 — 기준 뒤 실제 세션이 있을 때만 이 갈래다(놓친 세션 하나뿐이면 n 은 0)
+        tip = (f"{at}(KST) 자산 기록 대비 장종료가 누적 등락 — {(d.get('need') or {}).get('from', '기준 무렵')} 종가 → "
+               f"{asof} 종가(Yahoo 일봉 · {_yahoo_reason(d)})")
+    elif n:
+        tip = (f"{at}(KST) 자산 기록 대비 장종료가 누적 등락 — 그 뒤 마감한 세션 {n}개의 종가 등락을 곱함"
+               f"({asof} 종가까지 · TradingView 하루치 · 「국가별 심리지도」와 같은 하루치)")
+    elif wait:                           # 마감은 했지만 하루치를 아직 안 받았다 — '마감한 세션이 없다' 가 아니다
+        tip = f"{at}(KST) 자산 기록 뒤 마감한 세션의 종가를 아직 안 받아 0 — {base}"
+    else:
+        tip = f"{at}(KST) 자산 기록 뒤 마감한 세션이 아직 없어 0 — {base}"
+    if d.get("hol"):
+        tip += f" · {', '.join(d['hol'])} 휴장 추정(원천 값이 직전 세션과 같았음) — 등락 0 으로 셈"
+    if wait:
+        tip += f" · {', '.join(wait)} 종가는 아직 수집 전(장 마감 {_lag_txt(d.get('lag'))} 뒤) — 받으면 다음 갱신에 반영"
+    return tip
+
+
+def _prev_html(prev, value: float | None = None, *, ccy: str | None = None, fx: dict | None = None,
+               fb: float | None = None) -> str:
     """종목명 옆 `(+1.23%)` — 값이 없으면 `(—)` 에 사유를 툴팁으로(빈칸이 '0' 으로 읽히지 않게, #43).
 
-    `live` = 실시간 등락을 받을 티커(최신일 카드만, 사용자 2026-10-13 "가능한 실시간으로"). 화면이
-    `live_pct.LIVE_JS` 로 1분마다 덮어쓰고, 못 받으면 서버가 그린 전날 등락이 그대로 남는다.
-    `ccy`(해외 통화) + `fx` 가 오면 금액은 원화 기준(환율 반영) — 최신일(`live`) 카드만이다(지난 날에 오늘 환율을
-    곱하면 다른 날의 등락이 된다 — 지난 날은 현지통화 등락만이라고 툴팁이 말한다)."""
+    `prev` = (등락%, 날짜 또는 최신일 재료 dict, 사유). 최신일 카드(dict)는 기준 날 자산 기록 대비 **장종료가 누적
+    등락**(`_cum_prev`, 요약과 같은 값)이고 지난 날 카드(날짜)는 그날 기준 전날 하루 등락이다. 실시간 시세는 묻지
+    않는다(사용자 2026-10-14 "기준을 장종료가격으로"). 해외 최신일 카드는 원화 금액을 화면이 환율을 받아 다시
+    그린다(`js-hn-amt` — `_PNL_JS`). 지난 날 카드엔 오늘 환율을 곱하지 않는다(다른 날의 등락이 된다)."""
     import html as _h
-    # `data-v` = 보유 평가금액 — 실시간 칸도 금액을 같이 다시 센다(`live_pct.LIVE_JS` 의 paint)
-    dv = (f"' data-v='{round(value)}" + (f"' data-c='{_h.escape(ccy)}" if ccy else "")) if live and value else ""
-    if live and cum is not None:         # 누적 재료 — 화면이 실시간 등락 위에 곱한다(`_PNL_JS` hnCum)
-        dv += "' data-cum='" + _h.escape(json.dumps({k: cum.get(k) for k in ("ka", "kx", "sw", "n")}))
-    if live and fb:
-        dv += f"' data-fb='{fb}"
-    lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn{dv}" if live else "")
     if not prev:
-        return f"<span class='hn-chg{lv}' title='실시간 등락 대기'></span>" if live else ""
+        return ""
     v, d, why_ = prev
+    latest = isinstance(d, dict)
     if v is None:
-        return f"<span class='hn-chg{lv}' title='{_h.escape(why_ or '전날 등락 없음')}'>(—)</span>"
+        return f"<span class='hn-chg' title='{_h.escape(why_ or '전날 등락 없음')}'>(—)</span>"
     cls = "hn-up" if v > 0 else "hn-dn" if v < 0 else ""
     sign = "+" if v > 0 else ""
-    if isinstance(d, str) and d.startswith("@"):
-        at, _, n = d[1:].partition("|")
-        tip = (f"{at}(KST) 자산 기록 대비 누적 등락 — 그 뒤 마감한 세션 {n}개(TradingView 하루치)를 곱함 · 화면에선 "
-               "지금 세션의 실시간 등락까지")
-    else:
-        tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
-    fxp = (fx or {}).get(ccy) if ccy and live else None
+    tip = _close_tip(d) if latest else f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
+    fxp = (fx or {}).get(ccy) if ccy and latest else None
     # 해외 원화 금액엔 보이는 표식 — 괄호 %(주가 등락)로 눈으로 나눠 보면 안 맞기 때문이다(#33·#228)
     won = "원화 " if fxp is not None else ""
     amt = f" · {won}{_signed_krw(value * krw_pct(v, fxp) / 100)}" if value else ""
+    js = ""
     if amt:
-        tip += " · 금액 = 보유 평가금액 × 등락률(추정)"
-        if ccy and not live:
-            tip += " · 지난 날 카드라 현지통화 등락만(그날 환율 변동 미반영)"
+        tip += " · 금액 = " + ("기준 날 " if latest else "") + "보유 평가금액 × 등락률(추정)"
+        if ccy and not latest:
+            tip += " · 그날 기준 하루 등락이라 현지통화 등락만(환율 변동 미반영)"
         elif ccy:
+            # 화면이 환율을 받으면 금액·툴팁을 다시 그린다 — 그 재료(등락·금액·통화·기준 환율·환율 앞 툴팁)
+            js = (f" js-hn-amt' data-p='{round(v, 6)}' data-v='{round(value)}' data-c='{_h.escape(ccy)}"
+                  + (f"' data-fb='{fb}" if fb else "") + f"' data-tip='{_h.escape(tip)}")
             tip += ((f" · {ccy} 환율은 화면이 곧 받습니다 — 지금은 현지통화 등락만" if fx is None else
                      f" · {ccy} 환율 미확인 — 현지통화 등락만") if fxp is None else
                     f" · 원화 기준(주가 {sign}{v:.2f}% · 원/{ccy} {'+' if fxp > 0 else ''}{fxp:.2f}%)")
-    return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%{amt})</span>")
-
-
-def live_ticker(s: dict) -> str:
-    """실시간 등락을 물을 티커 — 카드 링크와 같은 꼴(`_lookup`, 국내 6자리는 접미 없이 — `live_pct.market_of`
-    가 국내로 읽는다)."""
-    return _lookup(s).split("/", 1)[1]
+    return f"<span class='hn-chg {cls}{js}' title='{_h.escape(tip)}'>({sign}{v:.2f}%{amt})</span>"
 
 
 def _hm_after(minutes: int) -> str:
@@ -2628,17 +2948,17 @@ def _amt_base(pnl: dict | None, s: dict, val: float) -> float:
 
 
 def _cum_prev(pnl: dict, s: dict):
-    """최신일 카드의 괄호 값 — 전일대비 요약과 **같은** 기준 대비 누적 등락(#38·#33). (값, 라벨, 사유)."""
+    """최신일 카드의 괄호 값 — 전일대비 요약과 **같은** 기준 대비 장종료가 누적 등락(#38·#33). (값, 재료 dict, 사유)."""
     if s.get("key") not in (pnl.get("cum") or {}):
         return None
     c = pnl["cum"][s["key"]]
-    if c is None:                        # 누적 원천이 없는 시장 — 실시간 하루 등락만(화면이 칠한다)
-        return None, None, f"{s.get('market')} 시장은 세션별 하루치가 없어 기준 대비 누적을 못 셈 — 실시간 하루 등락만"
+    if c is None:                        # 거래소 달력을 모르는 시장 — 사유를 단 '(—)'
+        return None, {}, no_close_why(s.get("market"))
     ka = c.get("ka")
-    return ((ka - 1) * 100 if ka is not None else None), f"@{pnl.get('at', '')}|{c.get('n', 0)}", c.get("why") or ""
+    return ((ka - 1) * 100 if ka is not None else None), {"at": pnl.get("at", ""), **c}, c.get("why") or ""
 
 
-def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value: float | None = None,
+def _card(s: dict, *, final: bool = False, prev=None, latest: bool = False, value: float | None = None,
           fx: dict | None = None, ind: str = "", pnl: dict | None = None) -> str:
     """종목 카드. `final` = 주기가 더는 이어서 정리하지 않는 날(`_live_dates` 밖) — 그날의 '대기' 를 '다음
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
@@ -2701,7 +3021,7 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value:
             f"data-pro='{1 if shown.get('pros') else 0}' data-con='{1 if shown.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
-            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', _amt_base(pnl, s, val) if live else val, ccy=currency_of(s.get('market') or ''), fx=fx, cum=((pnl or {}).get('cum') or {}).get(s.get('key')) if live else None, fb=((pnl or {}).get('fb') or {}).get(s.get('key')) if live else None)}"
+            f"{_h.escape(s['name'])}</a>{_prev_html(prev, _amt_base(pnl, s, val) if latest else val, ccy=currency_of(s.get('market') or ''), fx=fx, fb=((pnl or {}).get('fb') or {}).get(s.get('key')) if latest else None)}"
             f"<span class='hn-tk'>{_h.escape(s['ticker'])}{_ind_html(ind or s.get('ind') or '')} · 보유 {_krw(val)}"
             f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}"
             f"{_added_html(s)}</span></div>"
@@ -2752,7 +3072,7 @@ def _day_summary(rec: dict) -> str:
             f"<span class='hn-meta'>{_h.escape(_day_meta(rec))}</span></summary>")
 
 
-def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, live: bool = False,
+def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, latest: bool = False,
               values: dict | None = None, fx: dict | None = None, pnl: dict | None = None) -> str:
     """하루 칸의 본문(카드 · 새 뉴스 없음 · 뺀 상품) — 최신일은 페이지에, 지난 날은 조각 파일에 같은
     함수로 싣는다(#38). `final` → `_card`."""
@@ -2765,7 +3085,8 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
     # 한국어 라벨이 생기면 따라온다(적어 둔 값은 하루치가 없을 때의 폴백, 리뷰 2026-10-14)
     indl = industry_lookup(rec["date"])
     vals = values or {}
-    cards = "".join(_card(s, final=final, prev=_cum_prev(pnl, s) if pnl and live else look(s), live=live,
+    # 최신일 카드 = 요약과 같은 장종료가 누적 · 지금 자산 기록에 없는 종목(판 종목)은 그날 기준 전날 하루 등락
+    cards = "".join(_card(s, final=final, prev=(_cum_prev(pnl, s) if pnl and latest else None) or look(s), latest=latest,
                           value=vals.get(s.get("key")), fx=fx, ind=indl(s), pnl=pnl) for s in with_news)
     quiet_html = ""
     if quiet:
@@ -2787,11 +3108,11 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
 
 
 def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None,
-              live: bool = False, values: dict | None = None, fx: dict | None = None,
+              latest: bool = False, values: dict | None = None, fx: dict | None = None,
               pnl: dict | None = None) -> str:
     return (f"<details class='hn-day' data-hnday='1' data-open='{1 if open_ else 0}'"
             f"{' open' if open_ else ''}>{_day_summary(rec)}"
-            f"{_day_body(rec, final=final, now=now, live=live, values=values, fx=fx, pnl=pnl)}</details>")
+            f"{_day_body(rec, final=final, now=now, latest=latest, values=values, fx=fx, pnl=pnl)}</details>")
 
 
 def frag_name(date: str) -> str:
@@ -2857,12 +3178,42 @@ def _prev_date_html(recs: list[dict]) -> str:
     return f"<span class='prev'>· 전 {ds[1] if len(ds) > 1 else '없음'}</span>"
 
 
+def _lag_txt(m) -> str:
+    """마감 뒤 몇 분에 그 세션 종가를 받나 — 시장마다 다르다(하루치 `READY_MIN` · Yahoo 만 받는 시장 `YCLOSE_MARGIN_MIN`).
+    한 문구로 적으면 홍콩 줄이 '3시간 뒤' 라고 거짓말한다(독립 리뷰 2026-10-14). 모르면 하루치 시각."""
+    m = int(m or 0) or _ws_ready_min()
+    return f"{m // 60}시간" if m >= 60 and m % 60 == 0 else f"{m}분"
+
+
+def _yahoo_reason(d: dict) -> str:
+    """Yahoo 일봉 종가로 센 까닭 — 세 갈래의 처방이 다르다(#82): 하루치를 안 받는 시장 · 하루치를 놓친 세션 · 하루치에
+    없는 종목(ETF·우선주 등)."""
+    if d.get("nosnap"):
+        return "TradingView 하루치를 받지 않는 시장이라"
+    if d.get("broken"):
+        b = d["broken"]
+        return f"TradingView 하루치를 놓친 세션({', '.join(b[:2])}{f' 외 {len(b) - 2}' if len(b) > 2 else ''})이 있어"
+    return "TradingView 하루치에 없는 종목이라"
+
+
+def _ws_ready_min() -> int:
+    """하루치를 받는 시각(장 마감 뒤 몇 분) — 가이드 문구가 리터럴로 적으면 `READY_MIN` 을 바꿀 때 갈린다(#38·#55)."""
+    try:
+        from bot.world_sectors import READY_MIN
+        return int(READY_MIN)
+    except Exception:                                          # noqa: BLE001
+        return 180
+
+
+def _ws_ready_h() -> int:
+    return _ws_ready_min() // 60
+
+
 def render_page(records: list[dict], state: dict | None = None,
                 now: datetime | None = None, *, gen: str | None = None, total: int | None = None,
                 portfolio: dict | None = None, fx: dict | None = None) -> str:
     """`records` = 화면에 실을 날들(최근 `RENDER_DAYS` 일이면 충분 — 그 앞은 안 그린다) · `total` = 보관 중인
     날 수(`count_records`, 없으면 `records` 수)."""
-    from bot.live_pct import LIVE_JS as _LIVE_JS
     import html as _h
 
     from bot.fred_boards import _BOARD_CSS, _theme_head
@@ -2892,18 +3243,18 @@ def render_page(records: list[dict], state: dict | None = None,
     pos_vals: dict = {}
     # 원화 환율은 서버가 굽지 않는다 — 환율 전일대비는 장 중 계속 바뀌어, 구우면 15분 재생성마다 페이지 내용이
     # 달라져 '내용이 같으면 안 쓴다'(#442)가 무너지고 '새 업데이트' 배너가 상시 켜진다(독립 리뷰 2026-10-14). 화면이
-    # 열자마자 `api/live_pct?…&fx=1` 로 받는다(`_PNL_JS`). `fx` 인자는 테스트·진단용.
+    # 열자마자 `api/live_pct?fx=1` 로 받는다(`_PNL_JS`). `fx` 인자는 테스트·진단용.
     pnl_ctx: dict = {}
     try:
         pos, skip = pnl_positions(portfolio)
         pos_vals = {p["key"]: p["value"] for p in pos}
         if pos:
             pnl_ctx = pnl_context(pos, now, portfolio)
-            pnl = _pnl_html(pnl_ctx["pos"], skip, pnl_ctx["look"], basis="기준 뒤 마감 등락", fx=fx, ctx=pnl_ctx)
+            pnl = _pnl_html(pnl_ctx["pos"], skip, pnl_ctx["look"], fx=fx, ctx=pnl_ctx)
     except Exception as exc:                                   # noqa: BLE001
         log.warning("holdings_news: 전일대비 요약 실패: %s", exc)
         pnl_ctx = {}
-    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True, values=pos_vals, fx=fx, pnl=pnl_ctx)
+    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, latest=True, values=pos_vals, fx=fx, pnl=pnl_ctx)
                    if i == 0
                    else _day_lazy(r)
                    for i, r in enumerate(recs)) or (
@@ -2937,29 +3288,31 @@ def render_page(records: list[dict], state: dict | None = None,
 <b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 티커 옆은 그 종목의 <b>업종</b>입니다(「국가별
 섹터혼합」과 같은 TradingView 분류 · 그 시장 하루치가 없으면 비어 있습니다). AI 는 이 업종을 보고 이름만 같은
 다른 사업 기사(예: 반도체 장비 회사 '제우스' 에 섞인 같은 이름의 게임 기사)를 근거에서 뺍니다.<br>
-<b>전일대비 — 기준은 KST 날짜</b> — 자산 기록은 하루에도 여러 번 올라오므로 기준은 '직전 업로드' 가 아니라
-<b>오늘보다 앞선 가장 최근 날짜의 마지막 업로드</b>입니다(오늘이 10/9 이고 그 앞 기록이 10/5 뿐이면 10/5 의 마지막
+<b>전일대비 — 기준은 KST 날짜 · 값은 장종료가</b> — 자산 기록은 하루에도 여러 번 올라오므로 기준은 '직전 업로드' 가
+아니라 <b>오늘보다 앞선 가장 최근 날짜의 마지막 업로드</b>입니다(오늘이 10/9 이고 그 앞 기록이 10/5 뿐이면 10/5 의 마지막
 업로드 · 오늘 몇 번을 올려도 기준은 그대로). 맨 위(최신) 날짜 카드의 괄호와 맨 위 요약 칸은 둘 다 그 기준 대비
-<b>누적 등락</b>입니다 — 기준 업로드 뒤에 마감한 세션마다의 등락(「국가별 심리지도」가 받아 둔 TradingView 하루치)을
-곱하고, 화면을 열어 두면 지금 세션의 <b>실시간 등락</b>(정규장 · 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 ·
-장전·장후 시간외 제외)까지 곱해 1분마다 바뀝니다. 금액은 <b>기준 날 평가금액 × 누적 등락</b>으로 추정합니다(자산 기록에
-수량이 없어 평가금액을 씁니다 · 기준 업로드가 장중이었으면 그 세션 등락을 통째로 세므로 어긋날 수 있습니다). 기준 날
-이후 새로 생긴 종목은 지금 기록 금액을 쓰고 그 기록의 업로드 시각부터 센 등락을 곱합니다(기준 날부터 세면 들고 있지
-않던 날의 손익이 됩니다 · 요약 아래 줄이 그 수를 적습니다). 홍콩처럼 세션별 하루치가 없는 시장은 누적을 못 세어 실시간
-하루 등락만 씁니다. 그 사이 세션의 하루치가 없으면 지어내지
-않고 '(—)'·'미확인' 입니다. 해외 종목 금액은
-<b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 변동(네이버 원화 환율 · 1분마다 갱신)을 곱해
-(1+주가 등락)×(1+환율 변동)−1 로 셉니다 — 금액 앞에 '원화' 가 붙습니다. 환율 변동은 기준 업로드 무렵의 환율 수준이
-남아 있으면 '지금 ÷ 기준' 이고, 없으면(그 업로드를 한 시간 안에 못 봤을 때) 오늘 하루 변동입니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷
-평가금액과 다를 수 있습니다(마우스를 올리면 두 등락을 적습니다). 두 등락의 날짜·시각이 다를 수 있어(예: 미국 주가는
-간밤 세션 · 환율은 서울 외환시장 지금 · 주말·휴장엔 서로 다른 날) 추정치이고, 환율을 못 받은 통화는 '환율 미확인'
-으로 세고 주가 등락만으로 셉니다. 환율은 화면을 연 뒤 받으므로 처음 잠깐은 '환율 대기' 입니다. 지난 날 카드는 그날 환율을 받아 두지 않아 현지통화
-등락만입니다. 맨 위 <b>전일대비 · 전체/국내/해외</b>
-칸은 자산 기록의 값을 매길 수 있는 보유 전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그
-합 ÷ 등락을 아는 종목의 기준 평가금액 합입니다(등락을 모르는 종목은 금액에도 분모에도 넣지 않고 '미확인' 으로 셉니다).
-실시간을 못 받은 종목은 <b>마지막 마감까지의 누적</b>이 그대로 남습니다 — TradingView 하루치는 장 마감 3시간 뒤
-수집이라 미국은 한국 시각 아침 8~9시에 받으므로 이른 아침엔 '(—)' 일 수 있습니다. 지난 날 카드의 괄호는 그날 기준
-전날 하루 등락 그대로입니다(마우스를 올리면 무엇의 값인지와 기준 시각).<br>
+<b>장종료가 누적 등락</b>입니다 — 기준 업로드 뒤에 마감한 세션마다의 종가 등락(「국가별 심리지도」가 받아 둔 TradingView
+하루치)을 곱해 '기준 무렵 마지막 종가 → 받아 둔 마지막 종가' 를 셉니다. 종목마다 실시간 시세를 묻지 않습니다(열어 둔
+화면이 1분마다 보유 전 종목 시세를 묻던 부하를 없앴습니다) — 그래서 장중에는 값이 움직이지 않고, 하루치는 장 마감
+{_ws_ready_h()}시간 뒤에 받으므로 막 끝난 세션의 종가는 그 뒤 15분 주기 갱신에 실립니다. 요약 아래 줄이 시장마다 <b>어느
+날 종가까지</b> 반영했는지 적습니다(시장마다 장이 닫히는 시각이 달라 한 칸에 서로 다른 날의 종가가 섞입니다). 금액은
+<b>기준 날 평가금액 × 누적 등락</b>으로 추정합니다(자산 기록에 수량이 없어 평가금액을 씁니다 · 기준 업로드가 장중이었으면
+그 세션 종가까지를 통째로 세므로 어긋날 수 있습니다). 기준 날 이후 새로 생긴 종목은 지금 기록 금액을 쓰고 그 기록의
+업로드 시각부터 센 등락을 곱합니다(기준 날부터 세면 들고 있지 않던 날의 손익이 됩니다 · 요약 아래 줄이 그 수를
+적습니다). 원천이 그대로였던 세션(휴장 추정)은 등락 0 으로 셉니다. TradingView 하루치는 보통주·DR 만 실어, ETF·
+우선주처럼 거기에 없는 종목과 하루치를 받지 않는 시장(홍콩)은 <b>Yahoo 일봉 종가</b>로 같은 날 종가까지를 셉니다(봇이
+{TICK_MIN}분 주기에 받아 둡니다 — 화면은 묻지 않습니다). 그 사이 세션의 하루치를 놓친 경우나 종가를 아직 못 받은 경우는
+지어내지 않고 '(—)' 이며 마우스를 올리면 사유를 적습니다(요약 칸에선 '종가 기준 n/N종목' 의 나머지). 해외 종목 금액은 <b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 변동(네이버
+원화 환율 · 해외 보유가 있으면 화면이 1분마다 환율 하나만 받습니다)을 곱해 (1+주가 등락)×(1+환율 변동)−1 로 셉니다 —
+금액 앞에 '원화' 가 붙습니다. 환율 변동은 기준 업로드 무렵의 환율 수준이 남아 있으면 '지금 ÷ 기준' 이고, 없으면(그
+업로드를 한 시간 안에 못 봤을 때) 오늘 하루 변동입니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷ 평가금액과 다를 수
+있습니다(마우스를 올리면 두 등락을 적습니다). 종가와 환율의 시각이 달라(예: 미국 종가는 간밤 · 환율은 서울 외환시장
+지금) 추정치이고, 환율을 못 받은 통화는 '환율 미확인' 으로 세고 주가 등락만으로 셉니다. 환율은 화면을 연 뒤 받으므로
+처음 잠깐은 '환율 대기' 입니다. 맨 위 <b>전일대비 · 전체/국내/해외</b> 칸은 자산 기록의 값을 매길 수 있는 보유
+전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그 합 ÷ 등락을 아는 종목의 기준 평가금액
+합입니다(등락을 모르는 종목은 금액에도 분모에도 넣지 않습니다 — 칸 아래 'n/N종목' 이 그 수를 말합니다). 지난 날 카드의 괄호와 지금 자산 기록에
+없는 종목(판 종목)의 괄호는 그날 기준 전날 하루 등락 그대로이고 현지통화 등락만입니다(마우스를 올리면 무엇의 값인지와
+기준 시각).<br>
 <b>낮에 산 종목</b> — 종목 목록은 매일 아침 수집 때 정해지지만, 그 뒤 자산 기록이 바뀌어 새로 생긴 보유는
 {TICK_MIN}분 주기마다 그 종목만 같은 창·같은 규칙으로 모아 오늘 칸에 붙입니다(카드에 '자산 기록 변경 뒤 HH:MM 추가'
 · 한 주기 {MAX_ADD_PER_TICK}종목까지). 판 종목의 오늘 카드는 그대로 남습니다(그날 아침 들고 있던 종목의 소식이라).<br>
@@ -3004,7 +3357,7 @@ AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 �
 {days}
 <div class="footer">보유종목 News — 뉴스 정리(교육·정보), 투자 권유 아님 · NOAH</div>
 </div>
-<script>{_HN_JS}</script><script>{_PNL_JS}</script><script>{_LIVE_JS}</script>
+<script>{_HN_JS}</script><script>{_PNL_JS}</script>
 </body></html>"""
 
 

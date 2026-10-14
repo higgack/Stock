@@ -224,7 +224,10 @@ def test_board_table_adds_live_span_only_for_linked_rows_and_fills_after_draw():
     assert js["filled"] == 1 and js["same"], "다시 그린 표를 바로 채운다"
 
 
-def test_holdings_latest_day_gets_live_tickers_but_past_fragments_do_not(monkeypatch):
+def test_holdings_page_asks_no_ticker_quotes(monkeypatch):
+    """옛 계약(보유종목 News 최신일 카드는 실시간 칸)은 사용자 2026-10-14 "실시간 부하가 크면 기준을 장종료가격으로"
+    로 바뀌었다(#222) — 보유종목 News 는 최신일·지난 날 어느 카드도 종목 시세를 묻지 않는다(열어 둔 화면 하나가
+    분당 수백 건이었다). 국가별 보드의 실시간 칸은 그대로다(아래 테스트)."""
     import bot.holdings_news as hn
     from datetime import datetime, timezone, timedelta
     now = datetime(2026, 10, 13, 9, 0, tzinfo=timezone(timedelta(hours=9)))
@@ -235,10 +238,9 @@ def test_holdings_latest_day_gets_live_tickers_but_past_fragments_do_not(monkeyp
     us = dict(stock, ticker="AAPL", market="US", name="Apple")
     rec = {"date": "2026-10-13", "stocks": [stock, us]}
     page = hn.render_page([rec, dict(rec, date="2026-10-12")], {}, now=now)
-    assert "data-t='005930'" in page and "data-t='AAPL'" in page
-    assert lp.LIVE_JS in page
+    assert "data-t=" not in page and "js-live-pct" not in page and lp.LIVE_JS not in page
     frag = hn._day_body(dict(rec, date="2026-10-12"), now=now)
-    assert "js-live-pct" not in frag, "지난 날 카드의 괄호는 그날 기준이라 실시간으로 덮지 않는다"
+    assert "js-live-pct" not in frag
 
 
 def test_api_route_hands_the_ticker_list_to_lookup_and_dispatches(monkeypatch):
@@ -263,6 +265,47 @@ def test_api_route_hands_the_ticker_list_to_lookup_and_dispatches(monkeypatch):
     h2._handle_live_pct = lambda: called.append(1)
     h2._do_GET_routed()
     assert called == [1], "GET 라우팅이 이 핸들러로 간다"
+
+
+def test_api_says_fx_is_pending_only_when_the_table_is_empty(monkeypatch):
+    """빈 환율 표 — 받는 중(재시작 직후)인지 받기를 마쳤는데 없는지 서버가 말한다(화면이 '미확인' 을 지어내지 않게)."""
+    import bot.dashboard_server as ds
+    real_pending = lp.fx_pending
+    monkeypatch.setattr(lp, "lookup", lambda raw: {"q": {}, "pending": 0, "capped": False})
+    got = {}
+    h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+    h.path = "/api/live_pct?fx=1"
+    h._reply_json = lambda status, body: got.update(body, status=status)
+    monkeypatch.setattr(lp, "fx_lookup", lambda: {})
+    monkeypatch.setattr(lp, "fx_pending", lambda: True)
+    h._handle_live_pct()
+    assert got["fx"] == {} and got["fx_pending"] is True
+    got.clear()
+    monkeypatch.setattr(lp, "fx_lookup", lambda: {"USD": {"pct": 1.0}})
+    h._handle_live_pct()
+    assert "fx_pending" not in got
+    monkeypatch.setitem(lp._FX, "running", True)
+    monkeypatch.setitem(lp._FX, "at", 0.0)
+    assert real_pending() is True                                               # 재시작 뒤 첫 시도가 도는 중
+    monkeypatch.setitem(lp._FX, "at", 1.0)
+    assert real_pending() is False                                              # 한 번 끝난 뒤의 시도는 '받는 중' 이 아니다
+    monkeypatch.setitem(lp._FX, "running", False)
+    monkeypatch.setitem(lp._FX, "at", 0.0)
+    assert real_pending() is False
+
+
+def test_fx_pending_is_not_reported_on_every_retry_after_a_fast_failure(monkeypatch):
+    """델타 리뷰 2026-10-14 — `fx_lookup` 은 1분마다 새 시도를 띄운다. 원천이 빨리 실패하는 날(정지·403·낡은 값 풀)에
+    시도마다 '받는 중' 이라 말하면 화면이 '대기' 를 영원히 약속한다 — 첫 시도가 끝나면 그 뒤의 빈 표는 '미확인' 이다."""
+    started = []
+    monkeypatch.setattr(lp, "_Thread", lambda target=None, **kw: started.append(target) or _Noop())
+    monkeypatch.setattr(lp, "fx_changes", lambda levels=None: {})
+    monkeypatch.setattr(lp, "_FX", {"at": 0.0, "val": {}, "running": False})
+    assert lp.fx_lookup(now=1000.0) == {} and lp.fx_pending() is True and len(started) == 1
+    started[0]()                                                                # 첫 시도가 빈손으로 끝남
+    assert lp.fx_pending() is False
+    assert lp.fx_lookup(now=lp._FX["at"] + lp.FX_FRESH_SEC + 1) == {} and len(started) == 2   # 다음 시도가 떴지만
+    assert lp.fx_pending() is False
 
 
 def test_world_board_pages_load_the_live_script_before_the_board_script():

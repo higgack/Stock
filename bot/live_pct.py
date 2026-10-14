@@ -1,5 +1,6 @@
-"""종목명 옆 `(+1.23%)` 실시간 등락률 — 보유종목 News 카드 · 국가별 3보드 종목 표(사용자 2026-10-13
-"() 안에 등락률은 가능한 실시간으로").
+"""종목명 옆 `(+1.23%)` 실시간 등락률 — 국가별 3보드 종목 표(사용자 2026-10-13 "() 안에 등락률은 가능한
+실시간으로"). 보유종목 News 는 2026-10-14 부터 종목 시세를 묻지 않고(장종료가 기준 — 열어 둔 화면이 분당 수백 건을
+물었다) 원화 환율(`fx_lookup`)만 쓴다.
 
 시세는 화면들이 이미 쓰는 실시간 경로 그대로다(`chart_data` 와 같은 갈래, #38): 국내 = 네이버 polling
 (`naver_quote`) · 대만 = TWSE 공식(`tw_quote`, 네이버 미지원) · 미·일·홍·중 = 네이버 해외(`world_quote`).
@@ -21,7 +22,7 @@ import time
 log = logging.getLogger(__name__)
 
 FRESH_SEC = 60          # 화면 폴링(60초)과 같은 축 — 더 짧으면 같은 값을 두 번 받는다
-MAX_TICKERS = 400       # 한 요청이 맡길 수 있는 티커 수(심리지도 한 칸·보유 종목 하루치를 덮는다)
+MAX_TICKERS = 400       # 한 요청이 맡길 수 있는 티커 수(심리지도 한 칸을 덮는다)
 WORKERS = 6             # 동시 요청 — 원천 하나에 몰리지 않게 작게
 _KEEP_SEC = 6 * 3600    # 표에서 이보다 오래 안 물은 티커는 지운다(메모리 상한)
 
@@ -186,6 +187,15 @@ def fx_lookup(now: float | None = None, *, kick: bool = True) -> dict:
             for c, p in val.items()}
 
 
+def fx_pending() -> bool:
+    """재시작 뒤 **첫** 환율 받기가 아직 안 끝났나 — `fx_lookup` 이 빈 표를 줄 때 화면이 '못 받음' 과 '받는 중(재시작
+    직후)' 을 가르게 한다(상태는 아는 쪽이 말한다, #86). 한 번이라도 끝났으면 False — 그 뒤의 빈 표는 '미확인' 이
+    사실이다. 그 뒤 시도마다 True 를 주면 안 된다: `fx_lookup` 이 1분마다 새 시도를 띄우므로 원천이 빨리 실패하는 날엔
+    매 요청이 '받는 중' 으로 보여 화면이 '대기' 를 영원히 약속한다(델타 리뷰 2026-10-14)."""
+    with _LOCK:
+        return bool(_FX["running"]) and not _FX["at"]
+
+
 def normalize(raw) -> tuple[list[str], bool]:
     """쉼표 목록 → (중복 없는 티커, 잘렸나). 모양이 아닌 것은 버린다."""
     out: list[str] = []
@@ -267,8 +277,8 @@ def lookup(tickers, now: float | None = None, *, kick: bool = True) -> dict:
     return {"q": q, "pending": len(stale), "capped": capped}
 
 
-# 화면 쪽 — `.js-live-pct[data-t]` 칸을 1분마다 채운다. 못 받은 칸은 서버가 그린 것을 그대로 둔다(보유종목
-# News 는 전날 등락 · 국가별 표는 빈칸). 색 클래스는 칸이 `data-cu`/`data-cd` 로 고른다(페이지마다 토큰이
+# 화면 쪽 — `.js-live-pct[data-t]` 칸을 1분마다 채운다. 못 받은 칸은 서버가 그린 것을 그대로 둔다(국가별 표는
+# 빈칸). 색 클래스는 칸이 `data-cu`/`data-cd` 로 고른다(페이지마다 토큰이
 # 다르다). 상대 경로 — 토큰 경로(`/t/<token>/…`)를 떨어뜨리지 않는다(#359). 같은 탭에서 다시 그린 표는
 # 마지막 값으로 즉시 채운다(정렬·칸 열기마다 빈칸이 깜빡이지 않게).
 LIVE_JS = r"""
@@ -285,26 +295,11 @@ LIVE_JS = r"""
   function paint(el,v){
     if(!v) return;
     var p=v.pct, cu=el.getAttribute('data-cu')||'', cd=el.getAttribute('data-cd')||'';
-    // `data-v`(보유 평가금액)가 있는 칸은 금액도 같이(보유종목 News — 평가금액 × 등락률 추정). 해외(`data-c`
-    // = 통화)는 원화 환율 전일대비를 곱한 원화 기준 금액(`window.hnKrw`, 보유종목 News `_PNL_JS`).
-    var dv=parseFloat(el.getAttribute('data-v')||''), am='', cc=el.getAttribute('data-c'), how='';
-    // `data-cum`(보유종목 News 최신일 카드) — 기준 날 자산 기록 대비 누적 등락으로 바꿔 그린다(요약과 같은 기준)
-    var cj=el.getAttribute('data-cum'), raw=p;
-    if(cj&&window.hnCum){var cc0=null; try{cc0=JSON.parse(cj);}catch(e){}
-      var q=cc0?window.hnCum(cc0,p):p; if(q===null) return; p=q;}
-    if(dv&&window.hnAmt){
-      var fb=parseFloat(el.getAttribute('data-fb')||'')||null;
-      var k=(cc&&window.hnKrw)?window.hnKrw(p,cc,fb):{pct:p,fx:null};
-      am=' · '+(cc&&k.fx!==null?'원화 ':'')+window.hnAmt(dv*k.pct/100);
-      how=' · 금액 = 보유 평가금액 × 등락률(추정)'+(!cc?'':(k.fx===null?' · '+cc+' 환율 미확인 — 현지통화 등락만'
-        :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+cc+(k.day?' 오늘 하루 ':' 기준 대비 ')+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));}
-    el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%'+am+')';
+    el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%)';
     if(cu) el.classList.toggle(cu,p>0);
     if(cd) el.classList.toggle(cd,p<0);
     var when=kst(v.ts);
-    el.setAttribute('title',(cj?'기준 날 자산 기록 대비 누적 등락(지금 세션 실시간 '+(raw>0?'+':'')+raw.toFixed(2)+'% 포함)'
-      :'실시간 등락률(정규장 · 직전 종가 대비)')+how+' · '+v.src
-      +(when?' · 기준 '+when:'')+' · 1분마다 갱신');
+    el.setAttribute('title','실시간 등락률(정규장 · 직전 종가 대비) · '+v.src+(when?' · 기준 '+when:'')+' · 1분마다 갱신');
     el.setAttribute('data-live','1');
   }
   function fill(root){
@@ -330,7 +325,6 @@ LIVE_JS = r"""
       }).catch(function(){timer=setTimeout(poll,60000);})
       .then(function(){busy=false; if(again){again=false; clearTimeout(timer); timer=setTimeout(poll,300);}});
   }
-  window.liveRepaint=function(){fill(document);};      // 값은 그대로 다시 칠한다(보유종목 News 환율 갱신)
   window.liveFill=function(root){fill(root); clearTimeout(timer); timer=setTimeout(poll,300);};
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',poll); else poll();
 })();
