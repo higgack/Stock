@@ -78,6 +78,79 @@ def fetch_one(t: str) -> dict | None:
     return {"pct": round(pct, 2), "ts": q.get("ts"), "src": src}
 
 
+# ── 원화 환율 전일대비(보유종목 News 해외 원화 손익, 사용자 2026-10-14 "환율 반영 원화손익으로") ──────────
+# 원천 = 네이버 원화 환율 목록(`naver_marketindex.fetch_kr_fx` — 매크로 카드의 원/달러·원/엔과 같은 값 풀, #38).
+# 그 목록에 `FX_<통화>KRW` 가 없는 통화는 **지어내지 않고** 비운다(호출부가 '환율 미확인' 으로 센다, #165).
+FX_FRESH_SEC = 60                 # 종목 등락과 같은 축
+FX_MAX_AGE_SEC = 6 * 3600         # 원천이 막혀 낡은 값 풀(최대 24h)을 주면 그날의 환율 등락이 아닐 수 있다 → 버린다
+_FX_RE = re.compile(r"^FX_([A-Z]{3})KRW$")
+_FX: dict = {"at": 0.0, "val": {}, "running": False}
+
+
+def fx_pct_map(table) -> dict[str, float]:
+    """`fetch_kr_fx` 표 → {통화: 원화 환율 전일대비 %}. 순수."""
+    out: dict[str, float] = {}
+    for rc, rec in (table or {}).items() if isinstance(table, dict) else ():
+        m = _FX_RE.match(str(rc))
+        if not m or not isinstance(rec, dict):
+            continue
+        try:
+            v = float(rec.get("pct"))
+        except (TypeError, ValueError):
+            continue
+        if v == v and abs(v) < 50:                   # NaN·말도 안 되는 값은 싣지 않는다
+            out[m.group(1)] = round(v, 4)
+    return out
+
+
+def fx_changes() -> dict[str, float]:
+    """네트워크를 부를 수 있다(값 풀 30초 캐시). 값 풀이 `FX_MAX_AGE_SEC` 보다 낡았으면 {} — 못 받은 것과 같다."""
+    try:
+        from bot.naver_marketindex import fetch_kr_fx, value_age_sec
+        tbl = fetch_kr_fx()
+        age = value_age_sec("fx")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("live_pct: 원화 환율을 못 받았습니다(%s: %s)", type(exc).__name__, exc)
+        return {}
+    if age is not None and age > FX_MAX_AGE_SEC:
+        log.warning("live_pct: 원화 환율 값 풀이 %.1f시간 전 값이라 쓰지 않습니다", age / 3600)
+        return {}
+    return fx_pct_map(tbl)
+
+
+def _fx_worker() -> None:
+    try:
+        val = fx_changes()
+    except Exception:                                          # noqa: BLE001
+        val = {}
+    with _LOCK:
+        _FX["at"], _FX["running"] = time.time(), False
+        if val:                                                # 실패는 직전 값을 지우지 않는다(나이는 age 가 말한다)
+            _FX["val"] = val
+            _FX["val_at"] = _FX["at"]
+
+
+def fx_lookup(now: float | None = None, *, kick: bool = True) -> dict:
+    """화면용 {통화: {pct, age}} — 네트워크를 부르지 않는다(낡았으면 뒤에서 받는다). 값이 `FX_MAX_AGE_SEC` 보다
+    오래됐으면 싣지 않는다."""
+    now = time.time() if now is None else now
+    start = False
+    with _LOCK:
+        val, at = dict(_FX["val"]), _FX.get("val_at") or 0.0
+        if kick and now - _FX["at"] >= FX_FRESH_SEC and not _FX["running"]:
+            _FX["running"] = start = True
+    if start:
+        try:
+            _Thread(target=_fx_worker, name="live-fx", daemon=True).start()
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("live_pct: 환율 갱신 스레드를 띄우지 못했습니다(%s)", exc)
+            with _LOCK:
+                _FX["running"] = False
+    if not val or now - at > FX_MAX_AGE_SEC:
+        return {}
+    return {c: {"pct": p, "age": round(now - at)} for c, p in val.items()}
+
+
 def normalize(raw) -> tuple[list[str], bool]:
     """쉼표 목록 → (중복 없는 티커, 잘렸나). 모양이 아닌 것은 버린다."""
     out: list[str] = []
@@ -177,14 +250,19 @@ LIVE_JS = r"""
   function paint(el,v){
     if(!v) return;
     var p=v.pct, cu=el.getAttribute('data-cu')||'', cd=el.getAttribute('data-cd')||'';
-    // `data-v`(보유 평가금액)가 있는 칸은 금액도 같이(보유종목 News — 평가금액 × 등락률 추정)
-    var dv=parseFloat(el.getAttribute('data-v')||''), am='';
-    if(dv&&window.hnAmt) am=' · '+window.hnAmt(dv*p/100);
+    // `data-v`(보유 평가금액)가 있는 칸은 금액도 같이(보유종목 News — 평가금액 × 등락률 추정). 해외(`data-c`
+    // = 통화)는 원화 환율 전일대비를 곱한 원화 기준 금액(`window.hnKrw`, 보유종목 News `_PNL_JS`).
+    var dv=parseFloat(el.getAttribute('data-v')||''), am='', cc=el.getAttribute('data-c'), how='';
+    if(dv&&window.hnAmt){
+      var k=(cc&&window.hnKrw)?window.hnKrw(p,cc):{pct:p,fx:null};
+      am=' · '+window.hnAmt(dv*k.pct/100);
+      how=' · 금액 = 보유 평가금액 × 등락률(추정)'+(!cc?'':(k.fx===null?' · '+cc+' 환율 미확인 — 현지통화 등락만'
+        :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+cc+' '+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));}
     el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%'+am+')';
     if(cu) el.classList.toggle(cu,p>0);
     if(cd) el.classList.toggle(cd,p<0);
     var when=kst(v.ts);
-    el.setAttribute('title','실시간 등락률(정규장 · 직전 종가 대비)'+(am?' · 금액 = 보유 평가금액 × 등락률(추정)':'')+' · '+v.src
+    el.setAttribute('title','실시간 등락률(정규장 · 직전 종가 대비)'+how+' · '+v.src
       +(when?' · 기준 '+when:'')+' · 1분마다 갱신');
     el.setAttribute('data-live','1');
   }

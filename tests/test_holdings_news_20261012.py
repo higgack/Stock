@@ -2976,9 +2976,10 @@ def test_pnl_summary_groups_and_leaves_unknown_out_of_both_sides(hn):
     pos, _ = hn.pnl_positions(_pf())
     pct = {"KR:005930": -2.0, "US:AAPL": 1.0, "KR:069500": None}
     sm = hn.pnl_summary(pos, lambda p: (pct[p["key"]], None, ""))
-    assert sm["all"] == {"amt": -3_000_000.0 + 400_000.0, "base": 190_000_000.0, "n": 3, "n_priced": 2}
-    assert sm["KR"] == {"amt": -3_000_000.0, "base": 150_000_000.0, "n": 2, "n_priced": 1}
-    assert sm["XX"] == {"amt": 400_000.0, "base": 40_000_000.0, "n": 1, "n_priced": 1}
+    # 환율을 안 주면 해외는 주가 등락만으로 세고 '환율 미확인' 으로 센다(2026-10-14 원화 손익 이후 계약, #222)
+    assert sm["all"] == {"amt": -3_000_000.0 + 400_000.0, "base": 190_000_000.0, "n": 3, "n_priced": 2, "n_nofx": 1}
+    assert sm["KR"] == {"amt": -3_000_000.0, "base": 150_000_000.0, "n": 2, "n_priced": 1, "n_nofx": 0}
+    assert sm["XX"] == {"amt": 400_000.0, "base": 40_000_000.0, "n": 1, "n_priced": 1, "n_nofx": 1}
 
 
 def test_pnl_block_rendered_on_the_page(hn, ws_snaps):
@@ -2993,7 +2994,7 @@ def test_pnl_block_rendered_on_the_page(hn, ws_snaps):
     assert "전날 등락 기준 0/1종목" in html and "티커를 못 찾은 상품 2개(1,000만원)는 뺌" in html
     data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
     assert {"t": "005930", "v": 150000000, "g": "KR", "p": -2.0} in data
-    assert {"t": "AAPL", "v": 40000000, "g": "XX", "p": None} in data
+    assert {"t": "AAPL", "v": 40000000, "g": "XX", "p": None, "c": "USD"} in data
     from bot.live_pct import LIVE_JS
     assert html.index(hn._PNL_JS) < html.index(LIVE_JS)                    # hnAmt 가 먼저 정의된다
 
@@ -3009,8 +3010,8 @@ def test_pnl_block_absent_without_portfolio_and_failure_does_not_break_page(hn, 
 
 def test_pnl_json_cannot_close_the_script(hn):
     pos = [{"key": "KR:1", "market": "KR", "ticker": "1", "sym": "</script><b>", "name": "x", "value": 1.0}]
-    out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b")
-    assert out.count("</script>") == 1
+    out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b", fx={"</script>": 1.0})
+    assert out.count("</script>") == 2                                    # 재료 둘(종목 · 환율) 각자 하나씩
 
 
 _PNL_HARNESS = r"""
@@ -3021,8 +3022,9 @@ function mk(id){var e={id:id,textContent:'',className:'',children:[],attrs:{},
   setAttribute:function(k,v){this.attrs[k]=v;}, classList:{toggle:function(){}}, offsetParent:{}};
   els[id]=e; return e;}
 var data=mk('hn-pnl-data'); data.textContent=DATA;
+if(typeof FX!=='undefined'){var fxd=mk('hn-fx-data'); fxd.textContent=FX;}
 ['all','KR','XX'].forEach(function(g){mk('hn-pnl-'+g); mk('hn-pnl-'+g+'-sub');});
-var cell=mk('cell'); cell.attrs={'data-t':'005930','data-v':'150000000'};
+var cell=mk('cell'); cell.attrs=(typeof CELL!=='undefined')?CELL:{'data-t':'005930','data-v':'150000000'};
 global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
   createElement:function(){return {textContent:'',className:''};},
   querySelectorAll:function(){return [cell];}, addEventListener:function(){}};
@@ -3031,19 +3033,22 @@ global.fetch=function(u){fetched.push(u); return Promise.resolve({ok:true,json:f
 """
 
 
-def _run_pnl_js(hn, data, live):
+def _run_pnl_js(hn, data, live, fx=None, cell=None):
     from bot.live_pct import LIVE_JS
     node = shutil.which("node")
     if not node:
         pytest.skip("node 없음")
-    src = (f"var DATA={json.dumps(json.dumps(data))}; var LIVE={json.dumps(live)};" + _PNL_HARNESS
+    src = (f"var DATA={json.dumps(json.dumps(data))}; var LIVE={json.dumps(live)};"
+           + (f"var FX={json.dumps(json.dumps(fx))};" if fx is not None else "")
+           + (f"var CELL={json.dumps(cell)};" if cell is not None else "") + _PNL_HARNESS
            + hn._PNL_JS + LIVE_JS
            + "\nsetImmediate(function(){setImmediate(function(){setImmediate(function(){console.log(JSON.stringify("
              "{all:els['hn-pnl-all'].textContent,allsub:els['hn-pnl-all-sub'].textContent,"
              "kr:els['hn-pnl-KR'].textContent,xx:els['hn-pnl-XX'].textContent,xxsub:els['hn-pnl-XX-sub'].textContent,"
              "cell:cell.textContent,title:cell.attrs.title||'',n:fetched.length,"
+             "urls:fetched,"
              "sizes:fetched.filter(function(u){return u.indexOf('api/live_pct')===0;}).map(function(u){"
-             "return decodeURIComponent(u.split('t=')[1]).split(',').length;}),delays:delays}));});});});")
+             "return decodeURIComponent(u.split('t=')[1].split('&')[0]).split(',').length;}),delays:delays}));});});});")
     r = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -3078,6 +3083,7 @@ def test_pnl_js_chunks_under_the_server_cap_and_repolls_soon_when_pending(hn):
     o = _run_pnl_js(hn, data, {"q": {}, "pending": 3})
     pnl = [x for x in o["sizes"] if x != 1]                 # 1 = 카드 칸(LIVE_JS) 요청
     assert sum(pnl) == 650 and max(pnl) <= MAX_TICKERS and len(pnl) >= 2
+    assert sum("fx=1" in u for u in o["urls"]) == 1          # 환율은 첫 묶음 한 번만 묻는다(묶음마다 같은 값)
     # 받는 중(pending)이면 곧 다시 묻는다 — 카드 칸 폴러(LIVE_JS)도 5초를 걸므로 둘 다인지 센다(#75)
     assert o["delays"].count(5000) == 2, o["delays"]
     o = _run_pnl_js(hn, data[:2], {"q": {}, "pending": 0})
@@ -3134,9 +3140,79 @@ def test_latest_card_carries_value_for_live_amount_and_uses_current_portfolio(hn
     assert "data-v='150000000'" in card and "(-2.00% · -300만원)" in card and "보유 1.5억원" in card
 
 
-def test_overseas_cell_says_it_excludes_fx(hn, ws_snaps):
-    html = hn.render_page([_rec(_stock("KR:A"))], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
-    assert "전일대비 · 해외(현지통화 등락 · 환율 제외)" in html and "그날 환율 변동은 빠져 있습니다" in html
+def test_overseas_cell_says_it_is_krw_with_fx(hn, ws_snaps):
+    """옛 계약(해외 = 현지통화 · 환율 제외)은 사용자 2026-10-14 "환율 반영 원화손익으로" 로 뒤집혔다(#222) — 칸 이름이
+    원화·환율 반영을 말하고, 옛 '빠져 있습니다' 문구는 남지 않는다."""
+    html = hn.render_page([_rec(_stock("KR:A"))], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf(), fx={})
+    assert "전일대비 · 해외(원화 · 환율 반영)" in html and "환율 제외" not in html
+    assert "그날 환율 변동은 빠져 있습니다" not in html
+
+
+def test_krw_pct_compounds_and_falls_back_without_fx(hn):
+    assert hn.krw_pct(-6.69, None) == -6.69
+    assert hn.krw_pct(0.0, 0.5) == pytest.approx(0.5)
+    assert hn.krw_pct(10.0, 10.0) == pytest.approx(21.0)                  # 곱이지 합이 아니다
+    assert hn.krw_pct(-1.55, 0.5) == pytest.approx(((1 - 0.0155) * 1.005 - 1) * 100)
+
+
+def test_currency_of_market(hn):
+    assert hn.currency_of("KR") is None and hn.currency_of("US") == "USD" and hn.currency_of("JP") == "JPY"
+    assert hn.currency_of("TW") == "TWD" and hn.currency_of("HK") == "HKD" and hn.currency_of("CN_A") == "CNY"
+    assert hn.currency_of("ZZ") is None
+
+
+def test_pnl_summary_applies_fx_only_to_overseas(hn):
+    pos, _ = hn.pnl_positions(_pf())
+    pct = {"KR:005930": -2.0, "US:AAPL": 1.0, "KR:069500": None}
+    sm = hn.pnl_summary(pos, lambda p: (pct[p["key"]], None, ""), {"USD": 2.0, "KRW": 50.0})
+    xx = 40_000_000.0 * ((1.01 * 1.02) - 1)
+    assert sm["XX"]["amt"] == pytest.approx(xx) and sm["XX"]["n_nofx"] == 0
+    assert sm["KR"]["amt"] == pytest.approx(-3_000_000.0)                 # 국내엔 환율이 안 붙는다
+    assert sm["all"]["amt"] == pytest.approx(xx - 3_000_000.0)
+
+
+def test_page_summary_and_card_use_fx(hn, ws_snaps):
+    """서버가 그린 해외 칸·해외 카드 금액이 원화 기준 · JS 재료에 통화(`c`)와 환율(`hn-fx-data`)이 실린다(#20)."""
+    ws_snaps("US", "2026-10-09", [("NASDAQ:AAPL", 1.0)])
+    rec = _rec({**_stock("US:AAPL"), "market": "US", "ticker": "AAPL", "name": "애플", "value": 1.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf(), fx={"USD": 2.0})
+    xx = html.split("id='hn-pnl-XX'>")[1].split("</div>")[0]
+    assert xx == "<span class='hn-up'>+121만원 (+3.02%)</span>", xx        # 4천만 × 3.02%
+    data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
+    assert {"t": "AAPL", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"} in data
+    assert all("c" not in d for d in data if d["g"] == "KR")
+    assert json.loads(html.split("id='hn-fx-data'>")[1].split("</script>")[0]) == {"USD": 2.0}
+    card = html.split("data-hncard='1'")[1]
+    assert "data-c='USD'" in card and "(+1.00% · +121만원)" in card
+    assert "원화 기준(주가 +1.00% · 원/USD +2.00%)" in card
+
+
+def test_page_counts_missing_fx_instead_of_inventing_it(hn, ws_snaps):
+    ws_snaps("US", "2026-10-09", [("NASDAQ:AAPL", 1.0)])
+    rec = _rec({**_stock("US:AAPL"), "market": "US", "ticker": "AAPL", "name": "애플", "value": 1.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf(), fx={"JPY": 9.0})
+    assert html.split("id='hn-pnl-XX'>")[1].split("</div>")[0] == "<span class='hn-up'>+40만원 (+1.00%)</span>"
+    assert "환율 미확인 1" in html.split("id='hn-pnl-XX-sub'>")[1].split("</div>")[0]
+    assert "USD 환율 미확인 — 현지통화 등락만" in html.split("data-hncard='1'")[1]
+
+
+def test_page_fetches_fx_when_not_given(hn, ws_snaps, monkeypatch):
+    """`fx` 를 안 주면 렌더가 스스로 받는다(배선, #20)."""
+    import bot.live_pct as lp
+    monkeypatch.setattr(lp, "fx_changes", lambda: {"USD": -1.0})
+    ws_snaps("US", "2026-10-09", [("NASDAQ:AAPL", 1.0)])
+    rec = _rec({**_stock("US:AAPL"), "market": "US", "ticker": "AAPL", "name": "애플", "value": 1.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert json.loads(html.split("id='hn-fx-data'>")[1].split("</script>")[0]) == {"USD": -1.0}
+    monkeypatch.setattr(lp, "fx_changes", lambda: 1 / 0)
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert "hn-grid" in html and json.loads(html.split("id='hn-fx-data'>")[1].split("</script>")[0]) == {}
+
+
+def test_past_day_card_never_applies_todays_fx(hn):
+    """지난 날 카드에 오늘 환율을 곱하면 다른 날의 등락이 된다 — 현지통화 등락만, 툴팁이 그렇게 말한다."""
+    out = hn._prev_html((1.0, "2026-10-01", ""), "", 40_000_000.0, ccy="USD", fx={"USD": 2.0})
+    assert "+40만원" in out and "지난 날 카드라 현지통화 등락만" in out and "data-c" not in out
 
 
 def test_check_revert_cap_is_three(hn):
@@ -3173,3 +3249,30 @@ def test_transient_in_a_later_chunk_keeps_earlier_drops_for_capped_stocks(hn, mo
     hn.analyze(_rec(s), llm=f)
     assert s["status"] == "ok" and s["pros"] == [] and s["offtopic_lines"] == 1   # c1(Pros) 판정은 적용
     assert s["cons"] and "일시 오류" in s["check_why"]
+
+
+def test_pnl_js_krw_with_server_fx_then_live_fx(hn):
+    """JS 도 파이썬 `krw_pct` 와 같은 식 — 서버가 넣은 환율로 시작하고, 응답의 `fx` 가 오면 그걸 쓴다. 첫 묶음만
+    `fx=1` 을 붙인다. 카드 칸(`LIVE_JS`)도 `data-c` 로 원화 금액을 그린다."""
+    data = [{"t": "AAPL", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"},
+            {"t": "005930", "v": 150000000, "g": "KR", "p": -2.0}]
+    cell = {"data-t": "AAPL", "data-v": "40000000", "data-c": "USD"}
+    o = _run_pnl_js(hn, data, {"q": {}, "pending": 0}, fx={"USD": 2.0}, cell=cell)
+    assert o["xx"] == "+121만원 (+3.02%)" and o["xxsub"] == "전날 등락 1 / 1종목"
+    assert o["kr"] == "-300만원 (-2.00%)"
+    live = {"q": {"AAPL": {"pct": -1.0, "ts": "", "src": "네이버"}}, "pending": 0, "fx": {"USD": {"pct": 1.0, "age": 3}}}
+    o = _run_pnl_js(hn, data, live, fx={"USD": 2.0}, cell=cell)
+    k = 40000000 * ((0.99 * 1.01) - 1)
+    assert o["xx"] == hn._signed_krw(k) + f" ({k / 40000000 * 100:+.2f}%)"
+    assert o["cell"] == "(-1.00% · " + hn._signed_krw(k) + ")" and "원/USD +1.00%" in o["title"]
+    pnl_urls = [u for u in o["urls"] if "fx=1" in u]
+    assert len(pnl_urls) == 1
+
+
+def test_pnl_js_counts_missing_fx(hn):
+    data = [{"t": "AAPL", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
+    cell = {"data-t": "AAPL", "data-v": "40000000", "data-c": "USD"}
+    live = {"q": {"AAPL": {"pct": 1.0, "ts": "", "src": "x"}}, "pending": 0}
+    o = _run_pnl_js(hn, data, live, fx={}, cell=cell)
+    assert o["xx"] == "+40만원 (+1.00%)" and o["xxsub"] == "실시간 1 / 1종목 · 환율 미확인 1"
+    assert "USD 환율 미확인 — 현지통화 등락만" in o["title"]
