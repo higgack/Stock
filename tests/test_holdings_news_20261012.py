@@ -2347,15 +2347,17 @@ def test_card_header_shows_link_and_prev_change(hn, ws_snaps):
     """카드 머리 — 이름 = 종목분석 링크(접미 없는 국내 6자리, #399), 괄호 = 전날 등락(색은 한국 관례),
     값이 없으면 `(—)` + 사유 툴팁. 배선은 `_day_body` 로 태운다(#20 — 헬퍼만 재면 떼어도 통과)."""
     ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.234), ("KRX:000660", -2.0), ("KRX:035720", 0.0)])
-    s1 = {**_stock("KR:005930"), "name": "삼성전자"}
-    s2 = {**_stock("KR:000660"), "name": "SK하이닉스"}
-    s3 = {**_stock("KR:035720"), "name": "카카오"}
+    s1 = {**_stock("KR:005930"), "name": "삼성전자", "value": 100_000_000.0}
+    s2 = {**_stock("KR:000660"), "name": "SK하이닉스", "value": 30_000_000.0}
+    s3 = {**_stock("KR:035720"), "name": "카카오", "value": 5_000.0}
     s4 = {**_stock("KR:999999"), "name": "없음"}
     body = hn._day_body(_rec(s1, s2, s3, s4))
     assert ("<a class='hn-nm' href='lookup/005930' title='종목분석 화면으로'>삼성전자</a>"
             "<span class='hn-chg hn-up' title='2026-10-08 종가 기준") in body
-    assert "<span class='hn-chg hn-dn'" in body and "(-2.00%)</span>" in body
-    assert "(+1.23%)</span>" in body and "(0.00%)</span>" in body and "(+0.00%)" not in body
+    # 2026-10-14 사용자 "퍼센티지 옆에 금액" — 금액 = 보유 평가금액 × 등락률(추정, 툴팁이 밝힌다)
+    assert "<span class='hn-chg hn-dn'" in body and "(-2.00% · -60만원)</span>" in body
+    assert "(+1.23% · +123만원)</span>" in body and "(0.00% · 0원)</span>" in body and "(+0.00%" not in body
+    assert "금액 = 보유 평가금액 × 등락률(추정)" in body
     assert "<span class='hn-chg ' title='2026-10-08" in body                       # 보합은 색 없음
     assert "title='2026-10-08 하루치에 이 종목이 없음'>(—)</span>" in body
 
@@ -2949,3 +2951,119 @@ def test_why_splits_check_calls(hn, capsys):
     hn.why(_t("2026-10-14T09:30"), out=print)
     line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("   AI "))
     assert line.startswith("   AI 3회(그중 무관 소식 확인 1회) · 입력")     # ④ 의 일자 메타가 대신 만족 못 하게(#75)
+
+
+# ── 전일대비 금액(사용자 2026-10-14) ──────────────────────────────────────────
+# 자산 기록엔 수량이 없어 금액 = 보유 평가금액 × 등락률(추정)이다. 요약은 값을 매길 수 있는 보유 **전부**(ETF
+# 포함 — '전체' 손익에서 ETF 를 빼면 합이 작아진다).
+def _pf():
+    return _model(_h("삼성전자", "005930.KS", "KR", 100_000_000.0),
+                  {**_h("삼성전자", "005930", "KR", 50_000_000.0), "금융사": "다른 증권사"},
+                  _h("KODEX 200", "069500", "KR", 20_000_000.0, source="etf_meta"),
+                  _h("애플", "AAPL", "US", 40_000_000.0, source="alias"),
+                  _h("TIGER 어딘가", None, "KR", 7_000_000.0, matched=False, source="etf_brand"),
+                  _h("모르는 상품", None, None, 3_000_000.0, matched=False, source=None))
+
+
+def test_pnl_positions_merge_include_etf_and_count_unpriced(hn):
+    pos, skip = hn.pnl_positions(_pf())
+    assert [(p["key"], p["value"]) for p in pos] == [
+        ("KR:005930", 150_000_000.0), ("US:AAPL", 40_000_000.0), ("KR:069500", 20_000_000.0)]
+    assert skip == {"n": 2, "value": 10_000_000.0}
+
+
+def test_pnl_summary_groups_and_leaves_unknown_out_of_both_sides(hn):
+    pos, _ = hn.pnl_positions(_pf())
+    pct = {"KR:005930": -2.0, "US:AAPL": 1.0, "KR:069500": None}
+    sm = hn.pnl_summary(pos, lambda p: (pct[p["key"]], None, ""))
+    assert sm["all"] == {"amt": -3_000_000.0 + 400_000.0, "base": 190_000_000.0, "n": 3, "n_priced": 2}
+    assert sm["KR"] == {"amt": -3_000_000.0, "base": 150_000_000.0, "n": 2, "n_priced": 1}
+    assert sm["XX"] == {"amt": 400_000.0, "base": 40_000_000.0, "n": 1, "n_priced": 1}
+
+
+def test_pnl_block_rendered_on_the_page(hn, ws_snaps):
+    """서버 값 = 전날 등락 기준 · 세 칸(전체·국내·해외) · 추정이라고 밝힌다 · JS 재료(JSON)를 싣는다."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0), ("KRX:069500", 1.0)])
+    rec = _rec({**_stock("KR:005930"), "name": "삼성전자", "value": 150_000_000.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    kr = html.split("id='hn-pnl-KR'>")[1].split("</div>")[0]
+    assert kr == "<span class='hn-dn'>-280만원 (-1.65%)</span>"          # (-300만 + 20만) ÷ 1.7억
+    assert "전날 등락 기준 2/2종목" in html.split("id='hn-pnl-KR-sub'>")[1].split("</div>")[0]
+    assert html.split("id='hn-pnl-XX'>")[1].split("</div>")[0] == "—"     # 미국 하루치 없음 → 모름
+    assert "전날 등락 기준 0/1종목" in html and "티커를 못 찾은 상품 2개(1,000만원)는 뺌" in html
+    data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
+    assert {"t": "005930", "v": 150000000, "g": "KR", "p": -2.0} in data
+    assert {"t": "AAPL", "v": 40000000, "g": "XX", "p": None} in data
+    from bot.live_pct import LIVE_JS
+    assert html.index(hn._PNL_JS) < html.index(LIVE_JS)                    # hnAmt 가 먼저 정의된다
+
+
+def test_pnl_block_absent_without_portfolio_and_failure_does_not_break_page(hn, monkeypatch):
+    rec = _rec(_stock("KR:A"))
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={})
+    assert "id='hn-pnl-data'" not in html and "hn-grid" in html
+    monkeypatch.setattr(hn, "pnl_summary", lambda *a: 1 / 0)
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert "id='hn-pnl-data'" not in html and "hn-grid" in html            # 곁들이가 본체를 지우지 않는다
+
+
+def test_pnl_json_cannot_close_the_script(hn):
+    pos = [{"key": "KR:1", "market": "KR", "ticker": "1", "sym": "</script><b>", "name": "x", "value": 1.0}]
+    out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b")
+    assert out.count("</script>") == 1
+
+
+_PNL_HARNESS = r"""
+var els={}, fetched=[];
+function mk(id){var e={id:id,textContent:'',className:'',children:[],attrs:{},
+  appendChild:function(c){this.children.push(c); this.textContent=c.textContent;},
+  getAttribute:function(k){return this.attrs[k]===undefined?null:this.attrs[k];},
+  setAttribute:function(k,v){this.attrs[k]=v;}, classList:{toggle:function(){}}, offsetParent:{}};
+  els[id]=e; return e;}
+var data=mk('hn-pnl-data'); data.textContent=DATA;
+['all','KR','XX'].forEach(function(g){mk('hn-pnl-'+g); mk('hn-pnl-'+g+'-sub');});
+var cell=mk('cell'); cell.attrs={'data-t':'005930','data-v':'150000000'};
+global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
+  createElement:function(){return {textContent:'',className:''};},
+  querySelectorAll:function(){return [cell];}, addEventListener:function(){}};
+global.setTimeout=function(){}; global.clearTimeout=function(){};
+global.fetch=function(u){fetched.push(u); return Promise.resolve({ok:true,json:function(){return Promise.resolve(LIVE);}});};
+"""
+
+
+def _run_pnl_js(hn, data, live):
+    from bot.live_pct import LIVE_JS
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    src = (f"var DATA={json.dumps(json.dumps(data))}; var LIVE={json.dumps(live)};" + _PNL_HARNESS
+           + hn._PNL_JS + LIVE_JS
+           + "\nsetImmediate(function(){setImmediate(function(){setImmediate(function(){console.log(JSON.stringify("
+             "{all:els['hn-pnl-all'].textContent,allsub:els['hn-pnl-all-sub'].textContent,"
+             "kr:els['hn-pnl-KR'].textContent,xx:els['hn-pnl-XX'].textContent,xxsub:els['hn-pnl-XX-sub'].textContent,"
+             "cell:cell.textContent,title:cell.attrs.title||'',n:fetched.length}));});});});")
+    r = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_pnl_js_recounts_with_live_and_falls_back_to_prev(hn):
+    """실시간이 온 종목은 실시간, 못 받은 종목은 서버가 넣은 전날 등락, 둘 다 없으면 세지 않는다 — 서버
+    `pnl_summary` 와 같은 규칙. 카드 칸(`LIVE_JS`)도 금액을 같이 그린다."""
+    data = [{"t": "005930", "v": 150000000, "g": "KR", "p": -2.0},
+            {"t": "069500", "v": 20000000, "g": "KR", "p": 1.0},
+            {"t": "AAPL", "v": 40000000, "g": "XX", "p": None}]
+    live = {"q": {"005930": {"pct": 1.0, "ts": "", "src": "네이버"}}, "pending": 0}
+    o = _run_pnl_js(hn, data, live)
+    assert o["kr"] == "+170만원 (+1.00%)"                                  # 150만(실시간) + 20만(전날)
+    assert o["all"] == "+170만원 (+1.00%)" and o["allsub"] == "실시간 1 · 전날 등락 1 · 미확인 1 / 3종목"
+    assert o["xx"] == "—" and o["xxsub"] == "미확인 1 / 1종목"
+    assert o["cell"] == "(+1.00% · +150만원)" and "평가금액 × 등락률(추정)" in o["title"]
+
+
+def test_pnl_js_amount_format_matches_python(hn):
+    for v, pct in ((12_345_678_900, 1.0), (-3_000_000_000, 1.0), (55_000, -10.0), (500, 2.0)):
+        o = _run_pnl_js(hn, [{"t": "A", "v": abs(v), "g": "KR", "p": pct * (1 if v > 0 else -1)}],
+                        {"q": {}, "pending": 0})
+        a = abs(v) * pct * (1 if v > 0 else -1) / 100
+        assert o["all"].split(" (")[0] == hn._signed_krw(a), (v, o)

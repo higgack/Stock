@@ -177,11 +177,14 @@ LIVE_JS = r"""
   function paint(el,v){
     if(!v) return;
     var p=v.pct, cu=el.getAttribute('data-cu')||'', cd=el.getAttribute('data-cd')||'';
-    el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%)';
+    // `data-v`(보유 평가금액)가 있는 칸은 금액도 같이(보유종목 News — 평가금액 × 등락률 추정)
+    var dv=parseFloat(el.getAttribute('data-v')||''), am='';
+    if(dv&&window.hnAmt) am=' · '+window.hnAmt(dv*p/100);
+    el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%'+am+')';
     if(cu) el.classList.toggle(cu,p>0);
     if(cd) el.classList.toggle(cd,p<0);
     var when=kst(v.ts);
-    el.setAttribute('title','실시간 등락률(정규장 · 직전 종가 대비) · '+v.src
+    el.setAttribute('title','실시간 등락률(정규장 · 직전 종가 대비)'+(am?' · 금액 = 보유 평가금액 × 등락률(추정)':'')+' · '+v.src
       +(when?' · 기준 '+when:'')+' · 1분마다 갱신');
     el.setAttribute('data-live','1');
   }

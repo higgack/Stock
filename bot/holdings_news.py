@@ -1669,7 +1669,61 @@ _HN_CSS = """
 .hn-quiet{font-size:12.5px;color:var(--muted);margin:2px 0 10px;line-height:1.6}
 .hn-hit{outline:2px solid var(--accent);outline-offset:1px}
 .hn-lazy{font-size:12.5px;color:var(--muted);padding:8px 4px}
+.hn-pnl .hn-up{color:var(--hn-up)}.hn-pnl .hn-dn{color:var(--hn-dn)}
+.hn-pnl-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.hn-pnl-note{font-size:11.5px;color:var(--muted);margin:-4px 0 10px}
 </style>
+"""
+
+# 전일대비 요약을 실시간 등락률로 다시 센다 — 1분마다(카드의 `LIVE_JS` 와 같은 주기·같은 엔드포인트). 실시간을
+# 못 받은 종목은 서버가 넣은 전날 등락을 쓰고, 둘 다 없으면 세지 않는다(`pnl_summary` 와 같은 규칙, #38).
+_PNL_JS = r"""
+(function(){
+  function amt(a){var s=a>0?'+':a<0?'-':'', x=Math.abs(a);
+    if(x>=1e8) return s+(x/1e8).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1})+'억원';
+    if(x>=1e4) return s+Math.round(x/1e4).toLocaleString('en-US')+'만원';
+    return s+Math.round(x).toLocaleString('en-US')+'원';}
+  window.hnAmt=amt;     // 카드 칸(`LIVE_JS` paint)도 쓴다 — 요약 재료가 없어도 정의한다
+  var el=document.getElementById('hn-pnl-data'); if(!el) return;
+  var pos; try{pos=JSON.parse(el.textContent)||[];}catch(e){return;}
+  var live={};
+  function draw(){
+    var G={all:[0,0,0,0,0],KR:[0,0,0,0,0],XX:[0,0,0,0,0]};   // 금액·분모·실시간·전날·전체
+    pos.forEach(function(p){
+      var lv=live[p.t], pct=lv?lv.pct:p.p;
+      ['all',p.g].forEach(function(g){var o=G[g]; o[4]++;
+        if(pct===null||pct===undefined) return;
+        o[0]+=p.v*pct/100; o[1]+=p.v; if(lv) o[2]++; else o[3]++;});
+    });
+    Object.keys(G).forEach(function(g){
+      var o=G[g], v=document.getElementById('hn-pnl-'+g), s=document.getElementById('hn-pnl-'+g+'-sub');
+      if(!v||!s) return;
+      if(!o[4]){v.textContent='—'; s.textContent='보유 없음'; return;}
+      if(!o[1]){v.textContent='—';}
+      else{var pc=o[0]/o[1]*100, sp=document.createElement('span');
+        sp.className=o[0]>0?'hn-up':o[0]<0?'hn-dn':'';
+        sp.textContent=amt(o[0])+' ('+(pc>0?'+':'')+pc.toFixed(2)+'%)';
+        v.textContent=''; v.appendChild(sp);}
+      var parts=[]; if(o[2]) parts.push('실시간 '+o[2]); if(o[3]) parts.push('전날 등락 '+o[3]);
+      var miss=o[4]-o[2]-o[3]; if(miss) parts.push('미확인 '+miss);
+      s.textContent=parts.join(' · ')+' / '+o[4]+'종목';
+    });
+  }
+  function poll(){
+    var ts=pos.map(function(p){return p.t;}), chunks=[];
+    for(var i=0;i<ts.length;i+=300) chunks.push(ts.slice(i,i+300));
+    var left=chunks.length, again=false;
+    if(!left){return;}
+    chunks.forEach(function(c){
+      fetch('api/live_pct?t='+encodeURIComponent(c.join(',')),{cache:'no-store'})
+        .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
+        .then(function(js){var q=(js&&js.q)||{}; for(var k in q) live[k]=q[k]; if(js&&js.pending) again=true;})
+        .catch(function(){})
+        .then(function(){if(--left===0){draw(); setTimeout(poll, again?5000:60000);}});
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',poll); else poll();
+})();
 """
 
 _HN_JS = r"""
@@ -1738,6 +1792,98 @@ def _krw(v: float) -> str:
     if v >= 1e4:
         return f"{v / 1e4:,.0f}만원"
     return f"{v:,.0f}원"
+
+
+def _signed_krw(a: float) -> str:
+    """전일대비 금액 — 부호를 붙인 `_krw`(화면 JS `hnAmt` 와 같은 꼴, #38)."""
+    return ("+" if a > 0 else "-" if a < 0 else "") + _krw(abs(a))
+
+
+# ── 전일대비 금액(사용자 2026-10-14 "전일대비 얼마나 금액이 오르거나 내렸는지") ─────────────────────────
+# 자산 기록에는 **수량이 없다**(뱅크샐러드 내보내기 = 평가금액·원금·수익률뿐, `portfolio_parser`). 그래서 금액은
+# '보유 평가금액 × 등락률' 로 **추정**하고 화면이 그렇게 말한다(#165 — 평가금액은 업로드 시점 가격 기준이라 오늘
+# 주가와 다를 수 있다). 해외 평가금액은 내보내기가 이미 원화로 환산한 값이다.
+def pnl_positions(model: dict | None = None) -> tuple[list[dict], dict]:
+    """전일대비 요약의 대상 — 자산 기록의 **값을 매길 수 있는** 보유 전부(티커·시장이 있는 것 · ETF 포함:
+    뉴스 카드와 달리 '전체' 손익이므로 ETF 를 빼면 합이 작아진다). 반환 = (종목 목록, {n, value} 티커가 없어
+    못 매긴 상품). 여러 증권사에 나눠 가진 종목은 합친다(`universe` 와 같은 키)."""
+    if model is None:
+        try:
+            from bot.portfolio import load
+            model = load() or {}
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("holdings_news: portfolio 읽기 실패(전일대비): %s", exc)
+            model = {}
+    out: dict[str, dict] = {}
+    skip = {"n": 0, "value": 0.0}
+    for h in model.get("holdings") or []:
+        try:
+            v = float(h.get("평가금액") or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        tk, mk = h.get("ticker"), str(h.get("market") or "").upper()
+        if not tk or not mk or not h.get("matched"):
+            skip["n"] += 1
+            skip["value"] += v
+            continue
+        code = _code(tk, mk)
+        key = f"{mk}:{code}"
+        pos = out.setdefault(key, {"key": key, "market": mk, "ticker": code, "sym": str(tk).strip(),
+                                   "name": str(h.get("상품명") or code), "value": 0.0})
+        pos["value"] += v
+    return sorted(out.values(), key=lambda p: (-p["value"], p["key"])), skip
+
+
+PNL_GROUPS = (("all", "전체"), ("KR", "국내"), ("XX", "해외"))
+
+
+def pnl_summary(positions: list[dict], look) -> dict:
+    """그룹(전체·국내·해외)별 {amt, base, n, n_priced} — `look(pos)` = (등락%, …). 등락률이 없는 종목은 금액에도
+    분모에도 넣지 않는다(빈칸을 0% 로 세면 그룹 등락률이 조용히 묽어진다, #43). 그룹 % = Σ금액 ÷ Σ그 평가금액."""
+    out = {g: {"amt": 0.0, "base": 0.0, "n": 0, "n_priced": 0} for g, _ in PNL_GROUPS}
+    for p in positions:
+        try:
+            pct = look(p)[0]
+        except Exception:                                      # noqa: BLE001
+            pct = None
+        for g in ("all", "KR" if p["market"] == "KR" else "XX"):
+            o = out[g]
+            o["n"] += 1
+            if pct is not None:
+                o["amt"] += p["value"] * pct / 100
+                o["base"] += p["value"]
+                o["n_priced"] += 1
+    return out
+
+
+def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str) -> str:
+    """요약 칸 3개 + 화면 JS 가 실시간으로 다시 셀 재료(JSON). 서버 값은 전날 등락 기준이고 화면을 열면
+    1분마다 실시간 등락률로 다시 센다(`_PNL_JS`)."""
+    import html as _h
+    if not positions:
+        return ""
+    sm = pnl_summary(positions, look)
+    cells = []
+    for g, lab in PNL_GROUPS:
+        o = sm[g]
+        if o["n_priced"]:
+            pct = o["amt"] / o["base"] * 100 if o["base"] else 0.0
+            cls = "hn-up" if o["amt"] > 0 else "hn-dn" if o["amt"] < 0 else ""
+            v = f"<span class='{cls}'>{_signed_krw(o['amt'])} ({'+' if pct > 0 else ''}{pct:.2f}%)</span>"
+        else:
+            v = "—"
+        sub = f"{basis} {o['n_priced']}/{o['n']}종목" if o["n"] else "보유 없음"
+        cells.append(f"<div class='stat'><div class='k'>전일대비 · {lab}</div>"
+                     f"<div class='v' id='hn-pnl-{g}'>{v}</div>"
+                     f"<div class='hn-pnl-sub' id='hn-pnl-{g}-sub'>{_h.escape(sub)}</div></div>")
+    data = [{"t": live_ticker(p), "v": round(p["value"]), "g": "KR" if p["market"] == "KR" else "XX",
+             "p": look(p)[0]} for p in positions]
+    note = ("평가금액 × 등락률로 추정한 금액입니다 — 자산 기록에 수량이 없어 업로드 시점 평가금액을 씁니다"
+            + (f" · 티커를 못 찾은 상품 {skip['n']}개({_krw(skip['value'])})는 뺌" if skip.get("n") else ""))
+    return (f"<div class='stat-grid hn-pnl'>{''.join(cells)}</div>"
+            f"<div class='hn-pnl-note'>{_h.escape(note)}</div>"
+            "<script type='application/json' id='hn-pnl-data'>"
+            + json.dumps(data, ensure_ascii=False).replace("</", "<\\/") + "</script>")
 
 
 def _lookup(s: dict) -> str:
@@ -1894,13 +2040,15 @@ def _prev_missing_why(ws, mk: str, d: str, now) -> str:
     return f"{d} 하루치가 없음"
 
 
-def _prev_html(prev, live: str = "") -> str:
+def _prev_html(prev, live: str = "", value: float | None = None) -> str:
     """종목명 옆 `(+1.23%)` — 값이 없으면 `(—)` 에 사유를 툴팁으로(빈칸이 '0' 으로 읽히지 않게, #43).
 
     `live` = 실시간 등락을 받을 티커(최신일 카드만, 사용자 2026-10-13 "가능한 실시간으로"). 화면이
     `live_pct.LIVE_JS` 로 1분마다 덮어쓰고, 못 받으면 서버가 그린 전날 등락이 그대로 남는다."""
     import html as _h
-    lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn" if live else "")
+    # `data-v` = 보유 평가금액 — 실시간 칸도 금액을 같이 다시 센다(`live_pct.LIVE_JS` 의 paint)
+    dv = f"' data-v='{round(value)}" if live and value else ""
+    lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn{dv}" if live else "")
     if not prev:
         return f"<span class='hn-chg{lv}' title='실시간 등락 대기'></span>" if live else ""
     v, d, why_ = prev
@@ -1909,7 +2057,10 @@ def _prev_html(prev, live: str = "") -> str:
     cls = "hn-up" if v > 0 else "hn-dn" if v < 0 else ""
     sign = "+" if v > 0 else ""
     tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
-    return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%)</span>")
+    amt = f" · {_signed_krw(value * v / 100)}" if value else ""
+    if amt:
+        tip += " · 금액 = 보유 평가금액 × 등락률(추정)"
+    return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%{amt})</span>")
 
 
 def live_ticker(s: dict) -> str:
@@ -1995,7 +2146,7 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
             f"data-pro='{1 if shown.get('pros') else 0}' data-con='{1 if shown.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
-            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '')}"
+            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', s.get('value'))}"
             f"<span class='hn-tk'>{_h.escape(s['ticker'])} · 보유 {_krw(float(s.get('value') or 0))}"
             f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}</span></div>"
             f"{pc}<details class='hn-src'><summary>근거 {len(items)}건{offnote}</summary>"
@@ -2137,7 +2288,8 @@ def _cost_line(now: datetime) -> str:
 
 
 def render_page(records: list[dict], state: dict | None = None,
-                now: datetime | None = None, *, gen: str | None = None, total: int | None = None) -> str:
+                now: datetime | None = None, *, gen: str | None = None, total: int | None = None,
+                portfolio: dict | None = None) -> str:
     """`records` = 화면에 실을 날들(최근 `RENDER_DAYS` 일이면 충분 — 그 앞은 안 그린다) · `total` = 보관 중인
     날 수(`count_records`, 없으면 `records` 수)."""
     from bot.live_pct import LIVE_JS as _LIVE_JS
@@ -2165,6 +2317,15 @@ def render_page(records: list[dict], state: dict | None = None,
         f"<div class='stat'><div class='k'>AI 비용 (오늘 / 이번 달 / 누적)</div><div class='v'>"
         f"{_h.escape(_cost_line(now))}</div></div>"
         "</div>")
+    # 전일대비 요약 — 실패는 이 칸만 비운다(곁들이가 본체를 지우지 않게, #315)
+    pnl = ""
+    try:
+        pos, skip = pnl_positions(portfolio)
+        if pos:
+            look = prev_changes(latest["date"] if latest else now.date().isoformat(), now)
+            pnl = _pnl_html(pos, skip, look, basis="전날 등락 기준")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 전일대비 요약 실패: %s", exc)
     days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True) if i == 0
                    else _day_lazy(r)
                    for i, r in enumerate(recs)) or (
@@ -2189,6 +2350,7 @@ def render_page(records: list[dict], state: dict | None = None,
 문장만 근거로 Pros/Cons 를 정리 · 내용이 바뀐 시각 {_h.escape(gen_s)}</div>
 <div class="hn-status" data-kind="{kind}">{_h.escape(line)}</div>
 {stats}
+{pnl}
 <details class="guide"><summary>ℹ️ 이 보드 읽는 법</summary>
 <b>종목</b> — 💼 자산 대시보드와 같은 보유 기록입니다. 여러 증권사에 나눠 가진 종목은 하나로 합치고,
 평가금액이 큰 종목부터 보여 줍니다. ETF(국내는 자산 기록이 ETF 로 알아본 상품, 미국은 거래소 목록의 ETF
@@ -2197,7 +2359,11 @@ def render_page(records: list[dict], state: dict | None = None,
 <b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 옆 괄호는 맨 위(최신) 날짜 카드에서
 <b>실시간 등락률</b>(정규장 · 직전 종가 대비 — 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 · 장 중이면 지금 값,
 장이 끝났으면 마지막 세션 값 · 장전·장후 시간외 등락은 넣지 않습니다)이고 화면을 열어 둔 동안 1분마다
-바뀝니다. 실시간을 못 받은 종목은 <b>전날(그 시장의 직전 거래일) 등락률</b>이 그대로 남습니다 — 「국가별
+바뀝니다. 등락률 옆 금액은 <b>보유 평가금액 × 등락률</b>로 추정한 전일대비 금액입니다(자산 기록에 수량이 없어
+업로드 시점 평가금액을 씁니다 — 그 뒤 주가가 많이 움직였으면 실제 금액과 다릅니다). 맨 위 <b>전일대비 · 전체/국내/해외</b>
+칸은 자산 기록의 값을 매길 수 있는 보유 전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그
+합 ÷ 등락률을 아는 종목의 평가금액 합입니다(등락률을 모르는 종목은 금액에도 분모에도 넣지 않고 '미확인' 으로 셉니다).
+실시간을 못 받은 종목은 <b>전날(그 시장의 직전 거래일) 등락률</b>이 그대로 남습니다 — 「국가별
 심리지도」가 받아 둔 TradingView 하루치(장 마감 3시간 뒤 수집)라 미국은 한국 시각 아침 8~9시에 받으므로 이른
 아침엔 '(—)' 일 수 있고, 휴장이거나 그날을 받지 못했어도 '(—)' 입니다. 지난 날 카드의 괄호는 그날 기준
 전날 등락 그대로입니다(마우스를 올리면 무엇의 값인지와 기준 시각).<br>
@@ -2242,7 +2408,7 @@ AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 �
 {days}
 <div class="footer">보유종목 News — 뉴스 정리(교육·정보), 투자 권유 아님 · NOAH</div>
 </div>
-<script>{_HN_JS}</script><script>{_LIVE_JS}</script>
+<script>{_HN_JS}</script><script>{_PNL_JS}</script><script>{_LIVE_JS}</script>
 </body></html>"""
 
 
