@@ -503,12 +503,29 @@ class TestDashboardTones:
 
     def test_legend_lists_each_present_tone(self):
         html = self._html()
-        leg = next(m.group(1) for m in re.finditer(
-            r'<p class="sub" style="margin:-6px 0 14px">(.*?)</p>', html, re.S)
-            if "df-badge-sig" in m.group(1))
+        # 범례는 접힌 <details> 안(사용자 2026-10-14 '설명 접어져있게') —
+        # 옛 <p class="sub"> 계약을 다시 썼다(#222).
+        leg = re.search(r'<details class="df-legend">(.*?)</details>',
+                        html, re.S).group(1)
         for t, (em, nm) in SIG_TONES.items():
             assert f"{em} {nm}</span>" in leg, t
         assert "빨강" in leg and "보라" in leg and "금색" in leg
+
+    def test_legend_collapsed_by_default_with_present_names(self):
+        """접힘 기본 — open 속성이 없고, 요약 줄은 있는 배지 이름만 싣고
+        기준 문장은 싣지 않는다(펼쳐야 보인다)."""
+        html = self._html()
+        m = re.search(r'<details class="df-legend"([^>]*)><summary>(.*?)</summary>',
+                      html, re.S)
+        assert m and "open" not in m.group(1)
+        summ = m.group(2)
+        for em, nm in SIG_TONES.values():
+            assert f"{em} {nm}" in summ
+        assert "<span" not in summ and "금색" not in summ
+        assert "미파싱" not in summ   # 그런 카드가 없으면 이름도 없다
+        # 기준은 한 줄(li)에 하나씩
+        body = html[m.end():html.index("</details>", m.end())]
+        assert body.count("<li>") == len(SIG_TONES)
 
     def test_absent_tone_has_no_pill_or_legend(self):
         html = _render({"2026-10-13": [
