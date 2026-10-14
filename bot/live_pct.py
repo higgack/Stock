@@ -190,7 +190,7 @@ def fx_lookup(now: float | None = None, *, kick: bool = True) -> dict:
 def fx_pending() -> bool:
     """재시작 뒤 **첫** 환율 받기가 아직 안 끝났나 — `fx_lookup` 이 빈 표를 줄 때 화면이 '못 받음' 과 '받는 중(재시작
     직후)' 을 가르게 한다(상태는 아는 쪽이 말한다, #86). 한 번이라도 끝났으면 False — 그 뒤의 빈 표는 '미확인' 이
-    사실이다. 그 뒤 시도마다 True 를 주면 안 된다: `fx_lookup` 이 1분마다 새 시도를 띄우므로 원천이 빨리 실패하는 날엔
+    사실이다. 그 뒤 시도마다 True 를 주면 안 된다: `fx_lookup` 은 물을 때마다 값이 60초보다 낡았으면 새 시도를 띄우므로 원천이 빨리 실패하는 날엔
     매 요청이 '받는 중' 으로 보여 화면이 '대기' 를 영원히 약속한다(델타 리뷰 2026-10-14)."""
     with _LOCK:
         return bool(_FX["running"]) and not _FX["at"]
