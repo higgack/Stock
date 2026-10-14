@@ -841,8 +841,9 @@ def build_prompt(stocks: list[dict]) -> str:
         "   이름이 같은 다른 회사 · 여러 종목 시세 나열 · 광고 · 회사 이름이 나오지만 투자와 무관한 소식(그 이름을\n"
         "   단 스포츠 구단의 경기 결과·순위·선수 기록, 연예·문화 행사 등). 단 스포츠·연예·콘텐츠·게임이 그 회사의\n"
         "   본업이거나, 회사의 수입·지출에 닿는 일(후원·마케팅 계약, 흥행 수입, 구단 매각·운영비)이면 관련 있다.\n"
-        "   종목 머리에 '업종' 이 있으면 그 업종의 회사로 읽는다 — 이름만 같고 다른 사업을 다루는 항목(예: 반도체\n"
-        "   장비 회사와 이름이 같은 게임·영화·상품, 같은 이름의 다른 회사)은 넣지 않는다.\n"
+        "   종목 머리의 '업종' 은 같은 이름을 가르는 단서다 — 그 회사가 아닌 **이름만 같은** 다른 회사·남의 게임·\n"
+        "   작품·상품을 다루는 항목(예: 반도체 장비 회사와 이름이 같은 다른 회사의 게임)은 넣지 않는다. 같은 회사의\n"
+        "   다른 사업부·자회사 소식은 업종과 달라도 관련 있다.\n"
         "   relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
         "6) 매수·매도 권유, 목표주가, 주가 예측을 쓰지 않는다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
@@ -863,7 +864,9 @@ OFFTOPIC_HINT = re.compile(
     r"KBO|K리그|MLB|NBA|EPL|올림픽|월드컵|콘서트|공연|드라마|예능|아이돌|팬미팅|배우|가수|시상식|영화제|"
     # 게임·콘텐츠 — 같은 이름의 게임·작품이 섞인다(제우스 079370 반도체 장비 ↔ 컴투스 신작 게임 '제우스', 2026-10-14).
     # 게임이 본업인 회사의 줄은 확인 단계가 업종을 보고 남긴다.
-    r"게임|MMORPG|RPG|구글 ?플레이|앱스토어|웹툰|OTT")
+    # 경제 기사의 관용어(게임체인저·치킨게임·제로섬 게임)는 빼고, 영문 약어는 낱말로만(SCOTT 의 OTT 를 안 잡게).
+    r"(?<!치킨)(?<!제로섬 )(?<!제로섬)게임(?!체인저|\s?체인저)|(?i:(?<![A-Za-z])(?:MMORPG|RPG|OTT)(?![A-Za-z]))|"
+    r"구글 ?플레이|앱스토어|웹툰")
 CHECK_MAX = 40                     # 한 번의 확인 호출에 묻는 줄 상한(넘으면 그 묶음의 다음 호출로)
 MAX_CHECK_REVERTS = 3              # 확인 일시 오류로 '대기' 로 되돌리는 상한 — 넘으면 줄을 남기고 그렇게 적는다
 
@@ -899,10 +902,11 @@ def build_check_prompt(cands: list[tuple[str, dict, str, int]]) -> str:
         "너는 개인 투자자의 보유 종목 Pros/Cons 를 검수하는 보조다. 아래 각 줄이 그 회사 주주의 투자 판단에\n"
         f"닿는지({INVEST_TOPICS}) 판정한다.\n"
         "- keep=false: 회사 이름만 나오고 회사의 사업·수입·지출과 이어지지 않는 소식. 그 이름을 단 스포츠\n"
-        "  구단의 경기 결과·순위·선수 기록·선수 부상·감독 교체, 연예·문화 행사 소식 등. 그리고 머리의 '업종' 과\n"
-        "  다른 사업을 다루는 소식(이름만 같은 게임·작품·상품·다른 회사 — 예: 반도체 장비 회사인데 근거가 같은\n"
-        "  이름의 모바일 게임 순위).\n"
-        "- keep=true: 스포츠·연예·콘텐츠·게임이 그 회사의 본업(업종)인 경우, 또는 회사 돈에 닿는 일(후원·마케팅\n"
+        "  구단의 경기 결과·순위·선수 기록·선수 부상·감독 교체, 연예·문화 행사 소식 등. 그리고 그 회사가 아닌\n"
+        "  **이름만 같은** 다른 회사·남의 게임·작품·상품의 소식(예: 업종이 반도체 장비인데 근거가 다른 회사가 낸\n"
+        "  같은 이름의 모바일 게임 순위). 머리의 '업종' 은 이 동명 판별의 단서일 뿐 그 회사 사업의 범위가 아니다.\n"
+        "- keep=true: 같은 회사의 다른 사업부·자회사 소식(업종과 달라도), 스포츠·연예·콘텐츠·게임이 그 회사의\n"
+        "  본업인 경우, 또는 회사 돈에 닿는 일(후원·마케팅\n"
         "  계약의 금액·조건, 흥행 수입, 구단 매각·운영비)이 근거에 **쓰여 있는** 경우.\n"
         "- 근거에 쓰이지 않은 연결(예: '선수 부상이 브랜드 이미지에 영향')을 지어내 keep=true 로 하지 않는다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
@@ -2068,7 +2072,8 @@ def _snap_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[dict, dict] | None
     rows = snap.get("rows") if isinstance(snap, dict) else None
     if not isinstance(rows, list):
         return None
-    lab = ((snap.get("labels") or {}).get("ind") or {}) if isinstance(snap.get("labels"), dict) else {}
+    lab = snap.get("labels") if isinstance(snap.get("labels"), dict) else {}
+    lab = lab.get("ind") if isinstance(lab.get("ind"), dict) else {}
     tbl, ind = {}, {}
     for r in rows:
         try:
@@ -2081,8 +2086,9 @@ def _snap_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[dict, dict] | None
             continue
         if isinstance(v, (int, float)) and v == v:
             tbl[k] = float(v)
-        if en:
-            ind[k] = str(lab.get(en) or en)
+        if isinstance(en, str) and en:          # 업종 칸이 깨져도 등락 표는 산다(곁들이가 본체를 지우지 않게, #315)
+            v2 = lab.get(en)
+            ind[k] = v2 if isinstance(v2, str) and v2 else en
     while len(_PREV_CACHE) >= _PREV_CACHE_MAX:
         _PREV_CACHE.pop(next(iter(_PREV_CACHE)))
     _PREV_CACHE[(mk, d)] = (mt, (tbl, ind))
@@ -2156,11 +2162,11 @@ def industry_lookup(date: str):
         try:
             from bot import world_sectors as ws
             from bot.world_sector_pages import lookup_ticker
-            for d in ws.prev_sessions(mk, date, IND_LOOKBACK) or []:
+            # 가까운 날이 이긴다 — 그 날 하루치에 없는 종목(거래정지 등)은 더 앞 날에서 찾는다(리뷰 2026-10-14)
+            for d in reversed(ws.prev_sessions(mk, date, IND_LOOKBACK) or []):
                 t = _snap_tables(ws, lookup_ticker, mk, d)
-                if t is not None and t[1]:
-                    out = t[1]
-                    break
+                if t is not None:
+                    out.update(t[1])
         except Exception as exc:                               # noqa: BLE001
             log.warning("holdings_news: 업종 조회 실패(%s %s): %s", mk, date, exc)
         memo[mk] = out
@@ -2321,7 +2327,7 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value:
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
             f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', val, ccy=currency_of(s.get('market') or ''), fx=fx)}"
-            f"<span class='hn-tk'>{_h.escape(s['ticker'])}{_ind_html(s.get('ind') or ind)} · 보유 {_krw(val)}"
+            f"<span class='hn-tk'>{_h.escape(s['ticker'])}{_ind_html(ind or s.get('ind') or '')} · 보유 {_krw(val)}"
             f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}</span></div>"
             f"{pc}<details class='hn-src'><summary>근거 {len(items)}건{offnote}</summary>"
             f"<ol>{lis}</ol></details></div>")
@@ -2379,10 +2385,12 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
     with_news = [s for s in ss if s.get("items")]
     quiet = [s for s in ss if not s.get("items")]
     look = prev_changes(rec["date"], now)
-    indl = industry_lookup(rec["date"])          # 업종을 적어 두지 않은 옛 기록도 렌더 때 채운다(#270)
+    # 업종은 렌더 때 다시 읽는다 — 적어 두지 않은 옛 기록도 채우고(#270), 그날 라벨이 없어 영문으로 적힌 값도
+    # 한국어 라벨이 생기면 따라온다(적어 둔 값은 하루치가 없을 때의 폴백, 리뷰 2026-10-14)
+    indl = industry_lookup(rec["date"])
     vals = values or {}
     cards = "".join(_card(s, final=final, prev=look(s), live=live, value=vals.get(s.get("key")), fx=fx,
-                          ind="" if s.get("ind") else indl(s)) for s in with_news)
+                          ind=indl(s)) for s in with_news)
     quiet_html = ""
     if quiet:
         names = ", ".join(_h.escape(s["name"]) for s in quiet[:60])
