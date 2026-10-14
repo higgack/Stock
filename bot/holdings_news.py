@@ -858,6 +858,7 @@ OFFTOPIC_HINT = re.compile(
     r"야구|축구|농구|배구|골프|테니스|e스포츠|이스포츠|구단|선수|감독|리그|시즌|홈런|투수|타자|득점|우승|"
     r"KBO|K리그|MLB|NBA|EPL|올림픽|월드컵|콘서트|공연|드라마|예능|아이돌|팬미팅|배우|가수|시상식|영화제")
 CHECK_MAX = 40                     # 한 번의 확인 호출에 묻는 줄 상한(넘으면 그 묶음의 다음 호출로)
+MAX_CHECK_REVERTS = 3              # 확인 일시 오류로 '대기' 로 되돌리는 상한 — 넘으면 줄을 남기고 그렇게 적는다
 
 
 def offtopic_candidates(stock: dict) -> list[tuple[str, int]]:
@@ -966,8 +967,7 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
                 time.sleep(pace)
             if b:
                 it["_body"] = b
-        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv",
-                                               "offtopic_lines", "check_why")}
+        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
         s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
                  relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
         n += 1
@@ -1032,7 +1032,8 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["offtopic_lines"] = 0
     stock["check_why"] = ""
     stock["pv"] = prompt_sig()
-    stock.pop("prev_pc", None)              # 새 기준으로 정리됐다 — 옛 정리는 더 쓸 데가 없다
+    # 옛 정리(`prev_pc`)는 여기서 버리지 않는다 — 무관 소식 확인이 일시 오류로 이 종목을 '대기' 로 되돌리면 그날
+    # 다시 정리하지 못했을 때 보여 줄 옛 정리가 사라진다(독립 리뷰 2026-10-14). 확인까지 끝난 뒤 `analyze` 가 버린다.
     stock["status"] = "ok"
     stock["reason"] = ""
     stock["retry"] = False
@@ -1130,10 +1131,10 @@ def _revert_pending(st: dict, why: str) -> None:
 
 def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
     """정리가 끝난 묶음에서 스포츠·연예 문맥으로 보이는 줄(`offtopic_candidates`)만 AI 에 다시 묻고, 투자와
-    무관하다고 답한 줄을 뺀다. 반환 = {calls, dropped, reverted, transient}.
+    무관하다고 답한 줄을 뺀다. 반환 = {calls, reverted, transient}.
 
     갈래(#82): 일시 오류 → 후보가 있던 종목을 '대기' 로 되돌린다(다음 주기에 정리부터 다시 — 확인 못 한 줄을
-    확인한 것처럼 남기지 않는다) · 거부·못 읽음·그 줄이 응답에 없음 → 줄은 **남기고** 카드가 '다시 확인하지
+    확인한 것처럼 남기지 않는다 · 같은 종목 `MAX_CHECK_REVERTS` 번째면 줄을 남기고 사유를 적는다) · 거부·못 읽음·그 줄이 응답에 없음 → 줄은 **남기고** 카드가 '다시 확인하지
     못함' 을 사유와 함께 말한다(빼는 쪽이 틀리면 진짜 호재·악재가 사라지므로 모를 때는 남긴다).
     호출은 `analyze` 의 주기 상한(`MAX_LLM_CALLS`)에 넣지 않는다 — 묶음 하나에 많아야 2번이고(묶음 종목
     `BATCH_MAX` × 줄 2·`MAX_PER_SIDE` ÷ `CHECK_MAX`), 상한에 넣으면 정리한 묶음이 확인 없이 남는다. 대신
@@ -1144,7 +1145,7 @@ def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
             continue
         for side, i in offtopic_candidates(st):
             cands.append((f"c{len(cands) + 1}", st, side, i))
-    done = {"calls": 0, "dropped": 0, "reverted": 0, "transient": False}
+    done = {"calls": 0, "reverted": 0, "transient": False}
     if not cands:
         return done
     llm_rec = rec.setdefault("llm", {"calls": 0, "pt": 0, "ot": 0, "cost_usd": 0.0})
@@ -1161,7 +1162,13 @@ def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
                 llm_rec["ot"] += ot
                 llm_rec["cost_usd"] = round(llm_rec["cost_usd"] + _log_usage(pt, ot), 6)
         if kind == "transient":
+            # 되돌리면 다음 주기에 정리(AI 1회)부터 다시 — 장애가 이어지면 매 주기 두 번 내고 앞 묶음이 차례를
+            # 막는다(독립 리뷰 2026-10-14). 같은 종목 `MAX_CHECK_REVERTS` 번째면 되돌리지 않고 줄을 남긴다.
             for st in {id(c[1]): c[1] for c in cands}.values():
+                st["check_reverts"] = int(st.get("check_reverts") or 0) + 1
+                if st["check_reverts"] >= MAX_CHECK_REVERTS:
+                    st["check_why"] = f"무관 소식 확인이 {st['check_reverts']}번 일시 오류({why})"
+                    continue
                 _revert_pending(st, f"무관 소식 확인 중 {why}")
                 done["reverted"] += 1
             done["transient"] = True
@@ -1177,7 +1184,8 @@ def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
             if keep is False:
                 drop.setdefault(id(st), set()).add((side, i))
             elif keep is None:
-                st["check_why"] = (f"무관 소식 확인 실패({why})" if why else
+                st["check_why"] = ("AI 키 없음" if kind == "no_key" else
+                                   f"무관 소식 확인 실패({why})" if why else
                                    "무관 소식 확인 응답을 못 읽음" if not data else "무관 소식 확인 응답에 이 줄이 없음")
     for st in grp:
         gone = drop.get(id(st))
@@ -1196,7 +1204,6 @@ def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
         # 뺀 줄만 근거로 삼던 항목은 '투자와 무관' 으로 흐리게 — 남기면 그 기사가 근거처럼 보인다
         st["relevant"] = [r for r in st.get("relevant") or [] if r not in cut_refs or r in still]
         st["offtopic_lines"] = len(gone)
-        done["dropped"] += len(gone)
     return done
 
 
@@ -1261,6 +1268,9 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
                 done["failed"] += 1
         chk = check_offtopic(grp, rec, llm=llm)
         done["analyzed"] -= chk["reverted"]
+        for s in grp:
+            if s.get("status") == "ok":
+                s.pop("prev_pc", None)      # 새 기준 정리·확인이 끝났다 — 옛 정리는 더 쓸 데가 없다
         if on_progress:
             on_progress(rec)
         if chk["transient"]:
@@ -1959,9 +1969,9 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
                  "<div class='hn-why'>옛 기준 정리에도 호재·악재로 가른 줄이 없었음</div>"))
     elif st == "ok":
         if not s.get("pros") and not s.get("cons"):
-            why = (f"AI 가 쓴 {drop}줄을 근거 번호가 없거나 맞지 않아 버림 — 아래 근거 목록에서 확인하세요"
-                   if drop else
-                   f"AI 가 쓴 {offl}줄을 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" if offl else
+            gone = [x for x in (f"{drop}줄은 근거 번호가 없거나 맞지 않아 버림" if drop else "",
+                                f"{offl}줄은 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" if offl else "") if x]
+            why = ("AI 가 쓴 줄 중 " + " · ".join(gone) + " — 아래 근거 목록에서 확인하세요" if gone else
                    "투자와 관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
                    "뉴스는 있지만 호재·악재로 가를 내용이 없음")
             pc = f"<div class='hn-why'>{_h.escape(why)}</div>"
@@ -2209,7 +2219,8 @@ Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴�
 투자와 무관한 소식(그 이름을 단 스포츠 구단의 경기 결과·선수 기록, 연예·문화 행사 등)은 근거로 쓰지 않고 근거
 목록에서 흐리게 보입니다. 스포츠·연예·콘텐츠·게임이 그 회사의 본업이거나 회사의 수입·지출에 닿는 일(후원·마케팅
 계약, 흥행 수입, 구단 매각·운영비)은 씁니다. 정리가 끝난 뒤 스포츠·연예 문맥으로 보이는 줄은 AI 에 <b>한 번 더</b>
-물어 투자와 무관하다고 답하면 빼고 카드에 뺀 줄 수를 적습니다(다시 묻지 못하면 줄은 남기고 그렇게 적습니다).
+물어 투자와 무관하다고 답하면 빼고 카드에 뺀 줄 수를 적습니다(AI 일시 오류면 그 종목을 '대기' 로 되돌려 다음 주기에
+다시 정리하고 — 같은 종목 {MAX_CHECK_REVERTS}번째면 그만두고 — 응답을 못 읽었으면 줄은 남기고 그렇게 적습니다).
 AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니다. 이
 기준이 바뀌면 가장 최근 기록은 새 기준으로 다시 정리합니다(AI 키가 있을 때 · 그동안 그 종목은 '대기' · 그 앞의
 기록은 옛 정리 그대로). 이것은 뉴스 요약이지 투자 판단이 아닙니다.<br>
@@ -2313,8 +2324,9 @@ def why(now: datetime | None = None, out=print) -> int:
         r = max(recs, key=lambda r: r["date"])
         llm = r.get("llm") or {}
         out(f"④ 마지막 기록 {r['date']} · 수집 {str(r.get('collected_at', ''))[:16]} · {_day_meta(r)}")
-        out(f"   AI {llm.get('calls', 0)}회 · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · "
-            f"${llm.get('cost_usd', 0):.4f}")
+        ck = int(llm.get("checks") or 0)
+        out(f"   AI {llm.get('calls', 0)}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
+            + f" · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · ${llm.get('cost_usd', 0):.4f}")
         out("   " + requeue_note(r, now))
     else:
         out("④ 기록 없음 — 봇이 아직 한 번도 모으지 않음")

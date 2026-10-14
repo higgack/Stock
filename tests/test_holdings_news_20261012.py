@@ -1796,7 +1796,7 @@ def test_dropped_lines_are_counted_and_shown(hn):
         ensure_ascii=False)))
     assert s["dropped_lines"] == 3 and s["pros"] == [] and s["cons"] == []
     card = hn._card({**s, "sym": "A"})
-    assert "AI 가 쓴 3줄을 근거 번호가 없거나 맞지 않아 버림" in card and "가를 내용이 없음" not in card
+    assert "AI 가 쓴 줄 중 3줄은 근거 번호가 없거나 맞지 않아 버림" in card and "가를 내용이 없음" not in card
     s2 = _stock("KR:B", 1)
     hn.analyze(_rec(s2), llm=_llm(json.dumps({"stocks": [{"key": "KR:B", "pros": [
         {"t": "좋다", "refs": [1]}, {"t": "버림", "refs": []}]}]}, ensure_ascii=False)))
@@ -2866,7 +2866,7 @@ def test_all_lines_dropped_says_why(hn):
     s["items"][1]["title"] = "두산 베어스 우승"
     hn.analyze(_rec(s), llm=_two_step(False))
     assert s["pros"] == [] and s["cons"] == []
-    assert "AI 가 쓴 2줄을 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" in hn._card(s)
+    assert "AI 가 쓴 줄 중 2줄은 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" in hn._card(s)
 
 
 def test_requeue_clears_check_traces(hn):
@@ -2875,4 +2875,77 @@ def test_requeue_clears_check_traces(hn):
     hn.analyze(rec, llm=_two_step(False))
     s["pv"] = "old"
     hn.requeue_stale(rec, body=lambda l: "", pace=0)
-    assert s["offtopic_lines"] == 0 and s["check_why"] == "" and s["prev_pc"]["offtopic_lines"] == 1
+    assert s["offtopic_lines"] == 0 and s["check_why"] == "" and s["prev_pc"]["pv"] == "old"
+
+
+def test_check_transient_after_requeue_keeps_the_old_summary(hn):
+    """독립 리뷰 HIGH 재현 — 새 기준으로 다시 정리하던 종목이 확인 일시 오류로 '대기' 로 돌아가도 옛 정리
+    (`prev_pc`)는 남아야 한다. 그날 안에 못 끝내면 카드가 그걸 '옛 기준' 으로 보여 준다."""
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(True))
+    s["pv"] = "old"
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+    assert s["status"] == "pending" and s["prev_pc"]["cons"]
+    card = hn._card(s, final=True)
+    assert "옛 기준 정리를 보여 줍니다" in card and "야구팀 주요 선수 부상" in card
+    hn.analyze(rec, llm=_two_step(True))                              # 성공하면 그때 버린다
+    assert s["status"] == "ok" and "prev_pc" not in s
+
+
+def test_check_transient_gives_up_after_the_revert_cap(hn):
+    """확인이 계속 일시 오류면 매 주기 정리+확인을 두 번 내지 않게 — 상한 번째엔 줄을 남기고 사유를 적는다."""
+    s = _sport_stock()
+    rec = _rec(s)
+    for i in range(1, hn.MAX_CHECK_REVERTS):
+        hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+        assert s["status"] == "pending" and s["check_reverts"] == i
+    hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+    assert s["status"] == "ok" and s["cons"] and s["check_reverts"] == hn.MAX_CHECK_REVERTS
+    assert f"무관 소식 확인이 {hn.MAX_CHECK_REVERTS}번 일시 오류" in hn._card(s)
+
+
+def test_check_no_key_is_named_and_not_counted(hn):
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(None, check_kind="no_key"))
+    assert s["status"] == "ok" and s["cons"] and s["check_why"] == "AI 키 없음"
+    assert rec["llm"]["calls"] == 1 and "checks" not in rec["llm"]
+
+
+def test_check_cost_is_logged_and_added_to_the_record(hn):
+    import bot.usage_tracker as ut
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(False))
+    rows = [json.loads(x) for x in ut.USAGE_LOG.read_text().splitlines()]
+    assert [(r["prompt_tokens"], r["completion_tokens"]) for r in rows] == [(1000, 200), (300, 20)]
+    assert rec["llm"]["pt"] == 1300 and rec["llm"]["ot"] == 220
+    assert rec["llm"]["cost_usd"] == round(sum(r["cost_usd"] for r in rows), 6) and rec["llm"]["cost_usd"] > 0
+
+
+def test_check_splits_into_chunks_and_applies_every_chunk(hn, monkeypatch):
+    """후보가 `CHECK_MAX` 를 넘으면 여러 번 묻는다 — 둘째 묶음 판정도 적용돼야 한다(첫 묶음만 보면 놓친다)."""
+    monkeypatch.setattr(hn, "CHECK_MAX", 1)
+    s = _sport_stock()
+    s["items"][1]["title"] = "두산 야구단 후원"
+    seen = []
+
+    def f(prompt):
+        if "검수하는 보조" in prompt:
+            ids = [ln.split("id=")[1].split(" ")[0] for ln in prompt.splitlines() if ln.startswith("### id=")]
+            seen.append(ids)
+            return json.dumps({"checks": [{"id": i, "keep": i == "c1"} for i in ids]}), 1, 1, "", ""
+        return _two_step(True)(prompt)
+    hn.analyze(_rec(s), llm=f)
+    assert seen == [["c1"], ["c2"]] and s["pros"] and s["cons"] == [] and s["offtopic_lines"] == 1
+
+
+def test_why_splits_check_calls(hn, capsys):
+    rec = {"date": "2026-10-14", "stocks": [], "llm": {"calls": 3, "checks": 1, "pt": 1, "ot": 1,
+                                                      "cost_usd": 0.001}}
+    hn.save_record(rec)
+    hn.why(_t("2026-10-14T09:30"), out=print)
+    line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("   AI "))
+    assert line.startswith("   AI 3회(그중 무관 소식 확인 1회) · 입력")     # ④ 의 일자 메타가 대신 만족 못 하게(#75)
