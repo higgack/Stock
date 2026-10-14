@@ -1126,7 +1126,10 @@ def test_stub_cards_are_not_the_latest_record(cal):
     html = di.render_page(recs + [stub], {}, now)
     i = html.index('class="di-status"')
     assert "2026-10-12 기록이 아직 없습니다" in html[i: html.index("</div>", i)]
-    assert "<div class='v'>2026-10-08</div>" in html and "KRX 자료 없음 1일 별도" in html
+    # 2026-10-14 부터 값 칸 옆에 '전 기록일' 이 붙는다(사용자 요청) — 최신은 여전히 받은 기록이고
+    # 전 기록일도 자료 없음 카드를 건너뛴다(#222 계약 다시 쓰기).
+    assert "<div class='v'>2026-10-08<span class='prev'>· 전 2026-09-30</span></div>" in html
+    assert "KRX 자료 없음 1일 별도" in html
     assert "<div class='v'>2거래일</div>" in html, "자료 없음 카드를 기록 수에 셌다"
     assert _daily_inst_line(recs + [stub], {}, now).lstrip().startswith("❌")
     assert "기록 2거래일" in _daily_inst_line(recs + [stub], {}, now)
