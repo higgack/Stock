@@ -1022,6 +1022,13 @@ def latest_real(records: list[dict]) -> str | None:
     return max(real) if real else None
 
 
+def prev_real(records: list[dict]) -> str | None:
+    """`latest_real` 바로 전에 받은 기록 날짜 — 화면 '최신 기준일' 옆에 싣는다(사용자 2026-10-14).
+    같은 규칙('자료 없음' 카드는 받은 게 아니다)으로 고른다(#38)."""
+    real = sorted({r["date"] for r in records if not r.get("nodata")}, reverse=True)
+    return real[1] if len(real) > 1 else None
+
+
 def _expected(now: datetime) -> str | None:
     """지금 받아야 할 마지막 거래일 — 달력 기준에서 KRX 가 휴장으로 답한 날을 뺀다.
     빼지 않으면 그날 뒤에 화면·감사가 거짓 ⚠️·❌ 다(독립 리뷰, #260)."""
@@ -1302,7 +1309,8 @@ def render_page(records: list[dict], state: dict | None = None,
     last_ok = _parse(st.get("last_ok"))
     stats = (
         "<div class='stat-grid'>"
-        f"<div class='stat'><div class='k'>최신 기준일</div><div class='v'>{real or '—'}</div></div>"
+        f"<div class='stat'><div class='k'>최신 기준일 · 전 기록일</div><div class='v'>{real or '—'}"
+        f"<span class='prev'>· 전 {prev_real(allrecs) or '없음'}</span></div></div>"
         f"<div class='stat'><div class='k'>기록{' (KRX 자료 없음 ' + str(n_stub) + '일 별도)' if n_stub else ''}"
         f"</div><div class='v'>{len(allrecs) - n_stub}거래일</div></div>"
         f"<div class='stat'><div class='k'>마지막 수집 (KST)</div><div class='v'>"

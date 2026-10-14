@@ -3758,3 +3758,17 @@ def test_nav_has_no_daily_byte_link(hn):
     html = hn.render_page([], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={})
     nav = html.split('<div class="nav">')[1].split("</div>")[0]
     assert "daily_byte.html" not in nav and "Daily Byte" not in nav and "dart_feed.html" in nav
+
+
+def test_stat_shows_previous_recorded_day_next_to_latest(hn):
+    """사용자 2026-10-14 — '최신기준일 옆에 그 전 기준일(전에 기록된 일자)도 명시'. 연속이 아닌 날도
+    그대로 '전에 기록된 날' 이다(10/14 옆 10/09)."""
+    import re
+    a, b, c = _page_rec(), _page_rec(), _page_rec()
+    a["date"], b["date"], c["date"] = "2026-10-14", "2026-10-09", "2026-10-08"
+    html = hn.render_page([c, a, b], {}, _t("2026-10-14T09:00"), gen="GEN")
+    m = re.search(r"최신 기준일 · 전 기록일</div><div class='v'>(.*?)</div>", html)
+    assert m and m.group(1) == "2026-10-14<span class='prev'>· 전 2026-10-09</span>", m
+    one = hn.render_page([a], {}, _t("2026-10-14T09:00"), gen="GEN")
+    assert "<span class='prev'>· 전 없음</span>" in one
+    assert ".stat .v .prev{" in html     # 클래스만 쓰고 CSS 가 없으면 본문 크기로 뜬다(#201)
