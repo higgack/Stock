@@ -3704,3 +3704,50 @@ def test_overseas_card_carries_its_fx_base_level(hn, ws_snaps, monkeypatch):
     html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=m)
     data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
     assert data[0]["fb"] == 1300.0 and "data-fb='1300.0'" in html.split("data-hncard='1'")[1]
+
+
+def test_new_overseas_holding_uses_its_own_upload_fx_level(hn, ws_snaps, monkeypatch):
+    """기준 날 뒤 새로 생긴 해외 종목의 환율 기준은 그 종목이 처음 실린 기록 무렵 수준이다(기준 날 수준 아님)."""
+    import bot.live_pct as lp
+    lv = {"v": {"USD": 1300.0}}
+    monkeypatch.setattr(lp, "fx_levels_cached", lambda **kw: lv["v"])
+    old = _model(_h("삼성전자", "005930", "KR", 1.0))
+    old["_saved_ts"] = _t("2026-10-08T08:00").timestamp()
+    hn.pnl_base(_t("2026-10-08T08:10"), old, bak=None)
+    lv["v"] = {"USD": 1350.0}
+    m = _model(_h("삼성전자", "005930", "KR", 1.0), _h("애플", "AAPL", "US", 40_000_000.0, source="alias"))
+    m["_saved_ts"] = _t("2026-10-12T07:00").timestamp()
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-12T07:10"), gen="GEN", portfolio=m)
+    data = {d["t"]: d for d in json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])}
+    assert data["AAPL"]["fb"] == 1350.0
+
+
+def test_unreadable_ledger_is_not_overwritten(hn):
+    p = hn._base_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{깨짐", encoding="utf-8")
+    hn.pnl_base(_t("2026-10-09T10:00"), _pm("2026-10-09T09:00", **{"000001": 1.0}), bak=None)
+    assert p.read_text(encoding="utf-8") == "{깨짐"                              # 쌓은 날을 빈 장부로 덮지 않는다
+
+
+def test_no_next_session_found_keeps_kx(hn, ws_snaps, monkeypatch):
+    """장이 닫혀 있고 다음 세션을 달력에서 못 찾으면 끝까지 kx — 0 이면 마지막 세션을 두 번 센다."""
+    import bot.world_sectors as ws
+    real = ws.session_times
+    monkeypatch.setattr(ws, "session_times", lambda mk, d: real(mk, d) if d <= "2026-10-08" else None)
+    ws_snaps("KR", "2026-10-08", [("KRX:000001", 1.0)])
+    c = hn.cum_lookup(_t("2026-10-07T20:00").timestamp(), _t("2026-10-12T08:00"))({"market": "KR", "ticker": "000001"})
+    assert c["sw"] == hn._SW_NEVER and c["kx"] == 1
+
+
+def test_add_new_holdings_uses_cached_etf_list_and_merges_source_counts(hn, monkeypatch):
+    seen = []
+    monkeypatch.setattr(hn, "_us_etf", lambda **kw: seen.append(kw) or set())
+    model = _model(_h("종목1", "000001", "KR"))
+    rec = {"date": "2026-10-12", "stocks": [], "universe": {"n": 0},
+           "sources": {"naver": 5, "fail": 1, "fail_reasons": {"x": 1}, "telegram": {"matched": 2}}}
+    f = _fetcher({}, ([_it("종목1 소식", "2026-10-12T06:00:00+09:00", link="https://p/1")], "naver", ""))
+    hn.add_new_holdings(rec, _t("2026-10-12T13:00"), records=[], model=model, fetch=f, body=lambda l: "",
+                        pace=0, ko=lambda c: "")
+    assert seen and all(k.get("cache_only") for k in seen)                      # 15분마다 목록 원천을 안 두드린다
+    assert rec["sources"]["naver"] == 6 and rec["sources"]["fail"] == 1
