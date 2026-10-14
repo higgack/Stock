@@ -393,11 +393,11 @@ def test_fx_lookup_never_fetches_on_the_request_path_and_refreshes_behind(monkey
     monkeypatch.setattr(lp, "_Thread", lambda target=None, **kw: started.append(target) or _Noop())
     assert lp.fx_lookup(now=1000.0) == {} and len(started) == 1
     assert lp.fx_lookup(now=1001.0) == {} and len(started) == 1        # 돌고 있으면 또 띄우지 않는다
-    monkeypatch.setattr(lp, "fx_changes", lambda: {"USD": 0.25})
+    monkeypatch.setattr(lp, "fx_changes", lambda **kw: {"USD": 0.25})
     monkeypatch.setattr(lp.time, "time", lambda: 1002.0)
     started[0]()                                                        # 뒤에서 받은 값
     assert lp.fx_lookup(now=1010.0, kick=False) == {"USD": {"pct": 0.25, "age": 8}}
-    monkeypatch.setattr(lp, "fx_changes", lambda: {})                   # 실패는 직전 값을 지우지 않는다
+    monkeypatch.setattr(lp, "fx_changes", lambda **kw: {})               # 실패는 직전 값을 지우지 않는다
     monkeypatch.setattr(lp.time, "time", lambda: 1100.0)
     lp._fx_worker()
     assert lp.fx_lookup(now=1100.0, kick=False)["USD"]["pct"] == 0.25
