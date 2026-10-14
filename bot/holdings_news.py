@@ -1644,6 +1644,13 @@ def tick_and_render(now: datetime | None = None) -> dict:
         st["no_holdings"] = False
         _save_state(st)
         res = {"status": "error"}
+    try:                                 # 하루치에 없는 보유의 종가 — 실패는 그 칸만 비운다(#315)
+        cr = refresh_closes(now)
+        if cr["asked"]:
+            log.info("holdings_news: Yahoo 일봉 종가 %d/%d종목%s", cr["got"], cr["asked"],
+                     f" — {cr['why']}" if cr["why"] else "")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 종가 보충 실패: %s", exc)
     regenerate(now)
     return res
 
@@ -1834,19 +1841,20 @@ _PNL_JS = r"""
         :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+c+(k.day?' 오늘 하루 ':' 기준 대비 ')+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));
     });
   }
-  // 해외 카드(`js-hn-amt`)는 통화가 있는 보유에만 붙으므로 요약 재료로 충분하다
-  var need=pos.some(function(p){return !!p.c;});
-  // 서버(대시보드)가 막 재시작하면 첫 응답의 환율이 비어 있다(값 풀을 뒤에서 받는 중) — 그걸 '미확인' 으로 그리지
-  // 않고 몇 초 뒤 다시 묻는다(3번까지 — 원천이 정말 막혔으면 그 뒤엔 '미확인' 이 사실이다)
-  var got=!!document.getElementById('hn-fx-data'), quick=0;
+  // 해외 카드(`js-hn-amt`)는 값이 있는 해외 보유에만 붙으므로 요약 재료로 충분하다 — 값이 없는 해외(전부 '(—)')면
+  // 다시 그릴 것이 없으니 묻지 않는다
+  var need=pos.some(function(p){return !!p.c&&p.p!==null&&p.p!==undefined;});
+  // 서버가 환율 값 풀을 아직 받는 중(`fx_pending` — 대시보드 재시작 직후 등)이면 빈 응답을 '미확인' 으로 그리지 않고
+  // 갖고 있던 환율을 둔 채 5초 뒤 다시 묻는다. 상태는 아는 쪽(서버)이 말한다 — 1분(12번)을 넘기면 다음 분으로
+  var quick=0;
   function poll(){
     fetch('api/live_pct?fx=1',{cache:'no-store'})
       .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
       .then(function(js){
         // 응답이 환율을 실었으면 통째로 바꾼다 — 서버가 낡아서 버린 통화가 화면에 남지 않게(리뷰 2026-10-14)
         var f=js&&js.fx; if(!f||typeof f!=='object') return;
-        if(!got&&!Object.keys(f).length&&quick<3){quick++; return 'soon';}
-        got=true;
+        if(js.fx_pending&&!Object.keys(f).length&&quick<12){quick++; return 'soon';}
+        quick=0;
         var nf={}, nl={};
         for(var cc in f){ if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
           if(f[cc]&&typeof f[cc].close==='number') nl[cc]=f[cc].close; }
@@ -2184,8 +2192,8 @@ def pnl_context(pos: list[dict], now: datetime | None = None, model: dict | None
 
 
 def no_close_why(market) -> str:
-    """장종료가 등락을 못 세는 시장의 사유 — 요약·카드가 같은 문장을 쓴다(#38)."""
-    return f"{_mk_name(market)} 시장은 종가 하루치(TradingView)를 받지 않아 장종료가 기준 등락을 못 셈"
+    """장종료가 등락을 못 세는 시장(거래소 달력을 모르는 시장)의 사유 — 요약·카드가 같은 문장을 쓴다(#38)."""
+    return f"{_mk_name(market)} 시장은 거래소 달력을 몰라 장종료가 기준 등락을 못 셈"
 
 
 def _mk_name(market) -> str:
@@ -2275,7 +2283,8 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, fx: dict | None = None
         bl = (f"기준 = 오늘 자산 기록({ctx['at']} 업로드 — 앞선 날짜의 기록이 아직 없음)" if ctx.get("today") else
               f"기준 = 오늘보다 앞선 가장 최근 날짜의 마지막 자산 기록({ctx['at']} 업로드 · KST 날짜 기준 — 하루에 "
               "여러 번 올려도 그날 마지막 것)")
-        bl += " · 그 평가금액 × 그 뒤 장종료가 누적 등락(그 뒤 마감한 세션마다의 종가 등락을 곱함 · 실시간 시세는 안 씀)"
+        bl += (" · 그 평가금액 × 그 뒤 장종료가 누적 등락(그 뒤 마감한 세션마다의 종가 등락을 곱함 · 하루치에 없는 ETF·"
+               "우선주·홍콩은 Yahoo 일봉 종가 · 실시간 시세는 안 씀)")
         if ctx.get("new"):
             bl += f" · 기준 날 이후 새로 생긴 {ctx['new']}종목은 지금 기록 금액"
     else:
@@ -2441,17 +2450,76 @@ def prev_changes(date: str, now: datetime | None = None):
     return look
 
 
-def cum_lookup(base_ts: float, now: datetime | None = None):
+# ── 하루치에 없는 종목의 종가(독립 리뷰 2026-10-14 High) ───────────────────────────────────────────────────
+# TradingView 하루치(`tv_scanner`)는 **보통주·DR 만** 싣는다 — ETF·우선주는 구조적으로 없고, 홍콩은 하루치를 아예 받지
+# 않는다. 그 종목들은 Yahoo 일봉 종가로 같은 식('기준 무렵 마지막 종가 → 같은 asof 세션 종가')을 센다. 받는 일은 봇
+# 15분 주기(`refresh_closes`)가 하고 디스크(`closes.json`)에 남긴다 — 렌더는 네트워크 0 그대로다.
+YCLOSE_RETRY_MIN = 30              # 못 받았거나 그날 봉이 아직 없을 때 다시 묻는 간격 — 실패마다 두 배(상한 `YCLOSE_RETRY_CAP`)
+YCLOSE_RETRY_CAP = 8 * 60
+YCLOSE_MARGIN_MIN = 30             # 하루치가 없는 시장의 세션 종가를 '받을 수 있다' 고 볼 마감 뒤 여유 — 장중 봉을 종가로 굽지 않게
+YCLOSE_KEEP_DAYS = 60
+YCLOSE_CHUNK = 50                  # 한 번에 묻는 종목 수
+
+
+def _closes_path() -> Path:
+    return _DIR / "closes.json"
+
+
+def load_closes() -> dict:
+    """{보유 키: {y: Yahoo 심볼, bars: {날짜: 종가}, at: 받은 epoch, tried: 물은 epoch, fails, why}} — 디스크만."""
+    try:
+        d = json.loads(_closes_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        log.warning("holdings_news: 종가 캐시 읽기 실패: %s", exc)
+        return {}
+
+
+def yahoo_symbol(st: dict, *, alt: bool = False) -> str:
+    """Yahoo 일봉 심볼 — 국내는 자산 기록이 준 접미(.KS/.KQ)가 있으면 그대로, 없으면 .KS(ETF 는 전부 유가증권 시장)
+    → 못 받으면 `alt` 로 .KQ 를 한 번 더. 미국은 BRK.B → BRK-B. 그 밖 시장은 자산 기록 심볼 그대로(Yahoo 꼴로 푼다)."""
+    mk = str(st.get("market") or "").upper()
+    tk = str(st.get("ticker") or "").upper()
+    sym = str(st.get("sym") or tk).strip().upper()
+    if mk == "KR":
+        return sym if sym.endswith((".KS", ".KQ")) else f"{tk}.{'KQ' if alt else 'KS'}"
+    return sym.replace(".", "-") if mk == "US" else sym
+
+
+def yahoo_ratio(ent, need: dict) -> tuple[float | None, str]:
+    """(지금 종가 ÷ 기준 무렵 종가, 사유). `need` = {from: 기준 무렵 세션, to: asof 세션, ready: 그 세션 종가가 확정된
+    epoch}. to 세션 봉은 **그 세션이 끝난 뒤에 받은 것**만 쓴다 — 장중에 받아 둔 봉을 종가로 쓰면 지어낸 값이다."""
+    if not isinstance(ent, dict) or not ent.get("bars"):
+        return None, (str(ent.get("why")) if isinstance(ent, dict) and ent.get("why") else "아직 안 받음(봇 15분 주기에 받음)")
+    bars = ent["bars"]
+    if need["to"] not in bars or float(ent.get("at") or 0) < float(need.get("ready") or 0):
+        return None, f"Yahoo 일봉에 {need['to']} 종가가 아직 없음(봇 15분 주기에 다시 받음)"
+    prior = [d for d in bars if d <= need["from"]]
+    if not prior:
+        return None, f"Yahoo 일봉에 {need['from']} 무렵 종가가 없음"
+    b, t = bars[max(prior)], bars[need["to"]]
+    if not (isinstance(b, (int, float)) and isinstance(t, (int, float)) and b > 0 and t > 0):
+        return None, "Yahoo 종가가 0 이하"
+    return t / b, ""
+
+
+def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | None = None):
     """기준 시각(전일 자산 기록의 업로드 시각) 뒤의 **장종료가** 누적 등락 조회기 — `cum(stock) -> dict | None`.
 
     사용자 2026-10-14 "오늘이 10/9 이고 그전 자산이 10/5 기준이면 10/5 와 비교" + 같은 날 "실시간으로 가져오는게 부하가
     크면 기준을 장종료가격으로" — 기준 업로드 뒤에 **마감한** 세션마다 그날 종가 등락(「국가별 심리지도」 하루치 = 직전
-    종가 대비 종가)을 곱한다 = '기준 무렵 마지막 종가 → 받아 둔 마지막 종가'. 디스크 하루치만 읽는다(네트워크 0 —
-    옛 화면은 열려 있는 동안 1분마다 보유 전 종목 시세를 물었다). 반환 키:
-      ka   = 곱(1+r) — 빠진 세션이 하나라도 있으면 None(지어내지 않는다)
-      n    = 곱한 세션 수 · asof = 반영한 마지막 종가 세션(곱한 세션이 없으면 기준 무렵 마지막 종가 세션)
-      wait = 마감했지만 하루치를 아직 안 받은 세션(장 마감 `READY_MIN` 뒤 수집) — 그 종가는 빼고 앞까지만 센다
-      hol  = 휴장 추정으로 0 으로 센 세션(카드 툴팁이 이름을 댄다) · why = 못 셀 때 사유
+    종가 대비 종가)을 곱한다 = '기준 무렵 마지막 종가 → 받아 둔 마지막 종가'. 하루치에 없는 종목(ETF·우선주 등 —
+    하루치는 보통주·DR 만)과 하루치를 받지 않는 시장(홍콩)은 같은 식을 Yahoo 일봉 종가(`closes` — 봇 주기가 받아 둔
+    디스크 캐시)로 센다. 렌더는 디스크만 읽는다(네트워크 0 — 옛 화면은 열려 있는 동안 1분마다 보유 전 종목 시세를
+    물었다). 반환 키:
+      ka   = 곱(1+r) 또는 종가 비 — 빠진 세션·종가가 있으면 None(지어내지 않는다)
+      n    = 기준 뒤 마감해 센 세션 수 · asof = 반영한 마지막 종가 세션(센 세션이 없으면 기준 무렵 마지막 종가 세션)
+      wait = 마감했지만 아직 안 받은 세션(하루치는 장 마감 `READY_MIN` 뒤 · 하루치 없는 시장은 `YCLOSE_MARGIN_MIN` 뒤) —
+             그 종가는 빼고 앞까지만 센다
+      hol  = 휴장 추정으로 0 으로 센 세션(카드 툴팁이 이름을 댄다) · src = 'tv'(하루치) / 'yahoo'(일봉 종가)
+      need = Yahoo 종가가 필요하면 {key, y, from, to, ready}(봇 주기 `refresh_closes` 가 모아 받는다) · why = 못 셀 때 사유
     휴장 추정 세션(`market_day_status` 'holiday' — 받을 창 내내 원천 값이 직전 세션과 같았다)은 등락 0 으로 센다.
     ⚠️ 원천이 그 세션을 끝내 안 실은 경우도 같은 갈래라 그때는 그날 등락이 빠진다(재지 못함, #165 — 그래서 이름을 댄다).
     ⚠️ 기준 업로드가 장중이었으면 그 세션 종가까지를 통째로 센다(업로드 시각의 가격을 모른다 — 화면이 추정이라 밝힌다)."""
@@ -2459,73 +2527,224 @@ def cum_lookup(base_ts: float, now: datetime | None = None):
     memo: dict = {}
     now_utc = now.astimezone(timezone.utc)
     base_utc = datetime.fromtimestamp(float(base_ts), timezone.utc)
+    cache = {"v": closes}
 
-    def _plan(mk: str):
-        if mk in memo:
-            return memo[mk]
+    def _closes() -> dict:
+        if cache["v"] is None:
+            cache["v"] = load_closes()
+        return cache["v"]
+
+    def _plan(cal: str, snap: bool):
+        """(기준 무렵 세션, [(세션, 표 | None=휴장 0 | '' = Yahoo 로 셀 세션)], 대기, 깨진 사유, {세션: 마감 epoch})."""
+        if (cal, snap) in memo:
+            return memo[(cal, snap)]
         out = None
         try:
             from bot import world_sectors as ws
             from bot.world_sector_pages import lookup_ticker
-            state = ws.load_state()
+            state = ws.load_state() if snap else None
             d0 = base_utc.astimezone(_KST).date() - timedelta(days=14)
-            bsess, days, wait, broken = None, [], [], []
+            bsess, days, wait, broken, ctime = None, [], [], [], {}
             for i in range((now.date() - d0).days + 2):
                 d = (d0 + timedelta(days=i)).isoformat()
-                t = ws.session_times(mk, d)
+                t = ws.session_times(cal, d)
                 if not t or t[1] > now_utc:
                     continue
                 if t[1] <= base_utc:
                     bsess = d
                     continue
+                ctime[d] = t[1].timestamp()
                 if wait:                     # 아직 안 받은 세션 뒤는 하루치가 있어도 곱하지 않는다 — 가운데 하루를 빼먹은
                     # 값이 된다. 평소엔 날짜 순으로 받아 이 상태가 안 나오지만 조용히 틀리지 않게(회귀가 스텁으로 잰다)
                     wait.append(d)
                     continue
-                tb = _snap_tables(ws, lookup_ticker, mk, d)
+                if not snap:                 # 하루치를 받지 않는 시장 — 마감 뒤 여유가 지나면 Yahoo 종가로 센다
+                    if t[1] + timedelta(minutes=YCLOSE_MARGIN_MIN) <= now_utc:
+                        days.append((d, ""))
+                    else:
+                        wait.append(d)
+                    continue
+                tb = _snap_tables(ws, lookup_ticker, cal, d)
                 if tb is not None:
                     days.append((d, tb[0]))
                     continue
-                st = ws.market_day_status(mk, d, now, state)
+                st = ws.market_day_status(cal, d, now, state)
                 if st == "pending":
                     wait.append(d)
                 elif st == "holiday":
                     days.append((d, None))   # 휴장 추정 — 등락 0(원천 값이 직전 세션과 같았다)
                 else:
-                    broken.append(_prev_missing_why(ws, mk, d, now))
-            out = (bsess, days, wait, broken)
+                    broken.append(_prev_missing_why(ws, cal, d, now))
+            out = (bsess, days, wait, broken, ctime)
         except Exception as exc:                               # noqa: BLE001
-            log.warning("holdings_news: 누적 등락 계획 실패(%s): %s", mk, exc)
-        memo[mk] = out
+            log.warning("holdings_news: 누적 등락 계획 실패(%s): %s", cal, exc)
+        memo[(cal, snap)] = out
         return out
 
     def cum(st: dict) -> dict | None:
-        """None = 이 시장은 세션별 하루치를 받지 않아 장종료가 등락을 셀 수 없다(홍콩 등 — 부른 쪽이 '(—)' 에
-        `no_close_why` 를 단다). 계산이 깨지면 None 이 아니라 `ka` None + 사유(두 갈래의 처방이 다르다, #82)."""
-        mk = _PREV_MK.get(str(st.get("market") or "").upper())
-        if not mk:
-            return None
-        plan = _plan(mk)
-        if plan is None:                 # 하루치를 받는 시장인데 계산이 깨졌다 — '받지 않는 시장' 이라 적으면 거짓 사유다
-            return {"ka": None, "n": 0, "asof": None, "wait": [], "hol": [], "why": "장종료가 등락 계산 실패(봇 로그 참고)"}
-        bsess, days, wait, broken = plan
-        key = _snap_key(st, mk)
+        """None = 이 시장은 거래소 달력을 몰라 장종료가 등락을 셀 수 없다(부른 쪽이 '(—)' 에 `no_close_why` 를 단다).
+        하루치를 받는 시장인데 계산이 깨지면 None 이 아니라 `ka` None + 사유(두 갈래의 처방이 다르다, #82)."""
+        market = str(st.get("market") or "").upper()
+        snap = _PREV_MK.get(market)
+        plan = _plan(snap or market, bool(snap))
+        if plan is None:
+            if not snap:
+                return None
+            # 하루치를 받는 시장인데 계산이 깨졌다 — '받지 않는 시장' 이라 적으면 거짓 사유다
+            return {"ka": None, "n": 0, "asof": None, "wait": [], "hol": [], "src": "tv", "need": None,
+                    "why": "장종료가 등락 계산 실패(봇 로그 참고)"}
+        bsess, days, wait, broken, ctime = plan
+        out = {"ka": 1, "n": len(days), "asof": days[-1][0] if days else bsess, "wait": list(wait),
+               "hol": [d for d, tbl in days if tbl is None], "src": "tv", "need": None, "why": ""}
+        if broken:
+            out.update(ka=None, why=" · ".join(broken))
+            return out
+        if not days:                     # 기준 뒤 마감해 센 세션이 없다 — 기준 무렵 종가 그대로(0)
+            return out
         fac, miss_tk = [], []
-        hol = [d for d, tbl in days if tbl is None]
-        for d, tbl in days:
-            v = 0.0 if tbl is None else tbl.get(key)
-            if v is None:
-                miss_tk.append(d)
-            else:
-                fac.append(1 + v / 100)
-        why = list(broken)
-        if miss_tk:
-            why.append(f"{', '.join(miss_tk)} 하루치에 이 종목이 없음(거래정지·신규상장 등)")
-        ka = None if why else math.prod(fac)
-        return {"ka": ka, "n": len(days), "asof": days[-1][0] if days else bsess, "wait": list(wait), "hol": hol,
-                "why": " · ".join(why)}
+        if snap:
+            key = _snap_key(st, snap)
+            for d, tbl in days:
+                v = 0.0 if tbl is None else tbl.get(key)
+                if v is None:
+                    miss_tk.append(d)
+                else:
+                    fac.append(1 + v / 100)
+            if not miss_tk:
+                out["ka"] = math.prod(fac)
+                return out
+        # 하루치에 없는 종목·하루치 없는 시장 — Yahoo 일봉 종가로 같은 asof 까지
+        if not bsess:
+            out.update(ka=None, why="기준 무렵 세션을 달력에서 못 찾음(14일 안)")
+            return out
+        k = st.get("key") or f"{market}:{st.get('ticker')}"
+        ent = _closes().get(k)
+        need = {"key": k, "y": (ent or {}).get("y") or yahoo_symbol(st), "from": bsess, "to": out["asof"],
+                "ready": ctime.get(out["asof"], 0) + YCLOSE_MARGIN_MIN * 60}
+        r, why = yahoo_ratio(ent, need)
+        head = (f"이 종목이 {', '.join(miss_tk)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
+                "거래정지·신규상장도)" if snap else f"{_mk_name(market)} 시장은 TradingView 하루치를 받지 않음")
+        out.update(src="yahoo", need=need, ka=r, hol=[],   # 휴장 추정 0 은 하루치 곱의 일이다 — 종가 비엔 없다
+                   why="" if r is not None else f"{head} — Yahoo 일봉 종가로 채우는데 {why}")
+        return out
 
     return cum
+
+
+def _yf_daily(syms: list[str], start: str, end: str) -> tuple[dict, str]:
+    """({심볼: {날짜: 종가}}, 사유) — Yahoo 일봉 한 묶음(`auto_adjust=False` — 배당·분할 소급 조정을 섞지 않은 그날
+    종가). 행 단위로 거른다(컬럼별 dropna 는 날짜를 갈라 놓는다 — `bollinger_board` 와 같은 처방)."""
+    try:
+        import yfinance as yf
+        df = yf.download(syms, start=start, end=end, interval="1d", group_by="ticker", auto_adjust=False,
+                         threads=True, progress=False, timeout=20)
+    except Exception as exc:                                   # noqa: BLE001
+        return {}, f"Yahoo 일봉 실패({type(exc).__name__}: {_exc_msg(exc, 60)})"
+    if df is None or getattr(df, "empty", True):
+        return {}, "Yahoo 일봉 응답 비어 있음"
+    multi = getattr(df.columns, "nlevels", 1) > 1
+    lv0 = set(df.columns.get_level_values(0)) if multi else set()
+    out: dict = {}
+    for y in syms:
+        try:
+            if multi and y not in lv0:
+                continue
+            sub = (df[y] if multi else df).dropna(subset=["Close"])
+            bars = {ix.strftime("%Y-%m-%d"): round(float(v), 6) for ix, v in sub["Close"].items() if float(v) > 0}
+        except Exception:                                      # noqa: BLE001
+            continue
+        if bars:
+            out[y] = bars
+    return out, ""
+
+
+def refresh_closes(now: datetime | None = None, *, model: dict | None = None, download=None) -> dict:
+    """하루치에 없는 보유(ETF·우선주 등)·하루치 없는 시장(홍콩)의 Yahoo 일봉 종가를 받아 `closes.json` 에 둔다 — 봇
+    15분 주기가 렌더 **앞에** 부른다(네트워크는 여기만 · 렌더는 디스크만). 렌더와 같은 `pnl_context` 로 필요한 종목과
+    날짜를 정하고(#35), 이미 그 종가가 있으면 묻지 않는다. 못 받으면 `YCLOSE_RETRY_MIN` 부터 두 배씩 쉬었다 묻는다
+    (상한 `YCLOSE_RETRY_CAP`, #303). 반환 = {asked, got, why}."""
+    now = _now(now)
+    pos, _ = pnl_positions(model)
+    if not pos:
+        return {"asked": 0, "got": 0, "why": ""}
+    ctx = pnl_context(pos, now, model)
+    needs: dict = {}
+    for c in (ctx.get("cum") or {}).values():
+        n = (c or {}).get("need")
+        if not n:
+            continue
+        o = needs.setdefault(n["key"], dict(n))
+        o["from"] = min(o["from"], n["from"])
+        o["to"], o["ready"] = max(o["to"], n["to"]), max(o["ready"], n["ready"])
+    cache = load_closes()
+    t = now.timestamp()
+
+    def _due(k, n):
+        ent = cache.get(k)
+        if yahoo_ratio(ent, n)[0] is not None:
+            return False
+        if not isinstance(ent, dict) or not ent.get("tried"):
+            return True
+        wait_min = min(YCLOSE_RETRY_MIN * 2 ** min(max(int(ent.get("fails") or 0), 1) - 1, 8), YCLOSE_RETRY_CAP)
+        return t - float(ent["tried"]) >= wait_min * 60
+
+    due = {k: n for k, n in needs.items() if _due(k, n)}
+    if not due:
+        return {"asked": 0, "got": 0, "why": ""}
+    try:
+        from bot.finviz_client import yf_paused
+        if yf_paused():
+            return {"asked": 0, "got": 0, "why": "yfinance 일시정지(YF_PAUSE) — 종가를 묻지 않음"}
+    except Exception:                                          # noqa: BLE001
+        pass
+    fetch = download or _yf_daily
+    start = (datetime.fromisoformat(min(n["from"] for n in due.values())) - timedelta(days=10)).date().isoformat()
+    end = (now.date() + timedelta(days=1)).isoformat()
+    got, why_all = 0, ""
+
+    def _ask(items: dict, *, count: bool = True) -> list:
+        """`count` = 이번 바퀴의 실패로 세나 — 코스닥 접미로 한 번 더 묻는 건 같은 바퀴라 두 번 세지 않는다."""
+        nonlocal got, why_all
+        miss = []
+        keys = list(items)
+        for i in range(0, len(keys), YCLOSE_CHUNK):
+            chunk = keys[i:i + YCLOSE_CHUNK]
+            bars_by, why = fetch([items[k] for k in chunk], start, end)
+            why_all = why or why_all
+            for k in chunk:
+                ent = cache.setdefault(k, {})
+                ent["tried"] = t
+                bars = bars_by.get(items[k])
+                if bars:
+                    keep = (now.date() - timedelta(days=YCLOSE_KEEP_DAYS)).isoformat()
+                    merged = {**(ent.get("bars") or {}), **bars}
+                    ent.update(y=items[k], at=t, bars={d: v for d, v in merged.items() if d >= keep}, why="")
+                    ok = yahoo_ratio(ent, {**due[k], "y": items[k]})[0] is not None
+                    ent["fails"] = 0 if ok else int(ent.get("fails") or 0) + count
+                    got += ok
+                else:
+                    miss.append(k)
+                    ent["fails"] = int(ent.get("fails") or 0) + count
+                    ent["why"] = why or f"Yahoo 일봉에 {items[k]} 가 없음"
+        return miss
+
+    miss = _ask({k: n["y"] for k, n in due.items()})
+    # 국내는 접미를 모르면 .KS 로 먼저 묻는다 — 없으면 코스닥(.KQ)으로 한 번 더(자산 기록이 접미를 줬으면 그대로)
+    alt = {k: f"{k.split(':', 1)[1]}.KQ" for k in miss if k.startswith("KR:") and due[k]["y"].endswith(".KS")
+           and not str(next((p.get("sym") for p in pos if p["key"] == k), "")).upper().endswith(".KS")}
+    if alt:
+        _ask(alt, count=False)
+    try:
+        path = _closes_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("holdings_news: 종가 캐시 저장 실패: %s", exc)
+    if why_all:
+        log.warning("holdings_news: Yahoo 일봉 %s", why_all)
+    return {"asked": len(due), "got": got, "why": why_all}
 
 
 def _snap_key(st: dict, mk: str) -> str:
@@ -2593,7 +2812,10 @@ def _close_tip(d: dict) -> str:
     """최신일 카드 괄호의 툴팁 — 무엇의 값인지(기준 시각·반영한 마지막 종가·아직 안 받은 종가)."""
     at, n, asof, wait = d.get("at") or "", int(d.get("n") or 0), d.get("asof"), d.get("wait") or []
     base = f"{asof} 종가 그대로" if asof else "기준 무렵 종가 그대로"
-    if n:
+    if n and d.get("src") == "yahoo":    # 하루치에 없는 종목(ETF·우선주 등)·하루치 없는 시장 — 종가 비
+        tip = (f"{at}(KST) 자산 기록 대비 장종료가 누적 등락 — {(d.get('need') or {}).get('from', '기준 무렵')} 종가 → "
+               f"{asof} 종가(Yahoo 일봉 · TradingView 하루치에 없는 종목이라)")
+    elif n:
         tip = (f"{at}(KST) 자산 기록 대비 장종료가 누적 등락 — 그 뒤 마감한 세션 {n}개의 종가 등락을 곱함"
                f"({asof} 종가까지 · TradingView 하루치 · 「국가별 심리지도」와 같은 하루치)")
     elif wait:                           # 마감은 했지만 하루치를 아직 안 받았다 — '마감한 세션이 없다' 가 아니다
@@ -3004,15 +3226,16 @@ def render_page(records: list[dict], state: dict | None = None,
 업로드 · 오늘 몇 번을 올려도 기준은 그대로). 맨 위(최신) 날짜 카드의 괄호와 맨 위 요약 칸은 둘 다 그 기준 대비
 <b>장종료가 누적 등락</b>입니다 — 기준 업로드 뒤에 마감한 세션마다의 종가 등락(「국가별 심리지도」가 받아 둔 TradingView
 하루치)을 곱해 '기준 무렵 마지막 종가 → 받아 둔 마지막 종가' 를 셉니다. 종목마다 실시간 시세를 묻지 않습니다(열어 둔
-화면이 분당 수백 건을 묻던 부하를 없앴습니다) — 그래서 장중에는 값이 움직이지 않고, 하루치는 장 마감
+화면이 1분마다 보유 전 종목 시세를 묻던 부하를 없앴습니다) — 그래서 장중에는 값이 움직이지 않고, 하루치는 장 마감
 {_ws_ready_h()}시간 뒤에 받으므로 막 끝난 세션의 종가는 그 뒤 15분 주기 갱신에 실립니다. 요약 아래 줄이 시장마다 <b>어느
 날 종가까지</b> 반영했는지 적습니다(시장마다 장이 닫히는 시각이 달라 한 칸에 서로 다른 날의 종가가 섞입니다). 금액은
 <b>기준 날 평가금액 × 누적 등락</b>으로 추정합니다(자산 기록에 수량이 없어 평가금액을 씁니다 · 기준 업로드가 장중이었으면
 그 세션 종가까지를 통째로 세므로 어긋날 수 있습니다). 기준 날 이후 새로 생긴 종목은 지금 기록 금액을 쓰고 그 기록의
 업로드 시각부터 센 등락을 곱합니다(기준 날부터 세면 들고 있지 않던 날의 손익이 됩니다 · 요약 아래 줄이 그 수를
-적습니다). 원천이 그대로였던 세션(휴장 추정)은 등락 0 으로 셉니다. 홍콩처럼 세션별 하루치를 받지 않는 시장, 그 사이
-세션의 하루치를 놓친 경우, 그날 하루치에 종목이 없는 경우(거래정지·신규상장)는 지어내지 않고 '(—)' 이며 마우스를
-올리면 사유를 적습니다(요약 칸에선 '종가 기준 n/N종목' 의 나머지). 해외 종목 금액은 <b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 변동(네이버
+적습니다). 원천이 그대로였던 세션(휴장 추정)은 등락 0 으로 셉니다. TradingView 하루치는 보통주·DR 만 실어, ETF·
+우선주처럼 거기에 없는 종목과 하루치를 받지 않는 시장(홍콩)은 <b>Yahoo 일봉 종가</b>로 같은 날 종가까지를 셉니다(봇이
+{TICK_MIN}분 주기에 받아 둡니다 — 화면은 묻지 않습니다). 그 사이 세션의 하루치를 놓친 경우나 종가를 아직 못 받은 경우는
+지어내지 않고 '(—)' 이며 마우스를 올리면 사유를 적습니다(요약 칸에선 '종가 기준 n/N종목' 의 나머지). 해외 종목 금액은 <b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 변동(네이버
 원화 환율 · 해외 보유가 있으면 화면이 1분마다 환율 하나만 받습니다)을 곱해 (1+주가 등락)×(1+환율 변동)−1 로 셉니다 —
 금액 앞에 '원화' 가 붙습니다. 환율 변동은 기준 업로드 무렵의 환율 수준이 남아 있으면 '지금 ÷ 기준' 이고, 없으면(그
 업로드를 한 시간 안에 못 봤을 때) 오늘 하루 변동입니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷ 평가금액과 다를 수

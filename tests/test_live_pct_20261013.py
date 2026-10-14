@@ -267,6 +267,29 @@ def test_api_route_hands_the_ticker_list_to_lookup_and_dispatches(monkeypatch):
     assert called == [1], "GET 라우팅이 이 핸들러로 간다"
 
 
+def test_api_says_fx_is_pending_only_when_the_table_is_empty(monkeypatch):
+    """빈 환율 표 — 받는 중(재시작 직후)인지 받기를 마쳤는데 없는지 서버가 말한다(화면이 '미확인' 을 지어내지 않게)."""
+    import bot.dashboard_server as ds
+    real_pending = lp.fx_pending
+    monkeypatch.setattr(lp, "lookup", lambda raw: {"q": {}, "pending": 0, "capped": False})
+    got = {}
+    h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+    h.path = "/api/live_pct?fx=1"
+    h._reply_json = lambda status, body: got.update(body, status=status)
+    monkeypatch.setattr(lp, "fx_lookup", lambda: {})
+    monkeypatch.setattr(lp, "fx_pending", lambda: True)
+    h._handle_live_pct()
+    assert got["fx"] == {} and got["fx_pending"] is True
+    got.clear()
+    monkeypatch.setattr(lp, "fx_lookup", lambda: {"USD": {"pct": 1.0}})
+    h._handle_live_pct()
+    assert "fx_pending" not in got
+    monkeypatch.setitem(lp._FX, "running", True)
+    assert real_pending() is True
+    monkeypatch.setitem(lp._FX, "running", False)
+    assert real_pending() is False
+
+
 def test_world_board_pages_load_the_live_script_before_the_board_script():
     import bot.world_sector_pages as wp
     from bot import world_sectors as ws

@@ -187,6 +187,13 @@ def fx_lookup(now: float | None = None, *, kick: bool = True) -> dict:
             for c, p in val.items()}
 
 
+def fx_pending() -> bool:
+    """환율 값 풀을 지금 받는 중인가 — `fx_lookup` 이 빈 표를 줄 때 화면이 '못 받음' 과 '받는 중(재시작 직후)' 을
+    가르게 한다(상태는 아는 쪽이 말한다, #86). 받기를 마쳤는데 비어 있으면 False — 그때 '미확인' 이 사실이다."""
+    with _LOCK:
+        return bool(_FX["running"])
+
+
 def normalize(raw) -> tuple[list[str], bool]:
     """쉼표 목록 → (중복 없는 티커, 잘렸나). 모양이 아닌 것은 버린다."""
     out: list[str] = []
