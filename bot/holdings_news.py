@@ -3157,8 +3157,19 @@ def _day_meta(rec: dict) -> str:
     if llm.get("calls"):
         ck = int(llm.get("checks") or 0)
         parts.append(f"AI {llm['calls']}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
-                     + f" · ${llm.get('cost_usd', 0):.4f}")
+                     + f" · {_cost_krw(llm.get('cost_usd', 0))}")
     return " · ".join(parts)
+
+
+def _cost_krw(usd) -> str:
+    """일자 칸의 AI 비용 — 원화(사용자 2026-10-14 "일별 금액도 달러말고 원화로"). 비용 카드와 같은 환율
+    (`usage_tracker.KRW_PER_USD`, #38)·같은 꼴(₩ 정수)."""
+    try:
+        from bot.usage_tracker import KRW_PER_USD
+        return f"₩{int(round(float(usd or 0) * KRW_PER_USD)):,}"
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 비용 원화 환산 실패: %s", exc)
+        return f"${float(usd or 0):.4f}"
 
 
 def _day_summary(rec: dict) -> str:
@@ -3372,7 +3383,7 @@ def render_page(records: list[dict], state: dict | None = None,
 <title>보유종목 News</title>{_BOARD_CSS}{_HN_CSS}
 {_theme_head()}
 </head><body><div class="wrap">
-<div class="nav"><a href="market.html">🌍 홈</a> · <a href="asia.html">🏯 ASIA</a> · <a href="portfolio.html">💼 자산</a> · <a href="index.html">🦉 종목분석</a> · <a href="dart_feed.html">📋 DART</a></div>
+<div class="nav"><a href="market.html">🌍 홈</a> · <a href="portfolio.html">💼 자산</a> · <a href="index.html">🦉 종목분석</a> · <a href="dart_feed.html">📋 DART</a></div>
 <h1>🗞️ <em>보유종목 News</em> — 보유 종목 뉴스 · Pros/Cons</h1>
 <div class="sub">자산 대시보드 보유 종목 × 네이버 뉴스(국내) · Yahoo Finance(해외) · 텔레그램 'Noah의 RAG'
 채널 · 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 직전 집계 이후 뉴스를 모아 AI(Gemini flash-lite)가 그

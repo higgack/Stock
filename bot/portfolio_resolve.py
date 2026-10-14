@@ -361,6 +361,31 @@ def resolve_via_naver(name: str) -> tuple[str, str] | None:
 
 _YF_US_EXCH = {"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS", "NIM", "OEM", "OQB"}
 
+# 자동 매칭의 신원 확인(사용자 2026-10-14 "SK에코플랜트는 한국종목이야" — 국내 비상장인데 미국 SKHY 로 붙었다).
+# 검색·번역이 '아무 티커' 나 내놓아도 값이 있기만 하면 통과하던 게 원인이다 — 그 티커의 원천 이름이 우리가 찾던
+# 회사인지 본다. 일반 낱말(그룹·법인 꼴)은 신원을 말하지 않으므로 빼고 잰다.
+_GENERIC_NAME_TOKENS = frozenset({
+    "inc", "corp", "corporation", "co", "company", "ltd", "limited", "plc", "sa", "ag", "nv", "se", "the",
+    "holding", "holdings", "group", "class", "common", "stock", "shares", "ordinary", "adr", "ads", "sponsored",
+    "international", "global", "technologies", "technology", "systems", "and"})
+
+
+def name_tokens(name: str) -> set[str]:
+    """영문 이름 → 신원 낱말(소문자 · 3자 이상 · 일반 낱말 제외)."""
+    return {w for w in re.findall(r"[a-z0-9]+", (name or "").lower())
+            if len(w) >= 3 and w not in _GENERIC_NAME_TOKENS}
+
+
+def same_company(want: str, got: str) -> bool:
+    """`want`(찾는 회사의 영문 이름) 과 `got`(원천이 그 티커에 붙인 이름)이 신원 낱말을 하나라도 공유하나 —
+    'SK Ecoplant' vs 'SK hynix ...' 는 'SK'(2자)만 겹쳐 아니다. 어느 쪽이든 낱말이 없으면 확인 불가 = False."""
+    a, b = name_tokens(want), name_tokens(got)
+    return bool(a and b and a & b)
+
+
+def _has_hangul(s: str) -> bool:
+    return bool(re.search(r"[가-힣]", s or ""))
+
 
 def resolve_via_yfinance(name: str) -> tuple[str, str] | None:
     """yfinance Search → (ticker, market). 네이버 폴백 뒤 보강 (사용자 2026-06-20
@@ -371,7 +396,8 @@ def resolve_via_yfinance(name: str) -> tuple[str, str] | None:
     q = (name or "").strip()
     if not q:
         return None
-    key = "yf:" + _normalize(q)
+    # 키 판(yf2) — 신원 확인 이전 판이 구운 오매칭(국내 비상장 → 미국 티커)을 7일 동안 다시 쓰지 않게(#18)
+    key = "yf2:" + _normalize(q)
     cache = _naver_cache_load()
     hit = cache.get(key)
     if hit and (time.time() - hit.get("ts", 0)) < 7 * 86400:
@@ -391,7 +417,12 @@ def resolve_via_yfinance(name: str) -> tuple[str, str] | None:
                 res = (sym, "KR")
                 break
             ex = (qd.get("exchange") or "").upper()
-            if "." not in sym and sym.isascii() and ex in _YF_US_EXCH:
+            # 미국 티커는 원천 이름이 찾는 이름과 같은 회사일 때만 — 한글 이름은 영문 원천 이름과 대조할 수 없어
+            # 받지 않는다(한글 해외 종목명은 별칭표·AI 번역 단계가 신원을 확인하고 맡는다). 국내 비상장(SK에코플랜트)이
+            # 검색 결과 첫 줄의 무관한 미국 티커로 붙던 길이다.
+            nm = qd.get("longname") or qd.get("shortname") or ""
+            if ("." not in sym and sym.isascii() and ex in _YF_US_EXCH
+                    and not _has_hangul(q) and same_company(q, nm)):
                 res = (sym.upper(), "US")
                 break
     except Exception:

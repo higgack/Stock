@@ -744,7 +744,7 @@ def test_render_cards_and_status(hn):
     assert "새 뉴스 없음 1종목: 카카오" in html
     assert "ETF 1개" in html and "티커 미확인 1개" in html and "KODEX 200" in html
     assert "본문 읽음 1/2" in html and "제목·요약에 이름이 없어 뺀 검색 결과 4건" in html
-    assert "대체 원천으로 받은 종목 1(네이버 키 없음)" in html and "AI 2회 · $0.0123" in html
+    assert "대체 원천으로 받은 종목 1(네이버 키 없음)" in html and "AI 2회 · ₩17" in html and "$0.0123" not in html
     assert "<div class='v'>4 / 5</div>" in html
 
 
@@ -4401,6 +4401,16 @@ def test_nav_has_no_daily_byte_link(hn):
     assert "daily_byte.html" not in nav and "Daily Byte" not in nav and "dart_feed.html" in nav
 
 
+def test_nav_has_no_asia_link_but_keeps_the_rest(hn):
+    """사용자 2026-10-14 "대시보드보는 뷰에서 ASIA 는 뺴줘" — 이 페이지 위 nav 에서만 뺀다(홈 hub 의 ASIA 링크는
+    그대로 — 위 `test_nav_puts_it_right_before_asia_on_the_hub`). 남는 링크와 순서는 그대로다."""
+    html = hn.render_page([], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={})
+    nav = html.split('<div class="nav">')[1].split("</div>")[0]
+    assert "asia.html" not in nav and "ASIA" not in nav
+    hrefs = [x.split('"')[0] for x in nav.split('href="')[1:]]
+    assert hrefs == ["market.html", "portfolio.html", "index.html", "dart_feed.html"]
+
+
 def test_stat_shows_previous_recorded_day_next_to_latest(hn):
     """사용자 2026-10-14 — '최신기준일 옆에 그 전 기준일(전에 기록된 일자)도 명시'. 연속이 아닌 날도
     그대로 '전에 기록된 날' 이다(10/14 옆 10/09)."""
@@ -4584,3 +4594,13 @@ def test_card_px_needs_a_known_currency_outside_korea(hn):
     assert hn._card_px(prev, look, {"key": "CN:600519", "market": "CN"}) is None
     assert hn._card_px(prev, look, {"key": "CN_A:600519", "market": "CN_A"}) == (12.5, "2026-10-08")
     assert hn._card_px(prev, look, {"key": "KR:005930", "market": "KR"}) == (12.5, "2026-10-08")
+
+
+def test_day_cost_is_krw_with_the_cost_card_rate(hn, monkeypatch):
+    """사용자 2026-10-14 "일별 금액도 달러말고 원화로" — 비용 카드와 같은 환율(`usage_tracker.KRW_PER_USD`)."""
+    import bot.usage_tracker as ut
+    monkeypatch.setattr(ut, "KRW_PER_USD", 1000)
+    rec = {"llm": {"calls": 133, "checks": 37, "cost_usd": 0.1028}}
+    meta = hn._day_meta(rec)
+    assert meta.endswith("AI 133회(그중 무관 소식 확인 37회) · ₩103") and "$" not in meta
+    assert hn._cost_krw(None) == "₩0" and hn._cost_krw(1.2345) == "₩1,234"
