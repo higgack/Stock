@@ -1796,7 +1796,7 @@ def test_dropped_lines_are_counted_and_shown(hn):
         ensure_ascii=False)))
     assert s["dropped_lines"] == 3 and s["pros"] == [] and s["cons"] == []
     card = hn._card({**s, "sym": "A"})
-    assert "AI 가 쓴 3줄을 근거 번호가 없거나 맞지 않아 버림" in card and "가를 내용이 없음" not in card
+    assert "AI 가 쓴 줄 중 3줄은 근거 번호가 없거나 맞지 않아 버림" in card and "가를 내용이 없음" not in card
     s2 = _stock("KR:B", 1)
     hn.analyze(_rec(s2), llm=_llm(json.dumps({"stocks": [{"key": "KR:B", "pros": [
         {"t": "좋다", "refs": [1]}, {"t": "버림", "refs": []}]}]}, ensure_ascii=False)))
@@ -2347,15 +2347,17 @@ def test_card_header_shows_link_and_prev_change(hn, ws_snaps):
     """카드 머리 — 이름 = 종목분석 링크(접미 없는 국내 6자리, #399), 괄호 = 전날 등락(색은 한국 관례),
     값이 없으면 `(—)` + 사유 툴팁. 배선은 `_day_body` 로 태운다(#20 — 헬퍼만 재면 떼어도 통과)."""
     ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.234), ("KRX:000660", -2.0), ("KRX:035720", 0.0)])
-    s1 = {**_stock("KR:005930"), "name": "삼성전자"}
-    s2 = {**_stock("KR:000660"), "name": "SK하이닉스"}
-    s3 = {**_stock("KR:035720"), "name": "카카오"}
+    s1 = {**_stock("KR:005930"), "name": "삼성전자", "value": 100_000_000.0}
+    s2 = {**_stock("KR:000660"), "name": "SK하이닉스", "value": 30_000_000.0}
+    s3 = {**_stock("KR:035720"), "name": "카카오", "value": 5_000.0}
     s4 = {**_stock("KR:999999"), "name": "없음"}
     body = hn._day_body(_rec(s1, s2, s3, s4))
     assert ("<a class='hn-nm' href='lookup/005930' title='종목분석 화면으로'>삼성전자</a>"
             "<span class='hn-chg hn-up' title='2026-10-08 종가 기준") in body
-    assert "<span class='hn-chg hn-dn'" in body and "(-2.00%)</span>" in body
-    assert "(+1.23%)</span>" in body and "(0.00%)</span>" in body and "(+0.00%)" not in body
+    # 2026-10-14 사용자 "퍼센티지 옆에 금액" — 금액 = 보유 평가금액 × 등락률(추정, 툴팁이 밝힌다)
+    assert "<span class='hn-chg hn-dn'" in body and "(-2.00% · -60만원)</span>" in body
+    assert "(+1.23% · +123만원)</span>" in body and "(0.00% · 0원)</span>" in body and "(+0.00%" not in body
+    assert "금액 = 보유 평가금액 × 등락률(추정)" in body
     assert "<span class='hn-chg ' title='2026-10-08" in body                       # 보합은 색 없음
     assert "title='2026-10-08 하루치에 이 종목이 없음'>(—)</span>" in body
 
@@ -2716,3 +2718,458 @@ def test_tick_saves_the_requeue_before_asking_the_ai(hn, monkeypatch):
     llm = _llm(_answer_all)
     hn.tick(_t("2026-10-13T09:15"), llm=llm, fetch=_news_for_all, body=lambda l: reads.append(l) or "", pace=0)
     assert reads == [] and "본문: 본문 https://n.news.naver.com/KR:A/1" in llm.calls[0]
+
+
+# ── 무관 소식 확인(사용자 2026-10-14 'A') ────────────────────────────────────
+# 10-14 09:12 정리분: 새 규칙(#1333)으로 정리됐는데도 두산우 Cons 에 '야구팀 선수 부상' 이 남았다 — 프롬프트만으로는
+# 못 막아 스포츠·연예 문맥 줄만 AI 에 한 번 더 묻는다. 가짜 AI 는 프롬프트로 정리/확인을 가른다.
+def _sport_stock():
+    s = _stock("KR:000155", 2)
+    s["name"] = "두산우"
+    s["items"][0]["title"] = "두산 베어스 주전 선수 부상으로 이탈"
+    s["items"][1]["title"] = "두산, CCL 판가 인상 수혜 전망"
+    return s
+
+
+def _two_step(keep, *, check_text=None, check_kind=""):
+    """정리 응답 = 야구 Cons 1줄 + 판가 Pros 1줄 · 확인 응답 = `keep`(None 이면 그 id 를 빼고 답한다)."""
+    calls = []
+
+    def f(prompt):
+        calls.append(prompt)
+        if "검수하는 보조" in prompt:
+            if check_kind:
+                return None, 0, 0, "AI 일시 오류(ServerError: 503)", check_kind
+            if check_text is not None:
+                return check_text, 300, 20, "", ""
+            ids = [ln.split("id=")[1].split(" ")[0] for ln in prompt.splitlines() if ln.startswith("### id=")]
+            return json.dumps({"checks": [{"id": i, "keep": keep} for i in ids if keep is not None]}), 300, 20, "", ""
+        keys = [ln.split("key=")[1].split(" ")[0] for ln in prompt.splitlines() if ln.startswith("### key=")]
+        out = {"stocks": [{"key": k, "relevant": [1, 2],
+                           "pros": [{"t": "CCL 판가 인상 수혜", "refs": [2]}],
+                           "cons": [{"t": "야구팀 주요 선수 부상" if k != "KR:B" else "실적 둔화",
+                                     "refs": [1]}]} for k in keys]}
+        return json.dumps(out, ensure_ascii=False), 1000, 200, "", ""
+    f.calls = calls
+    return f
+
+
+def test_offtopic_candidates_look_at_line_and_cited_titles_not_bodies(hn):
+    s = _sport_stock()
+    s["pros"] = [{"t": "CCL 판가 인상 수혜", "refs": [2]}]
+    s["cons"] = [{"t": "주가 변동 가능성", "refs": [1]}]          # 줄엔 낱말이 없지만 근거 제목에 '선수'
+    assert hn.offtopic_candidates(s) == [("cons", 0)]
+    s["items"][1]["_body"] = "본문 중 야구 이야기"                    # 본문의 지나가는 낱말은 후보로 안 센다
+    assert hn.offtopic_candidates(s) == [("cons", 0)]
+    s["pros"] = [{"t": "축구 후원 계약", "refs": [2]}]                  # 줄 글 자체에 낱말
+    assert hn.offtopic_candidates(s) == [("pros", 0), ("cons", 0)]
+
+
+def test_check_drops_lines_the_ai_calls_offtopic_and_dims_their_items(hn):
+    s = _sport_stock()
+    rec = _rec(s)
+    f = _two_step(False)
+    done = hn.analyze(rec, llm=f)
+    assert len(f.calls) == 2 and "id=c1" in f.calls[1] and "선수 부상" in f.calls[1]
+    assert s["status"] == "ok" and s["cons"] == [] and s["pros"] == [{"t": "CCL 판가 인상 수혜", "refs": [2]}]
+    assert s["offtopic_lines"] == 1 and s["relevant"] == [2]        # 뺀 줄만 쓰던 [1] 은 흐리게
+    assert done["analyzed"] == 1 and rec["llm"]["calls"] == 2 and rec["llm"]["checks"] == 1
+    card = hn._card(s)
+    assert "다시 확인해 뺀 줄 1개" in card and "선수 부상" not in card.split("hn-src")[0]
+    assert "AI 2회(그중 무관 소식 확인 1회)" in hn._day_meta(rec)
+
+
+def test_check_keeps_lines_the_ai_calls_relevant(hn):
+    s = _sport_stock()
+    hn.analyze(_rec(s), llm=_two_step(True))
+    assert s["cons"] == [{"t": "야구팀 주요 선수 부상", "refs": [1]}] and s["offtopic_lines"] == 0
+    assert s["relevant"] == [1, 2] and s["check_why"] == ""
+    assert "다시 확인" not in hn._card(s)
+
+
+def test_no_candidate_means_no_check_call(hn):
+    s = _stock("KR:A", 2)
+    f = _llm(json.dumps({"stocks": [{"key": "KR:A", "cons": [{"t": "실적 둔화", "refs": [1]}]}]}))
+    hn.analyze(_rec(s), llm=f)
+    assert len(f.calls) == 1 and s["cons"] and "checks" not in _rec()["llm"]
+
+
+@pytest.mark.parametrize("check_text, why", [
+    ("JSON 아님", "무관 소식 확인 응답을 못 읽음"),
+    (json.dumps({"checks": []}), "무관 소식 확인 응답에 이 줄이 없음"),
+    (json.dumps({"checks": [{"id": "c1", "keep": "false"}]}), "무관 소식 확인 응답에 이 줄이 없음"),
+])
+def test_check_unreadable_keeps_the_line_and_says_so(hn, check_text, why):
+    """모를 때는 남긴다 — 빼는 쪽이 틀리면 진짜 호재·악재가 사라진다. 대신 카드가 확인 못 했다고 말한다."""
+    s = _sport_stock()
+    hn.analyze(_rec(s), llm=_two_step(None, check_text=check_text))
+    assert s["status"] == "ok" and s["cons"] and s["check_why"] == why
+    assert f"다시 확인하지 못해 그대로 둠 — {why}" in hn._card(s)
+
+
+def test_check_rejected_keeps_line_with_reason(hn):
+    s = _sport_stock()
+    hn.analyze(_rec(s), llm=_two_step(None, check_kind="rejected"))
+    assert s["status"] == "ok" and s["cons"] and s["check_why"].startswith("무관 소식 확인 실패(AI 일시 오류")
+
+
+def test_check_transient_reverts_to_pending_for_next_cycle(hn):
+    """확인이 일시 오류면 확인 안 된 줄을 '확인했다' 로 남기지 않는다 — 대기로 되돌려 다음 주기에 다시."""
+    s = _sport_stock()
+    s["items"][0]["_body"] = "본문"
+    plain = _stock("KR:B", 1)                                          # 후보 없는 종목은 정리 그대로
+    rec = _rec(s, plain)
+    f = _two_step(None, check_kind="transient")
+    done = hn.analyze(rec, llm=f)
+    assert s["status"] == "pending" and s["retry"] is True and s["pros"] == [] and "pv" not in s
+    assert s["reason"].startswith("무관 소식 확인 중 AI 일시 오류") and s["tries"] == 0
+    assert not any(it.get("body_used") for it in s["items"])
+    assert plain["status"] == "ok" and done["transient"] is True and done["analyzed"] == 1
+    assert "다음 주기에 다시" in hn._card(s)
+
+
+def test_check_transient_stops_the_cycle(hn):
+    many = [_sport_stock() for _ in range(hn.BATCH_MAX + 1)]
+    for i, s in enumerate(many):
+        s["key"] = f"KR:{i:06d}"
+    f = _two_step(None, check_kind="transient")
+    hn.analyze(_rec(*many), llm=f)
+    assert sum("검수하는 보조" in p for p in f.calls) == 1             # 다음 묶음으로 가지 않는다
+
+
+def test_check_prompt_is_part_of_the_rule_signature(hn, monkeypatch):
+    """확인 규칙을 고치면 가장 최근 기록을 새 기준으로 다시 정리한다(`requeue_stale` 이 `pv` 를 대조)."""
+    a = hn.prompt_sig()
+    orig = hn.build_check_prompt
+    monkeypatch.setattr(hn, "build_check_prompt", lambda c: orig(c) + "x")
+    assert hn.prompt_sig() != a
+
+
+def test_check_line_ids_map_back_to_the_right_stock_and_side(hn):
+    """두 종목·두 쪽에 걸친 후보 — 확인 응답의 id 가 **그 종목의 그 줄** 을 뺀다(위치를 섞지 않는다)."""
+    a, b = _sport_stock(), _sport_stock()
+    b["key"] = "KR:000150"
+    b["name"] = "두산"
+    resp = {"stocks": [{"key": k, "relevant": [1, 2],
+                        "pros": [{"t": "야구단 후원 계약 체결", "refs": [2]}],
+                        "cons": [{"t": "선수 부상", "refs": [1]}]} for k in ("KR:000155", "KR:000150")]}
+
+    def f(prompt):
+        if "검수하는 보조" in prompt:
+            # c1=a.pros c2=a.cons c3=b.pros c4=b.cons — b 의 Cons 만 뺀다
+            return json.dumps({"checks": [{"id": i, "keep": i != "c4"} for i in ("c1", "c2", "c3", "c4")]}), 1, 1, "", ""
+        return json.dumps(resp, ensure_ascii=False), 1, 1, "", ""
+    hn.analyze(_rec(a, b), llm=f)
+    assert a["cons"] and a["pros"] and b["pros"] and b["cons"] == [] and b["offtopic_lines"] == 1
+
+
+def test_all_lines_dropped_says_why(hn):
+    s = _sport_stock()
+    s["items"][1]["title"] = "두산 베어스 우승"
+    hn.analyze(_rec(s), llm=_two_step(False))
+    assert s["pros"] == [] and s["cons"] == []
+    assert "AI 가 쓴 줄 중 2줄은 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" in hn._card(s)
+
+
+def test_requeue_clears_check_traces(hn):
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(False))
+    s["pv"] = "old"
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    assert s["offtopic_lines"] == 0 and s["check_why"] == "" and s["prev_pc"]["pv"] == "old"
+
+
+def test_check_transient_after_requeue_keeps_the_old_summary(hn):
+    """독립 리뷰 HIGH 재현 — 새 기준으로 다시 정리하던 종목이 확인 일시 오류로 '대기' 로 돌아가도 옛 정리
+    (`prev_pc`)는 남아야 한다. 그날 안에 못 끝내면 카드가 그걸 '옛 기준' 으로 보여 준다."""
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(True))
+    s["pv"] = "old"
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+    assert s["status"] == "pending" and s["prev_pc"]["cons"]
+    card = hn._card(s, final=True)
+    assert "옛 기준 정리를 보여 줍니다" in card and "야구팀 주요 선수 부상" in card
+    hn.analyze(rec, llm=_two_step(True))                              # 성공하면 그때 버린다
+    assert s["status"] == "ok" and "prev_pc" not in s
+
+
+def test_check_transient_gives_up_after_the_revert_cap(hn):
+    """확인이 계속 일시 오류면 매 주기 정리+확인을 두 번 내지 않게 — 상한 번째엔 줄을 남기고 사유를 적는다."""
+    s = _sport_stock()
+    rec = _rec(s)
+    for i in range(1, hn.MAX_CHECK_REVERTS):
+        hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+        assert s["status"] == "pending" and s["check_reverts"] == i
+    hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+    assert s["status"] == "ok" and s["cons"] and s["check_reverts"] == hn.MAX_CHECK_REVERTS
+    assert f"무관 소식 확인이 {hn.MAX_CHECK_REVERTS}번 일시 오류" in hn._card(s)
+
+
+def test_check_no_key_is_named_and_not_counted(hn):
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(None, check_kind="no_key"))
+    assert s["status"] == "ok" and s["cons"] and s["check_why"] == "AI 키 없음"
+    assert rec["llm"]["calls"] == 1 and "checks" not in rec["llm"]
+
+
+def test_check_cost_is_logged_and_added_to_the_record(hn):
+    import bot.usage_tracker as ut
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(False))
+    rows = [json.loads(x) for x in ut.USAGE_LOG.read_text().splitlines()]
+    assert [(r["prompt_tokens"], r["completion_tokens"]) for r in rows] == [(1000, 200), (300, 20)]
+    assert rec["llm"]["pt"] == 1300 and rec["llm"]["ot"] == 220
+    assert rec["llm"]["cost_usd"] == round(sum(r["cost_usd"] for r in rows), 6) and rec["llm"]["cost_usd"] > 0
+
+
+def test_check_splits_into_chunks_and_applies_every_chunk(hn, monkeypatch):
+    """후보가 `CHECK_MAX` 를 넘으면 여러 번 묻는다 — 둘째 묶음 판정도 적용돼야 한다(첫 묶음만 보면 놓친다)."""
+    monkeypatch.setattr(hn, "CHECK_MAX", 1)
+    s = _sport_stock()
+    s["items"][1]["title"] = "두산 야구단 후원"
+    seen = []
+
+    def f(prompt):
+        if "검수하는 보조" in prompt:
+            ids = [ln.split("id=")[1].split(" ")[0] for ln in prompt.splitlines() if ln.startswith("### id=")]
+            seen.append(ids)
+            return json.dumps({"checks": [{"id": i, "keep": i == "c1"} for i in ids]}), 1, 1, "", ""
+        return _two_step(True)(prompt)
+    hn.analyze(_rec(s), llm=f)
+    assert seen == [["c1"], ["c2"]] and s["pros"] and s["cons"] == [] and s["offtopic_lines"] == 1
+
+
+def test_why_splits_check_calls(hn, capsys):
+    rec = {"date": "2026-10-14", "stocks": [], "llm": {"calls": 3, "checks": 1, "pt": 1, "ot": 1,
+                                                      "cost_usd": 0.001}}
+    hn.save_record(rec)
+    hn.why(_t("2026-10-14T09:30"), out=print)
+    line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("   AI "))
+    assert line.startswith("   AI 3회(그중 무관 소식 확인 1회) · 입력")     # ④ 의 일자 메타가 대신 만족 못 하게(#75)
+
+
+# ── 전일대비 금액(사용자 2026-10-14) ──────────────────────────────────────────
+# 자산 기록엔 수량이 없어 금액 = 보유 평가금액 × 등락률(추정)이다. 요약은 값을 매길 수 있는 보유 **전부**(ETF
+# 포함 — '전체' 손익에서 ETF 를 빼면 합이 작아진다).
+def _pf():
+    return _model(_h("삼성전자", "005930.KS", "KR", 100_000_000.0),
+                  {**_h("삼성전자", "005930", "KR", 50_000_000.0), "금융사": "다른 증권사"},
+                  _h("KODEX 200", "069500", "KR", 20_000_000.0, source="etf_meta"),
+                  _h("애플", "AAPL", "US", 40_000_000.0, source="alias"),
+                  _h("TIGER 어딘가", None, "KR", 7_000_000.0, matched=False, source="etf_brand"),
+                  _h("모르는 상품", None, None, 3_000_000.0, matched=False, source=None))
+
+
+def test_pnl_positions_merge_include_etf_and_count_unpriced(hn):
+    pos, skip = hn.pnl_positions(_pf())
+    assert [(p["key"], p["value"]) for p in pos] == [
+        ("KR:005930", 150_000_000.0), ("US:AAPL", 40_000_000.0), ("KR:069500", 20_000_000.0)]
+    assert skip == {"n": 2, "value": 10_000_000.0}
+
+
+def test_pnl_summary_groups_and_leaves_unknown_out_of_both_sides(hn):
+    pos, _ = hn.pnl_positions(_pf())
+    pct = {"KR:005930": -2.0, "US:AAPL": 1.0, "KR:069500": None}
+    sm = hn.pnl_summary(pos, lambda p: (pct[p["key"]], None, ""))
+    assert sm["all"] == {"amt": -3_000_000.0 + 400_000.0, "base": 190_000_000.0, "n": 3, "n_priced": 2}
+    assert sm["KR"] == {"amt": -3_000_000.0, "base": 150_000_000.0, "n": 2, "n_priced": 1}
+    assert sm["XX"] == {"amt": 400_000.0, "base": 40_000_000.0, "n": 1, "n_priced": 1}
+
+
+def test_pnl_block_rendered_on_the_page(hn, ws_snaps):
+    """서버 값 = 전날 등락 기준 · 세 칸(전체·국내·해외) · 추정이라고 밝힌다 · JS 재료(JSON)를 싣는다."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0), ("KRX:069500", 1.0)])
+    rec = _rec({**_stock("KR:005930"), "name": "삼성전자", "value": 150_000_000.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    kr = html.split("id='hn-pnl-KR'>")[1].split("</div>")[0]
+    assert kr == "<span class='hn-dn'>-280만원 (-1.65%)</span>"          # (-300만 + 20만) ÷ 1.7억
+    assert "전날 등락 기준 2/2종목" in html.split("id='hn-pnl-KR-sub'>")[1].split("</div>")[0]
+    assert html.split("id='hn-pnl-XX'>")[1].split("</div>")[0] == "—"     # 미국 하루치 없음 → 모름
+    assert "전날 등락 기준 0/1종목" in html and "티커를 못 찾은 상품 2개(1,000만원)는 뺌" in html
+    data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
+    assert {"t": "005930", "v": 150000000, "g": "KR", "p": -2.0} in data
+    assert {"t": "AAPL", "v": 40000000, "g": "XX", "p": None} in data
+    from bot.live_pct import LIVE_JS
+    assert html.index(hn._PNL_JS) < html.index(LIVE_JS)                    # hnAmt 가 먼저 정의된다
+
+
+def test_pnl_block_absent_without_portfolio_and_failure_does_not_break_page(hn, monkeypatch):
+    rec = _rec(_stock("KR:A"))
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={})
+    assert "id='hn-pnl-data'" not in html and "hn-grid" in html
+    monkeypatch.setattr(hn, "pnl_summary", lambda *a: 1 / 0)
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert "id='hn-pnl-data'" not in html and "hn-grid" in html            # 곁들이가 본체를 지우지 않는다
+
+
+def test_pnl_json_cannot_close_the_script(hn):
+    pos = [{"key": "KR:1", "market": "KR", "ticker": "1", "sym": "</script><b>", "name": "x", "value": 1.0}]
+    out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b")
+    assert out.count("</script>") == 1
+
+
+_PNL_HARNESS = r"""
+var els={}, fetched=[];
+function mk(id){var e={id:id,textContent:'',className:'',children:[],attrs:{},
+  appendChild:function(c){this.children.push(c); this.textContent=c.textContent;},
+  getAttribute:function(k){return this.attrs[k]===undefined?null:this.attrs[k];},
+  setAttribute:function(k,v){this.attrs[k]=v;}, classList:{toggle:function(){}}, offsetParent:{}};
+  els[id]=e; return e;}
+var data=mk('hn-pnl-data'); data.textContent=DATA;
+['all','KR','XX'].forEach(function(g){mk('hn-pnl-'+g); mk('hn-pnl-'+g+'-sub');});
+var cell=mk('cell'); cell.attrs={'data-t':'005930','data-v':'150000000'};
+global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
+  createElement:function(){return {textContent:'',className:''};},
+  querySelectorAll:function(){return [cell];}, addEventListener:function(){}};
+var delays=[]; global.setTimeout=function(f,d){delays.push(d);}; global.clearTimeout=function(){};
+global.fetch=function(u){fetched.push(u); return Promise.resolve({ok:true,json:function(){return Promise.resolve(LIVE);}});};
+"""
+
+
+def _run_pnl_js(hn, data, live):
+    from bot.live_pct import LIVE_JS
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    src = (f"var DATA={json.dumps(json.dumps(data))}; var LIVE={json.dumps(live)};" + _PNL_HARNESS
+           + hn._PNL_JS + LIVE_JS
+           + "\nsetImmediate(function(){setImmediate(function(){setImmediate(function(){console.log(JSON.stringify("
+             "{all:els['hn-pnl-all'].textContent,allsub:els['hn-pnl-all-sub'].textContent,"
+             "kr:els['hn-pnl-KR'].textContent,xx:els['hn-pnl-XX'].textContent,xxsub:els['hn-pnl-XX-sub'].textContent,"
+             "cell:cell.textContent,title:cell.attrs.title||'',n:fetched.length,"
+             "sizes:fetched.filter(function(u){return u.indexOf('api/live_pct')===0;}).map(function(u){"
+             "return decodeURIComponent(u.split('t=')[1]).split(',').length;}),delays:delays}));});});});")
+    r = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_pnl_js_recounts_with_live_and_falls_back_to_prev(hn):
+    """실시간이 온 종목은 실시간, 못 받은 종목은 서버가 넣은 전날 등락, 둘 다 없으면 세지 않는다 — 서버
+    `pnl_summary` 와 같은 규칙. 카드 칸(`LIVE_JS`)도 금액을 같이 그린다."""
+    data = [{"t": "005930", "v": 150000000, "g": "KR", "p": -2.0},
+            {"t": "069500", "v": 20000000, "g": "KR", "p": 1.0},
+            {"t": "AAPL", "v": 40000000, "g": "XX", "p": None}]
+    live = {"q": {"005930": {"pct": 1.0, "ts": "", "src": "네이버"}}, "pending": 0}
+    o = _run_pnl_js(hn, data, live)
+    assert o["kr"] == "+170만원 (+1.00%)"                                  # 150만(실시간) + 20만(전날)
+    assert o["all"] == "+170만원 (+1.00%)" and o["allsub"] == "실시간 1 · 전날 등락 1 · 미확인 1 / 3종목"
+    assert o["xx"] == "—" and o["xxsub"] == "미확인 1 / 1종목"
+    assert o["cell"] == "(+1.00% · +150만원)" and "평가금액 × 등락률(추정)" in o["title"]
+
+
+def test_pnl_js_amount_format_matches_python(hn):
+    for v, pct in ((12_345_678_900, 1.0), (-3_000_000_000, 1.0), (55_000, -10.0), (500, 2.0)):
+        o = _run_pnl_js(hn, [{"t": "A", "v": abs(v), "g": "KR", "p": pct * (1 if v > 0 else -1)}],
+                        {"q": {}, "pending": 0})
+        a = abs(v) * pct * (1 if v > 0 else -1) / 100
+        assert o["all"].split(" (")[0] == hn._signed_krw(a), (v, o)
+
+
+def test_pnl_js_chunks_under_the_server_cap_and_repolls_soon_when_pending(hn):
+    """서버는 한 요청에 400 개까지만 받는다(`live_pct.MAX_TICKERS`) — 넘으면 뒤쪽이 조용히 '전날' 로 남는다."""
+    from bot.live_pct import MAX_TICKERS
+    data = [{"t": f"A{i}", "v": 1000, "g": "KR", "p": 1.0} for i in range(650)]
+    o = _run_pnl_js(hn, data, {"q": {}, "pending": 3})
+    pnl = [x for x in o["sizes"] if x != 1]                 # 1 = 카드 칸(LIVE_JS) 요청
+    assert sum(pnl) == 650 and max(pnl) <= MAX_TICKERS and len(pnl) >= 2
+    # 받는 중(pending)이면 곧 다시 묻는다 — 카드 칸 폴러(LIVE_JS)도 5초를 걸므로 둘 다인지 센다(#75)
+    assert o["delays"].count(5000) == 2, o["delays"]
+    o = _run_pnl_js(hn, data[:2], {"q": {}, "pending": 0})
+    assert 5000 not in o["delays"] and 60000 in o["delays"]
+
+
+def test_pnl_js_counts_live_and_prev_separately(hn):
+    data = [{"t": t_, "v": 1000000, "g": "KR", "p": 1.0} for t_ in ("A", "B", "C")]
+    live = {"q": {k: {"pct": 2.0, "ts": "", "src": "x"} for k in ("A", "B")}, "pending": 0}
+    o = _run_pnl_js(hn, data, live)
+    assert o["allsub"] == "실시간 2 · 전날 등락 1 / 3종목"
+
+
+def test_pnl_positions_skip_unmatched_even_with_a_ticker(hn):
+    pos, skip = hn.pnl_positions(_model(_h("오매칭", "123456", "KR", 5.0, matched=False),
+                                        _h("정상", "005930", "KR", 7.0)))
+    assert [p["key"] for p in pos] == ["KR:005930"] and skip == {"n": 1, "value": 5.0}
+
+
+def test_pnl_positions_tolerate_nan_value(hn):
+    pos, _ = hn.pnl_positions(_model(_h("이상값", "005930", "KR", float("nan"))))
+    assert pos[0]["value"] == 0.0
+
+
+def test_pnl_zero_base_renders_dash_like_the_js(hn):
+    pos = [{"key": "KR:1", "market": "KR", "ticker": "000001", "sym": "000001", "name": "x", "value": 0.0}]
+    out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b")
+    assert "id='hn-pnl-KR'>—</div>" in out
+
+
+def test_signed_krw_matches_js_rounding_and_drops_sign_at_zero(hn):
+    cases = (0.4, -0.4, 15_000, 25_000, -35_000, 149_999_999, 150_000_000, 12_345_678_900, float("nan"))
+    import shutil as _sh, subprocess as _sp
+    if not _sh.which("node"):
+        pytest.skip("node 없음")
+    src = hn._PNL_JS + "console.log(JSON.stringify(%s.map(function(a){return window.hnAmt(a);})));" % json.dumps(
+        [c if c == c else "NaN" for c in cases]).replace('"NaN"', "NaN")
+    r = _sp.run([_sh.which("node"), "-e", "global.window=global;global.document={readyState:'complete',"
+                 "getElementById:function(){return null;},addEventListener:function(){}};" + src],
+                capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == [hn._signed_krw(c) for c in cases]
+    assert hn._signed_krw(0.4) == "0원" and hn._signed_krw(15_000) == "+2만원" and hn._signed_krw(25_000) == "+3만원"
+    assert hn._signed_krw(150_000_000) == "+1.5억원" and hn._signed_krw(float("nan")) == "0원"
+
+
+def test_latest_card_carries_value_for_live_amount_and_uses_current_portfolio(hn, ws_snaps):
+    """실시간 칸이 금액을 다시 세려면 렌더된 카드에 `data-v` 가 있어야 한다(하네스가 손으로 넣으면 배선을 못 잰다,
+    #20) · 최신일 카드 금액은 요약과 같은 지금의 자산 기록 값으로(#33)."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    rec = _rec({**_stock("KR:005930"), "name": "삼성전자", "value": 1.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    card = html.split("data-hncard='1'")[1]
+    assert "data-v='150000000'" in card and "(-2.00% · -300만원)" in card and "보유 1.5억원" in card
+
+
+def test_overseas_cell_says_it_excludes_fx(hn, ws_snaps):
+    html = hn.render_page([_rec(_stock("KR:A"))], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert "전일대비 · 해외(현지통화 등락 · 환율 제외)" in html and "그날 환율 변동은 빠져 있습니다" in html
+
+
+def test_check_revert_cap_is_three(hn):
+    assert hn.MAX_CHECK_REVERTS == 3            # 리터럴로 — 상수로 재면 99 도 1 도 통과한다(#66)
+
+
+def test_check_reverts_reset_after_a_clean_check_and_on_requeue(hn):
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+    assert s["check_reverts"] == 1
+    hn.analyze(rec, llm=_two_step(True))
+    assert "check_reverts" not in s                                    # 확인을 마쳤다 — 처음부터 센다
+    s["check_reverts"] = 2
+    s["pv"] = "old"
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    assert "check_reverts" not in s
+
+
+def test_transient_in_a_later_chunk_keeps_earlier_drops_for_capped_stocks(hn, monkeypatch):
+    monkeypatch.setattr(hn, "CHECK_MAX", 1)
+    s = _sport_stock()
+    s["items"][1]["title"] = "두산 야구단 후원"
+    s["check_reverts"] = hn.MAX_CHECK_REVERTS - 1                      # 이번이 상한 — 되돌리지 않는다
+    n = []
+
+    def f(prompt):
+        if "검수하는 보조" in prompt:
+            n.append(1)
+            if len(n) == 2:
+                return None, 0, 0, "AI 일시 오류(503)", "transient"
+            return json.dumps({"checks": [{"id": "c1", "keep": False}]}), 1, 1, "", ""
+        return _two_step(True)(prompt)
+    hn.analyze(_rec(s), llm=f)
+    assert s["status"] == "ok" and s["pros"] == [] and s["offtopic_lines"] == 1   # c1(Pros) 판정은 적용
+    assert s["cons"] and "일시 오류" in s["check_why"]

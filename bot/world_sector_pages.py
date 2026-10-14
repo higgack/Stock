@@ -359,8 +359,8 @@ def _head(title: str) -> str:
 # 세 보드 뒤에 시장 흐름 보드를 사용자가 정한 순서로(사용자 2026-10-12: 유동성 → 시장타이밍 →
 # Breadth전략 → Bollinger)
 _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · <a href="index.html">🦉 종목분석</a> · '
-        '<a href="sector_mix.html">🌐 국가별 섹터혼합</a> · '
         '<a href="sentiment_map.html">🗺️ 국가별 심리지도</a> · '
+        '<a href="sector_mix.html">🌐 국가별 섹터혼합</a> · '
         '<a href="sector_stocks.html">📑 국가별 섹터종목</a> · '
         '<a href="liquidity.html">💧 유동성</a> · '
         '<a href="market_timing.html">🚦 시장타이밍</a> · '

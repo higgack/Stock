@@ -36,6 +36,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -847,6 +848,59 @@ def build_prompt(stocks: list[dict]) -> str:
         "종목:\n" + "\n\n".join(_stock_block(s) for s in stocks))
 
 
+# ── 무관 소식 확인(사용자 2026-10-14 'A') ─────────────────────────────────────
+# 규칙 5 를 프롬프트에 넣었는데도 flash-lite 가 두산우 Cons 에 '야구팀 선수 부상' 을 남겼다(10-14 09:12 정리분 —
+# 새 규칙으로 정리된 기록이었다). 프롬프트만으로는 확실히 못 막으므로, 스포츠·연예 문맥으로 **보이는** 줄만
+# 골라 AI 에 한 번 더 묻는다. 이 낱말 목록은 **후보를 고르는 데만** 쓰고 빼는 판정은 AI 가 한다 — 낱말로 바로
+# 빼면 구단 매각·후원 계약처럼 회사 돈에 닿는 기사까지 빠진다(#449·#146). 후보가 넓으면 묻는 비용이 조금 늘
+# 뿐이고 좁으면 놓치므로 넓게 잡는다(`경기`·`부상` 은 경제 '경기'·'부상하다' 와 겹쳐 뺐다 — 그 문맥은 '선수'·
+# 구기 종목명이 같이 잡는다).
+OFFTOPIC_HINT = re.compile(
+    r"야구|축구|농구|배구|골프|테니스|e스포츠|이스포츠|구단|선수|감독|리그|시즌|홈런|투수|타자|득점|우승|"
+    r"KBO|K리그|MLB|NBA|EPL|올림픽|월드컵|콘서트|공연|드라마|예능|아이돌|팬미팅|배우|가수|시상식|영화제")
+CHECK_MAX = 40                     # 한 번의 확인 호출에 묻는 줄 상한(넘으면 그 묶음의 다음 호출로)
+MAX_CHECK_REVERTS = 3              # 확인 일시 오류로 '대기' 로 되돌리는 상한 — 넘으면 줄을 남기고 그렇게 적는다
+
+
+def offtopic_candidates(stock: dict) -> list[tuple[str, int]]:
+    """(쪽, 줄 번호) — 줄 글이나 그 줄의 근거 항목(제목·요약)에 스포츠·연예 낱말이 있는 줄. 본문은 보지 않는다
+    (긴 본문의 지나가는 낱말까지 세면 거의 모든 줄이 후보가 된다)."""
+    by_n = {it["n"]: it for it in stock.get("items") or []}
+    out = []
+    for side in ("pros", "cons"):
+        for i, ln in enumerate(stock.get(side) or []):
+            txt = ln.get("t", "") + " " + " ".join(
+                f"{by_n[r].get('title', '')} {by_n[r].get('summary', '')}" for r in ln.get("refs") or []
+                if r in by_n)
+            if OFFTOPIC_HINT.search(txt):
+                out.append((side, i))
+    return out
+
+
+def build_check_prompt(cands: list[tuple[str, dict, str, int]]) -> str:
+    """`cands` = [(id, 종목, 쪽, 줄 번호)]. 종목 칸을 비우면 규칙 틀만 남는다(`prompt_sig` 가 그걸 잰다)."""
+    rows = []
+    for cid, st, side, i in cands:
+        ln = st[side][i]
+        by_n = {it["n"]: it for it in st.get("items") or []}
+        refs = " / ".join(f"[{r}] {by_n[r].get('title', '')} {by_n[r].get('summary', '')}".strip()
+                          for r in ln.get("refs") or [] if r in by_n)
+        nm = st["name"] + (f" / {st['ko']}" if st.get("ko") else "")
+        kind = "Pros(호재 관점)" if side == "pros" else "Cons(악재·리스크 관점)"
+        rows.append(f"### id={cid} · {nm}({st['ticker']}) · {kind}\n줄: {ln.get('t', '')}\n근거: {refs[:600]}")
+    return (
+        "너는 개인 투자자의 보유 종목 Pros/Cons 를 검수하는 보조다. 아래 각 줄이 그 회사 주주의 투자 판단에\n"
+        f"닿는지({INVEST_TOPICS}) 판정한다.\n"
+        "- keep=false: 회사 이름만 나오고 회사의 사업·수입·지출과 이어지지 않는 소식. 그 이름을 단 스포츠\n"
+        "  구단의 경기 결과·순위·선수 기록·선수 부상·감독 교체, 연예·문화 행사 소식 등.\n"
+        "- keep=true: 스포츠·연예·콘텐츠·게임이 그 회사의 본업인 경우, 또는 회사 돈에 닿는 일(후원·마케팅\n"
+        "  계약의 금액·조건, 흥행 수입, 구단 매각·운영비)이 근거에 **쓰여 있는** 경우.\n"
+        "- 근거에 쓰이지 않은 연결(예: '선수 부상이 브랜드 이미지에 영향')을 지어내 keep=true 로 하지 않는다.\n\n"
+        "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
+        '{"checks":[{"id":"줄 id 그대로","keep":true}]}\n\n'
+        "줄:\n" + "\n\n".join(rows))
+
+
 REQUEUE_REASON = "AI 정리 기준이 바뀜"   # 약속('다시 정리')은 저장하지 않는다 — 화면이 붙인다(#447)
 
 
@@ -855,7 +909,7 @@ def prompt_sig() -> str:
     Pros/Cons 는 안 바뀌므로(#18) 아직 이어서 정리하는 날의 종목은 지문이 다르면 다시 정리한다(`requeue_stale`).
     손으로 올리는 판 번호가 아니라 틀에서 파생한다 — 손 bump 는 이 레포에서 여섯 번 졌다(#119)."""
     import hashlib
-    return hashlib.sha1(build_prompt([]).encode("utf-8")).hexdigest()[:10]
+    return hashlib.sha1((build_prompt([]) + build_check_prompt([])).encode("utf-8")).hexdigest()[:10]
 
 
 def requeue_note(rec: dict, now: datetime | None = None) -> str:
@@ -916,7 +970,8 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
                 it["_body"] = b
         s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
         s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
-                 relevant=None, dropped_lines=0)
+                 relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
+        s.pop("check_reverts", None)
         n += 1
     if n:
         rec["requeued_for"] = [*(rec.get("requeued_for") or []), sig]
@@ -976,8 +1031,11 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["pros"], dp = _clean_side(res.get("pros"), valid)
     stock["cons"], dc = _clean_side(res.get("cons"), valid)
     stock["dropped_lines"] = dp + dc
+    stock["offtopic_lines"] = 0
+    stock["check_why"] = ""
     stock["pv"] = prompt_sig()
-    stock.pop("prev_pc", None)              # 새 기준으로 정리됐다 — 옛 정리는 더 쓸 데가 없다
+    # 옛 정리(`prev_pc`)는 여기서 버리지 않는다 — 무관 소식 확인이 일시 오류로 이 종목을 '대기' 로 되돌리면 그날
+    # 다시 정리하지 못했을 때 보여 줄 옛 정리가 사라진다(독립 리뷰 2026-10-14). 확인까지 끝난 뒤 `analyze` 가 버린다.
     stock["status"] = "ok"
     stock["reason"] = ""
     stock["retry"] = False
@@ -1063,6 +1121,106 @@ def call_llm(prompt: str) -> tuple[str | None, int, int, str, str]:
     return (getattr(resp, "text", None) or ""), pt, ot, "", ""
 
 
+def _revert_pending(st: dict, why: str) -> None:
+    """정리를 되돌려 다음 주기에 다시 — 확인 단계가 일시 오류로 못 돈 종목(확인 안 된 줄을 '확인했다' 로 남기지
+    않는다). 일시 오류라 시도로 세지 않는다(`analyze` 의 일시 오류 갈래와 같다)."""
+    st.update(status="pending", retry=True, reason=why, pros=[], cons=[], relevant=None,
+              dropped_lines=0, offtopic_lines=0, check_why="")
+    st.pop("pv", None)
+    for it in st.get("items") or []:
+        it.pop("body_used", None)
+
+
+def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
+    """정리가 끝난 묶음에서 스포츠·연예 문맥으로 보이는 줄(`offtopic_candidates`)만 AI 에 다시 묻고, 투자와
+    무관하다고 답한 줄을 뺀다. 반환 = {calls, reverted, transient}.
+
+    갈래(#82): 일시 오류 → 후보가 있던 종목을 '대기' 로 되돌린다(다음 주기에 정리부터 다시 — 확인 못 한 줄을
+    확인한 것처럼 남기지 않는다 · 같은 종목 `MAX_CHECK_REVERTS` 번째면 줄을 남기고 사유를 적는다) · 거부·못 읽음·그 줄이 응답에 없음 → 줄은 **남기고** 카드가 '다시 확인하지
+    못함' 을 사유와 함께 말한다(빼는 쪽이 틀리면 진짜 호재·악재가 사라지므로 모를 때는 남긴다).
+    호출은 `analyze` 의 주기 상한(`MAX_LLM_CALLS`)에 넣지 않는다 — 묶음 하나에 많아야 2번이고(묶음 종목
+    `BATCH_MAX` × 줄 2·`MAX_PER_SIDE` ÷ `CHECK_MAX`), 상한에 넣으면 정리한 묶음이 확인 없이 남는다. 대신
+    호출 수는 기록의 `llm.checks` 로 따로 센다(비용은 같은 원장·같은 카드)."""
+    cands = []
+    for st in grp:
+        if st.get("status") != "ok":
+            continue
+        for side, i in offtopic_candidates(st):
+            cands.append((f"c{len(cands) + 1}", st, side, i))
+    done = {"calls": 0, "reverted": 0, "transient": False}
+    if not cands:
+        return done
+    llm_rec = rec.setdefault("llm", {"calls": 0, "pt": 0, "ot": 0, "cost_usd": 0.0})
+    drop: dict[int, set] = {}            # id(종목) → {(쪽, 줄 번호)}
+    for k in range(0, len(cands), CHECK_MAX):
+        chunk = cands[k:k + CHECK_MAX]
+        text, pt, ot, why, kind = llm(build_check_prompt(chunk))
+        if kind != "no_key":
+            done["calls"] += 1
+            llm_rec["calls"] += 1
+            llm_rec["checks"] = int(llm_rec.get("checks") or 0) + 1
+            if pt or ot:
+                llm_rec["pt"] += pt
+                llm_rec["ot"] += ot
+                llm_rec["cost_usd"] = round(llm_rec["cost_usd"] + _log_usage(pt, ot), 6)
+        if kind == "transient":
+            reverted = set()
+            # 되돌리면 다음 주기에 정리(AI 1회)부터 다시 — 장애가 이어지면 매 주기 두 번 내고 앞 묶음이 차례를
+            # 막는다(독립 리뷰 2026-10-14). 같은 종목 `MAX_CHECK_REVERTS` 번째면 되돌리지 않고 줄을 남긴다.
+            for st in {id(c[1]): c[1] for c in cands}.values():
+                st["check_reverts"] = int(st.get("check_reverts") or 0) + 1
+                if st["check_reverts"] >= MAX_CHECK_REVERTS:
+                    st["check_why"] = f"무관 소식 확인이 {st['check_reverts']}번 일시 오류({why})"
+                    continue
+                _revert_pending(st, f"무관 소식 확인 중 {why}")
+                reverted.add(id(st))
+                done["reverted"] += 1
+            # 앞 묶음에서 이미 받은 판정은 되돌리지 않은 종목에 적용한다(버리면 AI 가 뺀 줄이 카드에 남는다)
+            _apply_drops([st for st in grp if id(st) not in reverted], drop)
+            done["transient"] = True
+            return done
+        data = _parse_json(text) if text and not kind else None
+        got = {}
+        if data and isinstance(data.get("checks"), list):
+            for r in data["checks"]:
+                if isinstance(r, dict) and isinstance(r.get("keep"), bool):
+                    got[str(r.get("id"))] = r["keep"]
+        for cid, st, side, i in chunk:
+            keep = got.get(cid)
+            if keep is False:
+                drop.setdefault(id(st), set()).add((side, i))
+            elif keep is None:
+                st["check_why"] = ("AI 키 없음" if kind == "no_key" else
+                                   f"무관 소식 확인 실패({why})" if why else
+                                   "무관 소식 확인 응답을 못 읽음" if not data else "무관 소식 확인 응답에 이 줄이 없음")
+    _apply_drops(grp, drop)
+    for st in grp:
+        if st.get("status") == "ok":
+            st.pop("check_reverts", None)     # 확인을 마쳤다 — 다음 재정리(기준 바뀜)의 일시 오류는 처음부터 센다
+    return done
+
+
+def _apply_drops(stocks: list[dict], drop: dict) -> None:
+    """확인 응답이 keep=false 라 한 줄을 뺀다 — 그 줄만 근거로 쓰던 항목은 `relevant` 에서 빼 흐리게."""
+    for st in stocks:
+        gone = drop.get(id(st))
+        if not gone:
+            continue
+        cut_refs = set()
+        for side in ("pros", "cons"):
+            kept = []
+            for i, ln in enumerate(st.get(side) or []):
+                if (side, i) in gone:
+                    cut_refs.update(ln.get("refs") or [])
+                else:
+                    kept.append(ln)
+            st[side] = kept
+        still = {r for side in ("pros", "cons") for ln in st[side] for r in ln.get("refs") or []}
+        # 뺀 줄만 근거로 삼던 항목은 '투자와 무관' 으로 흐리게 — 남기면 그 기사가 근거처럼 보인다
+        st["relevant"] = [r for r in st.get("relevant") or [] if r not in cut_refs or r in still]
+        st["offtopic_lines"] = len(gone)
+
+
 def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             on_progress=None) -> dict:
     """대기 중인 종목을 묶어 AI 에 보낸다(한 주기 `max_calls` 회까지). 묶음마다 `on_progress(rec)`
@@ -1122,8 +1280,16 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             if s["tries"] >= MAX_ANALYZE_TRIES:
                 s["status"] = "failed"
                 done["failed"] += 1
+        chk = check_offtopic(grp, rec, llm=llm)
+        done["analyzed"] -= chk["reverted"]
+        for s in grp:
+            if s.get("status") == "ok":
+                s.pop("prev_pc", None)      # 새 기준 정리·확인이 끝났다 — 옛 정리는 더 쓸 데가 없다
         if on_progress:
             on_progress(rec)
+        if chk["transient"]:
+            done["transient"] = True
+            break
     return done
 
 
@@ -1517,7 +1683,63 @@ _HN_CSS = """
 .hn-quiet{font-size:12.5px;color:var(--muted);margin:2px 0 10px;line-height:1.6}
 .hn-hit{outline:2px solid var(--accent);outline-offset:1px}
 .hn-lazy{font-size:12.5px;color:var(--muted);padding:8px 4px}
+.hn-pnl .hn-up{color:var(--hn-up)}.hn-pnl .hn-dn{color:var(--hn-dn)}
+.hn-pnl-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.hn-pnl-note{font-size:11.5px;color:var(--muted);margin:-4px 0 10px}
 </style>
+"""
+
+# 전일대비 요약을 실시간 등락률로 다시 센다 — 1분마다(카드의 `LIVE_JS` 와 같은 주기·같은 엔드포인트). 실시간을
+# 못 받은 종목은 서버가 넣은 전날 등락을 쓰고, 둘 다 없으면 세지 않는다(`pnl_summary` 와 같은 규칙, #38).
+_PNL_JS = r"""
+(function(){
+  // 파이썬 `_signed_krw` 와 같은 반올림(절댓값 반올림 올림 · 반올림해 0 이면 부호 없음)
+  function amt(a){var x=isFinite(a)?Math.abs(a):0, n, body;
+    if(x>=1e8){n=Math.floor(x/1e7+0.5); body=Math.floor(n/10).toLocaleString('en-US')+'.'+(n%10)+'억원';}
+    else if(x>=1e4){n=Math.floor(x/1e4+0.5); body=n.toLocaleString('en-US')+'만원';}
+    else{n=Math.floor(x+0.5); body=n.toLocaleString('en-US')+'원';}
+    return (n===0?'':a>0?'+':'-')+body;}
+  window.hnAmt=amt;     // 카드 칸(`LIVE_JS` paint)도 쓴다 — 요약 재료가 없어도 정의한다
+  var el=document.getElementById('hn-pnl-data'); if(!el) return;
+  var pos; try{pos=JSON.parse(el.textContent)||[];}catch(e){return;}
+  var live={};
+  function draw(){
+    var G={all:[0,0,0,0,0],KR:[0,0,0,0,0],XX:[0,0,0,0,0]};   // 금액·분모·실시간·전날·전체
+    pos.forEach(function(p){
+      var lv=live[p.t], pct=lv?lv.pct:p.p;
+      ['all',p.g].forEach(function(g){var o=G[g]; o[4]++;
+        if(pct===null||pct===undefined) return;
+        o[0]+=p.v*pct/100; o[1]+=p.v; if(lv) o[2]++; else o[3]++;});
+    });
+    Object.keys(G).forEach(function(g){
+      var o=G[g], v=document.getElementById('hn-pnl-'+g), s=document.getElementById('hn-pnl-'+g+'-sub');
+      if(!v||!s) return;
+      if(!o[4]){v.textContent='—'; s.textContent='보유 없음'; return;}
+      if(!o[1]){v.textContent='—';}
+      else{var pc=o[0]/o[1]*100, sp=document.createElement('span');
+        sp.className=o[0]>0?'hn-up':o[0]<0?'hn-dn':'';
+        sp.textContent=amt(o[0])+' ('+(pc>0?'+':'')+pc.toFixed(2)+'%)';
+        v.textContent=''; v.appendChild(sp);}
+      var parts=[]; if(o[2]) parts.push('실시간 '+o[2]); if(o[3]) parts.push('전날 등락 '+o[3]);
+      var miss=o[4]-o[2]-o[3]; if(miss) parts.push('미확인 '+miss);
+      s.textContent=parts.join(' · ')+' / '+o[4]+'종목';
+    });
+  }
+  function poll(){
+    var ts=pos.map(function(p){return p.t;}), chunks=[];
+    for(var i=0;i<ts.length;i+=300) chunks.push(ts.slice(i,i+300));
+    var left=chunks.length, again=false;
+    if(!left){return;}
+    chunks.forEach(function(c){
+      fetch('api/live_pct?t='+encodeURIComponent(c.join(',')),{cache:'no-store'})
+        .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
+        .then(function(js){var q=(js&&js.q)||{}; for(var k in q) live[k]=q[k]; if(js&&js.pending) again=true;})
+        .catch(function(){})
+        .then(function(){if(--left===0){draw(); setTimeout(poll, again?5000:60000);}});
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',poll); else poll();
+})();
 """
 
 _HN_JS = r"""
@@ -1586,6 +1808,113 @@ def _krw(v: float) -> str:
     if v >= 1e4:
         return f"{v / 1e4:,.0f}만원"
     return f"{v:,.0f}원"
+
+
+def _signed_krw(a: float) -> str:
+    """전일대비 금액 — 화면 JS `hnAmt` 와 **같은 반올림**(절댓값 기준 반올림 올림 · 반올림해 0 이면 부호 없음).
+    파이썬 `format` 은 짝수 반올림이라 경계에서 JS 와 1만원씩 갈렸다(독립 리뷰 2026-10-14, #33)."""
+    x = abs(a) if math.isfinite(a) else 0.0
+    if x >= 1e8:
+        n = math.floor(x / 1e7 + 0.5)
+        body = f"{n // 10:,}.{n % 10}억원"
+    elif x >= 1e4:
+        n = math.floor(x / 1e4 + 0.5)
+        body = f"{n:,}만원"
+    else:
+        n = math.floor(x + 0.5)
+        body = f"{n:,}원"
+    return ("" if n == 0 else "+" if a > 0 else "-") + body
+
+
+# ── 전일대비 금액(사용자 2026-10-14 "전일대비 얼마나 금액이 오르거나 내렸는지") ─────────────────────────
+# 자산 기록에는 **수량이 없다**(뱅크샐러드 내보내기 = 평가금액·원금·수익률뿐, `portfolio_parser`). 그래서 금액은
+# '보유 평가금액 × 등락률' 로 **추정**하고 화면이 그렇게 말한다(#165 — 평가금액은 업로드 시점 가격 기준이라 오늘
+# 주가와 다를 수 있다). 해외 평가금액은 내보내기가 이미 원화로 환산한 값이다.
+def pnl_positions(model: dict | None = None) -> tuple[list[dict], dict]:
+    """전일대비 요약의 대상 — 자산 기록의 **값을 매길 수 있는** 보유 전부(티커·시장이 있는 것 · ETF 포함:
+    뉴스 카드와 달리 '전체' 손익이므로 ETF 를 빼면 합이 작아진다). 반환 = (종목 목록, {n, value} 티커가 없어
+    못 매긴 상품). 여러 증권사에 나눠 가진 종목은 합친다(`universe` 와 같은 키)."""
+    if model is None:
+        try:
+            from bot.portfolio import load
+            model = load() or {}
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("holdings_news: portfolio 읽기 실패(전일대비): %s", exc)
+            model = {}
+    out: dict[str, dict] = {}
+    skip = {"n": 0, "value": 0.0}
+    for h in model.get("holdings") or []:
+        try:
+            v = float(h.get("평가금액") or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if not math.isfinite(v):           # 'NaN' 문자열도 float 로 읽힌다 — 카드 렌더가 round() 에서 죽지 않게
+            v = 0.0
+        tk, mk = h.get("ticker"), str(h.get("market") or "").upper()
+        if not tk or not mk or not h.get("matched"):
+            skip["n"] += 1
+            skip["value"] += v
+            continue
+        code = _code(tk, mk)
+        key = f"{mk}:{code}"
+        pos = out.setdefault(key, {"key": key, "market": mk, "ticker": code, "sym": str(tk).strip(),
+                                   "name": str(h.get("상품명") or code), "value": 0.0})
+        pos["value"] += v
+    return sorted(out.values(), key=lambda p: (-p["value"], p["key"])), skip
+
+
+PNL_GROUPS = (("all", "전체"), ("KR", "국내"), ("XX", "해외"))
+
+
+def pnl_summary(positions: list[dict], look) -> dict:
+    """그룹(전체·국내·해외)별 {amt, base, n, n_priced} — `look(pos)` = (등락%, …). 등락률이 없는 종목은 금액에도
+    분모에도 넣지 않는다(빈칸을 0% 로 세면 그룹 등락률이 조용히 묽어진다, #43). 그룹 % = Σ금액 ÷ Σ그 평가금액."""
+    out = {g: {"amt": 0.0, "base": 0.0, "n": 0, "n_priced": 0} for g, _ in PNL_GROUPS}
+    for p in positions:
+        try:
+            pct = look(p)[0]
+        except Exception:                                      # noqa: BLE001
+            pct = None
+        for g in ("all", "KR" if p["market"] == "KR" else "XX"):
+            o = out[g]
+            o["n"] += 1
+            if pct is not None:
+                o["amt"] += p["value"] * pct / 100
+                o["base"] += p["value"]
+                o["n_priced"] += 1
+    return out
+
+
+def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str) -> str:
+    """요약 칸 3개 + 화면 JS 가 실시간으로 다시 셀 재료(JSON). 서버 값은 전날 등락 기준이고 화면을 열면
+    1분마다 실시간 등락률로 다시 센다(`_PNL_JS`)."""
+    import html as _h
+    if not positions:
+        return ""
+    sm = pnl_summary(positions, look)
+    cells = []
+    for g, lab in PNL_GROUPS:
+        lab = lab + ("(현지통화 등락 · 환율 제외)" if g == "XX" else "")
+        o = sm[g]
+        if o["n_priced"] and o["base"]:
+            pct = o["amt"] / o["base"] * 100
+            cls = "hn-up" if o["amt"] > 0 else "hn-dn" if o["amt"] < 0 else ""
+            v = f"<span class='{cls}'>{_signed_krw(o['amt'])} ({'+' if pct > 0 else ''}{pct:.2f}%)</span>"
+        else:
+            v = "—"
+        sub = f"{basis} {o['n_priced']}/{o['n']}종목" if o["n"] else "보유 없음"
+        cells.append(f"<div class='stat'><div class='k'>전일대비 · {lab}</div>"
+                     f"<div class='v' id='hn-pnl-{g}'>{v}</div>"
+                     f"<div class='hn-pnl-sub' id='hn-pnl-{g}-sub'>{_h.escape(sub)}</div></div>")
+    data = [{"t": live_ticker(p), "v": round(p["value"]), "g": "KR" if p["market"] == "KR" else "XX",
+             "p": look(p)[0]} for p in positions]
+    note = ("평가금액 × 등락률로 추정한 금액입니다 — 자산 기록에 수량이 없어 업로드 시점 평가금액을 씁니다 · 해외는 "
+            "현지통화 등락률이라 그날 환율 변동은 빠져 있습니다"
+            + (f" · 티커를 못 찾은 상품 {skip['n']}개({_krw(skip['value'])})는 뺌" if skip.get("n") else ""))
+    return (f"<div class='stat-grid hn-pnl'>{''.join(cells)}</div>"
+            f"<div class='hn-pnl-note'>{_h.escape(note)}</div>"
+            "<script type='application/json' id='hn-pnl-data'>"
+            + json.dumps(data, ensure_ascii=False).replace("</", "<\\/") + "</script>")
 
 
 def _lookup(s: dict) -> str:
@@ -1742,13 +2071,15 @@ def _prev_missing_why(ws, mk: str, d: str, now) -> str:
     return f"{d} 하루치가 없음"
 
 
-def _prev_html(prev, live: str = "") -> str:
+def _prev_html(prev, live: str = "", value: float | None = None) -> str:
     """종목명 옆 `(+1.23%)` — 값이 없으면 `(—)` 에 사유를 툴팁으로(빈칸이 '0' 으로 읽히지 않게, #43).
 
     `live` = 실시간 등락을 받을 티커(최신일 카드만, 사용자 2026-10-13 "가능한 실시간으로"). 화면이
     `live_pct.LIVE_JS` 로 1분마다 덮어쓰고, 못 받으면 서버가 그린 전날 등락이 그대로 남는다."""
     import html as _h
-    lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn" if live else "")
+    # `data-v` = 보유 평가금액 — 실시간 칸도 금액을 같이 다시 센다(`live_pct.LIVE_JS` 의 paint)
+    dv = f"' data-v='{round(value)}" if live and value else ""
+    lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn{dv}" if live else "")
     if not prev:
         return f"<span class='hn-chg{lv}' title='실시간 등락 대기'></span>" if live else ""
     v, d, why_ = prev
@@ -1757,7 +2088,10 @@ def _prev_html(prev, live: str = "") -> str:
     cls = "hn-up" if v > 0 else "hn-dn" if v < 0 else ""
     sign = "+" if v > 0 else ""
     tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
-    return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%)</span>")
+    amt = f" · {_signed_krw(value * v / 100)}" if value else ""
+    if amt:
+        tip += " · 금액 = 보유 평가금액 × 등락률(추정)"
+    return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%{amt})</span>")
 
 
 def live_ticker(s: dict) -> str:
@@ -1783,7 +2117,7 @@ def _pending_reason(s: dict) -> str:
     return f"{r} — 다음 주기에 다시" if s.get("retry") else r
 
 
-def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str:
+def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value: float | None = None) -> str:
     """종목 카드. `final` = 주기가 더는 이어서 정리하지 않는 날(`_live_dates` 밖) — 그날의 '대기' 를 '다음
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
     import html as _h
@@ -1797,7 +2131,17 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
     rel = shown.get("relevant")
     relset = set(rel) if isinstance(rel, list) else {it["n"] for it in items}
     n_tg = sum(1 for it in items if it["src"] == "telegram")
+    # 평가금액 — 최신일은 요약(`pnl_positions`)과 같은 지금의 자산 기록 값, 지난 날은 그날 기록의 값(#33)
+    val = value if value is not None else float(s.get("value") or 0)
     drop = int(s.get("dropped_lines") or 0)
+    offl = int(s.get("offtopic_lines") or 0)
+    cwhy = s.get("check_why") or ""
+    # 확인 단계의 결과 — 뺀 줄은 수를, 확인하지 못한 줄은 사유를 보이는 줄로(#43·#228)
+    notes = "".join(
+        f"<div class='hn-why'>{_h.escape(x)}</div>" for x in (
+            f"근거 번호가 없거나 맞지 않아 버린 줄 {drop}개" if drop else "",
+            f"투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺀 줄 {offl}개" if offl else "",
+            f"⚠️ 스포츠·연예 문맥으로 보이는 줄을 다시 확인하지 못해 그대로 둠 — {cwhy}" if cwhy else "") if x)
     if old:
         r = s.get("reason") or "사유 미기록"
         why = ("이어서 정리하는 기간 안에 차례가 오지 않음" if r == REQUEUE_REASON else r)
@@ -1809,15 +2153,16 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
                  "<div class='hn-why'>옛 기준 정리에도 호재·악재로 가른 줄이 없었음</div>"))
     elif st == "ok":
         if not s.get("pros") and not s.get("cons"):
-            why = (f"AI 가 쓴 {drop}줄을 근거 번호가 없거나 맞지 않아 버림 — 아래 근거 목록에서 확인하세요"
-                   if drop else
+            gone = [x for x in (f"{drop}줄은 근거 번호가 없거나 맞지 않아 버림" if drop else "",
+                                f"{offl}줄은 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" if offl else "") if x]
+            why = ("AI 가 쓴 줄 중 " + " · ".join(gone) + " — 아래 근거 목록에서 확인하세요" if gone else
                    "투자와 관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
                    "뉴스는 있지만 호재·악재로 가를 내용이 없음")
             pc = f"<div class='hn-why'>{_h.escape(why)}</div>"
         else:
             pc = ("<div class='hn-pc'>" + _side("👍 Pros · 호재 관점", "hn-pro", s.get("pros") or [])
                   + _side("👎 Cons · 악재·리스크 관점", "hn-con", s.get("cons") or []) + "</div>"
-                  + (f"<div class='hn-why'>근거 번호가 없거나 맞지 않아 버린 줄 {drop}개</div>" if drop else ""))
+                  + notes)
     elif st == "failed":
         pc = (f"<div class='hn-why'>Pros/Cons 못 만듦({MAX_ANALYZE_TRIES}회 실패) — "
               f"{_h.escape(s.get('reason') or '사유 미기록')} · 뉴스만 표시</div>")
@@ -1834,8 +2179,8 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
             f"data-pro='{1 if shown.get('pros') else 0}' data-con='{1 if shown.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
-            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '')}"
-            f"<span class='hn-tk'>{_h.escape(s['ticker'])} · 보유 {_krw(float(s.get('value') or 0))}"
+            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', val)}"
+            f"<span class='hn-tk'>{_h.escape(s['ticker'])} · 보유 {_krw(val)}"
             f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}</span></div>"
             f"{pc}<details class='hn-src'><summary>근거 {len(items)}건{offnote}</summary>"
             f"<ol>{lis}</ol></details></div>")
@@ -1869,7 +2214,9 @@ def _day_meta(rec: dict) -> str:
     parts.append(f"텔레그램 창 안 {tg.get('window', 0)}건 중 보유 종목 언급 {tg.get('matched', 0)}건")
     llm = rec.get("llm") or {}
     if llm.get("calls"):
-        parts.append(f"AI {llm['calls']}회 · ${llm.get('cost_usd', 0):.4f}")
+        ck = int(llm.get("checks") or 0)
+        parts.append(f"AI {llm['calls']}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
+                     + f" · ${llm.get('cost_usd', 0):.4f}")
     return " · ".join(parts)
 
 
@@ -1882,7 +2229,8 @@ def _day_summary(rec: dict) -> str:
             f"<span class='hn-meta'>{_h.escape(_day_meta(rec))}</span></summary>")
 
 
-def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, live: bool = False) -> str:
+def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, live: bool = False,
+              values: dict | None = None) -> str:
     """하루 칸의 본문(카드 · 새 뉴스 없음 · 뺀 상품) — 최신일은 페이지에, 지난 날은 조각 파일에 같은
     함수로 싣는다(#38). `final` → `_card`."""
     import html as _h
@@ -1890,7 +2238,8 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
     with_news = [s for s in ss if s.get("items")]
     quiet = [s for s in ss if not s.get("items")]
     look = prev_changes(rec["date"], now)
-    cards = "".join(_card(s, final=final, prev=look(s), live=live) for s in with_news)
+    vals = values or {}
+    cards = "".join(_card(s, final=final, prev=look(s), live=live, value=vals.get(s.get("key"))) for s in with_news)
     quiet_html = ""
     if quiet:
         names = ", ".join(_h.escape(s["name"]) for s in quiet[:60])
@@ -1911,10 +2260,10 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
 
 
 def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None,
-              live: bool = False) -> str:
+              live: bool = False, values: dict | None = None) -> str:
     return (f"<details class='hn-day' data-hnday='1' data-open='{1 if open_ else 0}'"
             f"{' open' if open_ else ''}>{_day_summary(rec)}"
-            f"{_day_body(rec, final=final, now=now, live=live)}</details>")
+            f"{_day_body(rec, final=final, now=now, live=live, values=values)}</details>")
 
 
 def frag_name(date: str) -> str:
@@ -1974,7 +2323,8 @@ def _cost_line(now: datetime) -> str:
 
 
 def render_page(records: list[dict], state: dict | None = None,
-                now: datetime | None = None, *, gen: str | None = None, total: int | None = None) -> str:
+                now: datetime | None = None, *, gen: str | None = None, total: int | None = None,
+                portfolio: dict | None = None) -> str:
     """`records` = 화면에 실을 날들(최근 `RENDER_DAYS` 일이면 충분 — 그 앞은 안 그린다) · `total` = 보관 중인
     날 수(`count_records`, 없으면 `records` 수)."""
     from bot.live_pct import LIVE_JS as _LIVE_JS
@@ -2002,7 +2352,19 @@ def render_page(records: list[dict], state: dict | None = None,
         f"<div class='stat'><div class='k'>AI 비용 (오늘 / 이번 달 / 누적)</div><div class='v'>"
         f"{_h.escape(_cost_line(now))}</div></div>"
         "</div>")
-    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True) if i == 0
+    # 전일대비 요약 — 실패는 이 칸만 비운다(곁들이가 본체를 지우지 않게, #315)
+    pnl = ""
+    pos_vals: dict = {}
+    try:
+        pos, skip = pnl_positions(portfolio)
+        pos_vals = {p["key"]: p["value"] for p in pos}
+        if pos:
+            look = prev_changes(latest["date"] if latest else now.date().isoformat(), now)
+            pnl = _pnl_html(pos, skip, look, basis="전날 등락 기준")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: 전일대비 요약 실패: %s", exc)
+    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True, values=pos_vals)
+                   if i == 0
                    else _day_lazy(r)
                    for i, r in enumerate(recs)) or (
         f"<div class='hn-status'>아직 기록이 없습니다 — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 "
@@ -2026,6 +2388,7 @@ def render_page(records: list[dict], state: dict | None = None,
 문장만 근거로 Pros/Cons 를 정리 · 내용이 바뀐 시각 {_h.escape(gen_s)}</div>
 <div class="hn-status" data-kind="{kind}">{_h.escape(line)}</div>
 {stats}
+{pnl}
 <details class="guide"><summary>ℹ️ 이 보드 읽는 법</summary>
 <b>종목</b> — 💼 자산 대시보드와 같은 보유 기록입니다. 여러 증권사에 나눠 가진 종목은 하나로 합치고,
 평가금액이 큰 종목부터 보여 줍니다. ETF(국내는 자산 기록이 ETF 로 알아본 상품, 미국은 거래소 목록의 ETF
@@ -2034,7 +2397,12 @@ def render_page(records: list[dict], state: dict | None = None,
 <b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 옆 괄호는 맨 위(최신) 날짜 카드에서
 <b>실시간 등락률</b>(정규장 · 직전 종가 대비 — 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 · 장 중이면 지금 값,
 장이 끝났으면 마지막 세션 값 · 장전·장후 시간외 등락은 넣지 않습니다)이고 화면을 열어 둔 동안 1분마다
-바뀝니다. 실시간을 못 받은 종목은 <b>전날(그 시장의 직전 거래일) 등락률</b>이 그대로 남습니다 — 「국가별
+바뀝니다. 등락률 옆 금액은 <b>보유 평가금액 × 등락률</b>로 추정한 전일대비 금액입니다(자산 기록에 수량이 없어
+업로드 시점 평가금액을 씁니다 — 그 뒤 주가가 많이 움직였으면 실제 금액과 다릅니다 · 해외 종목은 현지통화
+등락률이라 그날 환율 변동은 빠져 있습니다). 맨 위 <b>전일대비 · 전체/국내/해외</b>
+칸은 자산 기록의 값을 매길 수 있는 보유 전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그
+합 ÷ 등락률을 아는 종목의 평가금액 합입니다(등락률을 모르는 종목은 금액에도 분모에도 넣지 않고 '미확인' 으로 셉니다).
+실시간을 못 받은 종목은 <b>전날(그 시장의 직전 거래일) 등락률</b>이 그대로 남습니다 — 「국가별
 심리지도」가 받아 둔 TradingView 하루치(장 마감 3시간 뒤 수집)라 미국은 한국 시각 아침 8~9시에 받으므로 이른
 아침엔 '(—)' 일 수 있고, 휴장이거나 그날을 받지 못했어도 '(—)' 입니다. 지난 날 카드의 괄호는 그날 기준
 전날 등락 그대로입니다(마우스를 올리면 무엇의 값인지와 기준 시각).<br>
@@ -2055,7 +2423,10 @@ Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴�
 {INVEST_TOPICS}처럼 투자 판단에 닿는 내용만 씁니다 — 이름이 같은 다른 회사 얘기나, 회사 이름은 나오지만
 투자와 무관한 소식(그 이름을 단 스포츠 구단의 경기 결과·선수 기록, 연예·문화 행사 등)은 근거로 쓰지 않고 근거
 목록에서 흐리게 보입니다. 스포츠·연예·콘텐츠·게임이 그 회사의 본업이거나 회사의 수입·지출에 닿는 일(후원·마케팅
-계약, 흥행 수입, 구단 매각·운영비)은 씁니다. AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니다. 이
+계약, 흥행 수입, 구단 매각·운영비)은 씁니다. 정리가 끝난 뒤 스포츠·연예 문맥으로 보이는 줄은 AI 에 <b>한 번 더</b>
+물어 투자와 무관하다고 답하면 빼고 카드에 뺀 줄 수를 적습니다(AI 일시 오류면 그 종목을 '대기' 로 되돌려 다음 주기에
+다시 정리하고 — 같은 종목 {MAX_CHECK_REVERTS}번째면 그만두고 — 응답을 못 읽었으면 줄은 남기고 그렇게 적습니다).
+AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니다. 이
 기준이 바뀌면 가장 최근 기록은 새 기준으로 다시 정리합니다(AI 키가 있을 때 · 그동안 그 종목은 '대기' · 그 앞의
 기록은 옛 정리 그대로). 이것은 뉴스 요약이지 투자 판단이 아닙니다.<br>
 <b>언제 갱신되나</b> — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 한 번 모읍니다(장 시작 전에 읽도록 · 봇이 {TICK_MIN}분마다
@@ -2076,7 +2447,7 @@ AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 �
 {days}
 <div class="footer">보유종목 News — 뉴스 정리(교육·정보), 투자 권유 아님 · NOAH</div>
 </div>
-<script>{_HN_JS}</script><script>{_LIVE_JS}</script>
+<script>{_HN_JS}</script><script>{_PNL_JS}</script><script>{_LIVE_JS}</script>
 </body></html>"""
 
 
@@ -2158,8 +2529,9 @@ def why(now: datetime | None = None, out=print) -> int:
         r = max(recs, key=lambda r: r["date"])
         llm = r.get("llm") or {}
         out(f"④ 마지막 기록 {r['date']} · 수집 {str(r.get('collected_at', ''))[:16]} · {_day_meta(r)}")
-        out(f"   AI {llm.get('calls', 0)}회 · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · "
-            f"${llm.get('cost_usd', 0):.4f}")
+        ck = int(llm.get("checks") or 0)
+        out(f"   AI {llm.get('calls', 0)}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
+            + f" · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · ${llm.get('cost_usd', 0):.4f}")
         out("   " + requeue_note(r, now))
     else:
         out("④ 기록 없음 — 봇이 아직 한 번도 모으지 않음")
