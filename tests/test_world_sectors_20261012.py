@@ -2133,7 +2133,8 @@ def test_a_session_past_its_window_is_not_reported_as_waiting(store):
 
 def test_new_board_nav_runs_into_the_market_flow_boards_in_the_users_order():
     hrefs = re.findall(r'href="([^"]+)"', wp._NAV)
-    assert hrefs == ["market.html", "index.html", "sector_mix.html", "sentiment_map.html",
+    # 심리지도가 섹터혼합 앞 — 홈만이 아니라 연결된 화면 전부(사용자 2026-10-14 "연결된 곳들도")
+    assert hrefs == ["market.html", "index.html", "sentiment_map.html", "sector_mix.html",
                      "sector_stocks.html", "liquidity.html", "market_timing.html",
                      "breadth_strategy.html", "bollinger.html"]
 
@@ -2208,3 +2209,26 @@ def test_ready_kst_uses_the_next_session_across_dst():
     assert (d, t.strftime("%m-%d %H:%M")) == ("2026-11-02", "11-03 09:00")
     t, d = ws.ready_kst("KR", _at(2026, 10, 12, 19))               # 그날 18:30 이 지났으면 다음 세션
     assert d == "2026-10-13"
+
+
+def test_every_nav_puts_sentiment_map_before_sector_mix():
+    """사용자 2026-10-13 홈 순서(심리지도 → 섹터혼합)가 연결된 화면 nav 엔 안 옮겨져 있었다(2026-10-14 "메인말고
+    연결된 다른곳으로 들어가면 여전히"). nav 를 이름으로 열거하면 다음 화면을 못 잡으므로(#24) `bot/`·`trade/`
+    소스 전수에서 두 링크가 **이웃한**(사이에 다른 링크 400자 이내) 자리를 모두 본다."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    tok = re.compile(r'href="(sector_mix|sentiment_map)\.html"')
+    seen, bad = 0, []
+    for f in list((root / "bot").rglob("*.py")) + list((root / "trade").rglob("*.py")):
+        if "tests" in f.parts:
+            continue
+        src = f.read_text(encoding="utf-8")
+        ms = list(tok.finditer(src))
+        for a, b in zip(ms, ms[1:]):
+            if b.start() - a.end() > 400 or a.group(1) == b.group(1):
+                continue
+            seen += 1
+            if a.group(1) == "sector_mix":
+                bad.append(f"{f.relative_to(root)}:{src[:a.start()].count(chr(10)) + 1}")
+    assert seen >= 4, f"이웃한 두 링크를 {seen}곳만 봤다 — 스캔이 눈멀었나"   # 0건은 통과가 아니다(#54)
+    assert not bad, f"섹터혼합이 심리지도 앞: {bad}"
