@@ -3183,7 +3183,7 @@ def test_page_summary_and_card_use_fx(hn, ws_snaps):
     assert all("c" not in d for d in data if d["g"] == "KR")
     assert json.loads(html.split("id='hn-fx-data'>")[1].split("</script>")[0]) == {"USD": 2.0}
     card = html.split("data-hncard='1'")[1]
-    assert "data-c='USD'" in card and "(+1.00% · +121만원)" in card
+    assert "data-c='USD'" in card and "(+1.00% · 원화 +121만원)" in card
     assert "원화 기준(주가 +1.00% · 원/USD +2.00%)" in card
 
 
@@ -3196,17 +3196,28 @@ def test_page_counts_missing_fx_instead_of_inventing_it(hn, ws_snaps):
     assert "USD 환율 미확인 — 현지통화 등락만" in html.split("data-hncard='1'")[1]
 
 
-def test_page_fetches_fx_when_not_given(hn, ws_snaps, monkeypatch):
-    """`fx` 를 안 주면 렌더가 스스로 받는다(배선, #20)."""
+def test_page_render_never_fetches_fx_and_says_it_waits(hn, ws_snaps, monkeypatch):
+    """서버는 환율을 굽지 않는다 — 장 중 계속 바뀌는 값을 구우면 15분 재생성마다 내용이 달라져 '내용이 같으면 안
+    쓴다'(#442)가 무너진다(독립 리뷰 2026-10-14 High). 화면이 열자마자 받으므로 서버 칸은 '환율 대기'(미확인 아님)."""
     import bot.live_pct as lp
-    monkeypatch.setattr(lp, "fx_changes", lambda: {"USD": -1.0})
+    called = []
+    monkeypatch.setattr(lp, "fx_changes", lambda: called.append(1) or {"USD": -1.0})
     ws_snaps("US", "2026-10-09", [("NASDAQ:AAPL", 1.0)])
     rec = _rec({**_stock("US:AAPL"), "market": "US", "ticker": "AAPL", "name": "애플", "value": 1.0})
-    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
-    assert json.loads(html.split("id='hn-fx-data'>")[1].split("</script>")[0]) == {"USD": -1.0}
-    monkeypatch.setattr(lp, "fx_changes", lambda: 1 / 0)
-    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
-    assert "hn-grid" in html and json.loads(html.split("id='hn-fx-data'>")[1].split("</script>")[0]) == {}
+    a = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    b = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert called == [] and a == b
+    assert "id='hn-fx-data'" not in a
+    assert "환율 대기 1" in a.split("id='hn-pnl-XX-sub'>")[1].split("</div>")[0] and "환율 미확인" not in a.split(
+        "id='hn-pnl-XX-sub'>")[1].split("</div>")[0]
+    card = a.split("data-hncard='1'")[1]
+    assert "USD 환율은 화면이 곧 받습니다" in card and "(+1.00% · +40만원)" in card   # 원화 표식 없음(환율 미반영)
+
+
+def test_unknown_currency_market_is_not_counted_as_missing_fx_like_the_js(hn):
+    pos = [{"key": "ZZ:X", "market": "ZZ", "ticker": "X", "sym": "X", "name": "x", "value": 100.0}]
+    sm = hn.pnl_summary(pos, lambda p: (1.0, None, ""), {})
+    assert sm["XX"]["n_nofx"] == 0 and sm["XX"]["amt"] == pytest.approx(1.0)
 
 
 def test_past_day_card_never_applies_todays_fx(hn):
@@ -3264,7 +3275,7 @@ def test_pnl_js_krw_with_server_fx_then_live_fx(hn):
     o = _run_pnl_js(hn, data, live, fx={"USD": 2.0}, cell=cell)
     k = 40000000 * ((0.99 * 1.01) - 1)
     assert o["xx"] == hn._signed_krw(k) + f" ({k / 40000000 * 100:+.2f}%)"
-    assert o["cell"] == "(-1.00% · " + hn._signed_krw(k) + ")" and "원/USD +1.00%" in o["title"]
+    assert o["cell"] == "(-1.00% · 원화 " + hn._signed_krw(k) + ")" and "원/USD +1.00%" in o["title"]
     pnl_urls = [u for u in o["urls"] if "fx=1" in u]
     assert len(pnl_urls) == 1
 
@@ -3276,3 +3287,17 @@ def test_pnl_js_counts_missing_fx(hn):
     o = _run_pnl_js(hn, data, live, fx={}, cell=cell)
     assert o["xx"] == "+40만원 (+1.00%)" and o["xxsub"] == "실시간 1 / 1종목 · 환율 미확인 1"
     assert "USD 환율 미확인 — 현지통화 등락만" in o["title"]
+
+
+def test_pnl_js_response_replaces_fx_wholesale(hn):
+    """서버가 낡아서 버린 통화(`fx: {}`)는 화면에서도 사라진다 — 받은 통화만 덮어쓰면 마지막 환율이 영원히 곱해진다
+    (독립 리뷰 2026-10-14 Medium)."""
+    data = [{"t": "AAPL", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
+    cell = {"data-t": "AAPL", "data-v": "40000000", "data-c": "USD"}
+    live = {"q": {"AAPL": {"pct": 1.0, "ts": "", "src": "x"}}, "pending": 0, "fx": {}}
+    o = _run_pnl_js(hn, data, live, fx={"USD": 2.0}, cell=cell)
+    assert o["xx"] == "+40만원 (+1.00%)" and o["xxsub"].endswith("환율 미확인 1")
+    assert o["cell"] == "(+1.00% · +40만원)"                              # 원화 표식도 빠진다
+    live = {"q": {"AAPL": {"pct": 1.0, "ts": "", "src": "x"}}, "pending": 0}  # 환율을 안 실은 응답은 그대로 둔다
+    o = _run_pnl_js(hn, data, live, fx={"USD": 2.0}, cell=cell)
+    assert o["xx"] == "+121만원 (+3.02%)"

@@ -255,7 +255,7 @@ LIVE_JS = r"""
     var dv=parseFloat(el.getAttribute('data-v')||''), am='', cc=el.getAttribute('data-c'), how='';
     if(dv&&window.hnAmt){
       var k=(cc&&window.hnKrw)?window.hnKrw(p,cc):{pct:p,fx:null};
-      am=' · '+window.hnAmt(dv*k.pct/100);
+      am=' · '+(cc&&k.fx!==null?'원화 ':'')+window.hnAmt(dv*k.pct/100);
       how=' · 금액 = 보유 평가금액 × 등락률(추정)'+(!cc?'':(k.fx===null?' · '+cc+' 환율 미확인 — 현지통화 등락만'
         :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+cc+' '+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));}
     el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%'+am+')';
@@ -289,6 +289,7 @@ LIVE_JS = r"""
       }).catch(function(){timer=setTimeout(poll,60000);})
       .then(function(){busy=false; if(again){again=false; clearTimeout(timer); timer=setTimeout(poll,300);}});
   }
+  window.liveRepaint=function(){fill(document);};      // 값은 그대로 다시 칠한다(보유종목 News 환율 갱신)
   window.liveFill=function(root){fill(root); clearTimeout(timer); timer=setTimeout(poll,300);};
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',poll); else poll();
 })();

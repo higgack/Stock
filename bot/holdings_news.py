@@ -1740,7 +1740,10 @@ _PNL_JS = r"""
       fetch('api/live_pct?t='+encodeURIComponent(c.join(','))+(i===0?'&fx=1':''),{cache:'no-store'})
         .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
         .then(function(js){var q=(js&&js.q)||{}; for(var k in q) live[k]=q[k]; if(js&&js.pending) again=true;
-          var f=js&&js.fx; if(f) for(var cc in f) if(f[cc]&&typeof f[cc].pct==='number') fx[cc]=f[cc].pct;})
+          // 응답이 환율을 실었으면 통째로 바꾼다 — 서버가 낡아서 버린 통화가 화면에 남지 않게(리뷰 2026-10-14)
+          var f=js&&js.fx; if(f&&typeof f==='object'){var nf={};
+            for(var cc in f) if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
+            fx=nf; if(window.liveRepaint) window.liveRepaint();}})
         .catch(function(){})
         .then(function(){if(--left===0){draw(); setTimeout(poll, again?5000:60000);}});
     });
@@ -1907,7 +1910,7 @@ def pnl_summary(positions: list[dict], look, fx: dict | None = None) -> dict:
             pct = None
         ccy = currency_of(p["market"])
         fxp = fx.get(ccy) if ccy else None
-        nofx = pct is not None and p["market"] != "KR" and fxp is None
+        nofx = pct is not None and ccy is not None and fxp is None      # JS 와 같은 규칙(통화를 아는 해외만)
         for g in ("all", "KR" if p["market"] == "KR" else "XX"):
             o = out[g]
             o["n"] += 1
@@ -1925,7 +1928,7 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict |
     import html as _h
     if not positions:
         return ""
-    fx = fx or {}
+    wait = fx is None                    # 서버가 환율을 안 받았다 — 화면이 곧 받는다('미확인' 이 아니라 '대기')
     sm = pnl_summary(positions, look, fx)
     cells = []
     for g, lab in PNL_GROUPS:
@@ -1937,7 +1940,7 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict |
             v = f"<span class='{cls}'>{_signed_krw(o['amt'])} ({'+' if pct > 0 else ''}{pct:.2f}%)</span>"
         else:
             v = "—"
-        sub = (f"{basis} {o['n_priced']}/{o['n']}종목" + (f" · 환율 미확인 {o['n_nofx']}" if o["n_nofx"] else "")
+        sub = (f"{basis} {o['n_priced']}/{o['n']}종목" + (f" · 환율 {'대기' if wait else '미확인'} {o['n_nofx']}" if o["n_nofx"] else "")
                if o["n"] else "보유 없음")
         cells.append(f"<div class='stat'><div class='k'>전일대비 · {lab}</div>"
                      f"<div class='v' id='hn-pnl-{g}'>{v}</div>"
@@ -1946,15 +1949,15 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict |
              "p": look(p)[0], **({"c": currency_of(p["market"])} if currency_of(p["market"]) else {})}
             for p in positions]
     note = ("평가금액 × 등락률로 추정한 금액입니다 — 자산 기록에 수량이 없어 업로드 시점 평가금액을 씁니다 · 해외는 "
-            "원화 기준(주가 등락에 그 통화의 원화 환율 전일대비를 곱함 · 네이버 원화 환율 — 두 등락의 기준 시각이 "
-            "달라 추정치입니다)"
+            "원화 기준(주가 등락에 그 통화의 원화 환율 전일대비를 곱함 · 네이버 원화 환율 · 화면이 1분마다 받음 — 두 "
+            "등락의 날짜·시각이 다를 수 있어 추정치입니다)"
             + (f" · 티커를 못 찾은 상품 {skip['n']}개({_krw(skip['value'])})는 뺌" if skip.get("n") else ""))
     return (f"<div class='stat-grid hn-pnl'>{''.join(cells)}</div>"
             f"<div class='hn-pnl-note'>{_h.escape(note)}</div>"
             "<script type='application/json' id='hn-pnl-data'>"
             + json.dumps(data, ensure_ascii=False).replace("</", "<\\/") + "</script>"
-            "<script type='application/json' id='hn-fx-data'>"
-            + json.dumps(fx, ensure_ascii=False).replace("</", "<\\/") + "</script>")
+            + ("" if wait else "<script type='application/json' id='hn-fx-data'>"
+               + json.dumps(fx, ensure_ascii=False).replace("</", "<\\/") + "</script>"))
 
 
 def _lookup(s: dict) -> str:
@@ -2132,13 +2135,16 @@ def _prev_html(prev, live: str = "", value: float | None = None, *, ccy: str | N
     sign = "+" if v > 0 else ""
     tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
     fxp = (fx or {}).get(ccy) if ccy and live else None
-    amt = f" · {_signed_krw(value * krw_pct(v, fxp) / 100)}" if value else ""
+    # 해외 원화 금액엔 보이는 표식 — 괄호 %(주가 등락)로 눈으로 나눠 보면 안 맞기 때문이다(#33·#228)
+    won = "원화 " if fxp is not None else ""
+    amt = f" · {won}{_signed_krw(value * krw_pct(v, fxp) / 100)}" if value else ""
     if amt:
         tip += " · 금액 = 보유 평가금액 × 등락률(추정)"
         if ccy and not live:
             tip += " · 지난 날 카드라 현지통화 등락만(그날 환율 변동 미반영)"
         elif ccy:
-            tip += (f" · {ccy} 환율 미확인 — 현지통화 등락만" if fxp is None else
+            tip += ((f" · {ccy} 환율은 화면이 곧 받습니다 — 지금은 현지통화 등락만" if fx is None else
+                     f" · {ccy} 환율 미확인 — 현지통화 등락만") if fxp is None else
                     f" · 원화 기준(주가 {sign}{v:.2f}% · 원/{ccy} {'+' if fxp > 0 else ''}{fxp:.2f}%)")
     return (f"<span class='hn-chg {cls}{lv}' title='{_h.escape(tip)}'>({sign}{v:.2f}%{amt})</span>")
 
@@ -2405,13 +2411,9 @@ def render_page(records: list[dict], state: dict | None = None,
     # 전일대비 요약 — 실패는 이 칸만 비운다(곁들이가 본체를 지우지 않게, #315)
     pnl = ""
     pos_vals: dict = {}
-    if fx is None:                       # 원화 환율 전일대비 — 해외 원화 손익(못 받으면 {} → '환율 미확인')
-        try:
-            from bot.live_pct import fx_changes
-            fx = fx_changes()
-        except Exception as exc:                               # noqa: BLE001
-            log.warning("holdings_news: 원화 환율 실패: %s", exc)
-            fx = {}
+    # 원화 환율은 서버가 굽지 않는다 — 환율 전일대비는 장 중 계속 바뀌어, 구우면 15분 재생성마다 페이지 내용이
+    # 달라져 '내용이 같으면 안 쓴다'(#442)가 무너지고 '새 업데이트' 배너가 상시 켜진다(독립 리뷰 2026-10-14). 화면이
+    # 열자마자 `api/live_pct?…&fx=1` 로 받는다(`_PNL_JS`). `fx` 인자는 테스트·진단용.
     try:
         pos, skip = pnl_positions(portfolio)
         pos_vals = {p["key"]: p["value"] for p in pos}
@@ -2457,9 +2459,10 @@ def render_page(records: list[dict], state: dict | None = None,
 바뀝니다. 등락률 옆 금액은 <b>보유 평가금액 × 등락률</b>로 추정한 전일대비 금액입니다(자산 기록에 수량이 없어
 업로드 시점 평가금액을 씁니다 — 그 뒤 주가가 많이 움직였으면 실제 금액과 다릅니다). 해외 종목 금액은
 <b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 전일대비(네이버 원화 환율 · 1분마다 갱신)를 곱해
-(1+주가 등락)×(1+환율 등락)−1 로 셉니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷ 평가금액과 다를 수 있습니다(마우스를
-올리면 두 등락을 적습니다). 두 등락의 기준 시각이 달라(미국 주가는 간밤 · 환율은 지금) 추정치이고, 환율을 못
-받은 통화는 '환율 미확인' 으로 세고 주가 등락만으로 셉니다. 지난 날 카드는 그날 환율을 받아 두지 않아 현지통화
+(1+주가 등락)×(1+환율 등락)−1 로 셉니다 — 금액 앞에 '원화' 가 붙습니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷
+평가금액과 다를 수 있습니다(마우스를 올리면 두 등락을 적습니다). 두 등락의 날짜·시각이 다를 수 있어(예: 미국 주가는
+간밤 세션 · 환율은 서울 외환시장 지금 · 주말·휴장엔 서로 다른 날) 추정치이고, 환율을 못 받은 통화는 '환율 미확인'
+으로 세고 주가 등락만으로 셉니다. 환율은 화면을 연 뒤 받으므로 처음 잠깐은 '환율 대기' 입니다. 지난 날 카드는 그날 환율을 받아 두지 않아 현지통화
 등락만입니다. 맨 위 <b>전일대비 · 전체/국내/해외</b>
 칸은 자산 기록의 값을 매길 수 있는 보유 전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그
 합 ÷ 등락률을 아는 종목의 평가금액 합입니다(등락률을 모르는 종목은 금액에도 분모에도 넣지 않고 '미확인' 으로 셉니다).
