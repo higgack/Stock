@@ -847,6 +847,58 @@ def build_prompt(stocks: list[dict]) -> str:
         "종목:\n" + "\n\n".join(_stock_block(s) for s in stocks))
 
 
+# ── 무관 소식 확인(사용자 2026-10-14 'A') ─────────────────────────────────────
+# 규칙 5 를 프롬프트에 넣었는데도 flash-lite 가 두산우 Cons 에 '야구팀 선수 부상' 을 남겼다(10-14 09:12 정리분 —
+# 새 규칙으로 정리된 기록이었다). 프롬프트만으로는 확실히 못 막으므로, 스포츠·연예 문맥으로 **보이는** 줄만
+# 골라 AI 에 한 번 더 묻는다. 이 낱말 목록은 **후보를 고르는 데만** 쓰고 빼는 판정은 AI 가 한다 — 낱말로 바로
+# 빼면 구단 매각·후원 계약처럼 회사 돈에 닿는 기사까지 빠진다(#449·#146). 후보가 넓으면 묻는 비용이 조금 늘
+# 뿐이고 좁으면 놓치므로 넓게 잡는다(`경기`·`부상` 은 경제 '경기'·'부상하다' 와 겹쳐 뺐다 — 그 문맥은 '선수'·
+# 구기 종목명이 같이 잡는다).
+OFFTOPIC_HINT = re.compile(
+    r"야구|축구|농구|배구|골프|테니스|e스포츠|이스포츠|구단|선수|감독|리그|시즌|홈런|투수|타자|득점|우승|"
+    r"KBO|K리그|MLB|NBA|EPL|올림픽|월드컵|콘서트|공연|드라마|예능|아이돌|팬미팅|배우|가수|시상식|영화제")
+CHECK_MAX = 40                     # 한 번의 확인 호출에 묻는 줄 상한(넘으면 그 묶음의 다음 호출로)
+
+
+def offtopic_candidates(stock: dict) -> list[tuple[str, int]]:
+    """(쪽, 줄 번호) — 줄 글이나 그 줄의 근거 항목(제목·요약)에 스포츠·연예 낱말이 있는 줄. 본문은 보지 않는다
+    (긴 본문의 지나가는 낱말까지 세면 거의 모든 줄이 후보가 된다)."""
+    by_n = {it["n"]: it for it in stock.get("items") or []}
+    out = []
+    for side in ("pros", "cons"):
+        for i, ln in enumerate(stock.get(side) or []):
+            txt = ln.get("t", "") + " " + " ".join(
+                f"{by_n[r].get('title', '')} {by_n[r].get('summary', '')}" for r in ln.get("refs") or []
+                if r in by_n)
+            if OFFTOPIC_HINT.search(txt):
+                out.append((side, i))
+    return out
+
+
+def build_check_prompt(cands: list[tuple[str, dict, str, int]]) -> str:
+    """`cands` = [(id, 종목, 쪽, 줄 번호)]. 종목 칸을 비우면 규칙 틀만 남는다(`prompt_sig` 가 그걸 잰다)."""
+    rows = []
+    for cid, st, side, i in cands:
+        ln = st[side][i]
+        by_n = {it["n"]: it for it in st.get("items") or []}
+        refs = " / ".join(f"[{r}] {by_n[r].get('title', '')} {by_n[r].get('summary', '')}".strip()
+                          for r in ln.get("refs") or [] if r in by_n)
+        nm = st["name"] + (f" / {st['ko']}" if st.get("ko") else "")
+        kind = "Pros(호재 관점)" if side == "pros" else "Cons(악재·리스크 관점)"
+        rows.append(f"### id={cid} · {nm}({st['ticker']}) · {kind}\n줄: {ln.get('t', '')}\n근거: {refs[:600]}")
+    return (
+        "너는 개인 투자자의 보유 종목 Pros/Cons 를 검수하는 보조다. 아래 각 줄이 그 회사 주주의 투자 판단에\n"
+        f"닿는지({INVEST_TOPICS}) 판정한다.\n"
+        "- keep=false: 회사 이름만 나오고 회사의 사업·수입·지출과 이어지지 않는 소식. 그 이름을 단 스포츠\n"
+        "  구단의 경기 결과·순위·선수 기록·선수 부상·감독 교체, 연예·문화 행사 소식 등.\n"
+        "- keep=true: 스포츠·연예·콘텐츠·게임이 그 회사의 본업인 경우, 또는 회사 돈에 닿는 일(후원·마케팅\n"
+        "  계약의 금액·조건, 흥행 수입, 구단 매각·운영비)이 근거에 **쓰여 있는** 경우.\n"
+        "- 근거에 쓰이지 않은 연결(예: '선수 부상이 브랜드 이미지에 영향')을 지어내 keep=true 로 하지 않는다.\n\n"
+        "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
+        '{"checks":[{"id":"줄 id 그대로","keep":true}]}\n\n'
+        "줄:\n" + "\n\n".join(rows))
+
+
 REQUEUE_REASON = "AI 정리 기준이 바뀜"   # 약속('다시 정리')은 저장하지 않는다 — 화면이 붙인다(#447)
 
 
@@ -855,7 +907,7 @@ def prompt_sig() -> str:
     Pros/Cons 는 안 바뀌므로(#18) 아직 이어서 정리하는 날의 종목은 지문이 다르면 다시 정리한다(`requeue_stale`).
     손으로 올리는 판 번호가 아니라 틀에서 파생한다 — 손 bump 는 이 레포에서 여섯 번 졌다(#119)."""
     import hashlib
-    return hashlib.sha1(build_prompt([]).encode("utf-8")).hexdigest()[:10]
+    return hashlib.sha1((build_prompt([]) + build_check_prompt([])).encode("utf-8")).hexdigest()[:10]
 
 
 def requeue_note(rec: dict, now: datetime | None = None) -> str:
@@ -914,9 +966,10 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
                 time.sleep(pace)
             if b:
                 it["_body"] = b
-        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
+        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv",
+                                               "offtopic_lines", "check_why")}
         s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
-                 relevant=None, dropped_lines=0)
+                 relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
         n += 1
     if n:
         rec["requeued_for"] = [*(rec.get("requeued_for") or []), sig]
@@ -976,6 +1029,8 @@ def apply_result(stock: dict, res: dict) -> None:
     stock["pros"], dp = _clean_side(res.get("pros"), valid)
     stock["cons"], dc = _clean_side(res.get("cons"), valid)
     stock["dropped_lines"] = dp + dc
+    stock["offtopic_lines"] = 0
+    stock["check_why"] = ""
     stock["pv"] = prompt_sig()
     stock.pop("prev_pc", None)              # 새 기준으로 정리됐다 — 옛 정리는 더 쓸 데가 없다
     stock["status"] = "ok"
@@ -1063,6 +1118,88 @@ def call_llm(prompt: str) -> tuple[str | None, int, int, str, str]:
     return (getattr(resp, "text", None) or ""), pt, ot, "", ""
 
 
+def _revert_pending(st: dict, why: str) -> None:
+    """정리를 되돌려 다음 주기에 다시 — 확인 단계가 일시 오류로 못 돈 종목(확인 안 된 줄을 '확인했다' 로 남기지
+    않는다). 일시 오류라 시도로 세지 않는다(`analyze` 의 일시 오류 갈래와 같다)."""
+    st.update(status="pending", retry=True, reason=why, pros=[], cons=[], relevant=None,
+              dropped_lines=0, offtopic_lines=0, check_why="")
+    st.pop("pv", None)
+    for it in st.get("items") or []:
+        it.pop("body_used", None)
+
+
+def check_offtopic(grp: list[dict], rec: dict, *, llm=call_llm) -> dict:
+    """정리가 끝난 묶음에서 스포츠·연예 문맥으로 보이는 줄(`offtopic_candidates`)만 AI 에 다시 묻고, 투자와
+    무관하다고 답한 줄을 뺀다. 반환 = {calls, dropped, reverted, transient}.
+
+    갈래(#82): 일시 오류 → 후보가 있던 종목을 '대기' 로 되돌린다(다음 주기에 정리부터 다시 — 확인 못 한 줄을
+    확인한 것처럼 남기지 않는다) · 거부·못 읽음·그 줄이 응답에 없음 → 줄은 **남기고** 카드가 '다시 확인하지
+    못함' 을 사유와 함께 말한다(빼는 쪽이 틀리면 진짜 호재·악재가 사라지므로 모를 때는 남긴다).
+    호출은 `analyze` 의 주기 상한(`MAX_LLM_CALLS`)에 넣지 않는다 — 묶음 하나에 많아야 2번이고(묶음 종목
+    `BATCH_MAX` × 줄 2·`MAX_PER_SIDE` ÷ `CHECK_MAX`), 상한에 넣으면 정리한 묶음이 확인 없이 남는다. 대신
+    호출 수는 기록의 `llm.checks` 로 따로 센다(비용은 같은 원장·같은 카드)."""
+    cands = []
+    for st in grp:
+        if st.get("status") != "ok":
+            continue
+        for side, i in offtopic_candidates(st):
+            cands.append((f"c{len(cands) + 1}", st, side, i))
+    done = {"calls": 0, "dropped": 0, "reverted": 0, "transient": False}
+    if not cands:
+        return done
+    llm_rec = rec.setdefault("llm", {"calls": 0, "pt": 0, "ot": 0, "cost_usd": 0.0})
+    drop: dict[int, set] = {}            # id(종목) → {(쪽, 줄 번호)}
+    for k in range(0, len(cands), CHECK_MAX):
+        chunk = cands[k:k + CHECK_MAX]
+        text, pt, ot, why, kind = llm(build_check_prompt(chunk))
+        if kind != "no_key":
+            done["calls"] += 1
+            llm_rec["calls"] += 1
+            llm_rec["checks"] = int(llm_rec.get("checks") or 0) + 1
+            if pt or ot:
+                llm_rec["pt"] += pt
+                llm_rec["ot"] += ot
+                llm_rec["cost_usd"] = round(llm_rec["cost_usd"] + _log_usage(pt, ot), 6)
+        if kind == "transient":
+            for st in {id(c[1]): c[1] for c in cands}.values():
+                _revert_pending(st, f"무관 소식 확인 중 {why}")
+                done["reverted"] += 1
+            done["transient"] = True
+            return done
+        data = _parse_json(text) if text and not kind else None
+        got = {}
+        if data and isinstance(data.get("checks"), list):
+            for r in data["checks"]:
+                if isinstance(r, dict) and isinstance(r.get("keep"), bool):
+                    got[str(r.get("id"))] = r["keep"]
+        for cid, st, side, i in chunk:
+            keep = got.get(cid)
+            if keep is False:
+                drop.setdefault(id(st), set()).add((side, i))
+            elif keep is None:
+                st["check_why"] = (f"무관 소식 확인 실패({why})" if why else
+                                   "무관 소식 확인 응답을 못 읽음" if not data else "무관 소식 확인 응답에 이 줄이 없음")
+    for st in grp:
+        gone = drop.get(id(st))
+        if not gone:
+            continue
+        cut_refs = set()
+        for side in ("pros", "cons"):
+            kept = []
+            for i, ln in enumerate(st.get(side) or []):
+                if (side, i) in gone:
+                    cut_refs.update(ln.get("refs") or [])
+                else:
+                    kept.append(ln)
+            st[side] = kept
+        still = {r for side in ("pros", "cons") for ln in st[side] for r in ln.get("refs") or []}
+        # 뺀 줄만 근거로 삼던 항목은 '투자와 무관' 으로 흐리게 — 남기면 그 기사가 근거처럼 보인다
+        st["relevant"] = [r for r in st.get("relevant") or [] if r not in cut_refs or r in still]
+        st["offtopic_lines"] = len(gone)
+        done["dropped"] += len(gone)
+    return done
+
+
 def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             on_progress=None) -> dict:
     """대기 중인 종목을 묶어 AI 에 보낸다(한 주기 `max_calls` 회까지). 묶음마다 `on_progress(rec)`
@@ -1122,8 +1259,13 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             if s["tries"] >= MAX_ANALYZE_TRIES:
                 s["status"] = "failed"
                 done["failed"] += 1
+        chk = check_offtopic(grp, rec, llm=llm)
+        done["analyzed"] -= chk["reverted"]
         if on_progress:
             on_progress(rec)
+        if chk["transient"]:
+            done["transient"] = True
+            break
     return done
 
 
@@ -1798,6 +1940,14 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
     relset = set(rel) if isinstance(rel, list) else {it["n"] for it in items}
     n_tg = sum(1 for it in items if it["src"] == "telegram")
     drop = int(s.get("dropped_lines") or 0)
+    offl = int(s.get("offtopic_lines") or 0)
+    cwhy = s.get("check_why") or ""
+    # 확인 단계의 결과 — 뺀 줄은 수를, 확인하지 못한 줄은 사유를 보이는 줄로(#43·#228)
+    notes = "".join(
+        f"<div class='hn-why'>{_h.escape(x)}</div>" for x in (
+            f"근거 번호가 없거나 맞지 않아 버린 줄 {drop}개" if drop else "",
+            f"투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺀 줄 {offl}개" if offl else "",
+            f"⚠️ 스포츠·연예 문맥으로 보이는 줄을 다시 확인하지 못해 그대로 둠 — {cwhy}" if cwhy else "") if x)
     if old:
         r = s.get("reason") or "사유 미기록"
         why = ("이어서 정리하는 기간 안에 차례가 오지 않음" if r == REQUEUE_REASON else r)
@@ -1811,13 +1961,14 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False) -> str
         if not s.get("pros") and not s.get("cons"):
             why = (f"AI 가 쓴 {drop}줄을 근거 번호가 없거나 맞지 않아 버림 — 아래 근거 목록에서 확인하세요"
                    if drop else
+                   f"AI 가 쓴 {offl}줄을 투자와 무관한 소식(스포츠·연예 등)이라고 다시 확인해 뺌" if offl else
                    "투자와 관련 있다고 본 항목이 없음 — 아래 근거 목록에서 확인하세요" if not relset else
                    "뉴스는 있지만 호재·악재로 가를 내용이 없음")
             pc = f"<div class='hn-why'>{_h.escape(why)}</div>"
         else:
             pc = ("<div class='hn-pc'>" + _side("👍 Pros · 호재 관점", "hn-pro", s.get("pros") or [])
                   + _side("👎 Cons · 악재·리스크 관점", "hn-con", s.get("cons") or []) + "</div>"
-                  + (f"<div class='hn-why'>근거 번호가 없거나 맞지 않아 버린 줄 {drop}개</div>" if drop else ""))
+                  + notes)
     elif st == "failed":
         pc = (f"<div class='hn-why'>Pros/Cons 못 만듦({MAX_ANALYZE_TRIES}회 실패) — "
               f"{_h.escape(s.get('reason') or '사유 미기록')} · 뉴스만 표시</div>")
@@ -1869,7 +2020,9 @@ def _day_meta(rec: dict) -> str:
     parts.append(f"텔레그램 창 안 {tg.get('window', 0)}건 중 보유 종목 언급 {tg.get('matched', 0)}건")
     llm = rec.get("llm") or {}
     if llm.get("calls"):
-        parts.append(f"AI {llm['calls']}회 · ${llm.get('cost_usd', 0):.4f}")
+        ck = int(llm.get("checks") or 0)
+        parts.append(f"AI {llm['calls']}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
+                     + f" · ${llm.get('cost_usd', 0):.4f}")
     return " · ".join(parts)
 
 
@@ -2055,7 +2208,9 @@ Yahoo Finance 의 그 종목 뉴스이고, 못 받거나 0건이면 구글 뉴�
 {INVEST_TOPICS}처럼 투자 판단에 닿는 내용만 씁니다 — 이름이 같은 다른 회사 얘기나, 회사 이름은 나오지만
 투자와 무관한 소식(그 이름을 단 스포츠 구단의 경기 결과·선수 기록, 연예·문화 행사 등)은 근거로 쓰지 않고 근거
 목록에서 흐리게 보입니다. 스포츠·연예·콘텐츠·게임이 그 회사의 본업이거나 회사의 수입·지출에 닿는 일(후원·마케팅
-계약, 흥행 수입, 구단 매각·운영비)은 씁니다. AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니다. 이
+계약, 흥행 수입, 구단 매각·운영비)은 씁니다. 정리가 끝난 뒤 스포츠·연예 문맥으로 보이는 줄은 AI 에 <b>한 번 더</b>
+물어 투자와 무관하다고 답하면 빼고 카드에 뺀 줄 수를 적습니다(다시 묻지 못하면 줄은 남기고 그렇게 적습니다).
+AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니다. 이
 기준이 바뀌면 가장 최근 기록은 새 기준으로 다시 정리합니다(AI 키가 있을 때 · 그동안 그 종목은 '대기' · 그 앞의
 기록은 옛 정리 그대로). 이것은 뉴스 요약이지 투자 판단이 아닙니다.<br>
 <b>언제 갱신되나</b> — 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 한 번 모읍니다(장 시작 전에 읽도록 · 봇이 {TICK_MIN}분마다
