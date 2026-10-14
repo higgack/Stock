@@ -36134,6 +36134,15 @@ class TestEdinetXbrl20260822:
         class _Cl:
             _fetch_day = staticmethod(_day)
         monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+
+        # 시계를 doc1 직후로 묶는다(#425) — 묶지 않으면 오늘에서 doc1 까지의
+        # 선형 구간만으로 상한(120일)을 넘어 10월부터 빨간불이었다
+        # (2026-10-14 실측: base 에서도 120일).
+        class _Frozen(_dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 7, 1)
+        monkeypatch.setattr(ex, "date", _Frozen)
         got = ex.find_annual_docs("7203.T", "k", max_docs=2)
         assert [d["doc_id"] for d in got] == ["D1", "D0"], got
         # 선형이면 2026-06-22 → 2025-06-20 까지 **367일**을 훑는다.
