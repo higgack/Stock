@@ -3717,18 +3717,29 @@ def test_pnl_js_takes_the_basis_label_from_the_page(hn):
 
 def test_pnl_js_retries_soon_while_the_server_says_fx_is_pending(hn):
     """대시보드가 막 재시작하면 환율 값 풀이 비어 있다 — 서버가 '받는 중'(`fx_pending`)이라 말하면 갖고 있던 값을 둔 채
-    5초 뒤 다시 묻는다(1분 = 12번까지). 그 뒤엔 1분 주기로 돌아가되 **여전히 받는 중이면 갖고 있던 값을 지우지 않는다**
-    (3차 독립 리뷰 2026-10-14 — 상한에 닿으면 빈 표로 '미확인' 을 그렸다). 받기를 마쳤는데 비면(`fx_pending` 없음) 그때
-    '미확인' 이 사실이다(처음 판은 '첫 응답' 만 봐서 열어 둔 탭이 재시작마다 '미확인' 이 됐다)."""
+    5초 뒤 다시 묻는다(1분 = 12번까지). 그 뒤엔 1분 주기로 돌아가되 갖고 있던 환율은 지우지 않고(3차 독립 리뷰), 처음부터
+    없던 화면은 '대기' 를 영원히 약속하지 않게 '미확인' 으로 그린다(델타 리뷰 2026-10-14). 받기를 마쳤는데 비면
+    (`fx_pending` 없음) 그때 '미확인' 이 사실이다(처음 판은 '첫 응답' 만 봐서 열어 둔 탭이 재시작마다 '미확인' 이 됐다)."""
     data = [{"k": "US:A", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
     o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True})
     assert o["delays"] == [5000] and o["xx"] == "SERVER" and o["xxsub"] == "SERVER"
-    o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True}, run=15)
+    o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True}, run=15)          # 처음부터 환율이 없던 화면
+    assert o["delays"] == [5000] * 12 + [60000] * 3 and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
+    o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True}, fx={"USD": 1.0}, run=15)   # 갖고 있던 환율은 둔다
     assert o["delays"] == [5000] * 12 + [60000] * 3 and o["xx"] == "SERVER" and o["xxsub"] == "SERVER"
     o = _run_pnl_js(hn, data, {"fx": {}})
     assert o["delays"] == [60000] and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
     o = _run_pnl_js(hn, data, {"fx": {"USD": {"pct": 1.0}}})
     assert o["delays"] == [60000] and o["xx"] == "+80만원 (+2.01%)"           # 4천만 × (1.01 × 1.01 − 1)
+
+
+def test_pnl_js_fast_retries_restart_after_a_good_answer(hn):
+    """재시작 한 번을 넘기고 좋은 답을 받았으면 다음 재시작에서 다시 5초 재시도를 쓴다(횟수가 이어지면 두 번째 재시작은
+    1분을 기다린다)."""
+    data = [{"k": "US:A", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
+    pend, good = {"fx": {}, "fx_pending": True}, {"fx": {"USD": {"pct": 1.0}}}
+    o = _run_pnl_js(hn, data, [pend] * 10 + [good] + [pend] * 5, run=16)
+    assert o["delays"] == [5000] * 10 + [60000] + [5000] * 5
 
 
 def test_pnl_js_keeps_polling_after_an_error_and_keeps_values_while_pending(hn):
@@ -4040,6 +4051,11 @@ def test_yahoo_value_stops_at_the_last_real_session_before_a_holiday(hn, ws_snap
     c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-12T08:00"))(
         {"key": "KR:069500", "market": "KR", "ticker": "069500"})
     assert c["ka"] == pytest.approx(1.03) and c["asof"] == "2026-10-06" and c["need"]["to"] == "2026-10-06"
+    # 종가 확정 시각도 그 실제 세션의 것 — 뒤 휴장 세션의 마감으로 재면 멀쩡한 종가를 하루 더 기다린다
+    _closes(hn, {"KR:069500": ({"2026-10-02": 100.0, "2026-10-06": 103.0}, "2026-10-07T18:00")})
+    c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-12T08:00"))(
+        {"key": "KR:069500", "market": "KR", "ticker": "069500"})
+    assert c["ka"] == pytest.approx(1.03)
 
 
 def test_a_missed_snapshot_session_falls_back_to_yahoo_and_says_so(hn, ws_snaps, monkeypatch):
@@ -4082,6 +4098,124 @@ def test_hong_kong_wait_and_reason_use_its_own_timing(hn):
         "반영한 마지막 종가: 홍콩 10-08(10-09 종가는 마감 30분 뒤 수집 — 받으면 다음 갱신에 반영)")
     tip = hn._close_tip({"at": "x", **c})
     assert "(Yahoo 일봉 · TradingView 하루치를 받지 않는 시장이라)" in tip and "장 마감 30분 뒤" in tip
+
+
+def test_a_short_yahoo_reply_keeps_closes_already_confirmed(hn, ws_snaps):
+    """델타 리뷰 2026-10-14 High — 받은 창을 통째로 갈아 끼우자, Yahoo 가 짧게(그날 봉 하나만) 답한 날 이미 확정된 기준
+    무렵 종가(10-06)까지 사라져 열흘 넘은 옛 봉(09-25, 50)으로 +102% 를 지어냈다. 확정된 봉(`sure` — 그 물음의 목표
+    세션까지)은 남기고, 그 뒤의 봉(장중일 수 있다)만 다음 응답이 정한다."""
+    ws_snaps("KR", "2026-10-07", [("KRX:005930", 1.0)])
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.0)])
+    m = _etf_model("2026-10-07T08:00")                                            # 기준 무렵 세션 = 10-06
+    replies = [{"069500.KS": {"2026-09-25": 50.0, "2026-10-06": 100.0, "2026-10-07": 101.0, "2026-10-08": 150.0}},
+               {"069500.KS": {"2026-10-08": 102.0}}]                              # 짧은 응답
+    hn.refresh_closes(_t("2026-10-08T09:00"), model=m, download=lambda *a: (replies.pop(0), ""))
+    bars = _closes_raw(hn)["KR:069500"]["bars"]
+    assert bars["2026-10-08"] == 150.0 and _closes_raw(hn)["KR:069500"]["sure"] == "2026-10-07"
+    r = hn.refresh_closes(_t("2026-10-08T19:00"), model=m, download=lambda *a: (replies.pop(0), ""))
+    bars = _closes_raw(hn)["KR:069500"]["bars"]
+    assert r["got"] == 1 and bars["2026-10-06"] == 100.0 and bars["2026-10-08"] == 102.0
+    c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-08T19:00"))({"key": "KR:069500", "market": "KR", "ticker": "069500"})
+    assert c["ka"] == pytest.approx(1.02)                                        # 10-06 100 → 10-08 102
+
+
+def test_yahoo_ratio_refuses_a_base_bar_far_before_the_base_session(hn):
+    """기준 세션 날 봉이 없을 때 그 앞 봉은 `YCLOSE_BASE_SLACK_DAYS`(7일) 안에서만 — 더 옛 봉이면 그 사이 등락이 섞인다."""
+    ent = {"bars": {"2026-09-25": 50.0, "2026-10-08": 101.0}, "at": 2e9}
+    assert hn.yahoo_ratio(ent, {"from": "2026-10-02", "to": "2026-10-08", "ready": 1e9})[0] == pytest.approx(2.02)
+    r, why = hn.yahoo_ratio(ent, {"from": "2026-10-03", "to": "2026-10-08", "ready": 1e9})
+    assert r is None and why == "Yahoo 일봉에 2026-10-03 무렵 종가가 없음"
+
+
+def test_tooltip_of_a_value_from_a_single_missed_session(hn, ws_snaps, monkeypatch):
+    """기준 뒤 세션이 놓친 세션 하나뿐이면 센 세션 수(n)는 0 인데 값은 Yahoo 종가 비로 있다 — 툴팁이 '마감한 세션이 아직
+    없어 0' 이라 적으면 카드의 등락과 모순이다(델타 리뷰 2026-10-14)."""
+    import bot.world_sectors as ws
+    monkeypatch.setattr(ws, "market_day_status", lambda mk, d, now, state=None: "missing")
+    _closes(hn, {"KR:005930": ({"2026-10-02": 100.0, "2026-10-06": 105.0}, "2026-10-07T08:00")})   # 10-05 대체공휴일
+    c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-07T08:00"))(
+        {"key": "KR:005930", "market": "KR", "ticker": "005930"})
+    assert c["n"] == 0 and c["ka"] == pytest.approx(1.05) and c["broken"] == ["2026-10-06"]
+    tip = hn._close_tip({"at": "10-05 18:00", **c})
+    assert "2026-10-02 종가 → 2026-10-06 종가(Yahoo 일봉 · TradingView 하루치를 놓친 세션(2026-10-06)이 있어)" in tip
+    assert "아직 없어 0" not in tip
+
+
+def test_an_old_base_keeps_its_base_bar_and_lists_missed_sessions_briefly(hn, ws_snaps, monkeypatch):
+    """기준(장부의 가장 최근 앞선 날)이 60일보다 오래돼도 그 무렵 종가를 지우지 않는다 — 지우면 '무렵 종가가 없음' 으로
+    영영 못 세고 매일 다시 묻는다. 놓친 세션이 수십 개여도 사유는 둘만 적고 수를 말한다(델타 리뷰 2026-10-14)."""
+    import bot.world_sectors as ws
+    monkeypatch.setattr(ws, "market_day_status", lambda mk, d, now, state=None: "missing")
+    m = _etf_model("2026-08-03T08:00")                                            # 기준 무렵 세션 = 07-31(금)
+    bars = {"2026-07-31": 100.0, "2026-10-08": 110.0}
+    hn.refresh_closes(_t("2026-10-12T08:00"), model=m,
+                      download=lambda syms, s, e: ({y: dict(bars) for y in syms}, ""))
+    assert _closes_raw(hn)["KR:069500"]["bars"]["2026-07-31"] == 100.0
+    st = {"key": "KR:069500", "market": "KR", "ticker": "069500"}
+    c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-12T08:00"))(st)
+    assert c["ka"] == pytest.approx(1.10) and len(c["broken"]) > 20
+    tip = hn._close_tip({"at": "08-03 08:00", **c})
+    assert f"외 {len(c['broken']) - 2})이 있어" in tip and len(tip) < 300
+    hn._closes_path().unlink()
+    c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-12T08:00"))(st)
+    assert c["ka"] is None and f" 외 {len(c['broken']) - 2}세션)" in c["why"] and len(c["why"]) < 400
+
+
+def test_refresh_closes_drops_bars_older_than_sixty_days_but_keeps_the_window(hn, ws_snaps):
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    hn._closes_path().parent.mkdir(parents=True, exist_ok=True)
+    hn._closes_path().write_text(json.dumps({"KR:069500": {
+        "y": "069500.KS", "bars": {"2026-07-01": 1.0, "2026-08-20": 2.0}, "at": 1.0, "tried": 1.0}}), encoding="utf-8")
+    hn.refresh_closes(_t("2026-10-12T08:00"), model=_etf_model(),
+                      download=lambda *a: ({"069500.KS": {"2026-10-07": 100.0, "2026-10-08": 101.0}}, ""))
+    bars = _closes_raw(hn)["KR:069500"]["bars"]
+    assert "2026-07-01" not in bars and bars["2026-08-20"] == 2.0 and bars["2026-10-08"] == 101.0
+
+
+def test_refresh_closes_prunes_sold_holdings_even_when_nothing_is_due(hn, ws_snaps):
+    """물을 게 없는 주기에도 판 종목 줄은 정리한다 — 정리가 저장할 때만 돌면 ETF 를 다 판 뒤엔 영영 안 돈다."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    now = _t("2026-10-12T08:00")
+    _closes(hn, {"KR:069500": ({"2026-10-07": 100.0, "2026-10-08": 101.0}, "2026-10-12T07:00")})
+    raw = _closes_raw(hn)
+    raw["KR:111111"] = {"y": "111111.KS", "bars": {}, "tried": (now - timedelta(days=61)).timestamp()}
+    hn._closes_path().write_text(json.dumps(raw), encoding="utf-8")
+    r = hn.refresh_closes(now, model=_etf_model(), download=lambda *a: 1 / 0)
+    assert r["asked"] == 0 and set(_closes_raw(hn)) == {"KR:069500"}
+
+
+def test_kosdaq_retry_keeps_the_first_failure_reason(hn, ws_snaps):
+    """.KS 가 일시 오류로 못 받았으면 그 사유가 '.KQ 가 없음' 에 덮이지 않는다(델타 리뷰 2026-10-14)."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    replies = [({}, "Yahoo 일봉 실패(TimeoutError: read)"), ({}, "")]
+    hn.refresh_closes(_t("2026-10-12T08:00"), model=_etf_model(), download=lambda *a: replies.pop(0))
+    why = _closes_raw(hn)["KR:069500"]["why"]
+    assert why == "Yahoo 일봉 실패(TimeoutError: read) · Yahoo 일봉에 069500.KQ 가 없음"
+
+
+def test_pause_reason_also_reaches_holdings_in_backoff(hn, ws_snaps, monkeypatch):
+    import bot.finviz_client as fc
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    m = _model(_h("KODEX 200", "069500", "KR", 20_000_000.0, source="etf_meta"),
+               _h("TIGER 200", "102110", "KR", 10_000_000.0, source="etf_meta"))
+    m["_saved_ts"] = _t("2026-10-08T08:00").timestamp()
+    hn._closes_path().parent.mkdir(parents=True, exist_ok=True)
+    hn._closes_path().write_text(json.dumps({"KR:102110": {"y": "102110.KS", "bars": {}, "why": "옛 사유",
+                                                           "tried": _t("2026-10-12T07:50").timestamp(), "fails": 1,
+                                                           "for": "2026-10-08"}}), encoding="utf-8")
+    monkeypatch.setattr(fc, "yf_paused", lambda: True)
+    hn.refresh_closes(_t("2026-10-12T08:00"), model=m, download=lambda *a: 1 / 0)
+    raw = _closes_raw(hn)
+    assert raw["KR:102110"]["why"].startswith("yfinance 일시정지") and raw["KR:069500"]["why"].startswith("yfinance")
+
+
+def test_collection_lag_follows_ready_min_in_minutes(hn, ws_snaps, monkeypatch):
+    """하루치 수집 시각은 `READY_MIN`(분) 그대로 — 시간 단위로 내려 적으면 90분 같은 값에서 문구가 틀린다(델타 리뷰)."""
+    import bot.world_sectors as ws
+    monkeypatch.setattr(ws, "READY_MIN", 150)
+    assert hn._ws_ready_min() == 150 and hn._lag_txt(None) == "150분" and hn._lag_txt(30) == "30분"
+    c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-12T08:00"))({"market": "KR", "ticker": "000001"})
+    assert c["lag"] == 150
 
 
 def test_pnl_js_does_not_poll_when_no_overseas_holding_has_a_value(hn):

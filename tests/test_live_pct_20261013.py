@@ -285,9 +285,27 @@ def test_api_says_fx_is_pending_only_when_the_table_is_empty(monkeypatch):
     h._handle_live_pct()
     assert "fx_pending" not in got
     monkeypatch.setitem(lp._FX, "running", True)
-    assert real_pending() is True
+    monkeypatch.setitem(lp._FX, "at", 0.0)
+    assert real_pending() is True                                               # 재시작 뒤 첫 시도가 도는 중
+    monkeypatch.setitem(lp._FX, "at", 1.0)
+    assert real_pending() is False                                              # 한 번 끝난 뒤의 시도는 '받는 중' 이 아니다
     monkeypatch.setitem(lp._FX, "running", False)
+    monkeypatch.setitem(lp._FX, "at", 0.0)
     assert real_pending() is False
+
+
+def test_fx_pending_is_not_reported_on_every_retry_after_a_fast_failure(monkeypatch):
+    """델타 리뷰 2026-10-14 — `fx_lookup` 은 1분마다 새 시도를 띄운다. 원천이 빨리 실패하는 날(정지·403·낡은 값 풀)에
+    시도마다 '받는 중' 이라 말하면 화면이 '대기' 를 영원히 약속한다 — 첫 시도가 끝나면 그 뒤의 빈 표는 '미확인' 이다."""
+    started = []
+    monkeypatch.setattr(lp, "_Thread", lambda target=None, **kw: started.append(target) or _Noop())
+    monkeypatch.setattr(lp, "fx_changes", lambda levels=None: {})
+    monkeypatch.setattr(lp, "_FX", {"at": 0.0, "val": {}, "running": False})
+    assert lp.fx_lookup(now=1000.0) == {} and lp.fx_pending() is True and len(started) == 1
+    started[0]()                                                                # 첫 시도가 빈손으로 끝남
+    assert lp.fx_pending() is False
+    assert lp.fx_lookup(now=lp._FX["at"] + lp.FX_FRESH_SEC + 1) == {} and len(started) == 2   # 다음 시도가 떴지만
+    assert lp.fx_pending() is False
 
 
 def test_world_board_pages_load_the_live_script_before_the_board_script():

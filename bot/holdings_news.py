@@ -1845,8 +1845,9 @@ _PNL_JS = r"""
   // 다시 그릴 것이 없으니 묻지 않는다
   var need=pos.some(function(p){return !!p.c&&p.p!==null&&p.p!==undefined;});
   // 서버가 환율 값 풀을 아직 받는 중(`fx_pending` — 대시보드 재시작 직후 등)이면 빈 응답을 '미확인' 으로 그리지 않고
-  // 갖고 있던 환율을 둔 채 5초 뒤 다시 묻는다. 상태는 아는 쪽(서버)이 말한다 — 1분(12번)을 넘기면 1분 주기로 돌아가되
-  // 그때도 빈 응답으로 갖고 있던 환율을 지우지 않는다(서버가 아직 받는 중이라는 사실은 그대로다, 독립 리뷰 2026-10-14)
+  // 갖고 있던 환율을 둔 채 5초 뒤 다시 묻는다. 상태는 아는 쪽(서버)이 말한다 — '받는 중' 은 재시작 뒤 **첫 시도가 끝나기
+  // 전**뿐이다(`live_pct.fx_pending`). 1분(12번)을 넘기면 1분 주기로 돌아가되 갖고 있던 환율은 지우지 않고, 처음부터 없던
+  // 화면은 '대기' 를 영원히 약속하지 않게 그때 '미확인' 으로 그린다(델타 리뷰 2026-10-14)
   var quick=0;
   function poll(){
     fetch('api/live_pct?fx=1',{cache:'no-store'})
@@ -1854,8 +1855,10 @@ _PNL_JS = r"""
       .then(function(js){
         // 응답이 환율을 실었으면 통째로 바꾼다 — 서버가 낡아서 버린 통화가 화면에 남지 않게(리뷰 2026-10-14)
         var f=js&&js.fx; if(!f||typeof f!=='object') return;
-        if(js.fx_pending&&!Object.keys(f).length){ if(quick<12){quick++; return 'soon';} return; }
-        quick=0;
+        var pend=js.fx_pending&&!Object.keys(f).length;
+        if(pend&&quick<12){quick++; return 'soon';}
+        if(pend&&Object.keys(fx).length) return;       // 상한 뒤에도 받는 중 — 갖고 있던 환율은 둔다
+        if(!pend) quick=0;
         var nf={}, nl={};
         for(var cc in f){ if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
           if(f[cc]&&typeof f[cc].close==='number') nl[cc]=f[cc].close; }
@@ -2462,6 +2465,7 @@ YCLOSE_RETRY_CAP = 8 * 60
 YCLOSE_MARGIN_MIN = 30             # 하루치가 없는 시장의 세션 종가를 '받을 수 있다' 고 볼 마감 뒤 여유 — 장중 봉을 종가로 굽지 않게
 YCLOSE_KEEP_DAYS = 60
 YCLOSE_CHUNK = 50                  # 한 번에 묻는 종목 수
+YCLOSE_BASE_SLACK_DAYS = 7         # 기준 세션 날 봉이 없을 때 그 앞 봉을 쓸 수 있는 거리(연휴 한 번은 넘는다)
 
 
 def _closes_path() -> Path:
@@ -2503,7 +2507,9 @@ def yahoo_ratio(ent, need: dict) -> tuple[float | None, str]:
         return None, (f"Yahoo 일봉에 {need['to']} 종가가 아직 없음(봇 주기가 다시 묻는다 — 못 받으면 "
                       f"{YCLOSE_RETRY_MIN}분부터 두 배씩 쉬었다가)")
     prior = [d for d in bars if d <= need["from"]]
-    if not prior:
+    # 기준 세션 날 봉이 없으면(원천 결측) 그 앞 가장 늦은 봉 — 단 `YCLOSE_BASE_SLACK_DAYS` 안에서만. 더 옛 봉이면 그
+    # 사이 등락이 섞인 값을 지어낸다(델타 리뷰 2026-10-14 High: 짧은 응답 뒤 09-25 봉으로 +102%)
+    if not prior or (datetime.fromisoformat(need["from"]) - datetime.fromisoformat(max(prior))).days > YCLOSE_BASE_SLACK_DAYS:
         return None, f"Yahoo 일봉에 {need['from']} 무렵 종가가 없음"
     b, t = bars[max(prior)], bars[need["to"]]
     if not (isinstance(b, (int, float)) and isinstance(t, (int, float)) and b > 0 and t > 0):
@@ -2600,7 +2606,7 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             return {"ka": None, "n": 0, "asof": None, "wait": [], "hol": [], "src": "tv", "need": None,
                     "why": "장종료가 등락 계산 실패(봇 로그 참고)"}
         bsess, days, wait, broken, ctime = plan
-        lag = _ws_ready_h() * 60 if snap else YCLOSE_MARGIN_MIN      # 마감 뒤 몇 분에 그 세션 종가를 받나
+        lag = _ws_ready_min() if snap else YCLOSE_MARGIN_MIN         # 마감 뒤 몇 분에 그 세션 종가를 받나
         out = {"ka": 1, "n": len(days), "asof": days[-1][0] if days else bsess, "wait": list(wait),
                "hol": [d for d, tbl in days if tbl is None], "src": "tv", "need": None, "lag": lag,
                "nosnap": not snap, "why": ""}
@@ -2634,7 +2640,9 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
         if not snap:
             head = f"{_mk_name(market)} 시장은 TradingView 하루치를 받지 않음"
         elif broken:
-            head = "TradingView 하루치를 놓친 세션이 있음(" + " · ".join(w for _, w in broken) + ")"
+            ws_ = [w for _, w in broken]  # 기준이 오래되면 수십 세션이 놓친 세션이 된다 — 둘만 적고 수를 말한다(#45)
+            head = ("TradingView 하루치를 놓친 세션이 있음(" + " · ".join(ws_[:2])
+                    + (f" 외 {len(ws_) - 2}세션" if len(ws_) > 2 else "") + ")")
         else:
             head = (f"이 종목이 {', '.join(miss_tk)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
                     "거래정지·신규상장도)")
@@ -2677,7 +2685,11 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
     15분 주기가 렌더 **앞에** 부른다(네트워크는 여기만 · 렌더는 디스크만). 렌더와 같은 `pnl_context` 로 필요한 종목과
     날짜를 정하고(#35), 이미 그 종가가 있으면 묻지 않는다. 못 받으면 `YCLOSE_RETRY_MIN` 부터 두 배씩 쉬었다 묻는다
     (상한 `YCLOSE_RETRY_CAP`, #303) — 쉬는 간격은 **그 목표 세션**의 실패만 센다(목표가 다음 세션으로 넘어가면 처음부터:
-    어제의 실패가 오늘 종가를 8시간 붙잡지 않게, 독립 리뷰 2026-10-14). 반환 = {asked, got, why}."""
+    어제의 실패가 오늘 종가를 8시간 붙잡지 않게, 독립 리뷰 2026-10-14). 반환 = {asked, got, why}.
+
+    봉은 종가가 확정된 것(`sure` — 그 물음의 목표 세션까지: 목표는 마감 뒤에만 정해진다)만 다음 물음에 남긴다. 그 뒤의
+    봉(장중에 받았을 수 있다)은 다음 응답이 갈아 끼우거나 버린다 — 응답에 그날 봉이 없다고 옛 장중 값이 종가로 남으면
+    안 되고(3차 리뷰 High), 응답이 짧다고 확정된 종가까지 버리면 기준 무렵 종가가 사라진다(델타 리뷰 2026-10-14 High)."""
     now = _now(now)
     pos, _ = pnl_positions(model)
     if not pos:
@@ -2686,6 +2698,8 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
     needs = {n["key"]: n for n in ((c or {}).get("need") for c in (ctx.get("cum") or {}).values()) if n}
     cache = load_closes()
     t = now.timestamp()
+    old = t - YCLOSE_KEEP_DAYS * 86400   # 판 종목의 줄은 60일 뒤 버린다 — 파일이 보유 이력만큼 자라지 않게
+    gone = [k for k, e in cache.items() if k not in needs and float((e or {}).get("tried") or 0) < old]
 
     def _due(k, n):
         ent = cache.get(k)
@@ -2696,14 +2710,9 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
         wait_min = min(YCLOSE_RETRY_MIN * 2 ** min(max(int(ent.get("fails") or 0), 1) - 1, 8), YCLOSE_RETRY_CAP)
         return t - float(ent["tried"]) >= wait_min * 60
 
-    due = {k: n for k, n in needs.items() if _due(k, n)}
-    if not due:
-        return {"asked": 0, "got": 0, "why": ""}
-
     def _save():
-        old = t - YCLOSE_KEEP_DAYS * 86400   # 판 종목의 줄은 60일 뒤 버린다 — 파일이 보유 이력만큼 자라지 않게
-        for k in [k for k, e in cache.items() if k not in needs and float((e or {}).get("tried") or 0) < old]:
-            cache.pop(k)
+        for k in gone:
+            cache.pop(k, None)
         try:
             path = _closes_path()
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -2713,6 +2722,11 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
         except OSError as exc:
             log.warning("holdings_news: 종가 캐시 저장 실패: %s", exc)
 
+    due = {k: n for k, n in needs.items() if _due(k, n)}
+    if not due:
+        if gone:                         # 물을 게 없어도 판 종목 줄은 정리한다(쓰는 건 그때만)
+            _save()
+        return {"asked": 0, "got": 0, "why": ""}
     try:
         from bot.finviz_client import yf_paused
         paused = yf_paused()
@@ -2720,18 +2734,21 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
         paused = False
     if paused:                           # 묻지 않았다는 사실을 카드가 말하게 — 안 남기면 '아직 안 받음' 이 이유를 숨긴다
         why = "yfinance 일시정지(YF_PAUSE) — 종가를 묻지 않음"
-        for k in due:
-            cache.setdefault(k, {})["why"] = why
+        for k, n in needs.items():       # 쉬는 중인 종목도 — 옛 실패 사유가 지금 상태를 가리지 않게
+            if yahoo_ratio(cache.get(k), n)[0] is None:
+                cache.setdefault(k, {})["why"] = why
         _save()
         return {"asked": 0, "got": 0, "why": why}
     fetch = download or _yf_daily
     start = (datetime.fromisoformat(min(n["from"] for n in due.values())) - timedelta(days=10)).date().isoformat()
     end = (now.date() + timedelta(days=1)).isoformat()
-    keep = (now.date() - timedelta(days=YCLOSE_KEEP_DAYS)).isoformat()   # 기준은 장부 보관(`BASE_KEEP_DAYS`) 안이라 창보다 늦다
+    # 기준은 장부의 가장 최근 앞선 날이라 오래될 수 있다(그날이 60일 전이어도 남긴다) — 창 시작보다 앞은 버리지 않는다
+    keep = min((now.date() - timedelta(days=YCLOSE_KEEP_DAYS)).isoformat(), start)
     got, why_all = 0, ""
 
     def _ask(items: dict, *, count: bool = True) -> list:
-        """`count` = 이번 바퀴의 실패로 세나 — 코스닥 접미로 한 번 더 묻는 건 같은 바퀴라 두 번 세지 않는다."""
+        """`count` = 이번 바퀴의 실패로 세나 — 코스닥 접미로 한 번 더 묻는 건 같은 바퀴라 두 번 세지 않는다(그 사유는
+        앞 사유 뒤에 붙인다 — .KS 가 일시 오류로 못 받은 사유를 '.KQ 가 없음' 이 덮지 않게)."""
         nonlocal got, why_all
         miss = []
         keys = list(items)
@@ -2746,10 +2763,10 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
                 ent["tried"] = t
                 bars = bars_by.get(items[k])
                 if bars:
-                    # 받은 창 안은 통째로 갈아 끼운다 — 장중에 받아 둔 봉이 다음 응답에 없으면(그날 봉을 원천이 아직
-                    # 안 실었다) 옛 장중 값이 종가로 남는다(독립 리뷰 2026-10-14 High). 창 밖(start 앞)만 옛 값을 둔다.
-                    merged = {**{d: v for d, v in (ent.get("bars") or {}).items() if d < start}, **bars}
-                    ent.update(y=items[k], at=t, bars={d: v for d, v in merged.items() if d >= keep}, why="")
+                    sure = str(ent.get("sure") or "")
+                    merged = {**{d: v for d, v in (ent.get("bars") or {}).items() if d < start or d <= sure}, **bars}
+                    ent.update(y=items[k], at=t, bars={d: v for d, v in merged.items() if d >= keep}, why="",
+                               sure=max(sure, due[k]["to"]))
                     ok = yahoo_ratio(ent, {**due[k], "y": items[k]})[0] is not None
                     if not ok:           # 받았지만 그날 봉이 아직 없다 — 같은 목표의 실패로 센다(받으면 목표가 바뀔 때 0 으로)
                         ent["fails"] = int(ent.get("fails") or 0) + count
@@ -2757,7 +2774,8 @@ def refresh_closes(now: datetime | None = None, *, model: dict | None = None, do
                 else:
                     miss.append(k)
                     ent["fails"] = int(ent.get("fails") or 0) + count
-                    ent["why"] = why or f"Yahoo 일봉에 {items[k]} 가 없음"
+                    w = why or f"Yahoo 일봉에 {items[k]} 가 없음"
+                    ent["why"] = w if count or not ent.get("why") else f"{ent['why']} · {w}"
         return miss
 
     miss = _ask({k: n["y"] for k, n in due.items()})
@@ -2839,7 +2857,7 @@ def _close_tip(d: dict) -> str:
     """최신일 카드 괄호의 툴팁 — 무엇의 값인지(기준 시각·반영한 마지막 종가·아직 안 받은 종가)."""
     at, n, asof, wait = d.get("at") or "", int(d.get("n") or 0), d.get("asof"), d.get("wait") or []
     base = f"{asof} 종가 그대로" if asof else "기준 무렵 종가 그대로"
-    if n and d.get("src") == "yahoo":    # 하루치에 없는 종목(ETF·우선주 등)·하루치 없는 시장 — 종가 비
+    if d.get("src") == "yahoo":          # 종가 비 — 기준 뒤 실제 세션이 있을 때만 이 갈래다(놓친 세션 하나뿐이면 n 은 0)
         tip = (f"{at}(KST) 자산 기록 대비 장종료가 누적 등락 — {(d.get('need') or {}).get('from', '기준 무렵')} 종가 → "
                f"{asof} 종가(Yahoo 일봉 · {_yahoo_reason(d)})")
     elif n:
@@ -3163,7 +3181,7 @@ def _prev_date_html(recs: list[dict]) -> str:
 def _lag_txt(m) -> str:
     """마감 뒤 몇 분에 그 세션 종가를 받나 — 시장마다 다르다(하루치 `READY_MIN` · Yahoo 만 받는 시장 `YCLOSE_MARGIN_MIN`).
     한 문구로 적으면 홍콩 줄이 '3시간 뒤' 라고 거짓말한다(독립 리뷰 2026-10-14). 모르면 하루치 시각."""
-    m = int(m or 0) or _ws_ready_h() * 60
+    m = int(m or 0) or _ws_ready_min()
     return f"{m // 60}시간" if m >= 60 and m % 60 == 0 else f"{m}분"
 
 
@@ -3173,17 +3191,22 @@ def _yahoo_reason(d: dict) -> str:
     if d.get("nosnap"):
         return "TradingView 하루치를 받지 않는 시장이라"
     if d.get("broken"):
-        return f"TradingView 하루치를 놓친 세션({', '.join(d['broken'])})이 있어"
+        b = d["broken"]
+        return f"TradingView 하루치를 놓친 세션({', '.join(b[:2])}{f' 외 {len(b) - 2}' if len(b) > 2 else ''})이 있어"
     return "TradingView 하루치에 없는 종목이라"
 
 
-def _ws_ready_h() -> int:
-    """하루치를 받는 시각(장 마감 뒤 몇 시간) — 가이드 문구가 리터럴로 적으면 `READY_MIN` 을 바꿀 때 갈린다(#38·#55)."""
+def _ws_ready_min() -> int:
+    """하루치를 받는 시각(장 마감 뒤 몇 분) — 가이드 문구가 리터럴로 적으면 `READY_MIN` 을 바꿀 때 갈린다(#38·#55)."""
     try:
         from bot.world_sectors import READY_MIN
-        return READY_MIN // 60
+        return int(READY_MIN)
     except Exception:                                          # noqa: BLE001
-        return 3
+        return 180
+
+
+def _ws_ready_h() -> int:
+    return _ws_ready_min() // 60
 
 
 def render_page(records: list[dict], state: dict | None = None,
