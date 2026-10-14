@@ -19,6 +19,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 KST = timezone(timedelta(hours=9))
+# 보유종목 News 화면의 환율 평소 주기 — 리터럴로 못박는다(제품 상수를 읽으면 그 크기를 못 잰다, #66). 사용자 2026-10-14
+# "환율정보를 받는건 1분말고 1시간으로 해줘. 부하안가게"
+FX_POLL_MS = 3_600_000
 
 
 def _t(s: str) -> datetime:
@@ -2281,7 +2284,9 @@ def test_sidecar_survives_a_save_of_a_reloaded_record(hn, caplog):
 # ── 카드 머리: 종목분석 링크 · 전날 등락(사용자 2026-10-13) ────────────────────────
 @pytest.fixture
 def ws_snaps(tmp_path, monkeypatch):
-    """`world_sectors` 하루치 저장소를 임시로 — 원천(TradingView) 형식 그대로 `KRX:005930` 기호·ROW 순서."""
+    """`world_sectors` 하루치 저장소를 임시로 — 원천(TradingView) 형식 그대로 `KRX:005930` 기호·ROW 순서.
+    행 = (기호, 등락%) 또는 (기호, 등락%, 종가) — 종가를 안 주면 close 칸이 비어(None) 카드 괄호에 종가가 안 붙는다
+    (종가가 붙는 갈래는 그걸 재는 테스트만 종가를 준다 — 나머지 단언이 등락·금액 축을 그대로 재게)."""
     import gzip
 
     import bot.world_sectors as ws
@@ -2293,7 +2298,7 @@ def ws_snaps(tmp_path, monkeypatch):
     def put(market, d, rows):
         p = ws.snap_path(market, d)
         p.parent.mkdir(parents=True, exist_ok=True)
-        full = [[sym, sym, None, None, chg, 1.0, 1.0, None, 1.0, 0] for sym, chg in rows]
+        full = [[r[0], r[0], None, None, r[1], 1.0, 1.0, None, (r[2] if len(r) > 2 else None), 0] for r in rows]
         with gzip.open(p, "wt", encoding="utf-8") as fh:
             json.dump({"rows": full}, fh)
         ws.cache_clear()
@@ -2985,7 +2990,7 @@ def test_pnl_positions_merge_include_etf_and_count_unpriced(hn):
     pos, skip = hn.pnl_positions(_pf())
     assert [(p["key"], p["value"]) for p in pos] == [
         ("KR:005930", 150_000_000.0), ("US:AAPL", 40_000_000.0), ("KR:069500", 20_000_000.0)]
-    assert skip == {"n": 2, "value": 10_000_000.0}
+    assert skip == {"n": 2, "value": 10_000_000.0, "names": {"TIGER 어딘가": 7_000_000.0, "모르는 상품": 3_000_000.0}}
 
 
 def test_pnl_summary_groups_and_leaves_unknown_out_of_both_sides(hn):
@@ -3117,13 +3122,13 @@ def test_pnl_js_amount_format_matches_python(hn):
         assert o["all"].split(" (")[0] == hn._signed_krw(a), (v, o)
 
 
-def test_pnl_js_asks_only_fx_once_a_minute_and_never_tickers(hn):
+def test_pnl_js_asks_only_fx_once_an_hour_and_never_tickers(hn):
     """옛 계약(종목 티커를 400개씩 나눠 1분마다 묻는다)은 사용자 2026-10-14 로 바뀌었다(#222) — 종목 시세는 묻지
     않는다(열어 둔 화면 하나가 분당 수백 건이었다). 해외 보유가 있으면 환율 하나만 1분마다 묻는다."""
     data = [{"k": f"KR:{i:06d}", "v": 1000, "g": "KR", "p": 1.0} for i in range(650)]
     data.append({"k": "US:AAPL", "v": 1000, "g": "XX", "p": 1.0, "c": "USD"})
     o = _run_pnl_js(hn, data, {"q": {}, "pending": 3, "fx": {"USD": {"pct": 0.0}}})
-    assert o["urls"] == ["api/live_pct?fx=1"] and o["delays"] == [60000]   # 종목 pending 이어도 5초로 당기지 않는다
+    assert o["urls"] == ["api/live_pct?fx=1"] and o["delays"] == [FX_POLL_MS]   # 종목 pending 이어도 5초로 당기지 않는다
 
 
 def test_pnl_js_domestic_only_page_asks_nothing(hn):
@@ -3136,7 +3141,7 @@ def test_pnl_js_domestic_only_page_asks_nothing(hn):
 def test_pnl_positions_skip_unmatched_even_with_a_ticker(hn):
     pos, skip = hn.pnl_positions(_model(_h("오매칭", "123456", "KR", 5.0, matched=False),
                                         _h("정상", "005930", "KR", 7.0)))
-    assert [p["key"] for p in pos] == ["KR:005930"] and skip == {"n": 1, "value": 5.0}
+    assert [p["key"] for p in pos] == ["KR:005930"] and skip == {"n": 1, "value": 5.0, "names": {"오매칭": 5.0}}
 
 
 def test_pnl_positions_tolerate_nan_value(hn):
@@ -3341,7 +3346,7 @@ def test_pnl_js_response_replaces_fx_wholesale(hn):
     assert o["xx"] == "+40만원 (+1.00%)" and o["xxsub"].endswith("환율 미확인 1")
     assert o["cell"] == "(+1.00% · +40만원)"                              # 원화 표식도 빠진다
     o = _run_pnl_js(hn, data, {"ok": False}, fx={"USD": 2.0}, cell=cell)
-    assert o["xx"] == "SERVER" and o["cell"] == "SERVER" and o["delays"] == [60000]   # 다음 분에 다시 묻는다
+    assert o["xx"] == "SERVER" and o["cell"] == "SERVER" and o["delays"] == [FX_POLL_MS]   # 한 시간 뒤 다시 묻는다
 
 
 # ── 업종(사용자 2026-10-14 "종목코드에 따른 업종을 같이 명시하고 그거에 맞게 뉴스를") ─────────────────────
@@ -3724,13 +3729,13 @@ def test_pnl_js_retries_soon_while_the_server_says_fx_is_pending(hn):
     o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True})
     assert o["delays"] == [5000] and o["xx"] == "SERVER" and o["xxsub"] == "SERVER"
     o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True}, run=15)          # 처음부터 환율이 없던 화면
-    assert o["delays"] == [5000] * 12 + [60000] * 3 and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
+    assert o["delays"] == [5000] * 12 + [FX_POLL_MS] * 3 and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
     o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True}, fx={"USD": 1.0}, run=15)   # 갖고 있던 환율은 둔다
-    assert o["delays"] == [5000] * 12 + [60000] * 3 and o["xx"] == "SERVER" and o["xxsub"] == "SERVER"
+    assert o["delays"] == [5000] * 12 + [FX_POLL_MS] * 3 and o["xx"] == "SERVER" and o["xxsub"] == "SERVER"
     o = _run_pnl_js(hn, data, {"fx": {}})
-    assert o["delays"] == [60000] and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
+    assert o["delays"] == [FX_POLL_MS] and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
     o = _run_pnl_js(hn, data, {"fx": {"USD": {"pct": 1.0}}})
-    assert o["delays"] == [60000] and o["xx"] == "+80만원 (+2.01%)"           # 4천만 × (1.01 × 1.01 − 1)
+    assert o["delays"] == [FX_POLL_MS] and o["xx"] == "+80만원 (+2.01%)"           # 4천만 × (1.01 × 1.01 − 1)
 
 
 def test_pnl_js_fast_retries_restart_after_a_good_answer(hn):
@@ -3739,7 +3744,7 @@ def test_pnl_js_fast_retries_restart_after_a_good_answer(hn):
     data = [{"k": "US:A", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
     pend, good = {"fx": {}, "fx_pending": True}, {"fx": {"USD": {"pct": 1.0}}}
     o = _run_pnl_js(hn, data, [pend] * 10 + [good] + [pend] * 5, run=16)
-    assert o["delays"] == [5000] * 10 + [60000] + [5000] * 5
+    assert o["delays"] == [5000] * 10 + [FX_POLL_MS] + [5000] * 5
 
 
 def test_pnl_js_keeps_polling_after_an_error_and_keeps_values_while_pending(hn):
@@ -3748,11 +3753,11 @@ def test_pnl_js_keeps_polling_after_an_error_and_keeps_values_while_pending(hn):
     data = [{"k": "US:A", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
     good = {"fx": {"USD": {"pct": 2.0}}}
     o = _run_pnl_js(hn, data, [good, "ERR"], run=2)
-    assert o["delays"] == [60000, 60000] and o["xx"] == "+121만원 (+3.02%)"
+    assert o["delays"] == [FX_POLL_MS, FX_POLL_MS] and o["xx"] == "+121만원 (+3.02%)"
     o = _run_pnl_js(hn, data, [good, {"fx": {}, "fx_pending": True}], run=2)
-    assert o["delays"] == [60000, 5000] and o["xx"] == "+121만원 (+3.02%)" and "미확인" not in o["xxsub"]
+    assert o["delays"] == [FX_POLL_MS, 5000] and o["xx"] == "+121만원 (+3.02%)" and "미확인" not in o["xxsub"]
     o = _run_pnl_js(hn, data, [good, "ERR", {"fx": {}, "fx_pending": True}, {"fx": {"USD": {"pct": 1.0}}}], run=4)
-    assert o["delays"] == [60000, 60000, 5000, 60000] and o["xx"] == "+80만원 (+2.01%)"
+    assert o["delays"] == [FX_POLL_MS, FX_POLL_MS, 5000, FX_POLL_MS] and o["xx"] == "+80만원 (+2.01%)"
 
 
 
@@ -4406,3 +4411,140 @@ def test_stat_shows_previous_recorded_day_next_to_latest(hn):
     one = hn.render_page([a], {}, _t("2026-10-14T09:00"), gen="GEN")
     assert "<span class='prev'>· 전 없음</span>" in one
     assert ".stat .v .prev{" in html     # 클래스만 쓰고 CSS 가 없으면 본문 크기로 뜬다(#201)
+
+
+# ── 카드 괄호의 종가 · 미확인 티커 이름 (사용자 2026-10-14 "종목별 () 안에 가격, 등락률, 내 자산의 그 종목변동, 즉 실제
+# 종가를 추가해줘" · "티커못찾은 11개는 뭐야?") ─────────────────────────────────────────────────────────────────────────
+
+def test_past_card_shows_that_session_close_before_pct_and_amount(hn, ws_snaps):
+    """지난 날 카드 = 그 하루치의 종가 · 등락 · 금액 순. 종가 칸이 빈 종목은 종가를 지어내지 않는다."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.234, 71200.0), ("KRX:000660", -2.0)])
+    s1 = {**_stock("KR:005930"), "name": "삼성전자", "value": 100_000_000.0}
+    s2 = {**_stock("KR:000660"), "name": "SK하이닉스", "value": 30_000_000.0}
+    body = hn._day_body(_rec(s1, s2))
+    assert "(₩71,200 · +1.23% · +123만원)</span>" in body
+    assert "title='₩71,200 = 2026-10-08 종가 · 2026-10-08 종가 기준 등락률" in body
+    assert "(-2.00% · -60만원)</span>" in body
+
+
+def test_card_drops_the_close_when_the_change_is_unknown(hn, ws_snaps):
+    """등락을 못 셌으면('하루치에 이 종목이 없음' 갈래) 그 하루치의 종가도 싣지 않는다 — 사유와 모순되지 않게."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", None, 71200.0)])
+    body = hn._day_body(_rec({**_stock("KR:005930"), "name": "삼성전자", "value": 1.0}))
+    assert "title='2026-10-08 하루치에 이 종목이 없음'>(—)</span>" in body and "₩71,200" not in body
+
+
+def test_snapshot_close_rejects_non_prices(hn, ws_snaps):
+    ws_snaps("KR", "2026-10-08", [("KRX:000001", 1.0, 0.0), ("KRX:000002", 1.0, -5.0), ("KRX:000003", 1.0, True),
+                                  ("KRX:000004", 1.0, float("nan")), ("KRX:000005", 1.0, "71200"),
+                                  ("KRX:000006", 1.0, 7.5)])
+    look = hn.prev_changes("2026-10-09")
+    got = {c: look.px(_hs("KR", c)) for c in ("000001", "000002", "000003", "000004", "000005", "000006")}
+    assert got == {"000001": None, "000002": None, "000003": None, "000004": None, "000005": None,
+                   "000006": (7.5, "2026-10-08")}
+
+
+def test_cum_close_is_the_last_compounded_session_close(hn, ws_snaps, monkeypatch):
+    """최신일 누적 = 곱한 **마지막 실제 세션**의 종가. 그 뒤 휴장 추정 세션은 종가가 직전 그대로라 그 앞 세션 종가."""
+    import bot.world_sectors as ws
+    ws_snaps("KR", "2026-10-06", [("KRX:005930", 0.5, 98.0)])
+    ws_snaps("KR", "2026-10-07", [("KRX:005930", 1.0, 99.0)])
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 2.0, 101.0)])
+    st = {"key": "KR:005930", "market": "KR", "ticker": "005930"}
+    c = hn.cum_lookup(_t("2026-10-06T18:00").timestamp(), _t("2026-10-09T08:00"), closes={})(st)
+    assert c["ka"] == pytest.approx(1.01 * 1.02) and (c["px"], c["px_d"]) == (101.0, "2026-10-08")
+    ws.snap_path("KR", "2026-10-08").unlink()
+    monkeypatch.setattr(hn, "_PREV_CACHE", {})
+    monkeypatch.setattr(ws, "market_day_status", lambda mk, d, now, state=None: "holiday")
+    c = hn.cum_lookup(_t("2026-10-06T18:00").timestamp(), _t("2026-10-09T08:00"), closes={})(st)
+    assert c["hol"] == ["2026-10-08"] and (c["px"], c["px_d"]) == (99.0, "2026-10-07")
+
+
+def test_cum_close_without_a_session_after_the_base_is_the_base_close(hn, ws_snaps):
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 2.0, 101.0)])
+    st = {"key": "KR:005930", "market": "KR", "ticker": "005930"}
+    c = hn.cum_lookup(_t("2026-10-08T18:00").timestamp(), _t("2026-10-09T08:00"), closes={})(st)
+    assert c["n"] == 0 and c["ka"] == 1 and (c["px"], c["px_d"]) == (101.0, "2026-10-08")
+
+
+def test_cum_close_from_yahoo_is_the_ratio_end_bar(hn, ws_snaps):
+    """하루치에 없는 ETF — 종가 비의 **끝** 봉이 카드의 종가다(못 세면 싣지 않는다)."""
+    ws_snaps("KR", "2026-10-07", [("KRX:005930", 1.0, 99.0)])
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.0, 100.0)])
+    m = _etf_model("2026-10-07T08:00")
+    st = {"key": "KR:069500", "market": "KR", "ticker": "069500"}
+    assert "px" not in hn.cum_lookup(m["_saved_ts"], _t("2026-10-08T19:00"))(st)       # 아직 못 받음
+    _closes(hn, {"KR:069500": ({"2026-10-06": 100.0, "2026-10-07": 101.0, "2026-10-08": 102.5}, "2026-10-08T19:00")})
+    c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-08T19:00"))(st)
+    assert c["src"] == "yahoo" and c["ka"] == pytest.approx(1.025) and (c["px"], c["px_d"]) == (102.5, "2026-10-08")
+
+
+def test_render_to_js_e2e_card_keeps_the_close_when_redrawn_with_fx(hn, ws_snaps):
+    """해외 카드는 화면이 환율을 받아 괄호를 다시 그린다 — 그때도 종가가 맨 앞에 남는다(재료 `data-px`, #20 렌더→JS)."""
+    import html as _html
+    import re
+    base = _model(_h("애플", "AAPL", "US", 1_000_000.0, source="alias"))
+    base["_saved_ts"] = _t("2026-10-07T19:00").timestamp()
+    hn.pnl_base(_t("2026-10-07T20:00"), base, bak=None)
+    ws_snaps("US", "2026-10-07", [("NASDAQ:AAPL", 1.0, 248.0)])
+    ws_snaps("US", "2026-10-08", [("NASDAQ:AAPL", 1.0, 250.5)])
+    m = _model(_h("애플", "AAPL", "US", 5_000_000.0, source="alias"))
+    m["_saved_ts"] = _t("2026-10-09T07:30").timestamp()
+    rec = _rec({**_stock("US:AAPL"), "market": "US", "ticker": "AAPL", "name": "애플"})
+    html = hn.render_page([rec], {}, _t("2026-10-09T08:00"), gen="GEN", portfolio=m)
+    card = html.split("data-hncard='1'")[1]
+    span = card.split("class='hn-chg")[1].split("</span>")[0]
+    assert span.split(">", 1)[1].startswith("($250.50 · +2.01% · ")                  # 서버가 그린 괄호
+    attrs = {k: _html.unescape(v) for k, v in re.findall(r"(data-[a-z]+)='([^']*)'", span.split(">")[0])}
+    assert attrs["data-px"] == "$250.50" and attrs["data-tip"].startswith("$250.50 = 2026-10-08 종가 · ")
+    data = json.loads(html.split("id='hn-pnl-data'")[1].split(">", 1)[1].split("</script>")[0])
+    o = _run_pnl_js(hn, data, {"q": {}, "pending": 0, "fx": {"USD": {"pct": 1.0, "age": 1}}}, cell=attrs,
+                    cls="hn-chg" + span.split("'")[0])
+    k = (1.01 * 1.01 * 1.01 - 1) * 100
+    assert o["cell"] == f"($250.50 · +2.01% · 원화 {hn._signed_krw(1_000_000 * k / 100)})"
+    assert o["title"].startswith("$250.50 = 2026-10-08 종가 · ")
+
+
+def test_card_px_failure_only_empties_the_close(hn, caplog):
+    look = lambda s: (1.0, "2026-10-08", "")                                         # noqa: E731
+    look.px = lambda s: 1 / 0
+    with caplog.at_level("WARNING"):
+        assert hn._card_px((1.0, "2026-10-08", ""), look, {"key": "KR:X"}) is None
+    assert "카드 종가 조회 실패" in caplog.text
+    assert hn._card_px((1.0, {"px": 3.0, "px_d": "2026-10-08"}, ""), look, {"key": "KR:X"}) == (3.0, "2026-10-08")
+    assert hn._card_px((None, {"why": "x"}, "x"), look, {"key": "KR:X"}) is None
+
+
+def test_skip_names_line_lists_unmatched_by_value_and_says_what_it_cut(hn, monkeypatch):
+    sk = {"n": 3, "value": 10.0, "names": {"B 상품": 7_000_000.0, "A 상품": 3_000_000.0}}
+    line = hn.skip_names_line(sk)
+    assert line.endswith(": B 상품(700만원) · A 상품(300만원) — 같은 이름을 여러 계좌에 나눠 가진 것은 하나로 적어 이름 2개")
+    assert "💼 자산 대시보드에서 고치면" in line
+    assert hn.skip_names_line({"n": 0, "value": 0.0, "names": {}}) == ""
+    monkeypatch.setattr(hn, "SKIP_NAMES_MAX", 1)
+    line = hn.skip_names_line({"n": 2, "value": 10.0, "names": {"B": 2.0, "A": 2.0}})
+    assert line.endswith(": A(2원) 외 1개")                                         # 같은 금액이면 이름순
+
+
+def test_page_lists_the_unmatched_holdings_by_name(hn):
+    html = hn.render_page([_rec(_stock("KR:A"))], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    line = html.split("id='hn-pnl-skip'>")[1].split("</div>")[0]
+    assert line.endswith(": TIGER 어딘가(700만원) · 모르는 상품(300만원)")
+    assert "티커를 못 찾은 상품 2개(1,000만원)는 뺌" in html
+
+
+def test_pnl_positions_merges_unmatched_names_across_accounts(hn):
+    _, skip = hn.pnl_positions(_model(_h("X 펀드", None, None, 2.0, matched=False),
+                                      _h("X 펀드", None, None, 3.0, matched=False),
+                                      _h("", "Z9", None, 1.0, matched=False)))
+    assert skip == {"n": 3, "value": 6.0, "names": {"X 펀드": 5.0, "Z9": 1.0}}
+
+
+def test_cum_close_from_yahoo_is_not_an_intraday_bar(hn, ws_snaps):
+    """그 세션 봉을 마감 뒤 여유 전에 받았으면(장중 값일 수 있다) 등락도 종가도 싣지 않는다 — 봉이 있다고 종가가 아니다."""
+    ws_snaps("KR", "2026-10-07", [("KRX:005930", 1.0, 99.0)])
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", 1.0, 100.0)])
+    m = _etf_model("2026-10-07T08:00")
+    _closes(hn, {"KR:069500": ({"2026-10-06": 100.0, "2026-10-08": 101.7}, "2026-10-08T15:40")})
+    c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-08T19:00"))({"key": "KR:069500", "market": "KR", "ticker": "069500"})
+    assert c["ka"] is None and "px" not in c
