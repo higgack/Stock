@@ -3342,7 +3342,9 @@ def test_pnl_js_response_replaces_fx_wholesale(hn):
     (독립 리뷰 2026-10-14 Medium). 환율을 안 실은 응답(오류 등)은 서버가 그린 값을 그대로 둔다."""
     data = [{"k": "US:AAPL", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
     cell = {"data-p": "1.0", "data-v": "40000000", "data-c": "USD"}
-    o = _run_pnl_js(hn, data, {"q": {}, "pending": 0, "fx": {}}, fx={"USD": 2.0}, cell=cell)
+    # 빈 표는 먼저 갖고 있던 환율을 둔 채 10초 뒤 한 번 더 묻고(H1 후속 확인), 그래도 비면 그때 지운다
+    o = _run_pnl_js(hn, data, {"q": {}, "pending": 0, "fx": {}}, fx={"USD": 2.0}, cell=cell, run=2)
+    assert o["delays"] == [10000, FX_POLL_MS]
     assert o["xx"] == "+40만원 (+1.00%)" and o["xxsub"].endswith("환율 미확인 1")
     assert o["cell"] == "(+1.00% · +40만원)"                              # 원화 표식도 빠진다
     o = _run_pnl_js(hn, data, {"ok": False}, fx={"USD": 2.0}, cell=cell)
@@ -3732,8 +3734,8 @@ def test_pnl_js_retries_soon_while_the_server_says_fx_is_pending(hn):
     assert o["delays"] == [5000] * 12 + [FX_POLL_MS] * 3 and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
     o = _run_pnl_js(hn, data, {"fx": {}, "fx_pending": True}, fx={"USD": 1.0}, run=15)   # 갖고 있던 환율은 둔다
     assert o["delays"] == [5000] * 12 + [FX_POLL_MS] * 3 and o["xx"] == "SERVER" and o["xxsub"] == "SERVER"
-    o = _run_pnl_js(hn, data, {"fx": {}})
-    assert o["delays"] == [FX_POLL_MS] and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
+    o = _run_pnl_js(hn, data, {"fx": {}}, run=2)
+    assert o["delays"] == [10000, FX_POLL_MS] and o["xxsub"] == "종가 기준 1/1종목 · 환율 미확인 1"
     o = _run_pnl_js(hn, data, {"fx": {"USD": {"pct": 1.0}}})
     assert o["delays"] == [FX_POLL_MS] and o["xx"] == "+80만원 (+2.01%)"           # 4천만 × (1.01 × 1.01 − 1)
 
@@ -4509,10 +4511,10 @@ def test_card_px_failure_only_empties_the_close(hn, caplog):
     look = lambda s: (1.0, "2026-10-08", "")                                         # noqa: E731
     look.px = lambda s: 1 / 0
     with caplog.at_level("WARNING"):
-        assert hn._card_px((1.0, "2026-10-08", ""), look, {"key": "KR:X"}) is None
+        assert hn._card_px((1.0, "2026-10-08", ""), look, {"key": "KR:X", "market": "KR"}) is None
     assert "카드 종가 조회 실패" in caplog.text
-    assert hn._card_px((1.0, {"px": 3.0, "px_d": "2026-10-08"}, ""), look, {"key": "KR:X"}) == (3.0, "2026-10-08")
-    assert hn._card_px((None, {"why": "x"}, "x"), look, {"key": "KR:X"}) is None
+    assert hn._card_px((1.0, {"px": 3.0, "px_d": "2026-10-08"}, ""), look, {"key": "KR:X", "market": "KR"}) == (3.0, "2026-10-08")
+    assert hn._card_px((None, {"why": "x"}, "x"), look, {"key": "KR:X", "market": "KR"}) is None
 
 
 def test_skip_names_line_lists_unmatched_by_value_and_says_what_it_cut(hn, monkeypatch):
@@ -4548,3 +4550,37 @@ def test_cum_close_from_yahoo_is_not_an_intraday_bar(hn, ws_snaps):
     _closes(hn, {"KR:069500": ({"2026-10-06": 100.0, "2026-10-08": 101.7}, "2026-10-08T15:40")})
     c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-08T19:00"))({"key": "KR:069500", "market": "KR", "ticker": "069500"})
     assert c["ka"] is None and "px" not in c
+
+
+def test_pnl_js_follows_up_once_when_the_server_answers_with_stale_fx(hn):
+    """서버는 환율을 뒤에서만 받아 응답이 **직전** 받기의 값이다 — 1시간 주기면 늘 한 주기 낡고, 밤새 안 열었으면 빈 표다
+    (독립 리뷰 2026-10-14 H1). 낡았거나(나이 > 60초) 비면 그 주기에 한 번만 10초 뒤 다시 묻는다 · 다음 주기엔 또 쓸 수 있다."""
+    data = [{"k": "US:A", "v": 40000000, "g": "XX", "p": 1.0, "c": "USD"}]
+    old, new = {"fx": {"USD": {"pct": 0.0, "age": 3600}}}, {"fx": {"USD": {"pct": 1.0, "age": 5}}}
+    o = _run_pnl_js(hn, data, [old, new], run=2)
+    assert o["delays"] == [10000, FX_POLL_MS] and o["xx"] == "+80만원 (+2.01%)"     # 후속 확인이 새 값을 그린다
+    o = _run_pnl_js(hn, data, [old], run=3)
+    assert o["delays"] == [10000, FX_POLL_MS, 10000]                               # 원천이 계속 낡아도 주기당 한 번
+    o = _run_pnl_js(hn, data, [{"fx": {"USD": {"pct": 1.0, "age": 60}}}], run=2)
+    assert o["delays"] == [FX_POLL_MS, FX_POLL_MS]                                 # 60초까지는 신선
+    o = _run_pnl_js(hn, data, [{"fx": {"USD": {"pct": 1.0, "age": 61}}}], run=1)
+    assert o["delays"] == [10000]                                                  # 61초면 낡음(서버가 새 받기를 띄움)
+    o = _run_pnl_js(hn, data, [{"fx": {}}, new], fx={"USD": 0.5}, run=1)
+    assert o["delays"] == [10000] and o["xx"] == "SERVER"                          # 빈 표 — 갖고 있던 값을 둔다
+
+
+def test_live_pct_fresh_window_matches_the_js_stale_threshold(hn):
+    """JS 의 '낡음' 문턱(60초)은 서버가 새 받기를 띄우는 문턱이다 — 하나만 바뀌면 후속 확인이 헛돈다."""
+    import bot.live_pct as lp
+    assert lp.FX_FRESH_SEC == 60 and "Math.max.apply(null,ages)>60;" in hn._PNL_JS
+
+
+def test_card_px_needs_a_known_currency_outside_korea(hn):
+    """통화를 모르는 시장(예: 'CN' 표기 — `MARKET_CONFIG` 엔 CN_A 만)은 종가를 싣지 않는다 — 위안 값에 ₩ 를 붙이지
+    않게(독립 리뷰 2026-10-14 M1). 국내와 통화를 아는 해외는 싣는다."""
+    look = lambda s: (1.0, "2026-10-08", "")                                         # noqa: E731
+    look.px = lambda s: (12.5, "2026-10-08")
+    prev = (1.0, "2026-10-08", "")
+    assert hn._card_px(prev, look, {"key": "CN:600519", "market": "CN"}) is None
+    assert hn._card_px(prev, look, {"key": "CN_A:600519", "market": "CN_A"}) == (12.5, "2026-10-08")
+    assert hn._card_px(prev, look, {"key": "KR:005930", "market": "KR"}) == (12.5, "2026-10-08")

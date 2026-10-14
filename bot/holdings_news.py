@@ -1849,7 +1849,11 @@ _PNL_JS = r"""
   // 갖고 있던 환율을 둔 채 5초 뒤 다시 묻는다. 상태는 아는 쪽(서버)이 말한다 — '받는 중' 은 재시작 뒤 **첫 시도가 끝나기
   // 전**뿐이다(`live_pct.fx_pending`). 1분(12번)을 넘기면 평소 주기(1시간)로 돌아가되 갖고 있던 환율은 지우지 않고, 처음부터 없던
   // 화면은 '대기' 를 영원히 약속하지 않게 그때 '미확인' 으로 그린다(델타 리뷰 2026-10-14)
-  var quick=0;
+  // 서버는 값을 뒤에서만 받는다(`live_pct.fx_lookup` — 이번 응답은 **직전** 받기의 결과). 주기가 1시간이면 응답 값이
+  // 늘 한 주기 낡고, 밤새 아무도 안 열었으면(값이 6시간 넘게 낡아 빈 표) 아침 첫 화면이 1시간 '미확인' 이 된다(독립
+  // 리뷰 2026-10-14 H1). 그래서 응답이 비었거나 낡았으면(나이 > `live_pct.FX_FRESH_SEC` 60초 = 이번 요청이 새 받기를
+  // 띄웠다) **한 주기에 한 번만** 10초 뒤 다시 묻는다 — 원천이 계속 실패해도 10초마다 두드리지 않게.
+  var quick=0, again=0;
   function poll(){
     fetch('api/live_pct?fx=1',{cache:'no-store'})
       .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
@@ -1860,13 +1864,20 @@ _PNL_JS = r"""
         if(pend&&quick<12){quick++; return 'soon';}
         if(pend&&Object.keys(fx).length) return;       // 상한 뒤에도 받는 중 — 갖고 있던 환율은 둔다
         if(!pend) quick=0;
+        var ages=Object.keys(f).map(function(c){return +(f[c]&&f[c].age)||0;});
+        var stale=!ages.length||Math.max.apply(null,ages)>60;
+        var follow=!pend&&stale&&!again;      // 이번 주기의 후속 확인을 아직 안 썼다
+        if(follow) again=1;
+        if(follow&&!ages.length) return 'again';   // 빈 표 — 갖고 있던 환율을 둔 채 10초 뒤 한 번 더
         var nf={}, nl={};
         for(var cc in f){ if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
           if(f[cc]&&typeof f[cc].close==='number') nl[cc]=f[cc].close; }
-        fx=nf; fxNow=nl; draw(); cards();})
+        fx=nf; fxNow=nl; draw(); cards();
+        if(follow) return 'again';})
       .catch(function(){})
       // 평소 주기 = 1시간(사용자 2026-10-14 "환율정보를 받는건 1분말고 1시간으로 — 부하안가게")
-      .then(function(r){setTimeout(poll,r==='soon'?5000:3600000);});
+      .then(function(r){if(r!=='again') again=0;     // 다음 주기는 후속 확인을 다시 한 번 쓸 수 있다
+        setTimeout(poll,r==='soon'?5000:r==='again'?10000:3600000);});
   }
   if(!need) return;                    // 국내만 들고 있으면 환율도 묻지 않는다 — 서버가 그린 값이 전부다
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',poll); else poll();
@@ -2404,7 +2415,7 @@ def _snap_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[dict, dict, dict] 
     except OSError:
         return None
     hit = _PREV_CACHE.get((mk, d))
-    if hit and hit[0] == mt and isinstance(hit[1], tuple) and len(hit[1]) == 3:
+    if hit and hit[0] == mt and isinstance(hit[1], tuple):
         return hit[1]
     snap = ws._gz_load(path)
     rows = snap.get("rows") if isinstance(snap, dict) else None
@@ -3033,6 +3044,9 @@ def _card_px(prev, look, s: dict):
     """카드 괄호의 종가 — 등락을 낸 **같은** 경로에서(#33): 최신일 누적(`_cum_prev` 재료 dict)이면 그 끝 종가, 지난 날
     (또는 누적을 못 쓴 최신일)이면 그 하루치의 종가. 실패는 이 칸만 비운다(#315)."""
     try:
+        m = str(s.get("market") or "").upper()
+        if m != "KR" and not currency_of(m):      # 통화를 모르면 싣지 않는다 — 위안 값에 원 기호를 붙이지 않게(리뷰 M1)
+            return None
         d = prev[1] if prev else None
         if isinstance(d, dict):
             return (d["px"], d["px_d"]) if d.get("px") is not None else None
