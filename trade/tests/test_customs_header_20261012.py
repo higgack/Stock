@@ -64,7 +64,13 @@ def test_render_puts_customs_line_in_header_and_js_keeps_it(tmp_path):
     m = re.search(r'<div class="meta meta-status" id="meta-status"([^>]*)>(.*?)</div>',
                   html, re.S)
     assert m, "상태줄 div 없음"
-    assert 'data-src="customs"' in m.group(1)
+    assert 'data-basis="customs"' in m.group(1)
+    # 감사 ③ 은 data-src 를 lazy 파일로 대조한다 — 렌더된 페이지의 참조가 전부
+    # 파일 이름이어야 'customs 미존재(nav/lazy 404)' 거짓 ❌ 가 안 난다
+    # (2026-10-14 일일 감사, 실수 #451). 감사의 정규식을 그대로 태운다(#35).
+    from trade.scripts import dashboard_audit as da
+    refs = {x or y for x, y in da._REF_RE.findall(html) if (x or y)}
+    assert all("." in r for r in refs), refs   # 이 픽스처는 lazy 없음 = 빈 집합
     assert "잠정 <strong>10월 1-10일</strong>" in m.group(2)
     assert "관세청 기준" in m.group(2)
     # JS 가 서버 줄을 채널 줄로 덮지 않는다

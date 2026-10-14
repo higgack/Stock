@@ -2850,6 +2850,13 @@ def _cost_line(now: datetime) -> str:
         return "—"
 
 
+def _prev_date_html(recs: list[dict]) -> str:
+    """최신 기준일 옆에 **그 전에 기록된 날**(사용자 2026-10-14) — 날짜 내림차순 기록의 두 번째.
+    기록이 하루뿐이면 '없음' 이라고 말한다(빈칸은 '못 셌다' 로 읽힌다, #43)."""
+    ds = sorted({r["date"] for r in recs if r.get("date")}, reverse=True)
+    return f"<span class='prev'>· 전 {ds[1] if len(ds) > 1 else '없음'}</span>"
+
+
 def render_page(records: list[dict], state: dict | None = None,
                 now: datetime | None = None, *, gen: str | None = None, total: int | None = None,
                 portfolio: dict | None = None, fx: dict | None = None) -> str:
@@ -2871,8 +2878,8 @@ def render_page(records: list[dict], state: dict | None = None,
     tg = ((latest or {}).get("sources") or {}).get("telegram") or {}
     stats = (
         "<div class='stat-grid'>"
-        f"<div class='stat'><div class='k'>최신 기준일</div><div class='v'>"
-        f"{latest['date'] if latest else '—'}</div></div>"
+        f"<div class='stat'><div class='k'>최신 기준일 · 전 기록일</div><div class='v'>"
+        f"{latest['date'] if latest else '—'}{_prev_date_html(allrecs)}</div></div>"
         f"<div class='stat'><div class='k'>뉴스 있는 종목 / 보유 종목</div><div class='v'>"
         f"{n_news} / {n_all}</div></div>"
         f"<div class='stat'><div class='k'>텔레그램 언급(최신일)</div><div class='v'>"

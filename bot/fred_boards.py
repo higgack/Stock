@@ -850,6 +850,8 @@ tr.row{cursor:pointer}tr.row:hover{background:var(--surface2)}tr.selected{backgr
    값은 tabular-nums 로 자리를 고정해 숫자가 흔들리지 않게. */
 .stat .k{font-size:12.5px;color:var(--fg);opacity:.72;line-height:1.45}
 .stat .v{font-size:19px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums}
+/* 값 옆의 보조 값(예: 최신 기준일 옆 '전 기록일') — 사용자 2026-10-14 */
+.stat .v .prev{font-size:13px;font-weight:500;opacity:.72;margin-left:6px;white-space:nowrap}
 .note{background:var(--surface2);border-left:3px solid var(--accent);border-radius:8px;padding:12px;font-size:13px;color:var(--fg);opacity:.9;margin-top:10px}
 .chartbox{position:relative;height:320px}
 .tbl-wrap{max-height:560px;overflow-y:auto}

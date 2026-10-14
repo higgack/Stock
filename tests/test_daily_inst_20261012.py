@@ -1126,7 +1126,10 @@ def test_stub_cards_are_not_the_latest_record(cal):
     html = di.render_page(recs + [stub], {}, now)
     i = html.index('class="di-status"')
     assert "2026-10-12 기록이 아직 없습니다" in html[i: html.index("</div>", i)]
-    assert "<div class='v'>2026-10-08</div>" in html and "KRX 자료 없음 1일 별도" in html
+    # 2026-10-14 부터 값 칸 옆에 '전 기록일' 이 붙는다(사용자 요청) — 최신은 여전히 받은 기록이고
+    # 전 기록일도 자료 없음 카드를 건너뛴다(#222 계약 다시 쓰기).
+    assert "<div class='v'>2026-10-08<span class='prev'>· 전 2026-09-30</span></div>" in html
+    assert "KRX 자료 없음 1일 별도" in html
     assert "<div class='v'>2거래일</div>" in html, "자료 없음 카드를 기록 수에 셌다"
     assert _daily_inst_line(recs + [stub], {}, now).lstrip().startswith("❌")
     assert "기록 2거래일" in _daily_inst_line(recs + [stub], {}, now)
@@ -1580,3 +1583,19 @@ def test_probe_writes_nothing_and_counts_rows(cal, store, krx, capsys):
     out = capsys.readouterr().out
     assert "KOSPI 기관 순매수 3행" in out and "KOSDAQ 기관 순매수 2행" in out
     assert not store.exists()
+
+
+def test_stat_shows_previous_recorded_day_next_to_latest(cal):
+    """사용자 2026-10-14 — '최신 기준일 옆에 그 전 기준일(전에 기록된 일자)도'. 같은 '받은 기록'
+    규칙으로 고른다 — 자료 없음 카드는 전 기록일이 아니다(#38)."""
+    import re
+    recs = _records()
+    real = sorted({r["date"] for r in recs if not r.get("nodata")}, reverse=True)
+    assert len(real) >= 2
+    stub = {"date": "2026-10-09", "nodata": True}
+    html = di.render_page(recs + [stub], {}, _at("2026-10-12", 10, 0))
+    m = re.search(r"최신 기준일 · 전 기록일</div><div class='v'>(.*?)</div>", html)
+    assert m and m.group(1) == f"{real[0]}<span class='prev'>· 전 {real[1]}</span>", m
+    assert di.prev_real([recs[0]]) is None
+    one = di.render_page([r for r in recs if r["date"] == real[0]], {}, _at("2026-10-12", 10, 0))
+    assert "<span class='prev'>· 전 없음</span>" in one

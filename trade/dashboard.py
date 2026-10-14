@@ -862,8 +862,10 @@ def _build_html(
         # so first paint stays clean and the backlog disappears the
         # moment the operator adds a RULE that empties eval_misses.
         # 관세청 기준 줄(customs_header)이 있으면 서버가 채우고 JS 는 건드리지 않는다
-        # (data-src='customs'). 없으면 비워 두고 JS 가 채널 폴백을 그린다.
-        + (f'<div class="meta meta-status" id="meta-status" data-src="customs">'
+        # (data-basis='customs'). 없으면 비워 두고 JS 가 채널 폴백을 그린다.
+        # ⚠️ data-src 는 이 페이지에서 'lazy 로 받을 파일' 이다 — 감사(③)가 그 값을
+        # 파일로 대조하므로 표식을 거기 실으면 'customs 미존재' 거짓 ❌ 가 된다(#34).
+        + (f'<div class="meta meta-status" id="meta-status" data-basis="customs">'
            f'{customs_header}</div>' if customs_header else
            '<div class="meta meta-status" id="meta-status"></div>')
         + f'<div class="meta meta-next" id="meta-next"></div>'
@@ -2311,10 +2313,10 @@ function buildIndustriesView(filtered){
 function renderHeaderMeta(){
   const st=currentDataStatus();
   const ms=document.getElementById('meta-status');
-  // 서버가 관세청 기준 줄을 그렸으면(data-src='customs') 채널 줄로 덮지 않는다
+  // 서버가 관세청 기준 줄을 그렸으면(data-basis='customs') 채널 줄로 덮지 않는다
   // (사용자 2026-10-12 — 채널이 07-22 뒤로 발표를 안 싣는다). 아래는 관세청
   // 데이터가 없을 때의 채널 폴백이다.
-  const fromCustoms=ms&&ms.dataset&&ms.dataset.src==='customs';
+  const fromCustoms=ms&&ms.dataset&&ms.dataset.basis==='customs';
   const sp=[];
   if(st.prelim)sp.push('잠정 <strong>'+esc(latestPeriodStr(st.prelim))+'</strong>');
   if(st.final)sp.push('확정 <strong>'+esc(latestPeriodStr(st.final))+'</strong>');
