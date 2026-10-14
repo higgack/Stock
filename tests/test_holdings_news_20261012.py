@@ -3301,3 +3301,152 @@ def test_pnl_js_response_replaces_fx_wholesale(hn):
     live = {"q": {"AAPL": {"pct": 1.0, "ts": "", "src": "x"}}, "pending": 0}  # 환율을 안 실은 응답은 그대로 둔다
     o = _run_pnl_js(hn, data, live, fx={"USD": 2.0}, cell=cell)
     assert o["xx"] == "+121만원 (+3.02%)"
+
+
+# ── 업종(사용자 2026-10-14 "종목코드에 따른 업종을 같이 명시하고 그거에 맞게 뉴스를") ─────────────────────
+@pytest.fixture
+def ws_ind(tmp_path, monkeypatch):
+    """업종·한국어 라벨을 실은 하루치 — 원천 형식 그대로(`ROW` 순서 · labels.ind 영문→한국어)."""
+    import gzip
+
+    import bot.world_sectors as ws
+    import bot.holdings_news as hnm
+    monkeypatch.setattr(ws, "_SNAP", tmp_path / "snapi")
+    monkeypatch.setattr(hnm, "_PREV_CACHE", {})
+    ws.cache_clear()
+
+    def put(market, d, rows, labels=None):
+        p = ws.snap_path(market, d)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        full = [[sym, sym, "Electronic Technology", ind, chg, 1.0, 1.0, None, 1.0, 0] for sym, ind, chg in rows]
+        with gzip.open(p, "wt", encoding="utf-8") as fh:
+            json.dump({"rows": full, "labels": {"sec": {}, "ind": labels or {}}}, fh)
+        ws.cache_clear()
+    yield put
+    ws.cache_clear()
+
+
+def test_industry_lookup_uses_source_korean_label_and_falls_back(hn, ws_ind):
+    ws_ind("KR", "2026-10-08", [("KRX:079370", "Electronic Production Equipment", 1.0),
+                                ("KRX:005930", "Telecommunications Equipment", -1.0)],
+           {"Electronic Production Equipment": "전자 생산 장비"})
+    ind = hn.industry_lookup("2026-10-12")          # 10-09(한글날)·주말 건너 10-08 하루치
+    assert ind({"market": "KR", "ticker": "079370"}) == "전자 생산 장비"
+    assert ind({"market": "KR", "ticker": "005930"}) == "Telecommunications Equipment"   # 라벨 없으면 원천 영문
+    assert ind({"market": "KR", "ticker": "000000"}) == ""
+    assert ind({"market": "HK", "ticker": "0700"}) == ""                                 # 하루치가 없는 시장
+    # 전날 하루치가 없어도 몇 거래일 앞까지 본다(업종은 거의 안 바뀐다)
+    assert hn.industry_lookup("2026-10-14")({"market": "KR", "ticker": "079370"}) == "전자 생산 장비"
+
+
+def test_prompt_carries_industry_and_the_rule(hn):
+    s = {**_stock("KR:079370"), "name": "제우스", "ind": "전자 생산 장비"}
+    p = hn.build_prompt([s])
+    assert "### key=KR:079370 · 제우스(079370, 한국) · 업종: 전자 생산 장비" in p
+    assert "**이름만 같은** 다른 회사·남의 게임" in p
+    assert "업종:" not in hn.build_prompt([_stock("KR:A")]).split("종목:")[1]          # 모르면 지어내지 않는다
+
+
+def test_analyze_attaches_industry_before_asking(hn, ws_ind):
+    ws_ind("KR", "2026-10-08", [("KRX:079370", "Electronic Production Equipment", 1.0)],
+           {"Electronic Production Equipment": "전자 생산 장비"})
+    s = {**_stock("KR:079370"), "name": "제우스"}
+    rec = _rec(s)
+    f = _llm(lambda p: json.dumps({"stocks": [{"key": "KR:079370", "relevant": [1], "pros": [], "cons": []}]}))
+    hn.analyze(rec, llm=f)
+    assert s["ind"] == "전자 생산 장비" and "업종: 전자 생산 장비" in f.calls[0]
+
+
+def test_attach_industry_failure_leaves_it_blank(hn, monkeypatch):
+    monkeypatch.setattr(hn, "industry_lookup", lambda d: (lambda s: 1 / 0))
+    s = _stock("KR:A")
+    hn._attach_industry(_rec(s), [s])
+    assert "ind" not in s
+
+
+def test_game_line_is_a_check_candidate_and_check_prompt_has_industry(hn):
+    s = {**_stock("KR:079370", 1), "name": "제우스", "ind": "전자 생산 장비",
+         "cons": [{"t": "구글 플레이 매출 순위 2위를 기록했다.", "refs": [1]}], "pros": []}
+    assert hn.offtopic_candidates(s) == [("cons", 0)]
+    p = hn.build_check_prompt([("c1", s, "cons", 0)])
+    assert "제우스(079370) · 업종: 전자 생산 장비 · Cons" in p and "**이름만 같은**" in p
+    # 업종은 동명 판별의 단서일 뿐 사업 범위가 아니다 — 같은 회사의 다른 사업부는 남긴다(리뷰 2026-10-14 High)
+    assert "keep=true: 같은 회사의 다른 사업부·자회사 소식(업종과 달라도)" in p
+    assert "같은 회사의\n   다른 사업부·자회사 소식은 업종과 달라도 관련 있다" in hn.build_prompt([])
+
+
+def test_card_header_shows_industry_even_for_old_records(hn, ws_ind):
+    """업종을 적어 두지 않은 기록도 렌더 때 채운다(#270) · 적어 둔 값이 있으면 그것."""
+    ws_ind("KR", "2026-10-08", [("KRX:079370", "Electronic Production Equipment", 1.0)],
+           {"Electronic Production Equipment": "전자 생산 장비"})
+    rec = _rec({**_stock("KR:079370"), "name": "제우스"})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={})
+    card = html.split("data-hncard='1'")[1]
+    assert "079370 · <span class='hn-ind'" in card and ">전자 생산 장비</span> · 보유" in card
+    # 렌더 때 읽은 값이 이긴다(그날 영문으로 적힌 값도 한국어 라벨을 따라온다) · 하루치가 없으면 적어 둔 값
+    rec = _rec({**_stock("KR:079370"), "name": "제우스", "ind": "Electronic Production Equipment"})
+    card = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={}).split("data-hncard='1'")[1]
+    assert ">전자 생산 장비</span>" in card
+    rec = _rec({**_stock("KR:999999"), "name": "x", "ind": "적어 둔 업종"})
+    card = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={}).split("data-hncard='1'")[1]
+    assert ">적어 둔 업종</span>" in card
+
+
+@pytest.mark.parametrize("txt,hit", [("HBM 게임체인저로 부상", False), ("치킨게임 심화", False), ("제로섬 게임", False),
+                                     ("SCOTT 대표 선임", False), ("신작 게임 출시", True), ("넷플릭스 OTT", True),
+                                     ("ott 시장", True), ("신작 MMORPG", True), ("구글플레이 매출 2위", True)])
+def test_offtopic_hint_game_words_skip_common_economic_idioms(hn, txt, hit):
+    assert bool(hn.OFFTOPIC_HINT.search(txt)) is hit
+
+
+def test_broken_industry_field_keeps_the_change_table(hn, tmp_path, monkeypatch):
+    """업종 칸이 깨져도(리스트·라벨이 dict 아님) 전날 등락은 산다 — 곁들이가 본체를 지우지 않는다(#315)."""
+    import gzip
+
+    import bot.world_sectors as ws
+    monkeypatch.setattr(ws, "_SNAP", tmp_path / "snapb")
+    monkeypatch.setattr(hn, "_PREV_CACHE", {})
+    ws.cache_clear()
+    p = ws.snap_path("KR", "2026-10-08")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rows = [["KRX:000001", "a", None, ["weird"], 1.5, 1, 1, None, 1, 0],
+            ["KRX:000002", "b", None, "Semis", -2.0, 1, 1, None, 1, 0]]
+    with gzip.open(p, "wt", encoding="utf-8") as fh:
+        json.dump({"rows": rows, "labels": {"ind": ["not", "a", "dict"]}}, fh)
+    ws.cache_clear()
+    look = hn.prev_changes("2026-10-12")
+    assert look({"market": "KR", "ticker": "000001"})[0] == 1.5
+    ind = hn.industry_lookup("2026-10-12")
+    assert ind({"market": "KR", "ticker": "000001"}) == "" and ind({"market": "KR", "ticker": "000002"}) == "Semis"
+
+
+def test_industry_lookback_merges_per_stock_nearest_first(hn, ws_ind):
+    """가까운 날 하루치에 없는 종목(거래정지 등)은 더 앞 날에서 찾고, 둘 다 있으면 가까운 날이 이긴다."""
+    ws_ind("KR", "2026-10-08", [("KRX:000001", "New", 1.0)])
+    ws_ind("KR", "2026-10-07", [("KRX:000001", "Old", 1.0), ("KRX:000002", "Halted", 1.0)])
+    ind = hn.industry_lookup("2026-10-12")
+    assert ind({"market": "KR", "ticker": "000001"}) == "New" and ind({"market": "KR", "ticker": "000002"}) == "Halted"
+
+
+def test_industry_us_key_and_escape(hn, ws_ind):
+    ws_ind("US", "2026-10-09", [("NYSE:BRK.B", "<b>Insurance</b>", 1.0)])
+    assert hn.industry_lookup("2026-10-12")({"market": "US", "ticker": "BRK-B", "sym": "BRK-B"}) == "<b>Insurance</b>"
+    assert "&lt;b&gt;Insurance&lt;/b&gt;" in hn._ind_html("<b>Insurance</b>") and "<b>" not in hn._ind_html("<b>x</b>")
+
+
+def test_industry_reaches_the_offtopic_check_call(hn, ws_ind):
+    """E2E — `analyze` 가 붙인 업종이 실제 확인 호출에 실린다(헬퍼만 재면 배선을 못 본다, #20)."""
+    ws_ind("KR", "2026-10-08", [("KRX:000155", "Electronic Production Equipment", 1.0)],
+           {"Electronic Production Equipment": "전자 생산 장비"})
+    s = _sport_stock()
+    s.pop("ind", None)
+    rec = _rec(s)
+    f = _two_step(False)
+    hn.analyze(rec, llm=f)
+    chk = [c for c in f.calls if "검수하는 보조" in c]
+    assert chk and "업종: 전자 생산 장비" in chk[0]
+
+
+def test_non_string_label_falls_back_to_source_english(hn, ws_ind):
+    ws_ind("KR", "2026-10-08", [("KRX:000001", "Semis", 1.0)], {"Semis": 5})
+    assert hn.industry_lookup("2026-10-12")({"market": "KR", "ticker": "000001"}) == "Semis"
