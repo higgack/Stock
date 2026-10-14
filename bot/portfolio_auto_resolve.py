@@ -17,7 +17,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _HOME = Path.home() / ".tradingagents"
-_CACHE_PATH = _HOME / "portfolio_auto_aliases.json"
+# v2(2026-10-14) — 신원 확인(원천 이름 ↔ 모델이 말한 회사) 이전 판의 캐시엔 국내 비상장 → 무관한 미국 티커가
+# 영구로 남아 있다(SK에코플랜트 → SKHY). 새 파일에서 한 번씩 다시 묻는다(종목당 ₩1~2 · #18 구워진 값은 안 바뀐다).
+_CACHE_PATH = _HOME / "portfolio_auto_aliases_v2.json"
 _USAGE = _HOME / "usage.jsonl"
 _FLASH_IN, _FLASH_OUT = 0.30, 2.50
 _MAX_BATCH = 30
@@ -61,14 +63,22 @@ def _log_usage(pt: int, ot: int) -> None:
         pass
 
 
-def _verify_yfinance(ticker: str) -> str | None:
-    """yfinance 로 티커 유효성 검증 → market 또는 None."""
+def _verify_yfinance(ticker: str, company: str = "") -> str | None:
+    """yfinance 로 티커 검증 → market 또는 None. 값이 있는 것만으로는 부족하다 — 그 티커의 원천 이름이 모델이 말한
+    회사(`company`)와 같은 회사여야 한다(국내 비상장 SK에코플랜트가 무관한 미국 SKHY 로 붙었다, 2026-10-14).
+    이름을 못 받으면 확인 불가 = None(틀린 티커보다 미매칭이 낫다 — 화면은 이름과 금액을 그대로 보여 준다)."""
+    from bot.portfolio_resolve import same_company
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
         info = t.fast_info
         if not (getattr(info, "last_price", None) or
                 getattr(info, "previous_close", None)):
+            return None
+        meta = t.get_info() or {}
+        got = str(meta.get("longName") or meta.get("shortName") or "")
+        if not same_company(company, got):
+            log.info("auto_resolve: %s 이름 %r ≠ %r — 버림", ticker, got, company)
             return None
         return "US"
     except Exception:
@@ -108,14 +118,14 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
     batch = todo[:_MAX_BATCH]
     lines = "\n".join(f"{i+1}. {orig}" for i, (_, orig) in enumerate(batch))
     prompt = (
-        "다음은 한국 증권사 해외주식 계좌의 종목명입니다. 각 종목의 미국/해외 거래소 "
-        "티커 심볼을 식별하세요.\n"
+        "다음은 한국 증권사 계좌의 종목명입니다. 한국 상장주는 이미 걸렀으니, 미국 거래소에 상장된 해외 회사만 "
+        "티커와 영문 회사명을 식별하세요.\n"
         "- 한글 음역(시놉시스=Synopsys=SNPS) 또는 영문(ROUNDHILL MEMORY=DRAM)\n"
-        "- 결과는 JSON만: {\"시놉시스\": \"SNPS\", \"코닝\": \"GLW\", ...}\n"
-        "- 식별 불가 시 null\n"
+        "- 결과는 JSON만: {\"시놉시스\": {\"ticker\": \"SNPS\", \"company\": \"Synopsys\"}, ...}\n"
+        "- 한국 회사(비상장 포함 — 예: SK에코플랜트)·식별 불가·이름이 비슷한 다른 회사뿐이면 null\n"
         "- 설명 금지, JSON만 출력\n\n" + lines)
 
-    guesses: dict[str, str] = {}
+    guesses: dict[str, dict] = {}
     try:
         from bot.screener import _call_pro
         text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
@@ -127,14 +137,15 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
             if clean.startswith("json"):
                 clean = clean[4:]
         raw = json.loads(clean)
-        if isinstance(raw, dict):
-            guesses = {k: v for k, v in raw.items() if isinstance(v, str)}
+        if isinstance(raw, dict):           # 옛 형식(티커 문자열만)은 회사명이 없어 신원을 확인할 수 없다 — 받지 않는다
+            guesses = {k: v for k, v in raw.items() if isinstance(v, dict)}
     except Exception as e:
         log.info("auto_resolve flash: %s", e)
 
     for key, orig in batch:
-        ticker = guesses.get(orig)
-        if not ticker:
+        g = guesses.get(orig) or {}
+        ticker, company = g.get("ticker"), str(g.get("company") or "")
+        if not isinstance(ticker, str) or not ticker:
             cache[key] = None
             result[key] = None
             continue
@@ -143,7 +154,7 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
             cache[key] = None
             result[key] = None
             continue
-        mkt = _verify_yfinance(ticker)
+        mkt = _verify_yfinance(ticker, company)
         if mkt:
             cache[key] = [ticker, mkt]
             result[key] = (ticker, mkt)
