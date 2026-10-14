@@ -17126,22 +17126,23 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     # 색상 범례 (사용자 2026-06-12) — 🔥 중요/⚠️ 미파싱 의미 안내. 해당
     # 카드가 하나라도 있을 때만 노출(노이즈 방지).
     if _sig_total or _unp_total or _noparse_total:
-        _lg = []
+        _lg, _lg_names = [], []   # 이름은 만드는 자리에서 같이(HTML 재파싱 금지, #398)
         for _t, (_em, _nm) in _dart_feed.SIG_TONES.items():
             if _tone_total.get(_t):
+                _lg_names.append(f'{_em} {_nm}')
                 _lg.append(f'<span class="df-badge df-badge-sig df-badge-sig-{_t}">'
                            f'{_em} {_nm}</span> {_SIG_TONE_COLOR[_t]} — '
                            + _html.escape(_dart_feed.SIG_CRITERIA[_t]))
         if _unp_total:
+            _lg_names.append('⚠️ 미파싱')
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '파란 점선 — 우리 파서 갭(제목·원문 공유 시 파서 추가)')
         if _noparse_total:
+            _lg_names.append('미파싱제외')
             _lg.append('<span class="df-badge df-badge-noparse">미파싱제외</span> '
                        '회색 점선 — 설계상 구조화 대상 아님(자율공시·첨부정정, 제목이 곧 내용)')
         # 접힘 기본(사용자 2026-10-14 '내용이 많아져서 설명, 접어져있게 해줘') —
         # 요약 줄은 지금 있는 배지 이름만, 펼치면 한 줄에 하나씩 기준을 적는다.
-        _lg_names = [m.group(1) for m in (
-            re.search(r'">([^<]+)</span>', x) for x in _lg) if m]
         parts.append('<details class="df-legend"><summary>색상 범례 · '
                      + ' '.join(_lg_names) + '</summary><ul>'
                      + ''.join(f'<li>{x}</li>' for x in _lg) + '</ul></details>')

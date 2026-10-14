@@ -527,6 +527,17 @@ class TestDashboardTones:
         body = html[m.end():html.index("</details>", m.end())]
         assert body.count("<li>") == len(SIG_TONES)
 
+    def test_legend_summary_names_unparsed_when_present(self):
+        """미파싱 카드가 있으면 요약 줄에도 그 이름이 실린다 — 이름은 목록을
+        만드는 자리에서 같이 모은다(HTML 재파싱 금지, #398)."""
+        c = _card("20261013000009", "단일판매ㆍ공급계약체결", [], "계약")
+        c["corp_code"] = "00000001"   # 파싱 대상 판정 조건(is_parse_target)
+        html = _render({"2026-10-13": [c]})
+        assert 'class="df-badge df-badge-unp"' in html   # 전제: 미파싱으로 그려졌다
+        summ = re.search(r'<details class="df-legend"><summary>(.*?)</summary>',
+                         html, re.S).group(1)
+        assert summ == "색상 범례 · ⚠️ 미파싱", summ
+
     def test_absent_tone_has_no_pill_or_legend(self):
         html = _render({"2026-10-13": [
             _card("20261013000002", "단일판매ㆍ공급계약체결",
