@@ -3751,3 +3751,10 @@ def test_add_new_holdings_uses_cached_etf_list_and_merges_source_counts(hn, monk
                         pace=0, ko=lambda c: "")
     assert seen and all(k.get("cache_only") for k in seen)                      # 15분마다 목록 원천을 안 두드린다
     assert rec["sources"]["naver"] == 6 and rec["sources"]["fail"] == 1
+
+
+def test_nav_has_no_daily_byte_link(hn):
+    """사용자 2026-10-14 "대시보드 창에서 daily bite 는 빼주고" — 이 페이지 위 nav 에서 뺀다."""
+    html = hn.render_page([], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio={})
+    nav = html.split('<div class="nav">')[1].split("</div>")[0]
+    assert "daily_byte.html" not in nav and "Daily Byte" not in nav and "dart_feed.html" in nav

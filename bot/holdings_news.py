@@ -2914,7 +2914,7 @@ def render_page(records: list[dict], state: dict | None = None,
 <title>보유종목 News</title>{_BOARD_CSS}{_HN_CSS}
 {_theme_head()}
 </head><body><div class="wrap">
-<div class="nav"><a href="market.html">🌍 홈</a> · <a href="asia.html">🏯 ASIA</a> · <a href="portfolio.html">💼 자산</a> · <a href="index.html">🦉 종목분석</a> · <a href="dart_feed.html">📋 DART</a> · <a href="daily_byte.html">📰 Daily Byte</a></div>
+<div class="nav"><a href="market.html">🌍 홈</a> · <a href="asia.html">🏯 ASIA</a> · <a href="portfolio.html">💼 자산</a> · <a href="index.html">🦉 종목분석</a> · <a href="dart_feed.html">📋 DART</a></div>
 <h1>🗞️ <em>보유종목 News</em> — 보유 종목 뉴스 · Pros/Cons</h1>
 <div class="sub">자산 대시보드 보유 종목 × 네이버 뉴스(국내) · Yahoo Finance(해외) · 텔레그램 'Noah의 RAG'
 채널 · 매일 {RUN_HOUR:02d}:{RUN_MIN:02d} KST 이후 직전 집계 이후 뉴스를 모아 AI(Gemini flash-lite)가 그
