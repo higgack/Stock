@@ -379,8 +379,31 @@ def relocatable(section: str, cut: int) -> list[str]:
     return out
 
 
+def _ref_block(ref: str, num: str) -> str | None:
+    """REFERENCE 에 이미 있는 `### 실수 #N` 절의 본문 — 없으면 None."""
+    m = re.search(rf'(?m)^### 실수 #{re.escape(num)}\n(.*?)(?=^### |^## |\Z)', ref, re.S)
+    return m.group(1) if m else None
+
+
+def covered_by_ref(num: str, body: str, ref: str) -> bool:
+    """지금 CLAUDE.md 본문의 문장이 **전부** REFERENCE 에 이미 있는가.
+
+    REFERENCE 에 그 번호 절이 이미 있으면(앞서 접힌 항목) `_insert_ref` 는 새 전문을
+    넣지 않는다 — 그런데 그 뒤 CLAUDE.md 쪽을 **손으로 줄여 다시 쓴** 항목은(#190·#248
+    실측) 지금 문장이 REFERENCE 원문에 없어, 이관하면 지금 판이 어디에도 안 남는다
+    (#287 — 2026-10-14 회귀가 잡았다). 그런 항목은 옮기지 않는다(줄일 수 없으면 안
+    줄이는 것이 맞다, #32). 절이 없으면 이관이 전문을 넣으므로 True."""
+    blk = _ref_block(ref, num)
+    if blk is None:
+        return True
+    have = " ".join(blk.split())
+    cur = body.replace(f"{_POINTER}{num}", " ")
+    return all(" ".join(c.split()) in have for c in clauses(cur))
+
+
 def apply_relocate(cut: int) -> tuple[int, int]:
-    """번호 ≤ `cut` 인 항목을 전문 이관 — (옮긴 수, 절감 자수)."""
+    """번호 ≤ `cut` 인 항목을 전문 이관 — (옮긴 수, 절감 자수). REFERENCE 가 지금
+    본문을 다 담지 못한 항목은 건너뛴다(`covered_by_ref`)."""
     txt = CLAUDE.read_text(encoding="utf-8")
     ref = REFERENCE.read_text(encoding="utf-8")
     pre, sec, post = split_mistakes(txt)
@@ -392,7 +415,7 @@ def apply_relocate(cut: int) -> tuple[int, int]:
             continue
         s, e = ents[num]
         r = relocate_entry(num, sec[s:e], sec)
-        if r is None:
+        if r is None or not covered_by_ref(num, sec[s:e], ref):
             continue
         new, blk, save = r
         sec = sec[:s] + new + sec[e:]

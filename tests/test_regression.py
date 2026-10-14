@@ -75053,6 +75053,34 @@ class TestClaudeMdRelocate20260919:
         body = "1. 제목 → REFERENCE §실수 #1\n"
         assert cite_count(sec + body, "1", body) == 1
 
+    def test_entry_rewritten_after_folding_is_not_relocated(self, tmp_path, monkeypatch):
+        """2026-10-14 실측 — 앞서 접힌 뒤 CLAUDE.md 쪽을 **손으로 줄여 다시 쓴** 항목(#190·#248)은 REFERENCE 에
+        옛 전문만 있고 지금 문장은 없다. 이관하면 `_insert_ref` 가 이미 있는 절이라 아무것도 안 넣어 지금 판이
+        어디에도 안 남는다(#287). 지금 문장이 REFERENCE 에 다 있을 때만 옮긴다(`covered_by_ref`)."""
+        import bot.scripts.claude_md_fold as f
+        head = "## ⛔ 과거 실수 — 반복 금지 (먼저 읽을 것)\n"
+        tail = "## ⛔ UNIVERSAL CHANGES ONLY\n"
+        cites = "4. **뒤 항목**(2026-01-03): #2 #2 #3 #3 를 인용한다.\n"
+        sec = (head
+               + "2. **손으로 다시 쓴 규칙**(2026-01-01 사건): 지금 판에만 있는 새 문장이다.\n"
+                 "   → REFERENCE §실수 #2\n"
+               + "3. **그대로 접힌 규칙**(2026-01-02 사건): 원문 문장이다.\n"
+                 "   → REFERENCE §실수 #3\n"
+               + cites + tail)
+        ref = f._REF_HEAD + "\n\n" + (
+            "### 실수 #2\n\n2. **손으로 다시 쓴 규칙**(2026-01-01 사건): 옛 원문은 다른 말을 했다.\n\n"
+            "### 실수 #3\n\n3. **그대로 접힌 규칙**(2026-01-02 사건): 원문 문장이다. 그리고 서사가 길다.\n")
+        cl, rf = tmp_path / "CLAUDE.md", tmp_path / "REF.md"
+        cl.write_text(sec, encoding="utf-8")
+        rf.write_text(ref, encoding="utf-8")
+        monkeypatch.setattr(f, "CLAUDE", cl)
+        monkeypatch.setattr(f, "REFERENCE", rf)
+        assert f.relocatable(f.split_mistakes(sec)[1], 3) == ["2", "3"]           # 인용·제목 게이트는 둘 다 통과
+        done, _ = f.apply_relocate(3)
+        out = cl.read_text(encoding="utf-8")
+        assert done == 1 and "⇒ REFERENCE §실수 #3" in out and "⇒ REFERENCE §실수 #2" not in out
+        assert "지금 판에만 있는 새 문장이다" in out                                    # 지금 판이 남는다
+
     def test_every_relocated_entry_has_its_full_text_in_reference(self):
         """살아 있는 파일 계약 — 포인터만 남은 항목의 **전문**이 REFERENCE 에
         실재해야 한다. 하나라도 없으면 그 규칙은 어디에도 없다(#287·#286)."""
