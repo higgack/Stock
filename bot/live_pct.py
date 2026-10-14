@@ -119,13 +119,13 @@ def fx_level_map(table) -> dict[str, float]:
     return out
 
 
-def fx_levels_cached() -> dict[str, float]:
-    """디스크 값 풀에 이미 있는 원화 환율 수준 — 네트워크 0. 값 풀이 `FX_MAX_AGE_SEC` 보다 낡았으면 {}."""
+def fx_levels_cached(*, max_age: float | None = None) -> dict[str, float]:
+    """디스크 값 풀에 이미 있는 원화 환율 수준 — 네트워크 0. 값 풀이 `max_age`(기본 `FX_MAX_AGE_SEC`) 보다 낡았으면 {}."""
     try:
         from bot.finviz_client import _cached
         from bot.naver_marketindex import _KRFX_CACHE, value_age_sec
         age = value_age_sec("fx")
-        if age is None or age > FX_MAX_AGE_SEC:
+        if age is None or age > (FX_MAX_AGE_SEC if max_age is None else min(max_age, FX_MAX_AGE_SEC)):
             return {}
         return fx_level_map(_cached(_KRFX_CACHE, ttl=int(FX_MAX_AGE_SEC)) or {})
     except Exception as exc:                                   # noqa: BLE001
@@ -293,10 +293,11 @@ LIVE_JS = r"""
     if(cj&&window.hnCum){var cc0=null; try{cc0=JSON.parse(cj);}catch(e){}
       var q=cc0?window.hnCum(cc0,p):p; if(q===null) return; p=q;}
     if(dv&&window.hnAmt){
-      var k=(cc&&window.hnKrw)?window.hnKrw(p,cc):{pct:p,fx:null};
+      var fb=parseFloat(el.getAttribute('data-fb')||'')||null;
+      var k=(cc&&window.hnKrw)?window.hnKrw(p,cc,fb):{pct:p,fx:null};
       am=' · '+(cc&&k.fx!==null?'원화 ':'')+window.hnAmt(dv*k.pct/100);
       how=' · 금액 = 보유 평가금액 × 등락률(추정)'+(!cc?'':(k.fx===null?' · '+cc+' 환율 미확인 — 현지통화 등락만'
-        :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+cc+' '+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));}
+        :' · 원화 기준(주가 '+(p>0?'+':'')+p.toFixed(2)+'% · 원/'+cc+(k.day?' 오늘 하루 ':' 기준 대비 ')+(k.fx>0?'+':'')+k.fx.toFixed(2)+'%)'));}
     el.textContent='('+(p>0?'+':'')+p.toFixed(2)+'%'+am+')';
     if(cu) el.classList.toggle(cu,p>0);
     if(cd) el.classList.toggle(cd,p<0);

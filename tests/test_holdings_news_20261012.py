@@ -3022,7 +3022,7 @@ def test_pnl_block_absent_without_portfolio_and_failure_does_not_break_page(hn, 
 def test_pnl_json_cannot_close_the_script(hn):
     pos = [{"key": "KR:1", "market": "KR", "ticker": "1", "sym": "</script><b>", "name": "x", "value": 1.0}]
     out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b", fx={"</script>": 1.0})
-    assert out.count("</script>") == 3                                    # 재료 셋(종목 · 기준 환율 · 환율) 각자 하나씩
+    assert out.count("</script>") == 2                                    # 재료 둘(종목 · 환율) 각자 하나씩
 
 
 _PNL_HARNESS = r"""
@@ -3034,7 +3034,6 @@ function mk(id){var e={id:id,textContent:'',className:'',children:[],attrs:{},
   els[id]=e; return e;}
 var data=mk('hn-pnl-data'); data.textContent=DATA;
 if(typeof FX!=='undefined'){var fxd=mk('hn-fx-data'); fxd.textContent=FX;}
-if(typeof FXB!=='undefined'){var fbd=mk('hn-fxb-data'); fbd.textContent=FXB;}
 ['all','KR','XX'].forEach(function(g){mk('hn-pnl-'+g); mk('hn-pnl-'+g+'-sub');});
 var cell=mk('cell'); cell.attrs=(typeof CELL!=='undefined')?CELL:{'data-t':'005930','data-v':'150000000'};
 global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
@@ -3045,7 +3044,7 @@ global.fetch=function(u){fetched.push(u); return Promise.resolve({ok:true,json:f
 """
 
 
-def _run_pnl_js(hn, data, live, fx=None, cell=None, fxb=None):
+def _run_pnl_js(hn, data, live, fx=None, cell=None):
     from bot.live_pct import LIVE_JS
     node = shutil.which("node")
     if not node:
@@ -3053,7 +3052,7 @@ def _run_pnl_js(hn, data, live, fx=None, cell=None, fxb=None):
     src = (f"var DATA={json.dumps(json.dumps(data))}; var LIVE={json.dumps(live)};"
            + (f"var FX={json.dumps(json.dumps(fx))};" if fx is not None else "")
            + (f"var CELL={json.dumps(cell)};" if cell is not None else "")
-           + (f"var FXB={json.dumps(json.dumps(fxb))};" if fxb is not None else "") + _PNL_HARNESS
+           + _PNL_HARNESS
            + hn._PNL_JS + LIVE_JS
            + "\nsetImmediate(function(){setImmediate(function(){setImmediate(function(){console.log(JSON.stringify("
              "{all:els['hn-pnl-all'].textContent,allsub:els['hn-pnl-all-sub'].textContent,"
@@ -3076,7 +3075,7 @@ def test_pnl_js_recounts_with_live_and_falls_back_to_prev(hn):
     live = {"q": {"005930": {"pct": 1.0, "ts": "", "src": "네이버"}}, "pending": 0}
     o = _run_pnl_js(hn, data, live)
     assert o["kr"] == "+170만원 (+1.00%)"                                  # 150만(실시간) + 20만(전날)
-    assert o["all"] == "+170만원 (+1.00%)" and o["allsub"] == "실시간 1 · 전날 등락 1 · 미확인 1 / 3종목"
+    assert o["all"] == "+170만원 (+1.00%)" and o["allsub"] == "실시간 1 · 기준 뒤 마감 등락 1 · 미확인 1 / 3종목"
     assert o["xx"] == "—" and o["xxsub"] == "미확인 1 / 1종목"
     assert o["cell"] == "(+1.00% · +150만원)" and "평가금액 × 등락률(추정)" in o["title"]
 
@@ -3107,7 +3106,7 @@ def test_pnl_js_counts_live_and_prev_separately(hn):
     data = [{"t": t_, "v": 1000000, "g": "KR", "p": 1.0} for t_ in ("A", "B", "C")]
     live = {"q": {k: {"pct": 2.0, "ts": "", "src": "x"} for k in ("A", "B")}, "pending": 0}
     o = _run_pnl_js(hn, data, live)
-    assert o["allsub"] == "실시간 2 · 전날 등락 1 / 3종목"
+    assert o["allsub"] == "실시간 2 · 기준 뒤 마감 등락 1 / 3종목"
 
 
 def test_pnl_positions_skip_unmatched_even_with_a_ticker(hn):
@@ -3285,13 +3284,13 @@ def test_pnl_js_krw_with_server_fx_then_live_fx(hn):
             {"t": "005930", "v": 150000000, "g": "KR", "p": -2.0}]
     cell = {"data-t": "AAPL", "data-v": "40000000", "data-c": "USD"}
     o = _run_pnl_js(hn, data, {"q": {}, "pending": 0}, fx={"USD": 2.0}, cell=cell)
-    assert o["xx"] == "+121만원 (+3.02%)" and o["xxsub"] == "전날 등락 1 / 1종목"
+    assert o["xx"] == "+121만원 (+3.02%)" and o["xxsub"] == "기준 뒤 마감 등락 1 / 1종목"
     assert o["kr"] == "-300만원 (-2.00%)"
     live = {"q": {"AAPL": {"pct": -1.0, "ts": "", "src": "네이버"}}, "pending": 0, "fx": {"USD": {"pct": 1.0, "age": 3}}}
     o = _run_pnl_js(hn, data, live, fx={"USD": 2.0}, cell=cell)
     k = 40000000 * ((0.99 * 1.01) - 1)
     assert o["xx"] == hn._signed_krw(k) + f" ({k / 40000000 * 100:+.2f}%)"
-    assert o["cell"] == "(-1.00% · 원화 " + hn._signed_krw(k) + ")" and "원/USD +1.00%" in o["title"]
+    assert o["cell"] == "(-1.00% · 원화 " + hn._signed_krw(k) + ")" and "원/USD 오늘 하루 +1.00%" in o["title"]
     pnl_urls = [u for u in o["urls"] if "fx=1" in u]
     assert len(pnl_urls) == 1
 
@@ -3532,33 +3531,39 @@ def _pm(at, **vals):
 
 def test_pnl_base_is_the_last_upload_of_the_latest_earlier_kst_date(hn):
     """오늘이 10/9 이고 앞선 기록이 10/5 뿐이면 10/5 의 마지막 업로드 — 오늘 여러 번 올려도 기준은 안 바뀐다."""
-    assert hn.pnl_base(_t("2026-10-05T09:00"), _pm("2026-10-05T09:00", **{"000001": 100.0}), bak=None)[0] is None
+    assert hn.pnl_base(_t("2026-10-05T09:00"), _pm("2026-10-05T09:00", **{"000001": 100.0}), bak=None)["vals"] is None
     hn.pnl_base(_t("2026-10-05T20:00"), _pm("2026-10-05T19:00", **{"000001": 110.0}), bak=None)   # 같은 날 늦은 업로드
-    base, at, ts, _ = hn.pnl_base(_t("2026-10-09T10:00"), _pm("2026-10-09T09:30", **{"000001": 150.0}), bak=None)
-    assert base == {"KR:000001": 110.0} and at == "10-05 19:00"
-    base2 = hn.pnl_base(_t("2026-10-09T15:00"), _pm("2026-10-09T14:50", **{"000001": 160.0}), bak=None)[0]
-    assert base2 == base                                                           # 오늘 업로드는 기준이 아니다
-    assert hn.pnl_base(_t("2026-10-10T09:00"), _pm("2026-10-09T14:50", **{"000001": 160.0}), bak=None)[0] == \
+    pb = hn.pnl_base(_t("2026-10-09T10:00"), _pm("2026-10-09T09:30", **{"000001": 150.0}), bak=None)
+    assert pb["vals"] == {"KR:000001": 110.0} and pb["at"] == "10-05 19:00"
+    assert pb["cur_ts"] == _t("2026-10-09T09:30").timestamp()
+    base2 = hn.pnl_base(_t("2026-10-09T15:00"), _pm("2026-10-09T14:50", **{"000001": 160.0}), bak=None)["vals"]
+    assert base2 == pb["vals"]                                                     # 오늘 업로드는 기준이 아니다
+    assert hn.pnl_base(_t("2026-10-10T09:00"), _pm("2026-10-09T14:50", **{"000001": 160.0}), bak=None)["vals"] == \
         {"KR:000001": 160.0}                                                       # 다음 날엔 어제 마지막 업로드
 
 
 def test_pnl_base_seeds_from_the_backup_and_prunes(hn, monkeypatch):
     bak = _pm("2026-10-07T18:00", **{"000001": 90.0})
-    base, at, _, _ = hn.pnl_base(_t("2026-10-08T10:00"), _pm("2026-10-08T09:00", **{"000001": 95.0}), bak=bak)
-    assert base == {"KR:000001": 90.0} and at == "10-07 18:00"
+    pb = hn.pnl_base(_t("2026-10-08T10:00"), _pm("2026-10-08T09:00", **{"000001": 95.0}), bak=bak)
+    assert pb["vals"] == {"KR:000001": 90.0} and pb["at"] == "10-07 18:00"
     led = json.loads(hn._base_path().read_text(encoding="utf-8"))
     assert set(led) == {"2026-10-07", "2026-10-08"}
     hn.pnl_base(_t("2026-10-30T10:00"), _pm("2026-10-29T09:00", **{"000001": 1.0}), bak=None)
     assert set(json.loads(hn._base_path().read_text(encoding="utf-8"))) == {"2026-10-29"}     # 10일 넘은 날은 지움
+    # 가장 최근 날은 오래돼도 남긴다 — 12일 전 업로드가 마지막이면 그게 기준이다(지우면 매 렌더 넣고 지운다)
+    pb = hn.pnl_base(_t("2026-11-15T10:00"), _pm("2026-10-29T09:00", **{"000001": 1.0}), bak=None)
+    assert pb["vals"] == {"KR:000001": 1.0} and pb["at"] == "10-29 09:00"
 
 
 def test_pnl_base_records_fx_level_only_for_a_fresh_upload(hn, monkeypatch):
     import bot.live_pct as lp
-    monkeypatch.setattr(lp, "fx_levels_cached", lambda: {"USD": 1350.0})
+    seen = []
+    monkeypatch.setattr(lp, "fx_levels_cached", lambda **kw: seen.append(kw.get("max_age")) or {"USD": 1350.0})
     hn.pnl_base(_t("2026-10-08T18:30"), _pm("2026-10-08T18:00", **{"000001": 1.0}), bak=_pm("2026-10-07T09:00", **{"000001": 1.0}))
     led = json.loads(hn._base_path().read_text(encoding="utf-8"))
     assert led["2026-10-08"]["fx"] == {"USD": 1350.0} and "fx" not in led["2026-10-07"]   # 옛 기록에 지금 환율 금지
-    assert hn.pnl_base(_t("2026-10-09T10:00"), _pm("2026-10-09T09:00", **{"000001": 1.0}), bak=None)[3] == {"USD": 1350.0}
+    assert seen == [1800 + hn.FX_BASE_SLACK_SEC]                                 # 값 풀은 그 업로드 무렵 것만
+    assert hn.pnl_base(_t("2026-10-09T10:00"), _pm("2026-10-09T09:00", **{"000001": 1.0}), bak=None)["fx"] == {"USD": 1350.0}
 
 
 def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
@@ -3578,7 +3583,9 @@ def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
     # 기준 10-01 18:00 → 10-02 세션 하루치가 없다(10-05 는 개천절 대체휴일이라 세션이 아니다)
     c = hn.cum_lookup(_t("2026-10-01T18:00").timestamp(), _t("2026-10-12T10:00"))(st)
     assert c["ka"] is None and "2026-10-02" in c["why"]                       # 하루치가 없는 세션은 지어내지 않는다
-    assert hn.cum_lookup(base, _t("2026-10-12T10:00"))({"market": "HK", "ticker": "0700"})["ka"] is None
+    assert "이 종목이 없음" not in c["why"]                                       # 하루치 통째 없음 ≠ 종목만 없음
+    # 세션별 하루치가 없는 시장은 None — 부른 쪽이 실시간 하루 등락을 그대로 쓴다(누적 때문에 실시간을 지우지 않게)
+    assert hn.cum_lookup(base, _t("2026-10-12T10:00"))({"market": "HK", "ticker": "0700"}) is None
 
 
 def test_summary_counts_holdings_new_since_the_base(hn, ws_snaps):
@@ -3611,15 +3618,89 @@ def test_pnl_js_compounds_live_on_top_of_closed_sessions(hn):
     k = (0.99 * 1.01 - 1) * 100
     assert _run_pnl_js(hn, data, live)["kr"] == f"{hn._signed_krw(1000000 * k / 100)} ({k:+.2f}%)"
     data = [{"t": "C", "v": 1000000, "g": "KR", "p": 0, "ka": 1, "kx": None, "sw": far, "n": 0}]
-    assert _run_pnl_js(hn, data, live)["kr"] == "0원 (0.00%)"
+    o = _run_pnl_js(hn, data, live)
+    assert o["kr"] == "0원 (0.00%)" and o["allsub"] == "실시간 1 / 1종목"     # 기준 뒤 마감 없음 = 0(실시간으로 셈)
 
 
 def test_pnl_js_fx_uses_base_level_when_known(hn):
-    data = [{"t": "AAPL", "v": 40000000, "g": "XX", "p": 0, "c": "USD", "ka": 1, "kx": 1, "sw": 0, "n": 0}]
+    data = [{"t": "AAPL", "v": 40000000, "g": "XX", "p": 0, "c": "USD", "ka": 1, "kx": 1, "sw": 0, "n": 0,
+             "fb": 1300.0}]
     live = {"q": {"AAPL": {"pct": 0.0, "ts": "", "src": "x"}}, "pending": 0,
             "fx": {"USD": {"pct": 0.5, "age": 1, "close": 1326.0}}}
     src_fx = {"USD": 0.5}
-    o = _run_pnl_js(hn, data, live, fx=src_fx, fxb={"USD": 1300.0})
+    cell = {"data-t": "AAPL", "data-v": "40000000", "data-c": "USD", "data-fb": "1300",
+            "data-cum": json.dumps({"ka": 1, "kx": 1, "sw": 0, "n": 0})}
+    o = _run_pnl_js(hn, data, live, fx=src_fx, cell=cell)
     assert o["xx"] == "+80만원 (+2.00%)"                                         # 1326 ÷ 1300 = +2% (오늘 0.5% 아님)
-    o = _run_pnl_js(hn, data, live, fx=src_fx)
+    assert "원/USD 기준 대비 +2.00%" in o["title"]
+    data[0].pop("fb")
+    cell.pop("data-fb")
+    o = _run_pnl_js(hn, data, live, fx=src_fx, cell=cell)
     assert o["xx"] == "+20만원 (+0.50%)"                                         # 기준 수준이 없으면 오늘 하루치
+    assert "원/USD 오늘 하루 +0.50%" in o["title"]
+
+
+def test_render_to_js_e2e_card_uses_base_amount_and_cumulative(hn, ws_snaps):
+    """렌더된 카드의 data-v(기준 금액)·data-cum 을 그대로 JS 에 태운다 — 손으로 만든 재료로는 배선을 못 본다(#20)."""
+    import html as _h
+    import re
+    hn.pnl_base(_t("2026-10-07T20:00"), _pm("2026-10-07T19:00", **{"005930": 1_000_000.0}), bak=None)
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    m = _pm("2026-10-12T07:30", **{"005930": 5_000_000.0})                     # 오늘 올린 기록(금액이 다르다)
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-12T08:00"), gen="GEN", portfolio=m)
+    card = html.split("data-hncard='1'")[1]
+    span = card.split("js-live-pct'")[1].split(">")[0]
+    attrs = dict(re.findall(r"(data-[a-z]+)='([^']*)'", span))
+    attrs = {k: _h.unescape(v) for k, v in attrs.items()}
+    assert attrs["data-v"] == "1000000"                                          # 기준 날 금액(지금 500만 아님)
+    assert "(-2.00% · -2만원)" in card and "보유 500만원" in card               # 보유 칸은 지금 기록
+    data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
+    o = _run_pnl_js(hn, data, {"q": {"005930": {"pct": 1.0, "ts": "", "src": "x"}}, "pending": 0}, cell=attrs)
+    import time as _time
+    c = json.loads(attrs["data-cum"])
+    assert c["ka"] == pytest.approx(0.98) and c["kx"] == 1 and c["n"] == 1     # 기준(10-07 19:00) 뒤 마감 = 10-08
+    # JS 는 기계 시계로 새 세션(10-12 09:00) 이 열렸는지 가른다 — 같은 규칙으로 기대값을 만든다
+    k = ((c["ka"] if _time.time() * 1000 >= c["sw"] else c["kx"]) * 1.01 - 1) * 100
+    assert o["cell"] == f"({k:+.2f}% · {hn._signed_krw(1_000_000 * k / 100)})"
+    assert o["kr"] == f"{hn._signed_krw(1_000_000 * k / 100)} ({k:+.2f}%)"     # 요약과 카드가 같은 값
+
+
+def test_hong_kong_holding_keeps_live_daily_change(hn):
+    """세션별 하루치가 없는 시장은 누적 재료를 싣지 않는다 — 실시간 하루 등락이 그대로 칠해진다(리뷰 2026-10-14 High)."""
+    m = _model(_h("텐센트", "0700.HK", "HK", 1_000_000.0))
+    m["_saved_ts"] = _t("2026-10-08T09:00").timestamp()
+    rec = _rec({**_stock("HK:0700"), "market": "HK", "ticker": "0700", "sym": "0700.HK", "name": "텐센트"})
+    html = hn.render_page([rec], {}, _t("2026-10-12T10:00"), gen="GEN", portfolio=m)
+    data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
+    head = html.split("data-hncard='1'")[1].split("</div>")[0]
+    assert "ka" not in data[0] and "data-cum" not in head and "js-live-pct" in head
+    o = _run_pnl_js(hn, data, {"q": {data[0]["t"]: {"pct": 1.5, "ts": "", "src": "x"}}, "pending": 0},
+                    cell={"data-t": data[0]["t"], "data-v": "1000000"})
+    assert o["cell"].startswith("(+1.50%") and o["xxsub"].startswith("실시간 1")
+
+
+def test_new_holding_since_base_counts_from_its_own_upload(hn, ws_snaps):
+    """기준(10-05) 뒤에 새로 생긴 종목은 기준 날부터 세면 들고 있지 않던 날의 손익을 지어낸다 — 그 종목이 처음 실린
+    지금 기록의 업로드 시각부터 센다(리뷰 2026-10-14 High)."""
+    hn.pnl_base(_t("2026-10-05T20:00"), _pm("2026-10-05T19:00", **{"005930": 100.0}), bak=None)
+    for d, v in (("2026-10-06", 1.0), ("2026-10-07", 2.0), ("2026-10-08", 3.0)):
+        ws_snaps("KR", d, [("KRX:005930", v), ("KRX:000660", v)])
+    m = _pm("2026-10-08T16:00", **{"005930": 999.0, "000660": 50.0})            # 10-08 장 마감 뒤 올린 기록
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-08T17:00"), gen="GEN", portfolio=m)
+    data = {d["t"]: d for d in json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])}
+    assert data["005930"]["n"] == 3 and data["005930"]["ka"] == pytest.approx(1.01 * 1.02 * 1.03)
+    assert data["000660"]["n"] == 0 and data["000660"]["ka"] == 1               # 새 종목: 그 업로드 뒤 마감 없음
+    assert data["000660"]["p"] == 0 and data["000660"]["v"] == 50
+
+
+def test_overseas_card_carries_its_fx_base_level(hn, ws_snaps, monkeypatch):
+    import bot.live_pct as lp
+    monkeypatch.setattr(lp, "fx_levels_cached", lambda **kw: {"USD": 1300.0})
+    m = _model(_h("애플", "AAPL", "US", 40_000_000.0, source="alias"))
+    m["_saved_ts"] = _t("2026-10-09T08:00").timestamp()
+    hn.pnl_base(_t("2026-10-09T08:10"), m, bak=None)                                # 업로드 10분 뒤 처음 봄 → 환율 수준 적음
+    ws_snaps("US", "2026-10-09", [("NASDAQ:AAPL", 1.0)])
+    rec = _rec({**_stock("US:AAPL"), "market": "US", "ticker": "AAPL", "name": "애플"})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=m)
+    data = json.loads(html.split("id='hn-pnl-data'>")[1].split("</script>")[0])
+    assert data[0]["fb"] == 1300.0 and "data-fb='1300.0'" in html.split("data-hncard='1'")[1]
