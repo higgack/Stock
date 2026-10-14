@@ -663,7 +663,7 @@ def _item_key(it: dict) -> str:
 def collect(now: datetime | None = None, *, model: dict | None = None,
             records: list[dict] | None = None, fetch=fetch_stock_news,
             body=_fetch_body, pace: float = 0.25, us_etf: set | None = None, ko=None,
-            beat=None) -> dict | None:
+            beat=None, only: set | None = None, since_at: datetime | None = None) -> dict | None:
     """하루 기록 하나를 만든다(분석 전 — 종목마다 status 'pending' 또는 'empty'). 보유 종목이 없으면
     None(쓸 것이 없다). 저장은 부른 쪽이. `pace` = 원천 요청 사이 쉬는 초(구글 뉴스는 데이터센터 IP
     에서 몰아 치면 막힌다 — 네이버 키가 없으면 국내 전부가 구글로 간다). `us_etf`·`ko` = 미국 ETF 목록·
@@ -675,6 +675,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
     이미 실린 항목은 앞선 기록 둘과 대조해 뺀다."""
     now = _now(now)
     stocks, skipped = universe(model, us_etf=_us_etf() if us_etf is None else us_etf)
+    if only is not None:                 # 낮에 새로 생긴 보유만(`add_new_holdings`) — 창·규칙은 아침 수집과 같다
+        stocks = [s for s in stocks if s["key"] in only]
     if not stocks:
         return None
     recs = load_records(limit=3) if records is None else records
@@ -687,6 +689,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
     since = (prev_until - timedelta(hours=WINDOW_OVERLAP_H)) if prev_until else \
         (now - timedelta(hours=DEFAULT_WINDOW_H))
     since = max(since, now - timedelta(hours=MAX_WINDOW_H))
+    if since_at is not None:             # 낮 추가 수집 — 오늘 아침 기록과 같은 창 시작(그날 소식을 다 담게)
+        since = since_at
     until = now
     seen = _seen_keys(recs, date)
     tg_all, tg_bad = _tg_read()
@@ -1493,6 +1497,39 @@ def _llm_ready() -> bool:
         return False
 
 
+# 낮에 자산 기록이 바뀌면(사용자 2026-10-14 "자산 기록이 바뀌었을 때 새로 생긴 종목만 바로 수집해 오늘 카드에")
+# 새로 생긴 보유만 모아 오늘 기록에 붙인다. 종목 목록은 아침 수집 한 번에 정해져, 낮에 산 종목은 다음 날까지
+# 카드가 없었다. 판 종목은 그대로 둔다(그날 아침에 들고 있던 종목의 뉴스는 사실이다). 한 주기 상한을 두어
+# 자산 기록을 통째로 바꿔도 한 주기가 길어지지 않는다(남은 종목은 다음 주기에).
+MAX_ADD_PER_TICK = 20
+
+
+def add_new_holdings(rec: dict, now: datetime | None = None, *, records: list[dict] | None = None,
+                     model: dict | None = None, fetch=fetch_stock_news, body=_fetch_body, pace: float = 0.25,
+                     us_etf: set | None = None, ko=None, beat=None) -> int:
+    """오늘 기록(`rec`)에 없는 지금의 보유 종목을 모아 붙인다(대기 상태 — 같은 주기의 `analyze` 가 정리한다).
+    반환 = 붙인 종목 수. 같은 날 다시 불러도 이미 붙은 종목은 다시 모으지 않는다(키로 대조)."""
+    now = _now(now)
+    etfs = _us_etf() if us_etf is None else us_etf
+    stocks, _ = universe(model, us_etf=etfs)
+    have = {s.get("key") for s in rec.get("stocks") or []}
+    new = [s["key"] for s in stocks if s["key"] not in have][:MAX_ADD_PER_TICK]
+    if not new:
+        return 0
+    part = collect(now, model=model, records=records, fetch=fetch, body=body, pace=pace, us_etf=etfs, ko=ko,
+                   beat=beat, only=set(new), since_at=_parse((rec.get("window") or {}).get("since")))
+    if not part:
+        return 0
+    at = now.isoformat(timespec="minutes")
+    for s in part["stocks"]:
+        s["added_at"] = at
+        rec.setdefault("stocks", []).append(s)
+    u = rec.setdefault("universe", {})
+    u["n"] = int(u.get("n") or 0) + len(part["stocks"])
+    rec.setdefault("added", []).append({"at": at, "n": len(part["stocks"])})
+    return len(part["stocks"])
+
+
 def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
          body=_fetch_body, pace: float = 0.25) -> dict:
     """오늘 기록이 없고 집계 시각이 지났으면 모으고, 대기 종목이 있으면 AI 에 보낸다 — 오늘 먼저, 남은 상한으로
@@ -1537,6 +1574,15 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
                     return {"status": "none"}
                 save_record(rec)
                 st["last_collect"] = now.isoformat(timespec="seconds")
+            elif rec is not None:
+                # 낮에 자산 기록이 바뀌어 새로 생긴 보유 — 실패는 이 일만 건너뛴다(본체를 멈추지 않게, #315)
+                try:
+                    na = add_new_holdings(rec, now, records=recs, fetch=fetch, body=body, pace=pace, beat=beat)
+                    if na:
+                        log.info("holdings_news: %s — 자산 기록에 새로 생긴 %d종목을 모아 붙임", date, na)
+                        save_record(rec)
+                except Exception as exc:                       # noqa: BLE001
+                    log.warning("holdings_news: 새 보유 추가 수집 실패: %s", exc)
             live = _live_dates([r["date"] for r in recs], date)
             todo = ([rec] if rec else []) + [r for r in sorted(recs, key=lambda r: r["date"], reverse=True)
                                              if r["date"] != date and r["date"] in live]
@@ -1733,16 +1779,32 @@ _PNL_JS = r"""
   window.hnAmt=amt;     // 카드 칸(`LIVE_JS` paint)도 쓴다 — 요약 재료가 없어도 정의한다
   // 원화 환율 전일대비(통화 → %) — 서버가 넣은 값으로 시작하고 1분마다 `fx=1` 로 갱신. 파이썬 `krw_pct` 와 같은 식.
   var fx={}; try{var fe=document.getElementById('hn-fx-data'); if(fe) fx=JSON.parse(fe.textContent)||{};}catch(e){fx={};}
-  function krw(p,c){var f=fx[c]; if(f===undefined||f===null) return {pct:p,fx:null};
-    return {pct:((1+p/100)*(1+f/100)-1)*100,fx:f};}
+  // 기준 날 업로드 무렵의 원화 환율 수준 — 있으면 환율 변동도 기준 대비 누적(지금 수준 ÷ 기준 수준), 없으면 오늘 하루치
+  var fxb={}; try{var be=document.getElementById('hn-fxb-data'); if(be) fxb=JSON.parse(be.textContent)||{};}catch(e){fxb={};}
+  var fxNow={};
+  function krw(p,c){var fac=null;
+    if(fxb[c]&&fxNow[c]) fac=fxNow[c]/fxb[c];
+    else if(fx[c]!==undefined&&fx[c]!==null) fac=1+fx[c]/100;
+    if(fac===null) return {pct:p,fx:null};
+    return {pct:((1+p/100)*fac-1)*100,fx:(fac-1)*100};}
   window.hnKrw=krw;
+  // 기준 대비 누적 등락 — 파이썬 `cum_lookup` 의 재료(ka 마감 전부 · kx 마지막 마감 뺀 것 · sw 새 세션 시각)
+  // 위에 실시간 등락을 곱한다. 못 세면 null(서버 값이 남는다).
+  function cum(c,lp){
+    if(!c) return lp;
+    if(Date.now()>=(c.sw||0)) return (c.ka===null||c.ka===undefined)?null:(c.ka*(1+lp/100)-1)*100;
+    if(c.kx===null||c.kx===undefined) return c.n===0?0:null;   // 기준 뒤 마감 없음 → 실시간은 기준 앞 세션
+    return (c.kx*(1+lp/100)-1)*100;}
+  window.hnCum=cum;
   var el=document.getElementById('hn-pnl-data'); if(!el) return;
   var pos; try{pos=JSON.parse(el.textContent)||[];}catch(e){return;}
   var live={};
   function draw(){
     var G={all:[0,0,0,0,0,0],KR:[0,0,0,0,0,0],XX:[0,0,0,0,0,0]};   // 금액·분모·실시간·전날·전체·환율 미확인
     pos.forEach(function(p){
-      var lv=live[p.t], pct=lv?lv.pct:p.p;
+      var lv=live[p.t], pct=null;
+      if(lv){pct=(p.ka!==undefined)?cum(p,lv.pct):lv.pct; if(pct===null) lv=null;}
+      if(pct===null) pct=p.p;
       ['all',p.g].forEach(function(g){var o=G[g]; o[4]++;
         if(pct===null||pct===undefined) return;
         var k=p.c?krw(pct,p.c):{pct:pct,fx:0};
@@ -1772,9 +1834,10 @@ _PNL_JS = r"""
         .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
         .then(function(js){var q=(js&&js.q)||{}; for(var k in q) live[k]=q[k]; if(js&&js.pending) again=true;
           // 응답이 환율을 실었으면 통째로 바꾼다 — 서버가 낡아서 버린 통화가 화면에 남지 않게(리뷰 2026-10-14)
-          var f=js&&js.fx; if(f&&typeof f==='object'){var nf={};
-            for(var cc in f) if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
-            fx=nf; if(window.liveRepaint) window.liveRepaint();}})
+          var f=js&&js.fx; if(f&&typeof f==='object'){var nf={}, nl={};
+            for(var cc in f){ if(f[cc]&&typeof f[cc].pct==='number') nf[cc]=f[cc].pct;
+              if(f[cc]&&typeof f[cc].close==='number') nl[cc]=f[cc].close; }
+            fx=nf; fxNow=nl; if(window.liveRepaint) window.liveRepaint();}})
         .catch(function(){})
         .then(function(){if(--left===0){draw(); setTimeout(poll, again?5000:60000);}});
     });
@@ -1906,6 +1969,100 @@ def pnl_positions(model: dict | None = None) -> tuple[list[dict], dict]:
 
 PNL_GROUPS = (("all", "전체"), ("KR", "국내"), ("XX", "해외"))
 
+# ── 전일대비의 기준 금액(사용자 2026-10-14 "자산대시보드 전번 업데이트 대비가 아니라 한국시간 전일 마지막 업데이트
+# 대비로") — 자산 기록은 하루에도 여러 번 올라온다. 그날 낮에 올린 평가금액은 이미 오늘 등락을 일부 품어서, 그걸
+# 기준으로 오늘 등락을 곱하면 두 번 센다. 그래서 KST 날짜마다 **그날 마지막 업로드**의 종목별 평가금액을 이 장부에
+# 남기고, 전일대비는 오늘보다 앞선 가장 최근 날의 값 × 오늘 등락으로 센다. 자산 기록은 최신 1개 + 직전 1개(.bak)만
+# 들고 있어(`portfolio.save`) 히스토리가 없으므로 여기서 쌓는다. 오늘 처음 생긴 종목은 기준이 없어 지금 금액을 쓰고
+# 화면이 그 수를 말한다(#43).
+BASE_KEEP_DAYS = 10
+FX_BASE_FRESH_SEC = 3600
+
+
+def _base_path() -> Path:
+    return _DIR / "pnl_base.json"
+
+
+def _saved_kst(model) -> tuple[str, float] | None:
+    try:
+        ts = float((model or {}).get("_saved_ts"))
+        return datetime.fromtimestamp(ts, _KST).date().isoformat(), ts
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def pnl_base(now: datetime | None = None, model: dict | None = None, *, bak: dict | None = None,
+             write: bool = True) -> tuple[dict | None, str, float | None, dict]:
+    """(기준 {key: 평가금액}, 기준 라벨 'MM-DD HH:MM', 업로드 시각 epoch) — 오늘(KST)보다 앞선 가장 최근 **날짜**의
+    마지막 자산 업로드(오늘이 10/9 이고 그 앞 기록이 10/5 뿐이면 10/5 의 마지막 업로드). 없으면 (None, '', None).
+    지금 자산 기록과 직전 기록(.bak)을 장부에 넣고(같은 날은 더 늦은 업로드가 이긴다) 오래된 날은 지운다."""
+    now = _now(now)
+    if model is None:
+        try:
+            from bot.portfolio import load
+            model = load() or {}
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("holdings_news: portfolio 읽기 실패(전일 기준): %s", exc)
+            model = {}
+        if bak is None:
+            try:
+                from bot.portfolio import PORTFOLIO_PATH
+                bak = json.loads(PORTFOLIO_PATH.with_suffix(".json.bak").read_text(encoding="utf-8"))
+            except Exception:                                  # noqa: BLE001 — 없으면 없는 것
+                bak = None
+    path = _base_path()
+    try:
+        led = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(led, dict):
+            led = {}
+    except (OSError, ValueError):
+        led = {}
+    changed = False
+    for m in (bak, model):
+        sk = _saved_kst(m)
+        if not sk or not isinstance(m, dict):
+            continue
+        d, ts = sk
+        cur = led.get(d) if isinstance(led.get(d), dict) else None
+        if cur and float(cur.get("ts") or 0) >= ts:
+            continue
+        pos, _ = pnl_positions(m)
+        led[d] = {"ts": ts, "vals": {p["key"]: round(p["value"]) for p in pos}}
+        # 그 업로드 무렵의 원화 환율 수준 — 여러 날 기준의 해외 원화 손익(지금 ÷ 기준)에 쓴다. 업로드 뒤 한 시간
+        # 안에 처음 보는 기록에만 적는다(옛 기록에 지금 환율을 적으면 그날 환율인 척한다, #165).
+        if now.timestamp() - ts <= FX_BASE_FRESH_SEC:
+            try:
+                from bot.live_pct import fx_levels_cached
+                lv = fx_levels_cached()
+                if lv:
+                    led[d]["fx"] = lv
+            except Exception as exc:                           # noqa: BLE001
+                log.warning("holdings_news: 기준 환율 수준 읽기 실패: %s", exc)
+        changed = True
+    keep = (now.date() - timedelta(days=BASE_KEEP_DAYS)).isoformat()
+    for d in [d for d in led if d < keep]:
+        led.pop(d)
+        changed = True
+    if changed and write:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(led, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            log.warning("holdings_news: 전일 기준 장부 저장 실패: %s", exc)
+    today = now.date().isoformat()
+    prior = sorted(d for d in led if d < today and isinstance(led[d], dict))
+    if not prior:
+        return None, "", None, {}
+    e = led[prior[-1]]
+    ts = float(e.get("ts") or 0)
+    at = datetime.fromtimestamp(ts, _KST).strftime("%m-%d %H:%M")
+    vals = e.get("vals") if isinstance(e.get("vals"), dict) else {}
+    fxb = e.get("fx") if isinstance(e.get("fx"), dict) else {}
+    return ({k: float(v) for k, v in vals.items() if isinstance(v, (int, float))}, at, ts,
+            {k: float(v) for k, v in fxb.items() if isinstance(v, (int, float)) and v > 0})
+
 
 # 해외 원화 손익(사용자 2026-10-14 "환율 반영 원화손익으로") — 원화 기준 등락 = (1+주가 등락)(1+원화 환율 등락) − 1.
 # 환율 = 네이버 원화 환율 전일대비(`live_pct.fx_changes`). 통화는 시장 설정(`market.MARKET_CONFIG`) 한 곳에서(#38).
@@ -1953,7 +2110,48 @@ def pnl_summary(positions: list[dict], look, fx: dict | None = None) -> dict:
     return out
 
 
-def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict | None = None) -> str:
+def pnl_context(pos: list[dict], now: datetime | None = None, model: dict | None = None) -> dict:
+    """전일대비의 기준과 누적 등락 — 요약·최신일 카드·화면 JS 가 같은 값을 쓴다(#38).
+    {pos: 기준 금액으로 바꾼 보유, look: 누적 등락 조회(pnl_summary 꼴), cum: key→누적 재료, base: key→기준 금액,
+     at: 기준 라벨, today: 기준이 오늘 기록인가(전일 기록 없음), new: 기준에 없어 지금 금액을 쓴 종목 수}"""
+    now = _now(now)
+    base, at, ts, fxb = pnl_base(now, model)
+    today = base is None
+    if today:                            # 앞선 날짜의 기록이 없다(처음 배포 직후 등) — 지금 기록 시각을 기준으로
+        sk = _saved_kst(model if model is not None else _load_model_safe())
+        ts = sk[1] if sk else now.timestamp()
+        at = datetime.fromtimestamp(ts, _KST).strftime("%m-%d %H:%M")
+        base = {}
+    cum = cum_lookup(ts, now)
+    cmap, bmap, bpos, new = {}, {}, [], 0
+    for p in pos:
+        b = base.get(p["key"])
+        if b is None:
+            new += 0 if today else 1
+            b = p["value"]
+        bmap[p["key"]] = b
+        cmap[p["key"]] = cum(p)
+        bpos.append({**p, "value": b})
+
+    def look(p):
+        c = cmap.get(p["key"]) or {}
+        ka = c.get("ka")
+        return ((ka - 1) * 100 if ka is not None else None), None, c.get("why") or ""
+
+    return {"pos": bpos, "look": look, "cum": cmap, "base": bmap, "at": at, "today": today, "new": new,
+            "fxb": fxb}
+
+
+def _load_model_safe() -> dict:
+    try:
+        from bot.portfolio import load
+        return load() or {}
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+
+def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict | None = None,
+              ctx: dict | None = None) -> str:
     """요약 칸 3개 + 화면 JS 가 실시간으로 다시 셀 재료(JSON). 서버 값은 전날 등락 기준이고 화면을 열면
     1분마다 실시간 등락률로 다시 센다(`_PNL_JS`)."""
     import html as _h
@@ -1976,10 +2174,22 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict |
         cells.append(f"<div class='stat'><div class='k'>전일대비 · {lab}</div>"
                      f"<div class='v' id='hn-pnl-{g}'>{v}</div>"
                      f"<div class='hn-pnl-sub' id='hn-pnl-{g}-sub'>{_h.escape(sub)}</div></div>")
+    cum = (ctx or {}).get("cum") or {}
     data = [{"t": live_ticker(p), "v": round(p["value"]), "g": "KR" if p["market"] == "KR" else "XX",
-             "p": look(p)[0], **({"c": currency_of(p["market"])} if currency_of(p["market"]) else {})}
+             "p": look(p)[0], **({"c": currency_of(p["market"])} if currency_of(p["market"]) else {}),
+             **({k: cum[p["key"]][k] for k in ("ka", "kx", "sw", "n")} if p["key"] in cum else {})}
             for p in positions]
-    note = ("평가금액 × 등락률로 추정한 금액입니다 — 자산 기록에 수량이 없어 업로드 시점 평가금액을 씁니다 · 해외는 "
+    if ctx:
+        bl = (f"기준 = 오늘 자산 기록({ctx['at']} 업로드 — 앞선 날짜의 기록이 아직 없음)" if ctx.get("today") else
+              f"기준 = 오늘보다 앞선 가장 최근 날짜의 마지막 자산 기록({ctx['at']} 업로드 · KST 날짜 기준 — 하루에 "
+              "여러 번 올려도 그날 마지막 것)")
+        bl += (" · 그 평가금액 × 그 뒤 누적 등락(그 뒤 마감한 세션마다의 등락을 곱하고, 화면에선 지금 세션의 실시간 "
+               "등락까지)")
+        if ctx.get("new"):
+            bl += f" · 기준 날 이후 새로 생긴 {ctx['new']}종목은 지금 기록 금액"
+    else:
+        bl = "평가금액 × 등락률"
+    note = (bl + "로 추정한 금액입니다 — 자산 기록에 수량이 없어 평가금액을 씁니다 · 해외는 "
             "원화 기준(주가 등락에 그 통화의 원화 환율 전일대비를 곱함 · 네이버 원화 환율 · 화면이 1분마다 받음 — 두 "
             "등락의 날짜·시각이 다를 수 있어 추정치입니다)"
             + (f" · 티커를 못 찾은 상품 {skip['n']}개({_krw(skip['value'])})는 뺌" if skip.get("n") else ""))
@@ -1987,6 +2197,8 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, basis: str, fx: dict |
             f"<div class='hn-pnl-note'>{_h.escape(note)}</div>"
             "<script type='application/json' id='hn-pnl-data'>"
             + json.dumps(data, ensure_ascii=False).replace("</", "<\\/") + "</script>"
+            "<script type='application/json' id='hn-fxb-data'>"
+            + json.dumps((ctx or {}).get("fxb") or {}, ensure_ascii=False).replace("</", "<\\/") + "</script>"
             + ("" if wait else "<script type='application/json' id='hn-fx-data'>"
                + json.dumps(fx, ensure_ascii=False).replace("</", "<\\/") + "</script>"))
 
@@ -2138,6 +2350,79 @@ def prev_changes(date: str, now: datetime | None = None):
     return look
 
 
+def cum_lookup(base_ts: float, now: datetime | None = None):
+    """기준 시각(전일 자산 기록의 업로드 시각) 뒤의 누적 등락 조회기 — `cum(stock) -> dict`.
+
+    사용자 2026-10-14 "오늘이 10/9 이고 그전 자산이 10/5 기준이면 10/5 와 비교" — 기준 뒤에 **마감한** 세션마다
+    그날 등락(「국가별 심리지도」 하루치)을 곱해 '마지막 마감까지' 를 만들고, 화면은 그 위에 지금 세션의 실시간
+    등락을 곱한다. 반환 키:
+      ka  = 기준 뒤 마감한 세션 전부의 곱(1+r) — 하나라도 하루치가 없으면 None
+      kx  = 마지막 마감 세션을 뺀 곱 — 장이 닫혀 있을 때 실시간 등락이 곧 그 마지막 세션이라 그걸 뺀다.
+            기준 뒤 마감한 세션이 없으면 None(그때의 실시간은 기준 **앞** 세션이라 쓰면 안 된다)
+      sw  = 이 시각(epoch ms)부터는 실시간이 새 세션 → ka 위에 곱한다(장이 열려 있으면 0)
+      n   = 기준 뒤 마감한 세션 수 · why = 못 셀 때 사유
+    ⚠️ 기준 업로드가 장중이었으면 그 세션의 등락을 통째로 센다(업로드 시각의 가격을 모른다 — 화면이 추정이라 밝힌다)."""
+    now = _now(now)
+    memo: dict = {}
+    now_utc = now.astimezone(timezone.utc)
+    base_utc = datetime.fromtimestamp(float(base_ts), timezone.utc)
+
+    def _plan(mk: str):
+        if mk in memo:
+            return memo[mk]
+        out = None
+        try:
+            from bot import world_sectors as ws
+            from bot.world_sector_pages import lookup_ticker
+            d0 = base_utc.astimezone(_KST).date() - timedelta(days=3)
+            closed, cur_open, nxt = [], False, None
+            for i in range((now.date() - d0).days + 10):
+                d = (d0 + timedelta(days=i)).isoformat()
+                t = ws.session_times(mk, d)
+                if not t:
+                    continue
+                op, cl = t
+                if cl <= base_utc:
+                    continue
+                if cl <= now_utc:
+                    closed.append(d)
+                elif op <= now_utc:
+                    cur_open = True
+                elif nxt is None:
+                    nxt = op
+            tbls = {d: _snap_tables(ws, lookup_ticker, mk, d) for d in closed}
+            out = (closed, cur_open, nxt, tbls)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("holdings_news: 누적 등락 계획 실패(%s): %s", mk, exc)
+        memo[mk] = out
+        return out
+
+    def cum(st: dict) -> dict:
+        mk = _PREV_MK.get(str(st.get("market") or "").upper())
+        plan = _plan(mk) if mk else None
+        if plan is None:
+            return {"ka": None, "kx": None, "sw": 0, "n": 0,
+                    "why": f"{st.get('market')} 시장은 세션별 등락 원천이 없음"}
+        closed, cur_open, nxt, tbls = plan
+        key = _snap_key(st, mk)
+        fac, miss = [], []
+        for d in closed:
+            t = tbls.get(d)
+            v = t[0].get(key) if t else None
+            fac.append(None if v is None else 1 + v / 100)
+            if v is None:
+                miss.append(d)
+        ka = None if miss else math.prod(fac)
+        kx = None
+        if closed and None not in fac[:-1]:
+            kx = math.prod(fac[:-1])
+        sw = 0 if (cur_open or nxt is None) else int(nxt.timestamp() * 1000)
+        why = f"{', '.join(miss)} 하루치에 이 종목이 없음(아직 안 받았거나 거래 없음)" if miss else ""
+        return {"ka": ka, "kx": kx, "sw": sw, "n": len(closed), "why": why}
+
+    return cum
+
+
 def _snap_key(st: dict, mk: str) -> str:
     """하루치 표의 키 — 표는 `lookup_ticker` 꼴(국내 6자리 · 미국 BRK.B → BRK-B)."""
     key = (st["ticker"] if mk == "KR" else (st.get("sym") or st["ticker"])).upper()
@@ -2200,7 +2485,7 @@ def _prev_missing_why(ws, mk: str, d: str, now) -> str:
 
 
 def _prev_html(prev, live: str = "", value: float | None = None, *, ccy: str | None = None,
-               fx: dict | None = None) -> str:
+               fx: dict | None = None, cum: dict | None = None) -> str:
     """종목명 옆 `(+1.23%)` — 값이 없으면 `(—)` 에 사유를 툴팁으로(빈칸이 '0' 으로 읽히지 않게, #43).
 
     `live` = 실시간 등락을 받을 티커(최신일 카드만, 사용자 2026-10-13 "가능한 실시간으로"). 화면이
@@ -2210,6 +2495,8 @@ def _prev_html(prev, live: str = "", value: float | None = None, *, ccy: str | N
     import html as _h
     # `data-v` = 보유 평가금액 — 실시간 칸도 금액을 같이 다시 센다(`live_pct.LIVE_JS` 의 paint)
     dv = (f"' data-v='{round(value)}" + (f"' data-c='{_h.escape(ccy)}" if ccy else "")) if live and value else ""
+    if live and cum is not None:         # 누적 재료 — 화면이 실시간 등락 위에 곱한다(`_PNL_JS` hnCum)
+        dv += "' data-cum='" + _h.escape(json.dumps({k: cum.get(k) for k in ("ka", "kx", "sw", "n")}))
     lv = (f" js-live-pct' data-t='{_h.escape(live)}' data-cu='hn-up' data-cd='hn-dn{dv}" if live else "")
     if not prev:
         return f"<span class='hn-chg{lv}' title='실시간 등락 대기'></span>" if live else ""
@@ -2218,7 +2505,12 @@ def _prev_html(prev, live: str = "", value: float | None = None, *, ccy: str | N
         return f"<span class='hn-chg{lv}' title='{_h.escape(why_ or '전날 등락 없음')}'>(—)</span>"
     cls = "hn-up" if v > 0 else "hn-dn" if v < 0 else ""
     sign = "+" if v > 0 else ""
-    tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
+    if isinstance(d, str) and d.startswith("@"):
+        at, _, n = d[1:].partition("|")
+        tip = (f"{at}(KST) 자산 기록 대비 누적 등락 — 그 뒤 마감한 세션 {n}개(TradingView 하루치)를 곱함 · 화면에선 "
+               "지금 세션의 실시간 등락까지")
+    else:
+        tip = f"{d} 종가 기준 등락률 · TradingView(「국가별 심리지도」와 같은 하루치)"
     fxp = (fx or {}).get(ccy) if ccy and live else None
     # 해외 원화 금액엔 보이는 표식 — 괄호 %(주가 등락)로 눈으로 나눠 보면 안 맞기 때문이다(#33·#228)
     won = "원화 " if fxp is not None else ""
@@ -2263,8 +2555,30 @@ def _ind_html(ind: str) -> str:
         if ind else ""
 
 
+def _added_html(s: dict) -> str:
+    """낮에 자산 기록이 바뀌어 붙은 종목 — 아침 수집분과 창은 같지만 모은 시각이 다르다고 밝힌다(#43)."""
+    import html as _h
+    at = str(s.get("added_at") or "")
+    return f" · 자산 기록 변경 뒤 {_h.escape(at[11:16])} 추가" if len(at) >= 16 else ""
+
+
+def _amt_base(pnl: dict | None, s: dict, val: float) -> float:
+    """최신일 카드 금액의 기준 — 요약과 같은 기준 날 평가금액(없으면 지금 금액)."""
+    b = ((pnl or {}).get("base") or {}).get(s.get("key"))
+    return b if b is not None else val
+
+
+def _cum_prev(pnl: dict, s: dict):
+    """최신일 카드의 괄호 값 — 전일대비 요약과 **같은** 기준 대비 누적 등락(#38·#33). (값, 라벨, 사유)."""
+    c = (pnl.get("cum") or {}).get(s.get("key"))
+    if c is None:
+        return None
+    ka = c.get("ka")
+    return ((ka - 1) * 100 if ka is not None else None), f"@{pnl.get('at', '')}|{c.get('n', 0)}", c.get("why") or ""
+
+
 def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value: float | None = None,
-          fx: dict | None = None, ind: str = "") -> str:
+          fx: dict | None = None, ind: str = "", pnl: dict | None = None) -> str:
     """종목 카드. `final` = 주기가 더는 이어서 정리하지 않는 날(`_live_dates` 밖) — 그날의 '대기' 를 '다음
     주기에' 라고 적으면 지킬 수 없는 약속이다(리뷰 2026-10-12)."""
     import html as _h
@@ -2326,9 +2640,10 @@ def _card(s: dict, *, final: bool = False, prev=None, live: bool = False, value:
             f"data-pro='{1 if shown.get('pros') else 0}' data-con='{1 if shown.get('cons') else 0}' "
             f"data-tg='{1 if n_tg else 0}' data-q='{_h.escape(q)}'>"
             f"<div class='hn-h'><a class='hn-nm' href='{_h.escape(_lookup(s))}' title='종목분석 화면으로'>"
-            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', val, ccy=currency_of(s.get('market') or ''), fx=fx)}"
+            f"{_h.escape(s['name'])}</a>{_prev_html(prev, live_ticker(s) if live else '', _amt_base(pnl, s, val) if live else val, ccy=currency_of(s.get('market') or ''), fx=fx, cum=((pnl or {}).get('cum') or {}).get(s.get('key')) if live else None)}"
             f"<span class='hn-tk'>{_h.escape(s['ticker'])}{_ind_html(ind or s.get('ind') or '')} · 보유 {_krw(val)}"
-            f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}</span></div>"
+            f" · 뉴스 {len(items) - n_tg}건{f' · 텔레그램 {n_tg}건' if n_tg else ''}"
+            f"{_added_html(s)}</span></div>"
             f"{pc}<details class='hn-src'><summary>근거 {len(items)}건{offnote}</summary>"
             f"<ol>{lis}</ol></details></div>")
 
@@ -2377,7 +2692,7 @@ def _day_summary(rec: dict) -> str:
 
 
 def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, live: bool = False,
-              values: dict | None = None, fx: dict | None = None) -> str:
+              values: dict | None = None, fx: dict | None = None, pnl: dict | None = None) -> str:
     """하루 칸의 본문(카드 · 새 뉴스 없음 · 뺀 상품) — 최신일은 페이지에, 지난 날은 조각 파일에 같은
     함수로 싣는다(#38). `final` → `_card`."""
     import html as _h
@@ -2389,8 +2704,8 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
     # 한국어 라벨이 생기면 따라온다(적어 둔 값은 하루치가 없을 때의 폴백, 리뷰 2026-10-14)
     indl = industry_lookup(rec["date"])
     vals = values or {}
-    cards = "".join(_card(s, final=final, prev=look(s), live=live, value=vals.get(s.get("key")), fx=fx,
-                          ind=indl(s)) for s in with_news)
+    cards = "".join(_card(s, final=final, prev=_cum_prev(pnl, s) if pnl and live else look(s), live=live,
+                          value=vals.get(s.get("key")), fx=fx, ind=indl(s), pnl=pnl) for s in with_news)
     quiet_html = ""
     if quiet:
         names = ", ".join(_h.escape(s["name"]) for s in quiet[:60])
@@ -2411,10 +2726,11 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, li
 
 
 def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None,
-              live: bool = False, values: dict | None = None, fx: dict | None = None) -> str:
+              live: bool = False, values: dict | None = None, fx: dict | None = None,
+              pnl: dict | None = None) -> str:
     return (f"<details class='hn-day' data-hnday='1' data-open='{1 if open_ else 0}'"
             f"{' open' if open_ else ''}>{_day_summary(rec)}"
-            f"{_day_body(rec, final=final, now=now, live=live, values=values, fx=fx)}</details>")
+            f"{_day_body(rec, final=final, now=now, live=live, values=values, fx=fx, pnl=pnl)}</details>")
 
 
 def frag_name(date: str) -> str:
@@ -2509,15 +2825,17 @@ def render_page(records: list[dict], state: dict | None = None,
     # 원화 환율은 서버가 굽지 않는다 — 환율 전일대비는 장 중 계속 바뀌어, 구우면 15분 재생성마다 페이지 내용이
     # 달라져 '내용이 같으면 안 쓴다'(#442)가 무너지고 '새 업데이트' 배너가 상시 켜진다(독립 리뷰 2026-10-14). 화면이
     # 열자마자 `api/live_pct?…&fx=1` 로 받는다(`_PNL_JS`). `fx` 인자는 테스트·진단용.
+    pnl_ctx: dict = {}
     try:
         pos, skip = pnl_positions(portfolio)
         pos_vals = {p["key"]: p["value"] for p in pos}
         if pos:
-            look = prev_changes(latest["date"] if latest else now.date().isoformat(), now)
-            pnl = _pnl_html(pos, skip, look, basis="전날 등락 기준", fx=fx)
+            pnl_ctx = pnl_context(pos, now, portfolio)
+            pnl = _pnl_html(pnl_ctx["pos"], skip, pnl_ctx["look"], basis="기준 뒤 마감 등락", fx=fx, ctx=pnl_ctx)
     except Exception as exc:                                   # noqa: BLE001
         log.warning("holdings_news: 전일대비 요약 실패: %s", exc)
-    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True, values=pos_vals, fx=fx)
+        pnl_ctx = {}
+    days = "".join(_day_html(r, open_=True, final=r["date"] not in live, now=now, live=True, values=pos_vals, fx=fx, pnl=pnl_ctx)
                    if i == 0
                    else _day_lazy(r)
                    for i, r in enumerate(recs)) or (
@@ -2550,23 +2868,31 @@ def render_page(records: list[dict], state: dict | None = None,
 대만 ETF 는 가를 목록이 없어 회사로 셉니다).<br>
 <b>카드 머리</b> — 종목명을 누르면 종목분석 화면으로 갑니다. 티커 옆은 그 종목의 <b>업종</b>입니다(「국가별
 섹터혼합」과 같은 TradingView 분류 · 그 시장 하루치가 없으면 비어 있습니다). AI 는 이 업종을 보고 이름만 같은
-다른 사업 기사(예: 반도체 장비 회사 '제우스' 에 섞인 같은 이름의 게임 기사)를 근거에서 뺍니다. 옆 괄호는 맨 위(최신) 날짜 카드에서
-<b>실시간 등락률</b>(정규장 · 직전 종가 대비 — 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 · 장 중이면 지금 값,
-장이 끝났으면 마지막 세션 값 · 장전·장후 시간외 등락은 넣지 않습니다)이고 화면을 열어 둔 동안 1분마다
-바뀝니다. 등락률 옆 금액은 <b>보유 평가금액 × 등락률</b>로 추정한 전일대비 금액입니다(자산 기록에 수량이 없어
-업로드 시점 평가금액을 씁니다 — 그 뒤 주가가 많이 움직였으면 실제 금액과 다릅니다). 해외 종목 금액은
-<b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 전일대비(네이버 원화 환율 · 1분마다 갱신)를 곱해
-(1+주가 등락)×(1+환율 등락)−1 로 셉니다 — 금액 앞에 '원화' 가 붙습니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷
+다른 사업 기사(예: 반도체 장비 회사 '제우스' 에 섞인 같은 이름의 게임 기사)를 근거에서 뺍니다.<br>
+<b>전일대비 — 기준은 KST 날짜</b> — 자산 기록은 하루에도 여러 번 올라오므로 기준은 '직전 업로드' 가 아니라
+<b>오늘보다 앞선 가장 최근 날짜의 마지막 업로드</b>입니다(오늘이 10/9 이고 그 앞 기록이 10/5 뿐이면 10/5 의 마지막
+업로드 · 오늘 몇 번을 올려도 기준은 그대로). 맨 위(최신) 날짜 카드의 괄호와 맨 위 요약 칸은 둘 다 그 기준 대비
+<b>누적 등락</b>입니다 — 기준 업로드 뒤에 마감한 세션마다의 등락(「국가별 심리지도」가 받아 둔 TradingView 하루치)을
+곱하고, 화면을 열어 두면 지금 세션의 <b>실시간 등락</b>(정규장 · 국내 네이버 · 대만 TWSE · 미·일·홍·중 네이버 해외 ·
+장전·장후 시간외 제외)까지 곱해 1분마다 바뀝니다. 금액은 <b>기준 날 평가금액 × 누적 등락</b>으로 추정합니다(자산 기록에
+수량이 없어 평가금액을 씁니다 · 기준 업로드가 장중이었으면 그 세션 등락을 통째로 세므로 어긋날 수 있습니다). 기준 날
+이후 새로 생긴 종목은 지금 기록 금액을 쓰고 요약 아래 줄이 그 수를 적습니다. 그 사이 세션의 하루치가 없으면 지어내지
+않고 '(—)'·'미확인' 입니다. 해외 종목 금액은
+<b>원화 기준</b>입니다 — 주가 등락에 그 통화의 원화 환율 변동(네이버 원화 환율 · 1분마다 갱신)을 곱해
+(1+주가 등락)×(1+환율 변동)−1 로 셉니다 — 금액 앞에 '원화' 가 붙습니다. 환율 변동은 기준 업로드 무렵의 환율 수준이
+남아 있으면 '지금 ÷ 기준' 이고, 없으면(그 업로드를 한 시간 안에 못 봤을 때) 오늘 하루 변동입니다. 괄호 안 %는 주가 등락 그대로라 금액 ÷
 평가금액과 다를 수 있습니다(마우스를 올리면 두 등락을 적습니다). 두 등락의 날짜·시각이 다를 수 있어(예: 미국 주가는
 간밤 세션 · 환율은 서울 외환시장 지금 · 주말·휴장엔 서로 다른 날) 추정치이고, 환율을 못 받은 통화는 '환율 미확인'
 으로 세고 주가 등락만으로 셉니다. 환율은 화면을 연 뒤 받으므로 처음 잠깐은 '환율 대기' 입니다. 지난 날 카드는 그날 환율을 받아 두지 않아 현지통화
 등락만입니다. 맨 위 <b>전일대비 · 전체/국내/해외</b>
 칸은 자산 기록의 값을 매길 수 있는 보유 전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그
-합 ÷ 등락률을 아는 종목의 평가금액 합입니다(등락률을 모르는 종목은 금액에도 분모에도 넣지 않고 '미확인' 으로 셉니다).
-실시간을 못 받은 종목은 <b>전날(그 시장의 직전 거래일) 등락률</b>이 그대로 남습니다 — 「국가별
-심리지도」가 받아 둔 TradingView 하루치(장 마감 3시간 뒤 수집)라 미국은 한국 시각 아침 8~9시에 받으므로 이른
-아침엔 '(—)' 일 수 있고, 휴장이거나 그날을 받지 못했어도 '(—)' 입니다. 지난 날 카드의 괄호는 그날 기준
-전날 등락 그대로입니다(마우스를 올리면 무엇의 값인지와 기준 시각).<br>
+합 ÷ 등락을 아는 종목의 기준 평가금액 합입니다(등락을 모르는 종목은 금액에도 분모에도 넣지 않고 '미확인' 으로 셉니다).
+실시간을 못 받은 종목은 <b>마지막 마감까지의 누적</b>이 그대로 남습니다 — TradingView 하루치는 장 마감 3시간 뒤
+수집이라 미국은 한국 시각 아침 8~9시에 받으므로 이른 아침엔 '(—)' 일 수 있습니다. 지난 날 카드의 괄호는 그날 기준
+전날 하루 등락 그대로입니다(마우스를 올리면 무엇의 값인지와 기준 시각).<br>
+<b>낮에 산 종목</b> — 종목 목록은 매일 아침 수집 때 정해지지만, 그 뒤 자산 기록이 바뀌어 새로 생긴 보유는
+{TICK_MIN}분 주기마다 그 종목만 같은 창·같은 규칙으로 모아 오늘 칸에 붙입니다(카드에 '자산 기록 변경 뒤 HH:MM 추가'
+· 한 주기 {MAX_ADD_PER_TICK}종목까지). 판 종목의 오늘 카드는 그대로 남습니다(그날 아침 들고 있던 종목의 소식이라).<br>
 <b>뉴스</b> — 종목마다 최대 {MAX_NEWS_PER_STOCK}건입니다(원천이 최신순으로 주는 10건 안에서 — 두 이름으로
 찾는 종목은 두 검색 결과를 합쳐서 — 기사가 많은 날은 최근 것만 담깁니다). 국내는 네이버 뉴스 검색(키가 없으면 구글 뉴스)으로 이름을 찾되, 제목·요약에
 그 이름이 <b>낱말로</b> 나온 기사만 남깁니다(이름이 짧거나 흔하면 다른 회사 기사가 섞일 수 있어 AI 가 한 번 더

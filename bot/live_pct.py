@@ -103,7 +103,37 @@ def fx_pct_map(table) -> dict[str, float]:
     return out
 
 
-def fx_changes() -> dict[str, float]:
+def fx_level_map(table) -> dict[str, float]:
+    """`fetch_kr_fx` 표 → {통화: 원화 환율 수준(종가 칸)}. 순수 — 여러 날 기준의 누적 환율 변동(지금 ÷ 기준)에 쓴다."""
+    out: dict[str, float] = {}
+    for rc, rec in (table or {}).items() if isinstance(table, dict) else ():
+        m = _FX_RE.match(str(rc))
+        if not m or not isinstance(rec, dict):
+            continue
+        try:
+            v = float(rec.get("close"))
+        except (TypeError, ValueError):
+            continue
+        if v == v and v > 0:
+            out[m.group(1)] = v
+    return out
+
+
+def fx_levels_cached() -> dict[str, float]:
+    """디스크 값 풀에 이미 있는 원화 환율 수준 — 네트워크 0. 값 풀이 `FX_MAX_AGE_SEC` 보다 낡았으면 {}."""
+    try:
+        from bot.finviz_client import _cached
+        from bot.naver_marketindex import _KRFX_CACHE, value_age_sec
+        age = value_age_sec("fx")
+        if age is None or age > FX_MAX_AGE_SEC:
+            return {}
+        return fx_level_map(_cached(_KRFX_CACHE, ttl=int(FX_MAX_AGE_SEC)) or {})
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("live_pct: 원화 환율 수준을 못 읽었습니다(%s)", exc)
+        return {}
+
+
+def fx_changes(*, levels: dict | None = None) -> dict[str, float]:
     """네트워크를 부를 수 있다(값 풀 30초 캐시). 값 풀이 `FX_MAX_AGE_SEC` 보다 낡았으면 {} — 못 받은 것과 같다."""
     try:
         from bot.naver_marketindex import fetch_kr_fx, value_age_sec
@@ -115,18 +145,22 @@ def fx_changes() -> dict[str, float]:
     if age is not None and age > FX_MAX_AGE_SEC:
         log.warning("live_pct: 원화 환율 값 풀이 %.1f시간 전 값이라 쓰지 않습니다", age / 3600)
         return {}
+    if levels is not None:
+        levels.update(fx_level_map(tbl))
     return fx_pct_map(tbl)
 
 
 def _fx_worker() -> None:
+    lv: dict = {}
     try:
-        val = fx_changes()
+        val = fx_changes(levels=lv)
     except Exception:                                          # noqa: BLE001
         val = {}
     with _LOCK:
         _FX["at"], _FX["running"] = time.time(), False
         if val:                                                # 실패는 직전 값을 지우지 않는다(나이는 age 가 말한다)
             _FX["val"] = val
+            _FX["lvl"] = lv
             _FX["val_at"] = _FX["at"]
 
 
@@ -136,7 +170,7 @@ def fx_lookup(now: float | None = None, *, kick: bool = True) -> dict:
     now = time.time() if now is None else now
     start = False
     with _LOCK:
-        val, at = dict(_FX["val"]), _FX.get("val_at") or 0.0
+        val, at, lvl = dict(_FX["val"]), _FX.get("val_at") or 0.0, dict(_FX.get("lvl") or {})
         if kick and now - _FX["at"] >= FX_FRESH_SEC and not _FX["running"]:
             _FX["running"] = start = True
     if start:
@@ -148,7 +182,8 @@ def fx_lookup(now: float | None = None, *, kick: bool = True) -> dict:
                 _FX["running"] = False
     if not val or now - at > FX_MAX_AGE_SEC:
         return {}
-    return {c: {"pct": p, "age": round(now - at)} for c, p in val.items()}
+    return {c: {"pct": p, "age": round(now - at), **({"close": lvl[c]} if c in lvl else {})}
+            for c, p in val.items()}
 
 
 def normalize(raw) -> tuple[list[str], bool]:
@@ -253,6 +288,10 @@ LIVE_JS = r"""
     // `data-v`(보유 평가금액)가 있는 칸은 금액도 같이(보유종목 News — 평가금액 × 등락률 추정). 해외(`data-c`
     // = 통화)는 원화 환율 전일대비를 곱한 원화 기준 금액(`window.hnKrw`, 보유종목 News `_PNL_JS`).
     var dv=parseFloat(el.getAttribute('data-v')||''), am='', cc=el.getAttribute('data-c'), how='';
+    // `data-cum`(보유종목 News 최신일 카드) — 기준 날 자산 기록 대비 누적 등락으로 바꿔 그린다(요약과 같은 기준)
+    var cj=el.getAttribute('data-cum'), raw=p;
+    if(cj&&window.hnCum){var cc0=null; try{cc0=JSON.parse(cj);}catch(e){}
+      var q=cc0?window.hnCum(cc0,p):p; if(q===null) return; p=q;}
     if(dv&&window.hnAmt){
       var k=(cc&&window.hnKrw)?window.hnKrw(p,cc):{pct:p,fx:null};
       am=' · '+(cc&&k.fx!==null?'원화 ':'')+window.hnAmt(dv*k.pct/100);
@@ -262,7 +301,8 @@ LIVE_JS = r"""
     if(cu) el.classList.toggle(cu,p>0);
     if(cd) el.classList.toggle(cd,p<0);
     var when=kst(v.ts);
-    el.setAttribute('title','실시간 등락률(정규장 · 직전 종가 대비)'+how+' · '+v.src
+    el.setAttribute('title',(cj?'기준 날 자산 기록 대비 누적 등락(지금 세션 실시간 '+(raw>0?'+':'')+raw.toFixed(2)+'% 포함)'
+      :'실시간 등락률(정규장 · 직전 종가 대비)')+how+' · '+v.src
       +(when?' · 기준 '+when:'')+' · 1분마다 갱신');
     el.setAttribute('data-live','1');
   }
