@@ -3026,7 +3026,7 @@ var cell=mk('cell'); cell.attrs={'data-t':'005930','data-v':'150000000'};
 global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
   createElement:function(){return {textContent:'',className:''};},
   querySelectorAll:function(){return [cell];}, addEventListener:function(){}};
-global.setTimeout=function(){}; global.clearTimeout=function(){};
+var delays=[]; global.setTimeout=function(f,d){delays.push(d);}; global.clearTimeout=function(){};
 global.fetch=function(u){fetched.push(u); return Promise.resolve({ok:true,json:function(){return Promise.resolve(LIVE);}});};
 """
 
@@ -3041,7 +3041,9 @@ def _run_pnl_js(hn, data, live):
            + "\nsetImmediate(function(){setImmediate(function(){setImmediate(function(){console.log(JSON.stringify("
              "{all:els['hn-pnl-all'].textContent,allsub:els['hn-pnl-all-sub'].textContent,"
              "kr:els['hn-pnl-KR'].textContent,xx:els['hn-pnl-XX'].textContent,xxsub:els['hn-pnl-XX-sub'].textContent,"
-             "cell:cell.textContent,title:cell.attrs.title||'',n:fetched.length}));});});});")
+             "cell:cell.textContent,title:cell.attrs.title||'',n:fetched.length,"
+             "sizes:fetched.filter(function(u){return u.indexOf('api/live_pct')===0;}).map(function(u){"
+             "return decodeURIComponent(u.split('t=')[1]).split(',').length;}),delays:delays}));});});});")
     r = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -3067,3 +3069,107 @@ def test_pnl_js_amount_format_matches_python(hn):
                         {"q": {}, "pending": 0})
         a = abs(v) * pct * (1 if v > 0 else -1) / 100
         assert o["all"].split(" (")[0] == hn._signed_krw(a), (v, o)
+
+
+def test_pnl_js_chunks_under_the_server_cap_and_repolls_soon_when_pending(hn):
+    """서버는 한 요청에 400 개까지만 받는다(`live_pct.MAX_TICKERS`) — 넘으면 뒤쪽이 조용히 '전날' 로 남는다."""
+    from bot.live_pct import MAX_TICKERS
+    data = [{"t": f"A{i}", "v": 1000, "g": "KR", "p": 1.0} for i in range(650)]
+    o = _run_pnl_js(hn, data, {"q": {}, "pending": 3})
+    pnl = [x for x in o["sizes"] if x != 1]                 # 1 = 카드 칸(LIVE_JS) 요청
+    assert sum(pnl) == 650 and max(pnl) <= MAX_TICKERS and len(pnl) >= 2
+    # 받는 중(pending)이면 곧 다시 묻는다 — 카드 칸 폴러(LIVE_JS)도 5초를 걸므로 둘 다인지 센다(#75)
+    assert o["delays"].count(5000) == 2, o["delays"]
+    o = _run_pnl_js(hn, data[:2], {"q": {}, "pending": 0})
+    assert 5000 not in o["delays"] and 60000 in o["delays"]
+
+
+def test_pnl_js_counts_live_and_prev_separately(hn):
+    data = [{"t": t_, "v": 1000000, "g": "KR", "p": 1.0} for t_ in ("A", "B", "C")]
+    live = {"q": {k: {"pct": 2.0, "ts": "", "src": "x"} for k in ("A", "B")}, "pending": 0}
+    o = _run_pnl_js(hn, data, live)
+    assert o["allsub"] == "실시간 2 · 전날 등락 1 / 3종목"
+
+
+def test_pnl_positions_skip_unmatched_even_with_a_ticker(hn):
+    pos, skip = hn.pnl_positions(_model(_h("오매칭", "123456", "KR", 5.0, matched=False),
+                                        _h("정상", "005930", "KR", 7.0)))
+    assert [p["key"] for p in pos] == ["KR:005930"] and skip == {"n": 1, "value": 5.0}
+
+
+def test_pnl_positions_tolerate_nan_value(hn):
+    pos, _ = hn.pnl_positions(_model(_h("이상값", "005930", "KR", float("nan"))))
+    assert pos[0]["value"] == 0.0
+
+
+def test_pnl_zero_base_renders_dash_like_the_js(hn):
+    pos = [{"key": "KR:1", "market": "KR", "ticker": "000001", "sym": "000001", "name": "x", "value": 0.0}]
+    out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), basis="b")
+    assert "id='hn-pnl-KR'>—</div>" in out
+
+
+def test_signed_krw_matches_js_rounding_and_drops_sign_at_zero(hn):
+    cases = (0.4, -0.4, 15_000, 25_000, -35_000, 149_999_999, 150_000_000, 12_345_678_900, float("nan"))
+    import shutil as _sh, subprocess as _sp
+    if not _sh.which("node"):
+        pytest.skip("node 없음")
+    src = hn._PNL_JS + "console.log(JSON.stringify(%s.map(function(a){return window.hnAmt(a);})));" % json.dumps(
+        [c if c == c else "NaN" for c in cases]).replace('"NaN"', "NaN")
+    r = _sp.run([_sh.which("node"), "-e", "global.window=global;global.document={readyState:'complete',"
+                 "getElementById:function(){return null;},addEventListener:function(){}};" + src],
+                capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == [hn._signed_krw(c) for c in cases]
+    assert hn._signed_krw(0.4) == "0원" and hn._signed_krw(15_000) == "+2만원" and hn._signed_krw(25_000) == "+3만원"
+    assert hn._signed_krw(150_000_000) == "+1.5억원" and hn._signed_krw(float("nan")) == "0원"
+
+
+def test_latest_card_carries_value_for_live_amount_and_uses_current_portfolio(hn, ws_snaps):
+    """실시간 칸이 금액을 다시 세려면 렌더된 카드에 `data-v` 가 있어야 한다(하네스가 손으로 넣으면 배선을 못 잰다,
+    #20) · 최신일 카드 금액은 요약과 같은 지금의 자산 기록 값으로(#33)."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    rec = _rec({**_stock("KR:005930"), "name": "삼성전자", "value": 1.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    card = html.split("data-hncard='1'")[1]
+    assert "data-v='150000000'" in card and "(-2.00% · -300만원)" in card and "보유 1.5억원" in card
+
+
+def test_overseas_cell_says_it_excludes_fx(hn, ws_snaps):
+    html = hn.render_page([_rec(_stock("KR:A"))], {}, _t("2026-10-12T09:00"), gen="GEN", portfolio=_pf())
+    assert "전일대비 · 해외(현지통화 등락 · 환율 제외)" in html and "그날 환율 변동은 빠져 있습니다" in html
+
+
+def test_check_revert_cap_is_three(hn):
+    assert hn.MAX_CHECK_REVERTS == 3            # 리터럴로 — 상수로 재면 99 도 1 도 통과한다(#66)
+
+
+def test_check_reverts_reset_after_a_clean_check_and_on_requeue(hn):
+    s = _sport_stock()
+    rec = _rec(s)
+    hn.analyze(rec, llm=_two_step(None, check_kind="transient"))
+    assert s["check_reverts"] == 1
+    hn.analyze(rec, llm=_two_step(True))
+    assert "check_reverts" not in s                                    # 확인을 마쳤다 — 처음부터 센다
+    s["check_reverts"] = 2
+    s["pv"] = "old"
+    hn.requeue_stale(rec, body=lambda l: "", pace=0)
+    assert "check_reverts" not in s
+
+
+def test_transient_in_a_later_chunk_keeps_earlier_drops_for_capped_stocks(hn, monkeypatch):
+    monkeypatch.setattr(hn, "CHECK_MAX", 1)
+    s = _sport_stock()
+    s["items"][1]["title"] = "두산 야구단 후원"
+    s["check_reverts"] = hn.MAX_CHECK_REVERTS - 1                      # 이번이 상한 — 되돌리지 않는다
+    n = []
+
+    def f(prompt):
+        if "검수하는 보조" in prompt:
+            n.append(1)
+            if len(n) == 2:
+                return None, 0, 0, "AI 일시 오류(503)", "transient"
+            return json.dumps({"checks": [{"id": "c1", "keep": False}]}), 1, 1, "", ""
+        return _two_step(True)(prompt)
+    hn.analyze(_rec(s), llm=f)
+    assert s["status"] == "ok" and s["pros"] == [] and s["offtopic_lines"] == 1   # c1(Pros) 판정은 적용
+    assert s["cons"] and "일시 오류" in s["check_why"]
