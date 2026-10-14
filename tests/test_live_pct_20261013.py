@@ -361,3 +361,71 @@ def test_live_js_reads_twse_date_only_ts():
     """
     js = json.loads(_node(script).strip().splitlines()[-1])
     assert "기준 10-13 거래일" in js["t"], js
+
+
+# ── 원화 환율 전일대비(보유종목 News 해외 원화 손익, 사용자 2026-10-14) ─────────────────────────────────
+@pytest.fixture
+def fx_fresh(monkeypatch):
+    monkeypatch.setattr(lp, "_FX", {"at": 0.0, "val": {}, "running": False})
+
+
+def test_fx_pct_map_reads_only_krw_pairs_and_drops_junk():
+    tbl = {"FX_USDKRW": {"pct": -0.31}, "FX_JPYKRW": {"pct": "0.5"}, "FX_EURUSD": {"pct": 1.0},
+           "FX_HKDKRW": {"pct": float("nan")}, "FX_TWDKRW": {"pct": 99.0}, "FX_CNYKRW": {"pct": None},
+           "FX_GBPKRW": "x"}
+    assert lp.fx_pct_map(tbl) == {"USD": -0.31, "JPY": 0.5}
+    assert lp.fx_pct_map(None) == {} and lp.fx_pct_map([1]) == {}
+
+
+def test_fx_changes_drops_a_stale_pool(monkeypatch):
+    import bot.naver_marketindex as nm
+    monkeypatch.setattr(nm, "fetch_kr_fx", lambda: {"FX_USDKRW": {"pct": 0.4}})
+    monkeypatch.setattr(nm, "value_age_sec", lambda kind: 60.0)
+    assert lp.fx_changes() == {"USD": 0.4}
+    monkeypatch.setattr(nm, "value_age_sec", lambda kind: lp.FX_MAX_AGE_SEC + 1)
+    assert lp.fx_changes() == {}                     # 24h 낡은 값 풀은 그날 환율 등락이 아닐 수 있다
+    monkeypatch.setattr(nm, "fetch_kr_fx", lambda: 1 / 0)
+    assert lp.fx_changes() == {}
+
+
+def test_fx_lookup_never_fetches_on_the_request_path_and_refreshes_behind(monkeypatch, fx_fresh):
+    started = []
+    monkeypatch.setattr(lp, "_Thread", lambda target=None, **kw: started.append(target) or _Noop())
+    assert lp.fx_lookup(now=1000.0) == {} and len(started) == 1
+    assert lp.fx_lookup(now=1001.0) == {} and len(started) == 1        # 돌고 있으면 또 띄우지 않는다
+    monkeypatch.setattr(lp, "fx_changes", lambda: {"USD": 0.25})
+    monkeypatch.setattr(lp.time, "time", lambda: 1002.0)
+    started[0]()                                                        # 뒤에서 받은 값
+    assert lp.fx_lookup(now=1010.0, kick=False) == {"USD": {"pct": 0.25, "age": 8}}
+    monkeypatch.setattr(lp, "fx_changes", lambda: {})                   # 실패는 직전 값을 지우지 않는다
+    monkeypatch.setattr(lp.time, "time", lambda: 1100.0)
+    lp._fx_worker()
+    assert lp.fx_lookup(now=1100.0, kick=False)["USD"]["pct"] == 0.25
+    assert lp.fx_lookup(now=1002.0 + lp.FX_MAX_AGE_SEC + 1, kick=False) == {}   # 너무 낡으면 싣지 않는다
+
+
+def test_fx_lookup_thread_start_failure_releases(monkeypatch, fx_fresh):
+    class Boom:
+        def __init__(self, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError("x")
+    monkeypatch.setattr(lp, "_Thread", Boom)
+    lp.fx_lookup(now=1.0)
+    assert lp._FX["running"] is False
+
+
+def test_api_route_adds_fx_only_when_asked(monkeypatch):
+    import bot.dashboard_server as ds
+    monkeypatch.setattr(lp, "lookup", lambda raw: {"q": {}, "pending": 0, "capped": False})
+    monkeypatch.setattr(lp, "fx_lookup", lambda: {"USD": {"pct": 0.1, "age": 1}})
+    h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+    got = {}
+    h._reply_json = lambda status, body: got.update(body, status=status)
+    h.path = "/api/live_pct?t=AAPL"
+    h._handle_live_pct()
+    assert "fx" not in got
+    h.path = "/api/live_pct?t=AAPL&fx=1"
+    h._handle_live_pct()
+    assert got["fx"] == {"USD": {"pct": 0.1, "age": 1}}

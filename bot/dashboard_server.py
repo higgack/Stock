@@ -1888,14 +1888,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_live_pct(self) -> None:
-        """GET /api/live_pct?t=A,B,… — `live_pct.lookup` 그대로(요청 경로는 메모리만 읽고, 낡은 티커는
-        뒤에서 받는다). ₩0."""
+        """GET /api/live_pct?t=A,B,…[&fx=1] — `live_pct.lookup` 그대로(요청 경로는 메모리만 읽고, 낡은 티커는
+        뒤에서 받는다). `fx=1` 이면 원화 환율 전일대비(`fx_lookup`)도 싣는다. ₩0."""
         import urllib.parse as _uparse
         try:
             qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
             raw = ",".join(qs.get("t", [])).split(",")
-            from bot.live_pct import lookup
-            self._reply_json(200, {"ok": True, **lookup(raw)})
+            from bot.live_pct import fx_lookup, lookup
+            body = {"ok": True, **lookup(raw)}
+            if qs.get("fx"):                       # 보유종목 News 해외 원화 손익 — 원화 환율 전일대비(메모리만)
+                body["fx"] = fx_lookup()
+            self._reply_json(200, body)
         except Exception as exc:                               # noqa: BLE001
             log.warning("live_pct API failed: %s: %s", type(exc).__name__, exc)
             self._reply_json(500, {"ok": False, "error": type(exc).__name__})
