@@ -224,7 +224,10 @@ def test_board_table_adds_live_span_only_for_linked_rows_and_fills_after_draw():
     assert js["filled"] == 1 and js["same"], "다시 그린 표를 바로 채운다"
 
 
-def test_holdings_latest_day_gets_live_tickers_but_past_fragments_do_not(monkeypatch):
+def test_holdings_page_asks_no_ticker_quotes(monkeypatch):
+    """옛 계약(보유종목 News 최신일 카드는 실시간 칸)은 사용자 2026-10-14 "실시간 부하가 크면 기준을 장종료가격으로"
+    로 바뀌었다(#222) — 보유종목 News 는 최신일·지난 날 어느 카드도 종목 시세를 묻지 않는다(열어 둔 화면 하나가
+    분당 수백 건이었다). 국가별 보드의 실시간 칸은 그대로다(아래 테스트)."""
     import bot.holdings_news as hn
     from datetime import datetime, timezone, timedelta
     now = datetime(2026, 10, 13, 9, 0, tzinfo=timezone(timedelta(hours=9)))
@@ -235,10 +238,9 @@ def test_holdings_latest_day_gets_live_tickers_but_past_fragments_do_not(monkeyp
     us = dict(stock, ticker="AAPL", market="US", name="Apple")
     rec = {"date": "2026-10-13", "stocks": [stock, us]}
     page = hn.render_page([rec, dict(rec, date="2026-10-12")], {}, now=now)
-    assert "data-t='005930'" in page and "data-t='AAPL'" in page
-    assert lp.LIVE_JS in page
+    assert "data-t=" not in page and "js-live-pct" not in page and lp.LIVE_JS not in page
     frag = hn._day_body(dict(rec, date="2026-10-12"), now=now)
-    assert "js-live-pct" not in frag, "지난 날 카드의 괄호는 그날 기준이라 실시간으로 덮지 않는다"
+    assert "js-live-pct" not in frag
 
 
 def test_api_route_hands_the_ticker_list_to_lookup_and_dispatches(monkeypatch):
