@@ -2969,6 +2969,11 @@ def test_why_splits_check_calls(hn, capsys):
 # ── 전일대비 금액(사용자 2026-10-14) ──────────────────────────────────────────
 # 자산 기록엔 수량이 없어 금액 = 보유 평가금액 × 등락률(추정)이다. 요약은 값을 매길 수 있는 보유 **전부**(ETF
 # 포함 — '전체' 손익에서 ETF 를 빼면 합이 작아진다).
+def _stat_v(html: str, sid: str) -> str:
+    """맨 위 칸(`id`) 하나의 값만 잘라 본다 — 페이지 전체 grep 은 가이드·다른 칸이 대신 만족시킨다(#55·#75)."""
+    return html.split(f"id='{sid}'>")[1].split("<div class='v")[1].split(">", 1)[1].split("</div>")[0]
+
+
 def _pf(at=None):
     """`at` = 자산 업로드 시각(KST ISO) — 전일대비의 기준 날을 정한다(사용자 2026-10-14 날짜 기준)."""
     m = _pf0()
@@ -3018,8 +3023,13 @@ def test_pnl_block_rendered_on_the_page(hn, ws_snaps):
     assert html.split("id='hn-pnl-XX'>")[1].split("</div>")[0] == "—"     # 미국 하루치 없음 → 모름
     assert html.split("id='hn-pnl-XX-sub'>")[1].split("</div>")[0] == "종가 기준 0/1종목"
     assert "티커를 못 찾은 상품 2개(1,000만원)는 뺌" in html and "10-08 08:00 업로드" in html
-    # 미국은 한 종목도 못 셌다 — 날짜를 적으면 그날 종가를 반영한 척하고, 빼면 시장이 조용히 사라진다 → '—'
-    assert html.split("id='hn-pnl-asof'>")[1].split("</div>")[0] == "반영한 마지막 종가: 한국 10-08 · 미국 —"
+    # 미국은 한 종목도 못 셌다 — 날짜를 적으면 그날 종가를 반영한 척하고, 빼면 시장이 조용히 사라진다 → '—'.
+    # 반영한 날짜는 맨 위 '시세 반영' 칸이 말한다(사용자 2026-10-15 — 옛 요약 아래 줄에서 옮김, #222) · 아직 안 받은
+    # 종가가 없으면 요약 아래 대기 줄은 없다(#395)
+    assert _stat_v(html, "hn-st-asof") == "한국 10-08 · 미국 —"
+    assert "id='hn-pnl-wait'" not in html and "id='hn-pnl-asof'" not in html
+    # 기준 뒤 반영한 KR 세션은 10-08 하나(10-09 한글날) — 칸 이름이 '전일대비'(사용자 2026-10-15)
+    assert "<div class='k'>전일대비 · 국내</div>" in html
     el = html.split("id='hn-pnl-data'")[1]
     assert el.startswith(" data-basis='종가 기준'>")                       # JS 가 서버 칸과 같은 이름을 쓴다(#38)
     data = {d["k"]: d for d in json.loads(el.split(">", 1)[1].split("</script>")[0])}
@@ -3608,12 +3618,12 @@ def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
     st = {"market": "KR", "ticker": "000001"}
     base = _t("2026-10-05T18:00").timestamp()
     want = {"ka": pytest.approx(1.01 * 1.02 * 0.99), "n": 3, "asof": "2026-10-08", "wait": [], "hol": [],
-            "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": ""}
+            "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 3}
     assert hn.cum_lookup(base, _t("2026-10-12T10:00"))(st) == want              # 장중(10-12 세션은 아직 안 닫힘)
     assert hn.cum_lookup(base, _t("2026-10-12T08:00"))(st) == want              # 장 전
     c = hn.cum_lookup(_t("2026-10-08T20:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c == {"ka": 1, "n": 0, "asof": "2026-10-08", "wait": [], "hol": [], "src": "tv", "need": None,
-                 "lag": 180, "nosnap": False, "why": ""}                                                      # 기준 뒤 마감 없음 → 0
+                 "lag": 180, "nosnap": False, "why": "", "sess": 0}                                           # 기준 뒤 마감 없음 → 0
     # 기준 무렵 종가 세션은 며칠 앞일 수 있다 — 일요일 업로드면 목요일(10-09 한글날 · 주말) 종가
     c = hn.cum_lookup(_t("2026-10-11T12:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c["n"] == 0 and c["asof"] == "2026-10-08"
@@ -3657,9 +3667,10 @@ def test_cum_lookup_stops_at_the_last_collected_close_and_names_the_pending_one(
     ws_snaps("KR", "2026-10-07", [("KRX:000001", 2.0)])
     c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-08T17:00"))({"market": "KR", "ticker": "000001"})
     assert c == {"ka": pytest.approx(1.01 * 1.02), "n": 2, "asof": "2026-10-07", "wait": ["2026-10-08"], "hol": [],
-                 "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": ""}
-    assert hn.asof_note(hn.close_asof([{"market": "KR", "key": "k"}], {"k": c})) == (
-        "반영한 마지막 종가: 한국 10-07(10-08 종가는 마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)")
+                 "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 2}
+    ca = hn.close_asof([{"market": "KR", "key": "k"}], {"k": c})
+    assert hn.asof_line(ca) == "한국 10-07"                                     # 반영한 날 = 맨 위 '시세 반영' 칸
+    assert hn.asof_wait_note(ca) == "아직 안 받은 종가: 한국 10-08(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)"
 
 
 def test_session_after_a_pending_one_is_never_compounded_past_the_gap(hn, ws_snaps, monkeypatch):
@@ -3683,7 +3694,9 @@ def test_latest_card_and_summary_name_the_close_still_being_collected(hn, ws_sna
     html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-08T17:00"), gen="GEN", portfolio=m)
     head = html.split("data-hncard='1'")[1].split("class='hn-chg")[1].split("</span>")[0]
     assert "2026-10-07 종가까지" in head and "2026-10-08 종가는 아직 수집 전(장 마감 3시간 뒤)" in head
-    assert "한국 10-07(10-08 종가는 마감 3시간 뒤 수집" in html.split("id='hn-pnl-asof'>")[1].split("</div>")[0]
+    assert _stat_v(html, "hn-st-asof") == "한국 10-07"
+    assert html.split("id='hn-pnl-wait'>")[1].split("</div>")[0] == (
+        "아직 안 받은 종가: 한국 10-08(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)")
 
 
 def test_asof_line_uses_the_earliest_close_when_a_new_holding_has_a_later_base(hn, ws_snaps):
@@ -3694,8 +3707,9 @@ def test_asof_line_uses_the_earliest_close_when_a_new_holding_has_a_later_base(h
     ws_snaps("KR", "2026-10-07", [("KRX:005930", 1.0), ("KRX:000660", 1.0)])
     m = _pm("2026-10-08T16:00", **{"005930": 1_000_000.0, "000660": 500_000.0})
     html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-08T17:00"), gen="GEN", portfolio=m)
-    line = html.split("id='hn-pnl-asof'>")[1].split("</div>")[0]
-    assert line == "반영한 마지막 종가: 한국 10-07(10-08 종가는 마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)", line
+    assert _stat_v(html, "hn-st-asof") == "한국 10-07"            # 이른 쪽 — 늦은 쪽이면 대기 줄과 제 말을 뒤집는다
+    line = html.split("id='hn-pnl-wait'>")[1].split("</div>")[0]
+    assert line == "아직 안 받은 종가: 한국 10-08(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)", line
 
 
 def test_card_tip_with_a_closed_but_uncollected_session_does_not_say_none_closed(hn):
@@ -3708,11 +3722,20 @@ def test_card_tip_with_a_closed_but_uncollected_session_does_not_say_none_closed
     assert tip == "10-07 20:00(KST) 자산 기록 뒤 마감한 세션이 아직 없어 0 — 2026-10-07 종가 그대로"
 
 
-def test_asof_note_orders_markets_like_the_rest_of_the_page(hn):
-    note = hn.asof_note({"HK": {"asof": None, "wait": []}, "US": {"asof": "2026-10-07", "wait": []},
-                         "KR": {"asof": "2026-10-08", "wait": []}})
-    assert note == "반영한 마지막 종가: 한국 10-08 · 미국 10-07 · 홍콩 —"
-    assert hn.asof_note({}) == ""
+def test_asof_line_orders_markets_like_the_rest_of_the_page(hn):
+    """옛 `asof_note`(요약 아래 한 줄에 반영 날짜 + 대기)는 사용자 2026-10-15 '기준을 나눠야' 로 둘로 갈렸다(#222) —
+    반영 날짜는 맨 위 '시세 반영' 칸(`asof_line`), 아직 안 받은 종가는 요약 아래 줄(`asof_wait_note`). 시장 순서는 둘 다
+    페이지의 나머지와 같다."""
+    a = {"HK": {"asof": None, "wait": []}, "US": {"asof": "2026-10-07", "wait": ["2026-10-08"], "lag": 180},
+         "KR": {"asof": "2026-10-08", "wait": ["2026-10-09"], "lag": 180}}
+    assert hn.asof_line(a) == "한국 10-08 · 미국 10-07 · 홍콩 —"
+    assert hn.asof_wait_note(a) == ("아직 안 받은 종가: 한국 10-09(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영) · "
+                                    "미국 10-08(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)")
+    assert hn.asof_line({}) == "" and hn.asof_wait_note({}) == ""
+    # 알파벳 순(JP < KR)이 아니라 페이지 순(한국 먼저) — 대기 줄도 같은 순서
+    j = {"JP": {"asof": "2026-10-07", "wait": ["2026-10-08"], "lag": 180}, "KR": {"asof": "2026-10-07", "wait": ["2026-10-08"], "lag": 180}}
+    assert hn.asof_wait_note(j).startswith("아직 안 받은 종가: 한국 10-08(") and hn.asof_line(j) == "한국 10-07 · 일본 10-07"
+    assert hn.asof_wait_note({"KR": {"asof": "2026-10-08", "wait": []}}) == ""      # 대기 없음 → 줄 없음(#395)
 
 
 def test_pnl_js_takes_the_basis_label_from_the_page(hn):
@@ -3842,7 +3865,7 @@ def test_hong_kong_holding_gets_a_yahoo_close_value(hn):
     html = hn.render_page([rec], {}, _t("2026-10-09T18:00"), gen="GEN", portfolio=m)
     data = json.loads(html.split("id='hn-pnl-data'")[1].split(">", 1)[1].split("</script>")[0])
     assert data[0]["p"] == pytest.approx(2.0)                                      # 10-07 종가 500 → 10-09 종가 510
-    assert "홍콩 10-09" in html.split("id='hn-pnl-asof'>")[1].split("</div>")[0]
+    assert _stat_v(html, "hn-st-asof") == "홍콩 10-09"
 
 
 def test_yahoo_symbol_by_market(hn):
@@ -4101,8 +4124,9 @@ def test_hong_kong_wait_and_reason_use_its_own_timing(hn):
     _closes(hn, {"HK:0700.HK": ({"2026-10-07": 500.0, "2026-10-08": 505.0}, "2026-10-09T17:15")})
     st = {"key": "HK:0700.HK", "market": "HK", "ticker": "0700.HK", "sym": "0700.HK"}
     c = hn.cum_lookup(m["_saved_ts"], _t("2026-10-09T17:15"))(st)
-    assert hn.asof_note(hn.close_asof([st], {"HK:0700.HK": c})) == (
-        "반영한 마지막 종가: 홍콩 10-08(10-09 종가는 마감 30분 뒤 수집 — 받으면 다음 갱신에 반영)")
+    ca = hn.close_asof([st], {"HK:0700.HK": c})
+    assert hn.asof_line(ca) == "홍콩 10-08"
+    assert hn.asof_wait_note(ca) == "아직 안 받은 종가: 홍콩 10-09(마감 30분 뒤 수집 — 받으면 다음 갱신에 반영)"
     tip = hn._close_tip({"at": "x", **c})
     assert "(Yahoo 일봉 · TradingView 하루치를 받지 않는 시장이라)" in tip and "장 마감 30분 뒤" in tip
 
@@ -4289,7 +4313,7 @@ def test_hong_kong_holding_says_why_it_has_no_close_value(hn):
     assert "(—)" in head and "홍콩 시장은 TradingView 하루치를 받지 않음 — Yahoo 일봉 종가로 채우는데 아직 안 받음" in head
     assert html.split("id='hn-pnl-XX-sub'>")[1].split("</div>")[0] == "종가 기준 0/1종목"
     assert "js-live-pct" not in html
-    assert html.split("id='hn-pnl-asof'>")[1].split("</div>")[0] == "반영한 마지막 종가: 홍콩 —"
+    assert _stat_v(html, "hn-st-asof") == "홍콩 —"
 
 
 def test_new_holding_since_base_counts_from_its_own_upload(hn, ws_snaps):
@@ -4418,7 +4442,8 @@ def test_stat_shows_previous_recorded_day_next_to_latest(hn):
     a, b, c = _page_rec(), _page_rec(), _page_rec()
     a["date"], b["date"], c["date"] = "2026-10-14", "2026-10-09", "2026-10-08"
     html = hn.render_page([c, a, b], {}, _t("2026-10-14T09:00"), gen="GEN")
-    m = re.search(r"최신 기준일 · 전 기록일</div><div class='v'>(.*?)</div>", html)
+    # 칸 이름 '최신 기준일' 은 사용자 2026-10-15 '기준을 나눠야' 로 '뉴스 기준일' 이 됐다(#222 — 값 계약은 그대로)
+    m = re.search(r"뉴스 기준일 · 전 기록일</div><div class='v'>(.*?)</div>", html)
     assert m and m.group(1) == "2026-10-14<span class='prev'>· 전 2026-10-09</span>", m
     one = hn.render_page([a], {}, _t("2026-10-14T09:00"), gen="GEN")
     assert "<span class='prev'>· 전 없음</span>" in one
@@ -4604,3 +4629,135 @@ def test_day_cost_is_krw_with_the_cost_card_rate(hn, monkeypatch):
     meta = hn._day_meta(rec)
     assert meta.endswith("AI 133회(그중 무관 소식 확인 37회) · ₩103") and "$" not in meta
     assert hn._cost_krw(None) == "₩0" and hn._cost_krw(1.2345) == "₩1,234"
+
+
+# ── 맨 위 날짜 칸 셋 · 요약 칸 이름의 세션 수 (사용자 2026-10-15 "최신 기준일은 기준을 나눠야 — 오늘 자산을 업데이트
+# 안 했지만 10-15 기준으로 주식 변동에 따라 변동되잖아" · "4번은 니가 생각하기에 맞는 방향으로") ──────────────────────
+
+def test_top_cards_split_news_date_asset_upload_and_close(hn, ws_snaps):
+    """한 칸이 세 날짜(뉴스를 모은 날 · 보유·평가금액을 가져온 업로드 · 그 금액을 굴린 종가)를 대표하면 오늘 업로드를
+    안 한 날에도 금액이 '오늘 자산' 으로 읽힌다(#34) — 칸이 셋이고 각자 제 날짜를 말한다."""
+    ws_snaps("KR", "2026-10-13", [("KRX:005930", 1.0)])
+    ws_snaps("KR", "2026-10-14", [("KRX:005930", 2.0)])
+    m = _pm("2026-10-12T21:05", **{"005930": 1_000_000.0})              # 마지막 업로드 10-12 밤 · 10-15 는 안 올림
+    rec = {**_rec(_stock("KR:005930")), "date": "2026-10-15"}
+    html = hn.render_page([rec], {}, _t("2026-10-15T09:00"), gen="GEN", portfolio=m)
+    assert "<div class='k'>뉴스 기준일 · 전 기록일</div>" in html and "<div class='k'>최신 기준일" not in html
+    assert _stat_v(html, "hn-st-asset") == "10-12 21:05<span class='prev'>· 3일 전 · 오늘 업로드 없음</span>"
+    assert _stat_v(html, "hn-st-asof") == "한국 10-14"
+    # 순서 — 날짜 칸 셋이 나란히 맨 앞(뉴스 · 자산 · 시세)
+    i = [html.index(x) for x in ("뉴스 기준일 · 전 기록일", "id='hn-st-asset'", "id='hn-st-asof'", "뉴스 있는 종목 / 보유 종목")]
+    assert i == sorted(i)
+    # 오늘 올렸으면 그렇게 말한다
+    html = hn.render_page([rec], {}, _t("2026-10-15T09:00"), gen="GEN",
+                          portfolio=_pm("2026-10-15T08:40", **{"005930": 1_000_000.0}))
+    assert _stat_v(html, "hn-st-asset") == "10-15 08:40<span class='prev'>· 오늘 업로드</span>"
+    assert ".stat .v.hn-v-sm{" in html                                  # 클래스만 쓰고 CSS 가 없으면 본문 크기(#201)
+
+
+def test_asset_card_age_is_in_days_so_the_page_does_not_change_every_regen(hn):
+    """'몇 시간 전' 을 적으면 15분 재생성마다 페이지가 바뀌어 '새 업데이트' 배너가 상시 켜진다(#442) — 같은 날 안에서는
+    칸이 안 바뀐다."""
+    m = _pm("2026-10-12T21:05", **{"005930": 1_000_000.0})
+    a = _stat_v(hn.render_page([], {}, _t("2026-10-15T00:10"), gen="GEN", portfolio=m), "hn-st-asset")
+    b = _stat_v(hn.render_page([], {}, _t("2026-10-15T23:50"), gen="GEN", portfolio=m), "hn-st-asset")
+    assert a == b == "10-12 21:05<span class='prev'>· 3일 전 · 오늘 업로드 없음</span>"
+
+
+def test_asset_card_without_an_upload_time_says_which(hn):
+    """업로드 시각이 없는 기록(옛 형식)은 자산 기록이 적은 기준을 그대로 · 기록이 아예 없으면 그렇게 — 빈칸이면 '못
+    셌다' 로 읽힌다(#43). 요약이 없는 경우(보유 0 · 티커 미확인뿐)에도 칸은 자산 기록을 직접 읽는다."""
+    html = hn.render_page([], {}, _t("2026-10-15T09:00"), gen="GEN",
+                          portfolio=_model(_h("모르는 상품", None, None, 1.0, matched=False), as_of="2026-10-10"))
+    assert _stat_v(html, "hn-st-asset") == "2026-10-10<span class='prev'>· 업로드 시각 기록 없음</span>"
+    assert _stat_v(html, "hn-st-asof") == "—"
+    html = hn.render_page([], {}, _t("2026-10-15T09:00"), gen="GEN", portfolio={})
+    assert _stat_v(html, "hn-st-asset") == "—<span class='prev'>· 자산 기록 없음</span>"
+    m = {"holdings": [_h("모르는 상품", None, None, 1.0, matched=False)], "_saved_ts": _t("2026-10-14T07:00").timestamp()}
+    html = hn.render_page([], {}, _t("2026-10-15T09:00"), gen="GEN", portfolio=m)
+    assert _stat_v(html, "hn-st-asset") == "10-14 07:00<span class='prev'>· 1일 전 · 오늘 업로드 없음</span>"
+
+
+def test_summary_label_says_how_many_sessions_it_holds(hn, ws_snaps):
+    """기준 = 오늘보다 앞선 가장 최근 날짜의 마지막 업로드(사용자 2026-10-14)라, 며칠 안 올렸으면 칸에 여러 세션이
+    쌓인다 — 그때 '전일대비' 라 적으면 거짓이다(#34). 값은 같고 이름이 사실을 말한다."""
+    m = _pm("2026-10-05T19:00", **{"005930": 1_000_000.0})
+    # 기준 뒤 마감은 했지만 아직 반영한 세션이 없다(10-06 15:30 마감 · 하루치는 마감 3시간 뒤 수집)
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-06T17:00"), gen="GEN", portfolio=m)
+    assert "<div class='k'>10-05 기록 이후(반영한 세션 없음) · 국내</div>" in html
+    for d, v in (("2026-10-06", 1.0), ("2026-10-07", 2.0), ("2026-10-08", 3.0)):
+        ws_snaps("KR", d, [("KRX:005930", v)])
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-08T19:00"), gen="GEN", portfolio=m)
+    assert "<div class='k'>10-05 기록 이후(3세션) · 국내</div>" in html
+    assert "<div class='k'>10-05 기록 이후(3세션) · 전체</div>" in html
+    assert "<div class='k'>10-05 기록 대비 · 해외(원화 · 환율 반영)</div>" in html     # 해외 보유 없음 → 셀 세션 없음
+    # 같은 기준인데 그 뒤 마감한 세션이 하나뿐이면 '전일대비'
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-06T19:00"), gen="GEN", portfolio=m)
+    assert "<div class='k'>전일대비 · 국내</div>" in html
+
+
+def test_summary_label_does_not_count_holdings_new_since_the_base(hn, ws_snaps):
+    """기준 날 뒤 새로 생긴 종목은 제 업로드부터 센다(세션 0) — 그걸 섞으면 '0~3세션' 으로 기준 날짜와 안 맞는 이름이
+    된다. 새 종목뿐이면 그걸 센다."""
+    hn.pnl_base(_t("2026-10-05T20:00"), _pm("2026-10-05T19:00", **{"005930": 100.0}), bak=None)
+    for d, v in (("2026-10-06", 1.0), ("2026-10-07", 2.0), ("2026-10-08", 3.0)):
+        ws_snaps("KR", d, [("KRX:005930", v), ("KRX:000660", v)])
+    m = _pm("2026-10-08T16:00", **{"005930": 999.0, "000660": 50.0})
+    html = hn.render_page([_rec(_stock("KR:005930"))], {}, _t("2026-10-08T19:00"), gen="GEN", portfolio=m)
+    assert "<div class='k'>10-05 기록 이후(3세션) · 국내</div>" in html
+
+
+def test_span_head_branches(hn):
+    """갈래마다 — 범위 · 값을 못 센 종목 제외 · 그룹 · 새 종목만 · 재료 없음 · 업로드 시각 없는 기록."""
+    pos = [{"key": "KR:A", "market": "KR"}, {"key": "US:B", "market": "US"}, {"key": "KR:C", "market": "KR"},
+           {"key": "JP:D", "market": "JP"}]
+    ctx = {"at": "10-05 19:00", "cum": {"KR:A": {"ka": 1.0, "sess": 1}, "US:B": {"ka": 1.0, "sess": 2},
+                                        "KR:C": {"ka": None, "sess": 5}, "JP:D": None}, "newk": set()}
+    assert hn.pnl_span_head(ctx, pos, "KR") == "전일대비"                       # 값을 못 센 C(5세션)는 세지 않는다
+    assert hn.pnl_span_head(ctx, pos, "XX") == "10-05 기록 이후(2세션)"         # 달력을 모르는 JP 는 빠진다
+    assert hn.pnl_span_head(ctx, pos, "all") == "10-05 기록 이후(1~2세션)"
+    zero = {**ctx, "cum": {**ctx["cum"], "KR:C": {"ka": 1.0, "sess": 0}}}
+    assert hn.pnl_span_head(zero, pos, "KR") == "10-05 기록 이후(0~1세션)"      # 하나라도 0 이면 '전일대비' 가 아니다
+    only_new = {**ctx, "newk": {"KR:A", "US:B"}}
+    assert hn.pnl_span_head(only_new, pos, "KR") == "전일대비"                 # 새 종목뿐이면 그걸 센다
+    assert hn.pnl_span_head(None, pos, "KR") == "전일대비"
+    assert hn.pnl_span_head({**ctx, "today": True, "cur_ts": None}, pos, "XX") == "전일대비"
+    assert hn.pnl_span_head({**ctx, "today": True, "cur_ts": 1.0}, pos, "XX") == "10-05 기록 이후(2세션)"
+
+
+def test_cum_sess_counts_real_sessions_not_estimated_holidays(hn, ws_snaps, monkeypatch):
+    """휴장 추정 세션(등락 0)은 '전일대비' 인지 가를 때 세션이 아니다 — 세면 한 세션짜리가 '2세션' 이 된다. Yahoo 종가
+    비가 덮는 놓친 세션은 실제 세션이라 센다."""
+    import bot.world_sectors as ws
+    ws_snaps("KR", "2026-10-07", [("KRX:000001", 2.0)])                        # 10-06 하루치 없음
+    monkeypatch.setattr(ws, "market_day_status", lambda mk, d, now, state=None: "holiday")
+    c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-07T20:00"))({"market": "KR", "ticker": "000001"})
+    assert c["n"] == 2 and c["hol"] == ["2026-10-06"] and c["sess"] == 1
+    monkeypatch.setattr(ws, "market_day_status", lambda mk, d, now, state=None: "missing")
+    c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-07T20:00"), closes={})(
+        {"market": "KR", "ticker": "000001"})
+    assert c["src"] == "yahoo" and c["sess"] == 2                               # 놓친 10-06 + 10-07
+
+
+def test_guide_names_the_three_dates_and_the_label_rule(hn):
+    html = hn.render_page([], {}, _t("2026-10-15T09:00"), gen="GEN", portfolio={})
+    g = html.split("<details class=\"guide\">")[1].split("</details>")[0]
+    assert "<b>맨 위 날짜 칸 셋</b>" in g and "<b>자산 기록</b>" in g and "<b>시세 반영</b>" in g
+    assert "'MM-DD 기록 이후(N세션)'" in g and "요약 아래 줄이 시장마다" not in g
+
+
+def test_asset_card_uses_the_summary_upload_time_before_reading_the_record_again(hn):
+    """요약 재료(`pnl_context` cur_ts)가 있으면 그 업로드 시각을 쓴다 — 요약과 같은 기록을 말하게(#38). 없을 때만 자산
+    기록을 다시 읽는다."""
+    other = _pm("2026-10-01T09:00", **{"005930": 1.0})
+    out = hn._asset_upload_html({"cur_ts": _t("2026-10-14T21:05").timestamp()}, other, _t("2026-10-15T09:00"))
+    assert out == "<div class='v'>10-14 21:05<span class='prev'>· 1일 전 · 오늘 업로드 없음</span></div>"
+    assert "10-01 09:00" in hn._asset_upload_html({}, other, _t("2026-10-15T09:00"))
+
+
+def test_pnl_context_carries_the_current_upload_time(hn):
+    """'자산 기록' 칸이 요약과 같은 기록을 말하게 재료에 싣는다 — 빠지면 칸이 자산 기록을 한 번 더 읽는다(값은 같아
+    화면만 재서는 못 잡는다)."""
+    m = _pm("2026-10-14T21:05", **{"005930": 1.0})
+    pos, _ = hn.pnl_positions(m)
+    assert hn.pnl_context(pos, _t("2026-10-15T09:00"), m)["cur_ts"] == m["_saved_ts"]
