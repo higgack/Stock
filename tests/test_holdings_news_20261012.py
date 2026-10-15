@@ -4718,8 +4718,13 @@ def test_span_head_branches(hn):
     assert hn.pnl_span_head(ctx, pos, "all") == "10-05 기록 이후(1~2세션)"
     zero = {**ctx, "cum": {**ctx["cum"], "KR:C": {"ka": 1.0, "sess": 0}}}
     assert hn.pnl_span_head(zero, pos, "KR") == "10-05 기록 이후(0~1세션)"      # 하나라도 0 이면 '전일대비' 가 아니다
-    only_new = {**ctx, "newk": {"KR:A", "US:B"}}
+    only_new = {**ctx, "newk": {"KR:A", "US:B"}, "cur_ts": _t("2026-10-14T21:00").timestamp()}
     assert hn.pnl_span_head(only_new, pos, "KR") == "전일대비"                 # 새 종목뿐이면 그걸 센다
+    # 새 종목뿐이면 날짜도 그 종목의 기준(지금 기록 업로드) — 기준 날짜에 다른 기준의 세션 수를 붙이지 않는다
+    assert hn.pnl_span_head(only_new, pos, "XX") == "10-14 기록 이후(2세션)"
+    # 한 세션이어도 그 뒤 마감한 세션을 아직 받는 중이면 '전일대비' 가 아니다(독립 리뷰 2026-10-15)
+    waiting = {**ctx, "cum": {**ctx["cum"], "KR:A": {"ka": 1.0, "sess": 1, "wait": ["2026-10-08"]}}}
+    assert hn.pnl_span_head(waiting, pos, "KR") == "10-05 기록 이후(1세션)"
     assert hn.pnl_span_head(None, pos, "KR") == "전일대비"
     assert hn.pnl_span_head({**ctx, "today": True, "cur_ts": None}, pos, "XX") == "전일대비"
     assert hn.pnl_span_head({**ctx, "today": True, "cur_ts": 1.0}, pos, "XX") == "10-05 기록 이후(2세션)"
@@ -4761,3 +4766,13 @@ def test_pnl_context_carries_the_current_upload_time(hn):
     m = _pm("2026-10-14T21:05", **{"005930": 1.0})
     pos, _ = hn.pnl_positions(m)
     assert hn.pnl_context(pos, _t("2026-10-15T09:00"), m)["cur_ts"] == m["_saved_ts"]
+
+
+def test_asset_card_escapes_and_survives_odd_records(hn):
+    """자산 기록이 적은 기준(`as_of`)은 파일에서 온 글자 — 이스케이프한다 · 업로드 시각이 지금보다 뒤면 그렇게 말한다 ·
+    dict 가 아닌 기록이 와도 페이지 전체가 죽지 않는다(곁들이가 본체를 지우지 않게, #315)."""
+    out = hn._asset_upload_html({}, {"as_of": "<b>x</b>"}, _t("2026-10-15T09:00"))
+    assert "&lt;b&gt;x&lt;/b&gt;" in out and "<b>x" not in out
+    out = hn._asset_upload_html({"cur_ts": _t("2026-10-16T09:00").timestamp()}, None, _t("2026-10-15T09:00"))
+    assert out.endswith("· 업로드 시각이 지금보다 뒤</span></div>")
+    assert "자산 기록 없음" in hn._asset_upload_html({}, ["not", "a", "dict"], _t("2026-10-15T09:00"))

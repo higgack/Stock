@@ -57,7 +57,8 @@ _TG_LOCK = _DIR / ".tg_inbox.lock"
 _RUN_LOCK = _DIR / ".run.lock"
 
 TICK_MIN = 15                      # 봇이 깨어 확인하는 주기(분) — telegram_bot 주기가 이 값이다
-RUN_HOUR, RUN_MIN = 8, 0           # 매일 이 시각(KST) 이후 하루치를 모은다 — 장 시작 전에 읽게
+RUN_HOUR, RUN_MIN = 7, 0           # 매일 이 시각(KST) 이후 하루치를 모은다 — 장 시작 전에 읽게(사용자 2026-10-15 08:00→07:00
+#                                     "8시면 9시 개장에 너무 촉박")
 DEFAULT_WINDOW_H = 24              # 직전 기록이 없을 때 거슬러 보는 시간
 MAX_WINDOW_H = 72                  # 봇이 며칠 멈췄어도 이보다 오래된 뉴스는 '오늘 뉴스' 로 싣지 않는다
 WINDOW_OVERLAP_H = 6               # 다음 창은 직전 창 끝보다 이만큼 앞에서 연다 — 입력이 늦게 닿는다(수신함은 2분
@@ -2304,7 +2305,8 @@ def pnl_span_head(ctx: dict | None, positions: list[dict], g: str) -> str:
     기준은 '오늘보다 앞선 가장 최근 날짜의 마지막 업로드'(사용자 2026-10-14)라, 며칠 업로드를 안 했거나 기준 업로드가 장
     마감 전이었으면 칸에 두 세션 이상이 쌓인다 — 그때 '전일대비' 라고 적으면 거짓이다(#34). 값은 바꾸지 않고 이름이 사실을
     말한다: 반영한 세션이 모두 하나면 '전일대비', 둘 이상이면 'MM-DD 기록 이후(N세션)', 아직 없으면 '(반영한 세션 없음)'.
-    기준 날 뒤 새로 생긴 종목은 기준이 달라 세지 않는다(그것뿐이면 센다). 값을 못 센 종목·거래소 달력을 모르는 시장은
+    기준 날 뒤 새로 생긴 종목은 기준이 달라 세지 않는다(그것뿐이면 세되 날짜도 그 종목의 기준인 지금 기록 업로드로).
+    한 세션이어도 그 뒤 마감한 세션을 아직 받는 중이면 '전일대비' 가 아니다. 값을 못 센 종목·거래소 달력을 모르는 시장은
     빼고, 아무것도 못 셌으면 'MM-DD 기록 대비'. 재료가 없으면(ctx 없음) 옛 이름 '전일대비'."""
     if not ctx or not ctx.get("cum") or not ctx.get("at"):
         return "전일대비"
@@ -2317,11 +2319,22 @@ def pnl_span_head(ctx: dict | None, positions: list[dict], g: str) -> str:
                 if (g == "all" or (p["market"] == "KR") == (g == "KR"))
                 and not (skip_new and p["key"] in newk)
                 for c in (cmap.get(p["key"]),) if c and c.get("ka") is not None]
-    ns = _ns(True) or _ns(False)
+    ns = _ns(True)
+    if not ns and newk:
+        # 값을 센 것이 기준 날 뒤 새로 생긴 종목뿐 — 그 종목은 **지금 기록** 업로드부터 셌다. 기준 날짜를 적으면 다른 기준의
+        # 세션 수를 그 날짜에 붙이게 된다(독립 리뷰 2026-10-15) → 날짜도 지금 기록의 것
+        ns = _ns(False)
+        try:
+            md = datetime.fromtimestamp(float(ctx["cur_ts"]), _KST).strftime("%m-%d")
+        except (TypeError, ValueError, OverflowError, OSError, KeyError):
+            pass
     if not ns:
         return f"{md} 기록 대비"
     lo, hi = min(ns), max(ns)
-    if lo == hi == 1:
+    # 마감했지만 아직 안 받은 세션이 뒤에 있으면 그 칸은 '어제→오늘' 이 아니다 — 한 세션이어도 '전일대비' 라 적지 않는다
+    waiting = any((cmap.get(p["key"]) or {}).get("wait") for p in positions
+                  if g == "all" or (p["market"] == "KR") == (g == "KR"))
+    if lo == hi == 1 and not waiting:
         return "전일대비"
     if hi == 0:
         return f"{md} 기록 이후(반영한 세션 없음)"
@@ -3343,10 +3356,10 @@ def _asset_upload_html(ctx: dict, portfolio: dict | None, now: datetime) -> str:
     model = None
     if ts is None:
         model = portfolio if portfolio is not None else _load_model_safe()
-        sk = _saved_kst(model)
+        sk = _saved_kst(model) if isinstance(model, dict) else None
         ts = sk[1] if sk else None
     if ts is None:
-        raw = str((model or {}).get("as_of") or "").strip()
+        raw = str((model if isinstance(model, dict) else {}).get("as_of") or "").strip()
         return (f"<div class='v'>{_h.escape(raw) if raw else '—'}<span class='prev'>· "
                 f"{'업로드 시각 기록 없음' if raw else '자산 기록 없음'}</span></div>")
     try:
@@ -3505,7 +3518,7 @@ def render_page(records: list[dict], state: dict | None = None,
 있습니다(마우스를 올리면 두 등락을 적습니다). 종가와 환율의 시각이 달라(예: 미국 종가는 간밤 · 환율은 서울 외환시장
 지금) 추정치이고, 환율을 못 받은 통화는 '환율 미확인' 으로 세고 주가 등락만으로 셉니다. 환율은 화면을 연 뒤 받으므로
 처음 잠깐은 '환율 대기' 입니다. 요약 칸 이름은 그 칸이 <b>실제로 담은 세션 수</b>를 말합니다 — 기준 업로드 뒤 반영한
-세션이 하나면 '전일대비', 둘 이상이면 'MM-DD 기록 이후(N세션)'(며칠 자산을 올리지 않았거나, 기준 업로드가 장 마감 전이라
+세션이 하나면 '전일대비'(그 뒤 마감한 세션의 종가를 아직 받는 중이면 '(1세션)'), 둘 이상이면 'MM-DD 기록 이후(N세션)'(며칠 자산을 올리지 않았거나, 기준 업로드가 장 마감 전이라
 그 세션까지 같이 셀 때), 아직 하나도 반영하지 못했으면 '(반영한 세션 없음)' 입니다(값은 같은 식이고 이름만 사실대로
 바뀝니다 · 기준 날 뒤 새로 생긴 종목은 기준이 달라 세지 않습니다). 요약 <b>전체/국내/해외</b> 칸은 자산 기록의 값을 매길 수 있는 보유
 전부(ETF 포함 · 뉴스가 없는 종목 포함)를 같은 식으로 더한 값이고, %는 그 합 ÷ 등락을 아는 종목의 기준 평가금액
