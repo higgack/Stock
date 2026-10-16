@@ -1897,6 +1897,7 @@ _HN_CSS = """
 :root{--bg:#f7f8f9;--card:#ffffff;--hn-pro:#166534;--hn-con:#b91c1c;--hn-up:#c62828;--hn-dn:#1d4ed8}
 :root[data-theme="dark"]{--bg:#0f1117;--card:#1a1d27;--hn-pro:#4ade80;--hn-con:#f87171;--hn-up:#f87171;--hn-dn:#60a5fa}
 .hn-status{background:var(--surface2);border-left:3px solid var(--accent);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--fg);margin:10px 0}
+.hn-reset{margin-left:auto}
 .hn-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .hn-tools input{flex:1;min-width:200px;max-width:420px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);font-size:13px}
 .hn-day{background:var(--card);border:1px solid var(--border);border-radius:12px;margin:10px 0;padding:4px 14px}
@@ -2041,19 +2042,29 @@ _HN_JS = r"""
   var pills=[].slice.call(document.querySelectorAll('[data-hnf]'));
   var days=[].slice.call(document.querySelectorAll('details[data-hnday]'));
   if(!q) return;
-  var base=st?st.textContent:'', mode='all', wasOn=false;
+  var reset=document.getElementById('hn-reset');
+  var base=st?st.textContent:'', sel={}, wasOn=false;
+  // 칩은 여러 개 고를 수 있다 — 시장(국내·해외)끼리는 '또는', 나머지(Pros·Cons·텔레그램)는 '그리고'
+  // (둘 다 고르면 시장은 전부, 표식은 모두 갖춘 카드만). 아무것도 안 고르면 '전체'.
+  function picked(){return pills.map(function(p){return p.getAttribute('data-hnf');}).filter(function(k){return sel[k];});}
   function norm(s){return String(s||'').toLowerCase().replace(/\s+/g,'');}
   function keep(c){
-    if(mode==='KR') return c.getAttribute('data-mk')==='KR';
-    if(mode==='XX') return c.getAttribute('data-mk')!=='KR';
-    if(mode==='pro') return c.getAttribute('data-pro')==='1';
-    if(mode==='con') return c.getAttribute('data-con')==='1';
-    if(mode==='tg') return c.getAttribute('data-tg')==='1';
+    var mk=c.getAttribute('data-mk')==='KR'?'KR':'XX';
+    if((sel.KR||sel.XX) && !sel[mk]) return false;
+    if(sel.pro && c.getAttribute('data-pro')!=='1') return false;
+    if(sel.con && c.getAttribute('data-con')!=='1') return false;
+    if(sel.tg && c.getAttribute('data-tg')!=='1') return false;
     return true;
+  }
+  function paint(){
+    var any=picked().length>0;
+    pills.forEach(function(x){var k=x.getAttribute('data-hnf');x.classList.toggle('active',k==='all'?!any:!!sel[k]);});
   }
   function lazy(d){return !!d.getAttribute('data-lazy') && !d.__loaded;}
   function run(){
-    var v=norm(q.value), on=!!v || mode!=='all', shown=0;
+    var names=picked().map(function(k){var p=pills.filter(function(x){return x.getAttribute('data-hnf')===k;})[0];
+      return String(p.textContent||'').replace(/^[^0-9A-Za-z가-힣]+/,'');});
+    var v=norm(q.value), on=!!v || names.length>0, shown=0;
     [].slice.call(document.querySelectorAll('[data-hncard]')).forEach(function(c){
       var ok=keep(c) && (!v || norm(c.getAttribute('data-q')).indexOf(v)>=0);
       c.style.display=ok?'':'none';
@@ -2070,7 +2081,7 @@ _HN_JS = r"""
       if(any) d.open=true;
     });
     wasOn=on;
-    if(st) st.textContent=on?('조건에 맞는 카드 '+shown+'개'+(wait?(' · 아직 안 연 날 '+wait+'일은 펼치면 같이 걸러집니다'):'')):base;
+    if(st) st.textContent=on?((names.length?('['+names.join(' · ')+'] '):'')+'조건에 맞는 카드 '+shown+'개'+(wait?(' · 아직 안 연 날 '+wait+'일은 펼치면 같이 걸러집니다'):'')):base;
   }
   function load(d){
     if(d.__loaded||d.__loading) return;
@@ -2086,10 +2097,12 @@ _HN_JS = r"""
     if(d.getAttribute('data-lazy')) d.addEventListener('toggle',function(){if(d.open) load(d);});
   });
   pills.forEach(function(p){p.addEventListener('click',function(){
-    mode=p.getAttribute('data-hnf');
-    pills.forEach(function(x){x.classList.toggle('active',x===p);});
-    run();
+    var k=p.getAttribute('data-hnf');
+    if(k==='all') sel={}; else sel[k]=!sel[k];
+    paint(); run();
   });});
+  // 초기화 — 고른 칩과 검색어를 함께 지운다('전체' 칩은 칩만 푼다)
+  if(reset) reset.addEventListener('click',function(){sel={}; q.value=''; paint(); run();});
   q.addEventListener('input',run);
 })();
 """
@@ -3623,7 +3636,8 @@ def render_page(records: list[dict], state: dict | None = None,
     pills = "".join(
         f"<span class='pill{' active' if k == 'all' else ''}' data-hnf='{k}'>{lab}</span>"
         for k, lab in (("all", "전체"), ("KR", "🇰🇷 국내"), ("XX", "🌐 해외"), ("pro", "👍 Pros 있음"),
-                       ("con", "👎 Cons 있음"), ("tg", "📨 텔레그램 언급")))
+                       ("con", "👎 Cons 있음"), ("tg", "📨 텔레그램 언급"))) + (
+        "<span class='pill hn-reset' id='hn-reset' title='고른 칩과 검색어를 모두 지웁니다'>↺ 초기화</span>")
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>보유종목 News</title>{_BOARD_CSS}{_HN_CSS}
@@ -3716,7 +3730,10 @@ AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 �
 {MAX_ANALYZE_TRIES}번이면 그날은 뉴스만 보여 줍니다.<br>
 <b>표시 범위</b> — 최근 {RENDER_DAYS}일만 보여 주고 그 앞은 보관만 합니다. 가장 최근 날만 바로 보이고
 지난 날은 펼칠 때 불러옵니다(보유 종목이 많으면 하루 칸이 무거워서). 검색·필터는 불러온 날에 걸리고, 아직
-안 연 날은 펼치면 같이 걸러집니다(상태 줄이 몇 날이 남았는지 적습니다).
+안 연 날은 펼치면 같이 걸러집니다(상태 줄이 몇 날이 남았는지 적습니다).<br>
+<b>필터 칩</b> — 여러 개를 함께 고를 수 있습니다(다시 누르면 풀립니다). 국내·해외는 '또는'(둘 다 고르면 전부),
+Pros·Cons·텔레그램은 '그리고'(고른 표식을 모두 가진 카드만)로 걸립니다. 상태 줄 앞 대괄호가 지금 걸린 칩입니다.
+<b>전체</b>는 칩만 풀고, <b>↺ 초기화</b>는 칩과 검색어를 함께 지웁니다.
 </details>
 <div class="hn-tools"><input id="hn-q" type="text" placeholder="종목명·티커 검색" autocomplete="off" spellcheck="false"></div>
 <div class="pills">{pills}</div>
