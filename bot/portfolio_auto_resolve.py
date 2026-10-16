@@ -12,6 +12,7 @@ import os
 from bot.genai_factory import effective_key as _effective_key
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ _CACHE_PATH = _HOME / "portfolio_auto_aliases_v2.json"
 _USAGE = _HOME / "usage.jsonl"
 _FLASH_IN, _FLASH_OUT = 0.30, 2.50
 _MAX_BATCH = 30
+_KST = timezone(timedelta(hours=9))
 
 _cache: dict | None = None
 
@@ -63,10 +65,59 @@ def _log_usage(pt: int, ot: int) -> None:
         pass
 
 
-def _verify_yfinance(ticker: str, company: str = "") -> str | None:
-    """yfinance 로 티커 검증 → market 또는 None. 값이 있는 것만으로는 부족하다 — 그 티커의 원천 이름이 모델이 말한
-    회사(`company`)와 같은 회사여야 한다(국내 비상장 SK에코플랜트가 무관한 미국 SKHY 로 붙었다, 2026-10-14).
-    이름을 못 받으면 확인 불가 = None(틀린 티커보다 미매칭이 낫다 — 화면은 이름과 금액을 그대로 보여 준다)."""
+# 실패 기록(2026-10-16 사용자 "ASML·아날로그 디바이시스·에버스핀·에흐르 는 티커가 확실히 있는데 왜 미매칭?").
+# 옛 판은 AI 호출 실패·응답 해석 실패·Yahoo 이름 조회 실패까지 **영구** None 으로 구워, 한 번 실패한 종목은 다시
+# 묻지 않았고 사유도 남지 않았다(#161·#303 · #82). 이제 캐시 값은 셋 중 하나다:
+#   [ticker, market]                      — 매칭
+#   {"why", "final": True}                — 다시 물어도 같은 답(AI 가 해외 상장사가 아니라 함 · Yahoo 이름이 다른 회사)
+#   {"why", "final": False, "ts"}         — 일시 실패 · _RETRY_SEC 뒤 다시 묻는다(비용 상한 = 하루 4회 × ₩1~2)
+# 사유 없는 옛 None(v2 판)은 무엇으로 실패했는지 모르므로 한 번 다시 묻는다.
+_RETRY_SEC = 6 * 3600
+
+
+def _miss(why: str, *, final: bool, now: float) -> dict:
+    d = {"why": why, "final": final}
+    if not final:
+        d["ts"] = now
+    return d
+
+
+def entry_state(v, now: float | None = None) -> tuple[str, str]:
+    """캐시 값 → (상태, 설명). 상태 = hit / final / wait / ask."""
+    now = time.time() if now is None else now
+    if isinstance(v, list) and len(v) == 2 and v[0]:
+        return "hit", f"{v[0]} ({v[1]})"
+    if isinstance(v, dict):
+        why = str(v.get("why") or "사유 미기록")
+        if v.get("final"):
+            return "final", why
+        try:
+            left = _RETRY_SEC - (now - float(v.get("ts")))
+        except (TypeError, ValueError):
+            return "ask", why + " · 시각 미기록 — 다시 묻는다"
+        if left > 0:
+            nxt = datetime.fromtimestamp(now + left, _KST).strftime("%m-%d %H:%M")
+            return "wait", f"{why} · 다음 재시도 {nxt} KST"
+        return "ask", why + " · 재시도 시각 지남"
+    return "ask", "옛 판 실패 기록(사유 미기록) — 다시 묻는다"
+
+
+def miss_reason(name: str) -> str:
+    """미매칭 종목 이름 → 사람이 읽는 사유(캐시에 없으면 '아직 묻지 않음')."""
+    from bot.portfolio_resolve import _normalize
+    key = _normalize(name)
+    cache = _load()
+    if key not in cache:
+        return "아직 AI 매칭을 묻지 않음"
+    st, why = entry_state(cache[key])
+    return why if st != "hit" else ""
+
+
+def _verify_yfinance(ticker: str, company: str = "") -> tuple[str | None, str, bool]:
+    """yfinance 로 티커 검증 → (market | None, 실패 사유, 최종 여부). 값이 있는 것만으로는 부족하다 — 그 티커의 원천
+    이름이 모델이 말한 회사(`company`)와 같은 회사여야 한다(국내 비상장 SK에코플랜트가 무관한 미국 SKHY 로 붙었다,
+    2026-10-14). 이름을 못 받으면 확인 불가 — 틀린 티커보다 미매칭이 낫지만 그건 **일시 실패**라 다시 묻는다
+    (`get_info` 는 Yahoo 가 자주 거절한다 — 그때 검색 결과의 이름으로 한 번 더 본다)."""
     from bot.portfolio_resolve import same_company
     try:
         import yfinance as yf
@@ -74,24 +125,40 @@ def _verify_yfinance(ticker: str, company: str = "") -> str | None:
         info = t.fast_info
         if not (getattr(info, "last_price", None) or
                 getattr(info, "previous_close", None)):
-            return None
-        meta = t.get_info() or {}
-        got = str(meta.get("longName") or meta.get("shortName") or "")
+            return None, f"Yahoo 에 {ticker} 시세 없음", False
+        got = ""
+        try:
+            meta = t.get_info() or {}
+            got = str(meta.get("longName") or meta.get("shortName") or "")
+        except Exception as exc:                               # noqa: BLE001 — 검색 이름으로 한 번 더
+            log.info("auto_resolve: %s get_info 실패(%s) — 검색 이름으로", ticker, type(exc).__name__)
+        if not got:
+            try:
+                for q in getattr(yf.Search(ticker, max_results=6), "quotes", None) or []:
+                    if str(q.get("symbol") or "").upper() == ticker:
+                        got = str(q.get("longname") or q.get("shortname") or "")
+                        break
+            except Exception as exc:                           # noqa: BLE001
+                log.info("auto_resolve: %s 검색 실패(%s)", ticker, type(exc).__name__)
+        if not got:
+            return None, f"Yahoo 에서 {ticker} 회사 이름을 못 받음", False
         if not same_company(company, got):
             log.info("auto_resolve: %s 이름 %r ≠ %r — 버림", ticker, got, company)
-            return None
-        return "US"
-    except Exception:
-        return None
+            return None, f"{ticker} 의 Yahoo 이름 '{got}' ≠ AI '{company}'", True
+        return "US", "", True
+    except Exception as exc:                                   # noqa: BLE001
+        return None, f"Yahoo 확인 실패({type(exc).__name__})", False
 
 
-def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
-    """이름 목록 → {정규화키: (ticker, market) | None}. 캐시 우선, 미캐시만 Flash.
+def batch_resolve(names: list[str], now: float | None = None) -> dict[str, tuple[str, str] | None]:
+    """이름 목록 → {정규화키: (ticker, market) | None}. 캐시 우선 — 매칭·최종 실패·재시도 대기 중인 일시 실패는
+    묻지 않고, 나머지(처음 · 재시도 시각이 지난 일시 실패 · 사유 없는 옛 기록)만 Flash 에 묻는다.
 
     resolve_ticker() 에서 미매칭된 이름만 넘겨야 함 (KR/ETF 는 이미 처리).
     """
     from bot.portfolio_resolve import _normalize
 
+    now = time.time() if now is None else now
     cache = _load()
     result: dict[str, tuple[str, str] | None] = {}
     todo: list[tuple[str, str]] = []
@@ -101,17 +168,22 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
         if not key or len(key) < 2:
             continue
         if key in cache:
-            v = cache[key]
-            result[key] = tuple(v) if v else None
-            continue
-        todo.append((key, name))
+            st, _ = entry_state(cache[key], now)
+            if st == "hit":
+                result[key] = tuple(cache[key])
+                continue
+            if st in ("final", "wait"):
+                result[key] = None
+                continue
+        if all(k != key for k, _ in todo):
+            todo.append((key, name))
 
     if not todo:
         return result
 
     api_key = _effective_key()
     if not api_key:
-        for key, _ in todo:
+        for key, _ in todo:          # 키가 없으면 묻지도 않았다 — 기록하지 않는다(키를 넣으면 바로 묻는다)
             result[key] = None
         return result
 
@@ -122,10 +194,12 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
         "티커와 영문 회사명을 식별하세요.\n"
         "- 한글 음역(시놉시스=Synopsys=SNPS) 또는 영문(ROUNDHILL MEMORY=DRAM)\n"
         "- 결과는 JSON만: {\"시놉시스\": {\"ticker\": \"SNPS\", \"company\": \"Synopsys\"}, ...}\n"
+        "- 키는 위 목록의 종목명을 그대로 쓰세요\n"
         "- 한국 회사(비상장 포함 — 예: SK에코플랜트)·식별 불가·이름이 비슷한 다른 회사뿐이면 null\n"
         "- 설명 금지, JSON만 출력\n\n" + lines)
 
-    guesses: dict[str, dict] = {}
+    raw: dict | None = None
+    fail = ""
     try:
         from bot.screener import _call_pro
         text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
@@ -136,33 +210,86 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
             clean = clean.split("```")[1]
             if clean.startswith("json"):
                 clean = clean[4:]
-        raw = json.loads(clean)
-        if isinstance(raw, dict):           # 옛 형식(티커 문자열만)은 회사명이 없어 신원을 확인할 수 없다 — 받지 않는다
-            guesses = {k: v for k, v in raw.items() if isinstance(v, dict)}
-    except Exception as e:
+        got = json.loads(clean)
+        if isinstance(got, dict):
+            raw = got
+        else:
+            fail = "AI 응답이 JSON 객체가 아님"
+    except json.JSONDecodeError:
+        fail = "AI 응답을 JSON 으로 못 읽음"
+    except Exception as e:                                     # noqa: BLE001
+        fail = f"AI 호출 실패({type(e).__name__})"
         log.info("auto_resolve flash: %s", e)
 
+    # 모델이 키를 조금 바꿔 쓰는 일(괄호·공백)은 정규화로 맞춘다 — 그래도 없으면 '응답에 없음'(일시 실패)
+    by_norm = {_normalize(k): v for k, v in (raw or {}).items()} if raw is not None else {}
     for key, orig in batch:
-        g = guesses.get(orig) or {}
+        if raw is None:
+            cache[key] = _miss(fail, final=False, now=now)
+            result[key] = None
+            continue
+        if orig in raw:
+            g = raw[orig]
+        elif key in by_norm:
+            g = by_norm[key]
+        else:
+            cache[key] = _miss("AI 응답에 이 종목이 없음", final=False, now=now)
+            result[key] = None
+            continue
+        if g is None:
+            cache[key] = _miss("AI: 미국 상장 해외 회사로 식별 못 함(국내·비상장·식별 불가)", final=True, now=now)
+            result[key] = None
+            continue
+        if not isinstance(g, dict):    # 옛 형식(티커 문자열만)은 회사명이 없어 신원을 확인할 수 없다 — 받지 않는다
+            cache[key] = _miss("AI 응답 형식이 다름(회사명 없음)", final=False, now=now)
+            result[key] = None
+            continue
         ticker, company = g.get("ticker"), str(g.get("company") or "")
-        if not isinstance(ticker, str) or not ticker:
-            cache[key] = None
+        if not isinstance(ticker, str) or not ticker or not company:
+            cache[key] = _miss("AI 응답에 티커·회사명이 없음", final=False, now=now)
             result[key] = None
             continue
         ticker = ticker.strip().upper()
         if not re.match(r"^[A-Z0-9.-]{1,10}$", ticker):
-            cache[key] = None
+            cache[key] = _miss(f"AI 티커 모양이 이상함({ticker[:12]})", final=False, now=now)
             result[key] = None
             continue
-        mkt = _verify_yfinance(ticker, company)
+        mkt, why, final = _verify_yfinance(ticker, company)
         if mkt:
             cache[key] = [ticker, mkt]
             result[key] = (ticker, mkt)
             log.info("auto_resolve: %r → %s", orig, ticker)
         else:
-            cache[key] = None
+            cache[key] = _miss(why, final=final, now=now)
             result[key] = None
-            log.info("auto_resolve: %r → %s (verify failed)", orig, ticker)
+            log.info("auto_resolve: %r → %s (%s)", orig, ticker, why)
 
     _save()
     return result
+
+
+def why(out=print) -> int:
+    """읽기 전용 진단 — 지금 자산 기록의 미매칭 종목마다 자동 매칭 상태와 사유(AI·Yahoo 호출 없음)."""
+    from bot.portfolio import load
+    from bot.portfolio_resolve import _normalize
+    model = load() or {}
+    names = sorted({str(h.get("상품명") or "") for h in model.get("holdings") or []
+                    if not h.get("matched") and not h.get("source") and h.get("상품명")})
+    cache = _load()
+    out(f"# portfolio_auto_resolve --why · 캐시 {_CACHE_PATH.name} {len(cache)}항목 · 재시도 간격 {_RETRY_SEC // 3600}시간")
+    if not names:
+        out("미매칭 종목 없음")
+        return 0
+    out(f"미매칭 {len(names)}종목:")
+    for n in names:
+        key = _normalize(n)
+        st, why_ = entry_state(cache[key]) if key in cache else ("ask", "아직 AI 매칭을 묻지 않음")
+        lab = {"hit": "✅ 캐시엔 매칭(다음 재매칭에 붙음)", "final": "⛔ 최종", "wait": "⏳ 대기",
+               "ask": "🔁 다음 재매칭에 묻는다"}[st]
+        out(f"  · {n} — {lab}: {why_}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(why() if "--why" in sys.argv[1:] else 2)

@@ -32,6 +32,7 @@ _OVERSEAS_ALIAS: dict[str, tuple[str, str]] = {
     "앰코테크놀로지": ("AMKR", "US"),
     "비코인스트루먼츠": ("VECO", "US"),
     "에흐르테스트시스템즈": ("AEHR", "US"),
+    "에흐르테스트시스템스": ("AEHR", "US"),      # 뱅크샐러드 표기(2026-10-16 export) — '즈' 판만 있어 미매칭이었다
     "st마이크로일렉트로닉스": ("STM", "US"),  # ADR
     "ase테크놀로지홀딩": ("ASX", "US"),       # ADR (TW 본사)
     "klacorp": ("KLAC", "US"),

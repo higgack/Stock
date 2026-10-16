@@ -284,11 +284,24 @@ async def _run_async() -> int:
             state["tg_seeded"] = True
         state.update({"initialized": True, "ids": sorted(seen_ids), "last_msg_id": last_msg_id})
         _save_seen(state)
+        _rematch()
     finally:
         await client.disconnect()
 
     log.info("portfolio_watch: 처리 %d건 · 글 %d건 → 보유종목 News 수신함", processed, n_txt)
     return 0
+
+
+def _rematch() -> None:
+    """저장된 자산 기록의 미매칭 종목을 다시 매칭(일시 실패가 다음 업로드까지 남지 않게, 2026-10-16). 붙은 게
+    있으면 자산 대시보드를 다시 그린다. 실패는 이 주기의 일만 잃는다."""
+    try:
+        from bot.portfolio import rematch_unmatched
+        if rematch_unmatched():
+            from bot.dashboard import regenerate_portfolio_index
+            regenerate_portfolio_index()
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("portfolio_watch: 미매칭 재매칭 실패: %s", exc)
 
 
 def run() -> int:

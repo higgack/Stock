@@ -97,7 +97,10 @@ def test_auto_resolve_rejects_a_ticker_whose_name_is_another_company(ar, monkeyp
          {"SKHY": "SK Hynix Inc.", "SNPS": "Synopsys, Inc."})
     out = ar.batch_resolve(["SK에코플랜트", "시놉시스"])
     assert out == {"sk에코플랜트": None, "시놉시스": ("SNPS", "US")}
-    assert json.loads(ar._CACHE_PATH.read_text("utf-8")) == {"sk에코플랜트": None, "시놉시스": ["SNPS", "US"]}
+    # 2026-10-16 다시 씀(#222): 이름이 다른 회사인 것은 다시 물어도 같은 답이라 '최종' 실패로 사유와 함께 남는다
+    cache = json.loads(ar._CACHE_PATH.read_text("utf-8"))
+    assert cache["시놉시스"] == ["SNPS", "US"]
+    assert cache["sk에코플랜트"]["final"] is True and "SK Hynix" in cache["sk에코플랜트"]["why"]
 
 
 def test_auto_resolve_without_a_company_name_is_not_accepted(ar, monkeypatch):
