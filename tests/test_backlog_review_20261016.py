@@ -121,3 +121,70 @@ def test_whole_company_none_declarations(decl):
 ])
 def test_one_segment_none_is_not_a_whole_company_declaration(part):
     assert not _NO_DATA_RE.search(part), part
+
+
+# ── 000670 영풍 — 잔고에 기초잔고가 포함돼 가로 항등식이 안 선다 ─────────
+# 원문(`--explain 000670` VM 출력) 그대로. 각주가 사유를 밝힌다.
+def _yp(rows, total):
+    return ("(단위 : M/T, 천㎡, 천개 / 백만원) 회사명 품목 수주일자 납기 수주총액 "
+            "기납품액 수주잔고 수량 금액 수량 금액 수량 금액 " + rows + " 합 계 "
+            + total + " ※ 수주총액은 사업계획등을 기준으로 작성되며, 수주잔고에는 "
+            "기초잔고가 포함되어 있습니다. 5. 위험관리 및 파생거래")
+
+
+YP_26Q1 = _yp(
+    "㈜영풍 아연괴 2026.01.01~2026.12.31 2026.01.01~2026.12.31 55,226 245,858 "
+    "52,732 264,255 2,494 -18,396 영풍전자㈜ FPCB 3,156 3,126 2,722 3,207 -2,843 "
+    "-1,438 ㈜코리아써키트 PCB 249 374,713 163 228,513 86 146,200 ㈜인터플렉스 FPCB "
+    "241 62,667 197 52,254 44 10,414 ㈜테라닉스 PCB 81 12,738 70 12,097 34 5,541",
+    "- 699,103 - 560,326 - 142,321")
+YP_25Q2 = _yp(
+    "㈜영풍 아연괴 2025.01.01~2025.06.30 2025.01.01~2025.06.30 59,562 275,639 "
+    "56,573 241,552 2,989 34,087 영풍전자㈜ FPCB 37,267 47,026 39,155 50,149 640 "
+    "1,617 ㈜코리아써키트 PCB 431 498,700 330 361,325 101 137,375 ㈜인터플렉스 FPCB "
+    "404,702 101,291 354,445 91,605 50,256 9,685 ㈜테라닉스 PCB 270 48,810 199 "
+    "35,903 112 22,603", "- 971,466 - 780,534 - 205,367")
+YP_25Q4 = _yp(
+    "㈜영풍 아연괴 2025.01.01~2025.12.31 2025.01.01~2025.12.31 195,500 876,737 "
+    "187,194 824,272 8,306 52,465 영풍전자㈜ FPCB 59,894 72,914 65,699 79,011 "
+    "-3,277 -1,357 ㈜코리아써키트 PCB 811 1,005,296 690 818,583 121 186,713 "
+    "㈜인터플렉스 FPCB 930 228,816 857 211,579 73 17,237 ㈜테라닉스 PCB 470 82,023 "
+    "487 86,818 23 4,900", "- 2,265,786 - 2,020,264 - 259,958")
+
+
+@pytest.mark.parametrize("text,want", [(YP_26Q1, 142_321), (YP_25Q2, 205_367),
+                                       (YP_25Q4, 259_958)],
+                         ids=["26.1Q", "25.2Q", "25.4Q"])
+def test_opening_balance_included_table_reads_by_column_sums(text, want):
+    got = parse_backlog(text)
+    assert got and got["value"] == want * 1e6, got
+    assert got["form"] == "표·합계행(세로합)"
+
+
+@pytest.mark.parametrize("old,new", [
+    ("10,414 ㈜테라닉스", "99,414 ㈜테라닉스"),        # 잔고 열 행 하나
+    ("374,713 163 228,513", "374,713 163 300,000"),     # 기납품 열 행 하나
+    ("- 699,103 - 560,326", "- 750,000 - 560,326"),     # 합계 총액
+])
+def test_column_sums_must_hold_in_every_column(old, new):
+    assert YP_26Q1.count(old) == 1
+    assert parse_backlog(YP_26Q1.replace(old, new)) is None, new
+
+
+def test_a_row_that_is_not_three_or_six_cells_rejects():
+    """표를 다 못 읽은 행이 있으면 세로 합은 우연히라도 믿지 않는다."""
+    bad = YP_26Q1.replace("241 62,667 197 52,254 44 10,414",
+                          "241 62,667 197 52,254 10,414")
+    assert parse_backlog(bad) is None
+
+
+def test_single_data_row_is_not_column_evidence():
+    from bot.dart_backlog import _verify_columns
+    assert _verify_columns([[10.0, 4.0, 9.0]], [10.0, 4.0, 9.0]) is None
+
+
+def test_a_stray_short_run_is_not_silently_dropped():
+    """반대 증거 — 3·6칸이 아닌 행을 **빼고** 더하면 세로 합이 우연히 맞는다.
+    행 하나를 못 읽었다는 신호를 지우는 것이므로 거부해야 한다."""
+    bad = YP_26Q1.replace("㈜테라닉스 PCB", "기타 7 8 ㈜테라닉스 PCB")
+    assert parse_backlog(bad) is None

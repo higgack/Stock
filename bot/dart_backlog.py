@@ -8,6 +8,8 @@
   A. 표 — 헤더에 잔고 열 + 총액/기초 열 + 납품/매출/수익인식 열.
      A-1 `합 계` 행이 있으면 그 행을 검산해서 쓴다(가장 안전).
      A-2 합계행이 **없으면** 데이터 행을 각각 검산해 잔고열을 합산한다.
+     A-3 합계행의 가로 항등식이 안 서면 **세로 합**(행 합 = 합계, 세 열 모두)
+         으로 검산한다 — 영풍은 각주대로 잔고에 기초잔고가 포함돼 있다.
      ※ 티에스이는 `(단위 : 개, 백만원)` 로 수량까지 숫자여서 6열이 나온다 —
        홀수 인덱스(금액)만 뽑는다. 안 그러면 수량 162,577개가 잔고가 된다.
   B. XBRL 주석형 — `수주잔고, 기말 N`(한전KPS) / `건설계약 수주잔고 N`(현대건설).
@@ -538,6 +540,40 @@ def _header_gated(text: str, at: int) -> bool:
             and any(k in head for k in _DELIV_LABELS))
 
 
+def _amounts(r: list[float]) -> list[float] | None:
+    """한 행의 금액 3칸 — 6칸이면 (수량, 금액) 쌍이라 금액만(티에스이·영풍)."""
+    if len(r) == 6:
+        return r[1::2]
+    return list(r) if len(r) == 3 else None
+
+
+def _verify_columns(rows: list[list[float]], total: list[float]) -> float | None:
+    """가로 항등식이 안 서는 표의 **세로** 검산 — 데이터 행 합 = 합계행, 세 열 모두.
+
+    2026-10-16 영풍 000670 실측: 각주가 "수주잔고에는 **기초잔고가 포함**되어
+    있습니다" 라고 밝혀 `총액 − 기납품 = 잔고` 가 행마다 전기 잔고만큼 어긋난다
+    (26.1Q 테라닉스 12,738 − 12,097 = 641 인데 잔고 5,541 — 차이 4,900 이
+    25.4Q 테라닉스 잔고와 같다). 원문은 맞고 우리 항등식이 이 표에 안 맞는 것이다.
+    26.2Q 만 차이가 우연히 1% 안(0.83%)이라 받히고 나머지 4분기는 버려졌다.
+    대신 **세 열 모두** 행 합 = 합계가 성립해야 한다 — 열을 잘못 집으면 세
+    등식이 동시에 맞을 수 없다(형태 J·D 와 같은 규약). 잔고 열이 어느 것인지는
+    여전히 머리행 관문(총액·기납품·잔고 라벨)이 정한다. 행 하나라도 3·6칸이
+    아니면 표를 다 읽지 못한 것이므로 거부하고, 행은 2개 이상이어야 한다
+    (1행이면 행 = 합계라 아무것도 재지 않는다).
+    """
+    tot = _amounts(total)
+    if tot is None or tot[2] <= 0 or len(rows) < 2:
+        return None
+    amts = [_amounts(r) for r in rows]
+    if any(a is None for a in amts):
+        return None
+    for i in range(3):
+        col = sum(a[i] for a in amts)
+        if abs(col - tot[i]) > _TOL * max(abs(tot[i]), 1.0):
+            return None
+    return tot[2]
+
+
 def _parse_table(text: str) -> tuple[float, str] | None:
     """형태 A — 헤더(총액/기초 + 기납품 + 잔고)가 있는 표.
 
@@ -557,9 +593,13 @@ def _parse_table(text: str) -> tuple[float, str] | None:
         seg = _cut_table(text[m.end():m.end() + 2500])
         tm = re.search(r"합\s*계", seg)
         if tm:
-            got = _verify(_row_values(seg, tm.end()))
+            total = _row_values(seg, tm.end())
+            got = _verify(total)
             if got is not None:
                 return got * mult, "표·합계행"
+            got = _verify_columns(_runs(seg[:tm.start()]), total)
+            if got is not None:
+                return got * mult, "표·합계행(세로합)"
             continue
         # ② 합계행 없음 — 행별 검산 후 합산. 3열 이상 묶음은 **전부** 통과해야
         #    한다(하나라도 어긋나면 표를 잘못 읽고 있다는 뜻).
