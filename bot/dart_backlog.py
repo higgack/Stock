@@ -211,13 +211,34 @@ _GENERIC_BAL = {"기말"}
 # 제조사 보고서에나 있어, 그 바로 앞 계약자산 손상표의 `기말 계약자산` 을
 # 잔고 라벨로 만들었다(2026-10-16 144960 실측 — 수주표가 아닌데 '헤더에
 # 기납품·매출 열 없음' 으로 고칠 목록에 올랐다).
-_ORDER_CTX = re.compile(r"수주|기본\s*도급|도급\s*(?:금?액|공사|잔액)|계약잔액")
+# 표 머리 형태는 넓게 받는다 — `도급계약액`·`도급계약금액`·`총도급`·`도급계약 현황`
+# (독립 리뷰가 좁힌 첫 판이 이 넷을 놓쳐 실물 표를 버리는 것을 재현했다).
+_ORDER_CTX = re.compile(
+    r"수주|총\s*도급|도급\s*(?:계약\s*)?(?:금?액|공사|잔액|현황)|계약잔액")
 # 앞쪽 문맥은 **이 절 안에서만** — 같은 단계의 절 머리(`마.`)를 넘어 앞 절
 # 제목의 `수주` 를 빌리지 않는다(2026-10-16 376300 실측: `라. 수주계약 현황
 # … 해당사항 없습니다. 마. 공정가치평가 내역 … 당반기말` 의 `기말` 이 앞 절
 # 제목을 문맥으로 썼다). 절 머리 자신은 남긴다 — 391710 `라. 수주상황` 처럼
 # 그 제목이 곧 표의 문맥이다(078340 의 뒤쪽 판과 같은 병의 앞쪽 판, #38).
-_SECTION_HEAD = re.compile(r"(?:^|\s)[가나다라마바사아자차카타파하]\s*\.\s")
+# ⚠️ **아래 단계** 머리는 자르지 않는다 — `나. 수주상황 … 가. 국내 (표)` 의 `가.`
+# 는 수주 절 안의 하위 항목이라 거기서 자르면 실물 표가 문맥을 잃는다(독립 리뷰
+# 재현). 창 안에서 마지막 머리보다 **뒤 글자**의 머리가 앞에 있으면 하위 단계다.
+# 공백 없이 붙은 `없습니다.마.공정` 도 머리로 본다(DART 평문은 자주 붙는다).
+_SECTION_LETTERS = "가나다라마바사아자차카타파하"
+_SECTION_HEAD = re.compile(
+    r"(?:^|(?<=[\s.]))([" + _SECTION_LETTERS + r"])\s*\.\s*(?=[가-힣(])")
+
+
+def _section_start(before: str) -> int:
+    """앞쪽 문맥을 자를 위치(없으면 0) — 같은·윗 단계 절 머리에서만."""
+    heads = list(_SECTION_HEAD.finditer(before))
+    if not heads:
+        return 0
+    last = heads[-1]
+    rank = _SECTION_LETTERS.index(last.group(1))
+    if any(_SECTION_LETTERS.index(h.group(1)) > rank for h in heads[:-1]):
+        return 0
+    return last.start()
 
 
 def _balance_matches(text: str) -> list:
@@ -237,9 +258,7 @@ def _balance_matches(text: str) -> list:
     for m in re.finditer("|".join(_BAL_LABELS), text or ""):
         if m.group(0) in _GENERIC_BAL:
             before = text[max(0, m.start() - 260):m.start()]
-            heads = list(_SECTION_HEAD.finditer(before))
-            if heads:
-                before = before[heads[-1].start():]
+            before = before[_section_start(before):]
             near = before + _cut_table(text[m.start():m.start() + 120])
             if not _ORDER_CTX.search(near):
                 continue
@@ -972,9 +991,14 @@ _NO_DATA_RE = re.compile(
     r"|수주잔고[^.]{0,40}?기재하지\s*않"
     r"|수주(?:거래|계약)[^.]{0,25}?없습니다"
     # 2026-10-16 376300 실측 `라. 수주계약 현황 당사는 보고서 작성 기준일 현재
-    # 해당사항 없습니다.` — 주어 구절이 길어 위 25자 창을 넘는다. `해당사항
-    # 없` 은 그 절이 비었다는 **원문의 선언**이라 창을 넓혀도 다른 뜻을 안 문다.
-    r"|수주\s*(?:거래|계약|상황|현황)[^.]{0,60}?해당\s*사항\s*(?:이\s*)?없"
+    # 해당사항 없습니다.` — 주어 구절이 길어 위 25자 창을 넘는다.
+    # ⚠️ 주어가 **회사 전체**(당사·회사·연결실체)이고 문장이 `없습니다` 로 끝날
+    # 때만 — 표 칸 `해외 해당사항 없음` 이나 `방산부문은 해당사항이 없습니다`
+    # 처럼 **한 부문**만 빈 경우까지 물면 진짜 파서 갭이 '고칠 것 아님' 으로
+    # 숨는다(독립 리뷰 재현, #385).
+    r"|수주\s*(?:거래|계약|상황|현황)(?:\s*(?:현황|상황|내역))?\s*(?:은|는)?\s*"
+    r"(?:당사|회사|연결실체)"
+    r"[^.]{0,50}?해당\s*사항\s*(?:이\s*)?없습니다"
     r"|수주잔고[^.]{0,60}?(?:예측|관리)[^.]{0,30}?어려"
     r"|" + _TRADE_SECRET_PAT)
 

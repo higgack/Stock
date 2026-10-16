@@ -67,7 +67,8 @@ def test_section_heading_itself_still_lends_context():
     assert [m.group(0) for m in _balance_matches(t)] == ["기말", "기말"]
 
 
-@pytest.mark.parametrize("head", ["기본도급액", "도급금액", "도급공사"])
+@pytest.mark.parametrize("head", ["기본도급액", "도급금액", "도급공사", "도급계약액",
+                                  "도급계약금액", "총도급", "도급계약 현황"])
 def test_construction_header_words_still_lend_context(head):
     t = f"(단위 : 백만원) 구분 {head} 기초 증가 감소 기말 A 100 50 30 120"
     assert [m.group(0) for m in _balance_matches(t)][-1:] == ["기말"], head
@@ -78,3 +79,45 @@ def test_explicit_none_declaration_with_long_subject():
          "없습니다. (단위 : 백만원) 구분 수주잔고 A 1,000")
     assert _NO_DATA_RE.search(t)
     assert diagnose(t) == "명시적미공시"
+
+
+def test_prose_dogeup_contract_is_not_context():
+    t = ("(단위 : 천원) 구분 계약자산 기말 계약자산 (1,248,340) "
+         "연결기업은 도급계약에 대해 고객으로부터")
+    assert _balance_matches(t) == []
+
+
+_FORM_A = ("(단위 : 백만원) 구분 기초 수익인식 기말 A사 1,000 400 600 "
+           "합 계 1,000 400 600")
+
+
+def test_lower_level_heading_under_the_order_section_keeps_context():
+    """독립 리뷰 재현 — `나. 수주상황 … 가. 국내` 의 `가.` 는 하위 항목."""
+    got = parse_backlog("나. 수주상황 현황은 다음과 같습니다. 가. 국내 " + _FORM_A)
+    assert got and got["value"] == 600 * 1e6, got
+
+
+def test_sibling_heading_without_spaces_still_cuts():
+    t = ("라. 수주계약 현황 당사는 해당사항 없습니다.마.공정가치평가 내역 "
+         "(단위 : 천원) 구분 당반기말 수준1 2,900,000")
+    assert _balance_matches(t) == []
+
+
+@pytest.mark.parametrize("decl", [
+    "수주상황 당사는 보고서 작성 기준일 현재 해당사항이 없습니다.",
+    "수주계약 현황 당사는 보고서 작성 기준일 현재 해당사항 없습니다.",
+])
+def test_whole_company_none_declarations(decl):
+    assert _NO_DATA_RE.search(decl), decl
+
+
+@pytest.mark.parametrize("part", [
+    "나. 수주상황 (단위 : 백만원) 구분 수주총액 기납품액 수주잔고 해외 해당사항 없음 "
+    "국내 1,000 400 합 계 1,000 400 7 8 9",
+    "수주현황 해당사항 없는 부문은 제외하였습니다.",
+    "수주현황 중 방산부문은 해당사항이 없습니다.",
+    # 주어는 회사여도 문장이 아니라 **표 칸**(`없음`)이면 한 부문만 빈 것이다.
+    "수주상황 당사는 다음과 같습니다 구분 해외 해당사항 없음 국내 1,000 400 600",
+])
+def test_one_segment_none_is_not_a_whole_company_declaration(part):
+    assert not _NO_DATA_RE.search(part), part
