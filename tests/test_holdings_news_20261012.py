@@ -5030,3 +5030,65 @@ def test_tick_records_attach_failure_and_why_says_it(hn, portfolio, monkeypatch)
     assert "add_fail" not in hn.load_state()
     hn.why(_t("2026-10-12T07:50"), out=(out2 := []).append)
     assert "새로 생긴" not in _diff_line(out2) and "낮에 붙인 이력 07:45 1종목" in _diff_line(out2)
+
+
+def test_diff_line_ignores_yesterdays_attach_failure_and_none_state(hn):
+    """어제 밤 붙이기 실패가 남아 있어도 오늘 실패로 적지 않는다 · 상태가 None 이어도 새 보유를 말한다(델타 리뷰)."""
+    rec = {"date": "2026-10-13", "stocks": []}
+    st = {"last_tick": "2026-10-13T07:15:00+09:00",
+          "add_fail": {"at": "2026-10-12T23:50:00+09:00", "why": "X: y"}}
+    ln = hn.holdings_diff_line(rec, [_ds("KR:2", "나")], _t("2026-10-13T07:20"), st)
+    assert "실패" not in ln and "다음 주기에 붙음" in ln
+    assert "새로 생긴 1종목(나)" in hn.holdings_diff_line(rec, [_ds("KR:2", "나")], _t("2026-10-13T07:20"), None)
+
+
+def test_diff_line_midnight_wins_over_failure_and_missed_ticks(hn):
+    rec = {"date": "2026-10-12", "stocks": []}
+    cur = [_ds("KR:2", "나")]
+    a = hn.holdings_diff_line(rec, cur, _t("2026-10-12T23:50"),
+                              {"last_tick": "2026-10-12T23:46:00+09:00",
+                               "add_fail": {"at": "2026-10-12T23:46:00+09:00", "why": "X"}})
+    assert "자정을 넘어" in a and "실패" not in a                   # 다음 주기엔 오늘 기록이 없다
+    b = hn.holdings_diff_line(rec, cur, _t("2026-10-12T23:58"), {"last_tick": "2026-10-12T23:30:00+09:00"})
+    assert "자정을 넘어" in b                                        # 23:45 주기를 놓쳤으면 다음은 지금 이후
+    c = hn.holdings_diff_line(rec, cur, _t("2026-10-12T23:50"), {"last_tick": "2026-10-12T23:40:00+09:00"})
+    assert "다음 주기에 붙음" in c                                   # 23:55 주기는 아직 오늘이다
+
+
+def test_diff_line_multi_tick_says_what_rolls_over_midnight(hn, monkeypatch):
+    monkeypatch.setattr(hn, "MAX_ADD_PER_TICK", 2)
+    rec = {"date": "2026-10-12", "stocks": []}
+    cur = [_ds(f"KR:{i}", f"n{i}") for i in range(5)]
+    late = hn.holdings_diff_line(rec, cur, _t("2026-10-12T23:25"), {"last_tick": "2026-10-12T23:20:00+09:00"})
+    assert "3주기 — 자정 전에 다 못 붙은 종목은 내일 07:10 수집이 모음" in late
+    early = hn.holdings_diff_line(rec, cur, _t("2026-10-12T13:25"), {"last_tick": "2026-10-12T13:20:00+09:00"})
+    assert "3주기)" in early and "자정" not in early
+
+
+def test_attach_failure_is_cleared_by_a_clean_tick_and_by_the_morning_collect(hn, portfolio, monkeypatch):
+    f = _fetcher({}, ([], "naver", ""))
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    real = hn.add_new_holdings
+    monkeypatch.setattr(hn, "add_new_holdings", lambda *a, **k: 1 / 0)
+    hn.tick(_t("2026-10-12T07:30"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert "add_fail" in hn.load_state()
+    monkeypatch.setattr(hn, "add_new_holdings", real)
+    hn.tick(_t("2026-10-12T07:45"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert "add_fail" not in hn.load_state()                         # 새 보유가 없어도 성공한 주기가 지운다
+    # 밤에 실패가 남은 채 날이 바뀌면 아침 수집이 지운다
+    monkeypatch.setattr(hn, "add_new_holdings", lambda *a, **k: 1 / 0)
+    hn.tick(_t("2026-10-12T23:50"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert "add_fail" in hn.load_state()
+    hn.tick(_t("2026-10-13T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert "add_fail" not in hn.load_state()
+
+
+def test_attach_failure_reaches_disk_even_if_the_tick_dies_later(hn, portfolio, monkeypatch):
+    """뒤의 정리가 예외로 죽어도(`tick_and_render` 가 디스크를 다시 읽는다) 붙이기 실패는 디스크에 남는다."""
+    f = _fetcher({}, ([], "naver", ""))
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    monkeypatch.setattr(hn, "add_new_holdings", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(hn, "_live_dates", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        hn.tick(_t("2026-10-12T07:30"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert hn.load_state()["add_fail"]["at"].startswith("2026-10-12T07:30")

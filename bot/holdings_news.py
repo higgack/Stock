@@ -967,7 +967,9 @@ def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = Non
     남으므로, 둘을 갈라 적는다(#82). 대조는 `add_new_holdings` 와 같은 키·같은 목록으로 한다(#35).
     '다음 주기에 붙음' 은 그 경로가 실제로 다시 돌 때만 적는다(#380) — 주기가 멈췄거나, 직전 주기의 붙이기가
     실패했거나(`add_fail`), 다음 주기가 자정을 넘어 날짜가 바뀌면(그 주기엔 오늘 기록이 없다) 그렇게 말한다.
-    지금 목록이 비었으면(자산 기록 못 읽음 · 보유 0) 대조하지 않는다 — '전부 팔았다' 로 읽힌다(#54)."""
+    지금 목록이 비었으면(자산 기록 못 읽음 · 보유 0) 대조하지 않는다 — '전부 팔았다' 로 읽힌다(#54).
+    ⚠️ 못 보는 축(#274): 붙이기 실패는 이 줄에만 실린다 — 판정 줄(`status_verdict`)·일일 감사는 안 본다.
+    `add_new_holdings` 가 예외 없이 0종목을 돌려준 경우(그 사이 목록이 바뀌어 `collect` 가 빈손)도 성공으로 센다."""
     now = _now(now)
     st = st if isinstance(st, dict) else {}
     if not stocks:
@@ -997,20 +999,30 @@ def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = Non
     if new:
         tick_at = _parse(st.get("last_tick"))
         fail = st.get("add_fail") if isinstance(st.get("add_fail"), dict) else None
+        # 다음 주기 시각. 예정 시각이 이미 지났으면(주기를 놓침) 언제 돌지 모르므로 늦은 쪽 상한(지금 + 간격)으로
+        # 잰다 — 지난 시각으로 자정을 재면 넘는 걸 못 본다(리뷰)
         nxt = (tick_at or now) + timedelta(minutes=TICK_MIN)
+        if nxt < now:
+            nxt = now + timedelta(minutes=TICK_MIN)
+        if fail and str((_parse(fail.get("at")) or now - timedelta(days=1)).astimezone(_KST).date()) != today:
+            fail = None                  # 어제 기록이 남은 것 — 오늘 실패로 적지 않는다
+        n_ticks = math.ceil(len(new) / MAX_ADD_PER_TICK)
+        last_nxt = nxt + timedelta(minutes=TICK_MIN * (n_ticks - 1))
         if tick_at is not None and now - tick_at > timedelta(minutes=STALE_TICK_MIN):
             when = (f"⚠️ 마지막 주기가 {tick_at.astimezone(_KST).strftime('%m-%d %H:%M')} — 봇 주기가 멈췄으면 "
                     "붙지 않음")
-        elif rec.get("date") == today and fail:
-            when = f"⚠️ {_hm(fail.get('at'))} 주기의 붙이기가 실패({str(fail.get('why') or '?')[:100]}) — 다음 주기가 다시 시도"
         elif rec.get("date") == today and nxt.astimezone(_KST).date().isoformat() != today:
+            # 자정을 넘긴 주기엔 오늘 기록이 없어 붙이기가 안 돈다 — 실패 재시도 약속보다 먼저 본다(리뷰)
             when = (f"다음 주기가 자정을 넘어 오늘 기록엔 안 붙음 — 내일 {RUN_HOUR:02d}:{RUN_MIN:02d} 수집이 "
                     "지금 목록으로 모음")
+        elif rec.get("date") == today and fail:
+            when = f"⚠️ {_hm(fail.get('at'))} 주기의 붙이기가 실패({str(fail.get('why') or '?')[:100]}) — 다음 주기가 다시 시도"
         elif rec.get("date") == today:
-            n_ticks = math.ceil(len(new) / MAX_ADD_PER_TICK)
             when = (f"다음 주기에 붙음({TICK_MIN}분 간격"
                     + (f" · 마지막 주기 {tick_at.astimezone(_KST).strftime('%H:%M')}" if tick_at else "")
-                    + (f" · 주기당 {MAX_ADD_PER_TICK}종목이라 {n_ticks}주기" if n_ticks > 1 else "") + ")")
+                    + (f" · 주기당 {MAX_ADD_PER_TICK}종목이라 {n_ticks}주기" if n_ticks > 1 else "")
+                    + (f" — 자정 전에 다 못 붙은 종목은 내일 {RUN_HOUR:02d}:{RUN_MIN:02d} 수집이 모음"
+                       if last_nxt.astimezone(_KST).date().isoformat() != today else "") + ")")
         elif due(now):
             when = "다음 주기의 오늘 수집이 지금 목록으로 모음"
         else:
@@ -1707,6 +1719,7 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
                 # 지난 주기의 실패 사유는 지금 다시 모으기 시작한 순간 낡는다 — 남겨 두면 판정이 사유를 먼저 봐
                 # 정상 수집 내내 '오늘 집계 못 함' 이다(반영분 리뷰). 실패하면 `tick_and_render` 가 다시 적는다.
                 st["reason"] = ""
+                st.pop("add_fail", None)         # 오늘 수집은 지금 목록 전부를 모은다 — 어제 붙이기 실패는 낡았다(리뷰)
                 _save_state(st)
                 rec = collect(now, records=recs, fetch=fetch, body=body, pace=pace, beat=beat)
                 if rec is None:
