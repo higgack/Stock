@@ -114,6 +114,14 @@ def rematch_unmatched(now: float | None = None) -> int:
     from bot.portfolio_auto_resolve import batch_resolve
     from bot.portfolio_resolve import _normalize
     auto = batch_resolve(names, now=now)
+    # 묻는 동안(수 초~수십 초) 다른 쓰기(업로드·예수금 백필)가 끼면 처음 읽은 모델로 덮어 그것을 되돌린다 —
+    # 쓰기 직전에 다시 읽고, 업로드가 바뀌었으면 손대지 않는다(다음 주기가 새 기록으로 다시 본다, 독립 리뷰 2026-10-16)
+    fresh = load()
+    if not isinstance(fresh, dict) or fresh.get("_saved_ts") != model.get("_saved_ts"):
+        log.info("portfolio: 재매칭 중 자산 기록이 바뀌어 이번엔 쓰지 않음")
+        return 0
+    model = fresh
+    holdings = model.get("holdings") or []
     fixed = 0
     for h in holdings:
         if h.get("matched") or h.get("source"):
@@ -127,6 +135,10 @@ def rematch_unmatched(now: float | None = None) -> int:
     model["unmatched_names"] = [h.get("상품명", "") for h in holdings
                                 if not h.get("matched") and not h.get("source")]
     model["unmatched_why"] = _unmatched_why(holdings)
+    if fixed:
+        # 업로드 시각(`_saved_ts`)은 그대로 두되 '보유 구성이 바뀌었다' 는 표식을 남긴다 — 전일대비 기준 장부가 같은
+        # 업로드라도 이 표식이 바뀌면 그날 항목을 다시 적어, 내일 붙은 종목이 '새로 생긴 종목' 으로 세지 않게(리뷰 M2)
+        model["_rematch_ts"] = time.time() if now is None else now
     if fixed or model["unmatched_why"] != old_why:
         tmp = PORTFOLIO_PATH.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")

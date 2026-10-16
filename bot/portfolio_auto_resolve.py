@@ -69,17 +69,20 @@ def _log_usage(pt: int, ot: int) -> None:
 # 옛 판은 AI 호출 실패·응답 해석 실패·Yahoo 이름 조회 실패까지 **영구** None 으로 구워, 한 번 실패한 종목은 다시
 # 묻지 않았고 사유도 남지 않았다(#161·#303 · #82). 이제 캐시 값은 셋 중 하나다:
 #   [ticker, market]                      — 매칭
-#   {"why", "final": True}                — 다시 물어도 같은 답(AI 가 해외 상장사가 아니라 함 · Yahoo 이름이 다른 회사)
+#   {"why", "final": True, "ts"}          — 답을 받고 판정한 실패(AI 가 해외 상장사가 아니라 함 · Yahoo 이름이 다른
+#                                           회사 · 미국 밖 티커) · _FINAL_SEC 뒤 다시 묻는다. AI 의 답은 확률적이라
+#                                           '다시 물어도 같은 답' 이 아니다 — 영구로 굽지 않는다(독립 리뷰 2026-10-16)
 #   {"why", "final": False, "ts"}         — 일시 실패 · _RETRY_SEC 뒤 다시 묻는다(비용 상한 = 하루 4회 × ₩1~2)
 # 사유 없는 옛 None(v2 판)은 무엇으로 실패했는지 모르므로 한 번 다시 묻는다.
 _RETRY_SEC = 6 * 3600
+_FINAL_SEC = 30 * 86400
+# 확인 단계(Yahoo) 벽시계 예산 — portfolio-watch 는 TimeoutStartSec=180 이라 넘기면 Flash 값은 냈는데 아무것도 안
+# 남는다. 예산 밖 종목은 일시 실패로 남긴다(독립 리뷰 2026-10-16).
+_VERIFY_BUDGET_SEC = 60.0
 
 
 def _miss(why: str, *, final: bool, now: float) -> dict:
-    d = {"why": why, "final": final}
-    if not final:
-        d["ts"] = now
-    return d
+    return {"why": why, "final": final, "ts": now}
 
 
 def entry_state(v, now: float | None = None) -> tuple[str, str]:
@@ -89,15 +92,14 @@ def entry_state(v, now: float | None = None) -> tuple[str, str]:
         return "hit", f"{v[0]} ({v[1]})"
     if isinstance(v, dict):
         why = str(v.get("why") or "사유 미기록")
-        if v.get("final"):
-            return "final", why
+        final = bool(v.get("final"))
         try:
-            left = _RETRY_SEC - (now - float(v.get("ts")))
+            left = (_FINAL_SEC if final else _RETRY_SEC) - (now - float(v.get("ts")))
         except (TypeError, ValueError):
             return "ask", why + " · 시각 미기록 — 다시 묻는다"
         if left > 0:
             nxt = datetime.fromtimestamp(now + left, _KST).strftime("%m-%d %H:%M")
-            return "wait", f"{why} · 다음 재시도 {nxt} KST"
+            return ("final" if final else "wait"), f"{why} · 다음 재시도 {nxt} KST"
         return "ask", why + " · 재시도 시각 지남"
     return "ask", "옛 판 실패 기록(사유 미기록) — 다시 묻는다"
 
@@ -106,9 +108,12 @@ def miss_reason(name: str) -> str:
     """미매칭 종목 이름 → 사람이 읽는 사유(캐시에 없으면 '아직 묻지 않음')."""
     from bot.portfolio_resolve import _normalize
     key = _normalize(name)
+    if len(key) < 2:
+        return "이름이 너무 짧아 AI 매칭을 묻지 않음"
     cache = _load()
     if key not in cache:
-        return "아직 AI 매칭을 묻지 않음"
+        # 키가 없으면 batch_resolve 는 기록 없이 돌아간다 — '아직' 이라 적으면 영영 오지 않을 약속이다(#380)
+        return "AI 키가 없어 매칭을 묻지 못함" if not _effective_key() else "아직 AI 매칭을 묻지 않음"
     st, why = entry_state(cache[key])
     return why if st != "hit" else ""
 
@@ -144,7 +149,7 @@ def _verify_yfinance(ticker: str, company: str = "") -> tuple[str | None, str, b
             return None, f"Yahoo 에서 {ticker} 회사 이름을 못 받음", False
         if not same_company(company, got):
             log.info("auto_resolve: %s 이름 %r ≠ %r — 버림", ticker, got, company)
-            return None, f"{ticker} 의 Yahoo 이름 '{got}' ≠ AI '{company}'", True
+            return None, f"{ticker} 의 Yahoo 이름 '{got}' 과 AI '{company}' 의 신원 낱말이 겹치지 않음", True
         return "US", "", True
     except Exception as exc:                                   # noqa: BLE001
         return None, f"Yahoo 확인 실패({type(exc).__name__})", False
@@ -188,6 +193,11 @@ def batch_resolve(names: list[str], now: float | None = None) -> dict[str, tuple
         return result
 
     batch = todo[:_MAX_BATCH]
+    # 묻기 **전에** '조회 중' 을 기록한다 — 프로세스가 중간에 죽어도(유닛 시간 상한) 다음 주기가 같은 묶음을 곧바로
+    # 다시 묻지 않는다(그러면 2분마다 Flash 값을 낸다, 독립 리뷰 2026-10-16)
+    for key, _ in batch:
+        cache[key] = _miss("조회 중 중단됨(프로세스가 끝나기 전에 결과를 못 남김)", final=False, now=now)
+    _save()
     lines = "\n".join(f"{i+1}. {orig}" for i, (_, orig) in enumerate(batch))
     prompt = (
         "다음은 한국 증권사 계좌의 종목명입니다. 한국 상장주는 이미 걸렀으니, 미국 거래소에 상장된 해외 회사만 "
@@ -221,8 +231,10 @@ def batch_resolve(names: list[str], now: float | None = None) -> dict[str, tuple
         fail = f"AI 호출 실패({type(e).__name__})"
         log.info("auto_resolve flash: %s", e)
 
-    # 모델이 키를 조금 바꿔 쓰는 일(괄호·공백)은 정규화로 맞춘다 — 그래도 없으면 '응답에 없음'(일시 실패)
-    by_norm = {_normalize(k): v for k, v in (raw or {}).items()} if raw is not None else {}
+    # 모델이 키를 조금 바꿔 쓰는 일(괄호·공백·목록 번호 '1. ')은 정규화로 맞춘다 — 그래도 없으면 '응답에 없음'(일시 실패)
+    by_norm = {_normalize(re.sub(r"^\s*\d+\s*[.)]\s*", "", str(k))): v
+               for k, v in (raw or {}).items()} if raw is not None else {}
+    t0 = time.monotonic()
     for key, orig in batch:
         if raw is None:
             cache[key] = _miss(fail, final=False, now=now)
@@ -254,6 +266,14 @@ def batch_resolve(names: list[str], now: float | None = None) -> dict[str, tuple
             cache[key] = _miss(f"AI 티커 모양이 이상함({ticker[:12]})", final=False, now=now)
             result[key] = None
             continue
+        if "." in ticker:                  # 7203.T·ASML.AS — 미국 밖 거래소 티커를 'US' 로 굽지 않는다(Yahoo 미국 표기는 '-')
+            cache[key] = _miss(f"AI 가 미국 밖 거래소 티커를 줌({ticker})", final=True, now=now)
+            result[key] = None
+            continue
+        if time.monotonic() - t0 > _VERIFY_BUDGET_SEC:
+            cache[key] = _miss(f"Yahoo 확인 시간 예산 {_VERIFY_BUDGET_SEC:.0f}초 초과 — 다음에 다시", final=False, now=now)
+            result[key] = None
+            continue
         mkt, why, final = _verify_yfinance(ticker, company)
         if mkt:
             cache[key] = [ticker, mkt]
@@ -263,6 +283,7 @@ def batch_resolve(names: list[str], now: float | None = None) -> dict[str, tuple
             cache[key] = _miss(why, final=final, now=now)
             result[key] = None
             log.info("auto_resolve: %r → %s (%s)", orig, ticker, why)
+        _save()                            # 하나씩 남긴다 — 중간에 죽어도 확인한 것은 다시 안 묻는다
 
     _save()
     return result

@@ -284,7 +284,6 @@ async def _run_async() -> int:
             state["tg_seeded"] = True
         state.update({"initialized": True, "ids": sorted(seen_ids), "last_msg_id": last_msg_id})
         _save_seen(state)
-        _rematch()
     finally:
         await client.disconnect()
 
@@ -305,7 +304,12 @@ def _rematch() -> None:
 
 
 def run() -> int:
-    return asyncio.run(_run_async())
+    """텔레그램 쪽 결과와 무관하게 재매칭은 돈다 — 세션 잠금·FloodWait 로 일찍 끝나는 주기에도(독립 리뷰 M3).
+    업로드가 있었으면 그 업로드(ingest)가 이미 끝난 뒤다."""
+    try:
+        return asyncio.run(_run_async())
+    finally:
+        _rematch()
 
 
 def main() -> int:
