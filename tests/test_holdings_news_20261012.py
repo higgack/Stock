@@ -900,7 +900,10 @@ function matches(e, sel) {
 function attrs(s) { const a = {}; const re = /([a-z-]+)='([^']*)'/g; let x; while ((x = re.exec(s))) a[x[1]] = x[2]; return a; }
 function cardsOf(h) { const out = []; const re = /<div (class='hn-card'[^>]*)>/g; let m;
   while ((m = re.exec(h))) out.push(new El('div', attrs(m[1]))); return out; }
-const pills = []; { const re = /<span (class='pill[^']*' data-hnf='[^']*')>/g; let m; while ((m = re.exec(page))) pills.push(new El('span', attrs(m[1]))); }
+const pills = []; { const re = /<span (class='pill[^']*' data-hnf='[^']*')>([^<]*)</g; let m;
+  while ((m = re.exec(page))) { const e = new El('span', attrs(m[1])); e.textContent = m[2]; if (/ active'/.test(m[1])) e.classList.add('active'); pills.push(e); } }
+const resetM = page.match(/<span (class='pill hn-reset' id='hn-reset'[^>]*)>/);
+const resetEl = resetM ? new El('span', attrs(resetM[1])) : null;
 const days = page.split("<details class='hn-day'").slice(1).map(chunk => {
   const head = chunk.slice(0, chunk.indexOf('>'));
   const d = new El('details', attrs(head), cardsOf(chunk));
@@ -910,7 +913,7 @@ const days = page.split("<details class='hn-day'").slice(1).map(chunk => {
 const root = new El('root', {}, pills.concat(days));
 const q = new El('input', { id: 'hn-q' }), st = new El('div', { id: 'hn-st' });
 st.textContent = (page.match(/<div id="hn-st" class="sub">([^<]*)<\/div>/) || [])[1] || '';
-global.document = { getElementById: id => (id === 'hn-q' ? q : id === 'hn-st' ? st : null),
+global.document = { getElementById: id => (id === 'hn-q' ? q : id === 'hn-st' ? st : id === 'hn-reset' ? resetEl : null),
                     querySelectorAll: sel => root.querySelectorAll(sel) };
 const fetched = [];
 global.fetch = (url) => { fetched.push(url); return Promise.resolve(Object.prototype.hasOwnProperty.call(frags, url)
@@ -919,7 +922,8 @@ const flush = () => new Promise(r => setTimeout(r, 0));
 eval(src);
 const cards = () => root.querySelectorAll('[data-hncard]');
 const vis = () => cards().filter(c => c.style.display !== 'none').map(c => c.getAttribute('data-q'));
-const snap = () => ({ st: st.textContent, vis: vis(), hits: cards().filter(c => c.classList.contains('hn-hit'))
+const snap = () => ({ st: st.textContent, vis: vis(), q: q.value,
+  active: pills.filter(p => p.classList.contains('active')).map(p => p.getAttribute('data-hnf')), hits: cards().filter(c => c.classList.contains('hn-hit'))
   .map(c => c.getAttribute('data-q')), days: days.map(d => ({ lazy: d.getAttribute('data-lazy'),
   display: d.style.display, open: d.open, note: (d.querySelector('.hn-lazy') || {}).textContent || '' })), fetched: fetched.slice() });
 const steps = process.argv[5] ? JSON.parse(fs.readFileSync(process.argv[5], 'utf8')) : null;
@@ -929,6 +933,7 @@ const steps = process.argv[5] ? JSON.parse(fs.readFileSync(process.argv[5], 'utf
     for (const [op, arg] of steps) {
       if (op === 'search') { q.value = arg; q.fire('input'); }
       else if (op === 'pill') { pills.find(p => p.getAttribute('data-hnf') === arg).fire('click'); }
+      else if (op === 'reset') { resetEl.fire('click'); }
       else if (op === 'open' || op === 'close') { days[arg].open = op === 'open'; days[arg].fire('toggle');
         await flush(); await flush(); }
       else if (op === 'snap') { out[arg] = snap(); }
@@ -5092,3 +5097,47 @@ def test_attach_failure_reaches_disk_even_if_the_tick_dies_later(hn, portfolio, 
     with pytest.raises(ZeroDivisionError):
         hn.tick(_t("2026-10-12T07:30"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
     assert hn.load_state()["add_fail"]["at"].startswith("2026-10-12T07:30")
+
+
+def test_page_js_filter_pills_combine_and_reset(hn, tmp_path):
+    """2026-10-16 사용자 "한개를 선택하면 다른건 선택이 안되게 되어 있네. 중복으로 선택가능하게 해주고, 중복을 푸는
+    초기화버튼도" — 칩은 여러 개를 함께 고른다: 시장(국내·해외)끼리는 '또는', 표식(Pros·Cons·텔레그램)은 '그리고'.
+    상태 줄이 걸린 칩을 이름으로 말하고(#43), '전체' 는 칩만 · '↺ 초기화' 는 칩과 검색어를 함께 푼다.
+    픽스처는 갈래마다 결과가 달라지게 — 엔비디아는 Pros 만(텔레그램 없음)이라 AND 를 OR 로 바꾸면 남는다(#91c)."""
+    rec = _page_rec()
+    rec["stocks"][1] = {**rec["stocks"][1], "relevant": [1], "pros": [{"t": "데이터센터", "refs": [1]}]}
+    o = _harness(hn, tmp_path, [rec], [
+        ["pill", "pro"], ["snap", "pro"],
+        ["pill", "tg"], ["snap", "pro_tg"],
+        ["pill", "tg"], ["snap", "tg_off"],
+        ["pill", "KR"], ["snap", "pro_kr"],
+        ["pill", "XX"], ["snap", "pro_kr_xx"],
+        ["pill", "all"], ["snap", "all"],
+        ["search", "삼성"], ["pill", "pro"], ["pill", "all"], ["snap", "all_keeps_q"],
+        ["pill", "con"], ["snap", "before_reset"],
+        ["reset", None], ["snap", "reset"],
+    ])
+    assert sorted(o["pro"]["vis"]) == ["삼성전자 005930", "엔비디아 NVDA"] and o["pro"]["active"] == ["pro"]
+    assert o["pro_tg"]["vis"] == ["삼성전자 005930"]                         # 표식끼리는 '그리고'
+    assert sorted(o["pro_tg"]["active"]) == ["pro", "tg"]
+    assert o["pro_tg"]["st"].startswith("[Pros 있음 · 텔레그램 언급] 조건에 맞는 카드 1개")
+    assert sorted(o["tg_off"]["vis"]) == ["삼성전자 005930", "엔비디아 NVDA"]   # 다시 누르면 풀린다
+    assert o["pro_kr"]["vis"] == ["삼성전자 005930"]
+    assert sorted(o["pro_kr_xx"]["vis"]) == ["삼성전자 005930", "엔비디아 NVDA"]   # 시장끼리는 '또는'
+    assert o["pro_kr_xx"]["st"].startswith("[국내 · 해외 · Pros 있음] ")
+    a = o["all"]                                                            # '전체' = 칩만 푼다
+    assert a["active"] == ["all"] and len(a["vis"]) == 4 and a["st"] == "총 1일 기록"
+    k = o["all_keeps_q"]                                                    # '전체' 는 검색어를 남긴다
+    assert k["q"] == "삼성" and k["active"] == ["all"] and k["vis"] == ["삼성전자 005930"]
+    b = o["before_reset"]
+    assert b["q"] == "삼성" and b["vis"] == ["삼성전자 005930"] and b["active"] == ["con"]
+    r = o["reset"]                                                          # 초기화 = 칩 + 검색어
+    assert r["q"] == "" and r["active"] == ["all"] and len(r["vis"]) == 4 and r["st"] == "총 1일 기록"
+    assert r["hits"] == []
+
+
+def test_reset_button_is_rendered_next_to_the_pills(hn):
+    html = hn.render_page([_page_rec()], {}, _t("2026-10-12T09:00"), gen="GEN")
+    row = html.split("<div class=\"pills\">")[1].split("</div>")[0]
+    assert "id='hn-reset'" in row and "↺ 초기화" in row and row.count("data-hnf=") == 6
+    assert ".hn-reset{" in html                                             # 클래스만 쓰고 CSS 없는 것 금지(#201)
