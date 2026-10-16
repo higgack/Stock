@@ -440,3 +440,17 @@ def test_rematch_marks_the_model_for_the_pnl_ledger(pf, ar, monkeypatch, tmp_pat
     hn.pnl_base(now, m2, bak={})
     led = json.loads((tmp_path / "pnl_base.json").read_text("utf-8"))
     assert any("ADI" in k for k in led["2026-10-16"]["vals"]) and led["2026-10-16"]["rev"] == 7.0
+
+
+def test_rematch_uses_a_code_alias_before_asking_the_ai(pf, ar, monkeypatch):
+    """업로드 뒤 더한 별칭은 재매칭이 네트워크 없이 붙인다 — 에흐르 '스' 판이 AI·Yahoo 429 에 막혀 있었다(2026-10-16 VM)."""
+    m = _model()
+    m["holdings"][1]["상품명"] = "에흐르 테스트 시스템스"
+    m["unmatched_names"][0] = "에흐르 테스트 시스템스"
+    pf.PORTFOLIO_PATH.write_text(json.dumps(m, ensure_ascii=False), "utf-8")
+    asked = []
+    _llm(monkeypatch, {"SK에코플랜트": None}, calls=asked)
+    assert pf.rematch_unmatched() == 1
+    h = {x["상품명"]: x for x in json.loads(pf.PORTFOLIO_PATH.read_text("utf-8"))["holdings"]}
+    assert (h["에흐르 테스트 시스템스"]["ticker"], h["에흐르 테스트 시스템스"]["source"]) == ("AEHR", "alias")
+    assert asked and all("에흐르" not in str(c) for c in asked)  # 별칭으로 붙은 이름은 AI 에 안 묻는다

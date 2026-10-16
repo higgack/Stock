@@ -112,8 +112,14 @@ def rematch_unmatched(now: float | None = None) -> int:
     if not names:
         return 0
     from bot.portfolio_auto_resolve import batch_resolve
-    from bot.portfolio_resolve import _normalize
-    auto = batch_resolve(names, now=now)
+    from bot.portfolio_resolve import _normalize, resolve_overseas
+    # 별칭 표는 코드에 있다 — 업로드 뒤 더한 별칭(예: 에흐르 '스' 판)은 다음 업로드까지 안 닿고 AI·Yahoo 를 거쳐
+    # 일시 실패(429)에 막혔다(2026-10-16 VM). 네트워크 0 인 별칭을 먼저 보고, 남은 것만 AI 에 묻는다.
+    alias = {_normalize(n): resolve_overseas(n) for n in names}
+    alias = {k: v for k, v in alias.items() if v}
+    rest = [n for n in names if _normalize(n) not in alias]
+    auto = dict(batch_resolve(rest, now=now)) if rest else {}
+    auto.update(alias)
     # 묻는 동안(수 초~수십 초) 다른 쓰기(업로드·예수금 백필)가 끼면 처음 읽은 모델로 덮어 그것을 되돌린다 —
     # 쓰기 직전에 다시 읽고, 업로드가 바뀌었으면 손대지 않는다(다음 주기가 새 기록으로 다시 본다, 독립 리뷰 2026-10-16)
     fresh = load()
@@ -129,6 +135,8 @@ def rematch_unmatched(now: float | None = None) -> int:
         ar = auto.get(_normalize(h.get("상품명") or ""))
         if ar:
             h["ticker"], h["market"], h["matched"] = ar[0], ar[1], True
+            if _normalize(h.get("상품명") or "") in alias:
+                h["source"] = "alias"
             fixed += 1
     old_why = model.get("unmatched_why")
     model["matched_count"] = sum(1 for h in holdings if h.get("matched"))
