@@ -188,3 +188,24 @@ def test_a_stray_short_run_is_not_silently_dropped():
     행 하나를 못 읽었다는 신호를 지우는 것이므로 거부해야 한다."""
     bad = YP_26Q1.replace("㈜테라닉스 PCB", "기타 7 8 ㈜테라닉스 PCB")
     assert parse_backlog(bad) is None
+
+
+def test_six_cell_rows_without_a_quantity_amount_header_are_not_read_as_pairs():
+    """독립 리뷰 재현 — 당기·전기 3열 두 벌을 나란히 둔 6칸 표. 세로 합은 어느
+    열이든 서므로, (수량, 금액) 쌍이라는 근거(머리행)가 없으면 받지 않는다."""
+    t = ("(단위 : 백만원) 구분 당기 수주총액 기납품액 수주잔고 전기 수주총액 기납품액 "
+         "수주잔고 A 1,000 300 900 2,000 1,500 800 B 500 200 400 1,000 700 400 "
+         "합 계 1,500 500 1,300 3,000 2,200 1,200 5. 위험관리")
+    assert parse_backlog(t) is None
+
+
+def test_nonpositive_total_balance_is_not_a_value():
+    bad = (YP_26Q1.replace("- 142,321", "- -1,000")
+           .replace("5,541", "-137,780"))
+    assert parse_backlog(bad) is None
+
+
+def test_pairs_need_the_quantity_amount_header_three_times():
+    """`수량 금액` 이 한 번뿐이면 6칸이 세 쌍이라는 근거가 없다."""
+    t = YP_26Q1.replace("수량 금액 수량 금액 수량 금액", "수량 금액")
+    assert t != YP_26Q1 and parse_backlog(t) is None

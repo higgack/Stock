@@ -540,6 +540,10 @@ def _header_gated(text: str, at: int) -> bool:
             and any(k in head for k in _DELIV_LABELS))
 
 
+# 머리행이 `수량 금액` 을 **세 번** 반복하는 표(총액·기납품·잔고 각각의 수량·금액).
+_PAIR_HEAD = re.compile(r"(?:수\s*량\s*금\s*액\s*){3}")
+
+
 def _amounts(r: list[float]) -> list[float] | None:
     """한 행의 금액 3칸 — 6칸이면 (수량, 금액) 쌍이라 금액만(티에스이·영풍)."""
     if len(r) == 6:
@@ -555,11 +559,17 @@ def _verify_columns(rows: list[list[float]], total: list[float]) -> float | None
     (26.1Q 테라닉스 12,738 − 12,097 = 641 인데 잔고 5,541 — 차이 4,900 이
     25.4Q 테라닉스 잔고와 같다). 원문은 맞고 우리 항등식이 이 표에 안 맞는 것이다.
     26.2Q 만 차이가 우연히 1% 안(0.83%)이라 받히고 나머지 4분기는 버려졌다.
-    대신 **세 열 모두** 행 합 = 합계가 성립해야 한다 — 열을 잘못 집으면 세
-    등식이 동시에 맞을 수 없다(형태 J·D 와 같은 규약). 잔고 열이 어느 것인지는
-    여전히 머리행 관문(총액·기납품·잔고 라벨)이 정한다. 행 하나라도 3·6칸이
-    아니면 표를 다 읽지 못한 것이므로 거부하고, 행은 2개 이상이어야 한다
-    (1행이면 행 = 합계라 아무것도 재지 않는다).
+    대신 **세 열 모두** 행 합 = 합계가 성립해야 한다.
+    ⚠️ 이 검산이 보증하는 것은 **행을 빠짐없이 읽었다**는 것까지다 — 제대로
+    읽힌 표라면 세로 합은 어느 열이든 성립하므로, 어느 열이 잔고인지는 **증명하지
+    못한다**(독립 리뷰 지적: 당기·전기 3열 두 벌을 나란히 둔 6칸 표에서 전기
+    잔고가 나왔다). 그래서 호출부가 머리행이 `수량 금액` 을 **세 번** 반복하는
+    표(총액·기납품·잔고의 수량·금액 쌍 — 영풍 형식)에만 이 경로를 연다. 그
+    머리행이 6칸을 (수량, 금액) 쌍으로, 셋째 금액을 잔고로 정한다. 행 하나라도
+    3·6칸이 아니면 표를 다 읽지 못한 것이므로 거부하고, 행은 2개 이상이어야
+    한다(1행이면 행 = 합계라 아무것도 재지 않는다).
+    ⚠️ 못 보는 축(#274): 머리행에 연도·기수 같은 1~4자리 숫자 토큰이 끼면 그게
+    한 칸짜리 행이 되어 표 전체가 거부된다(빈칸 쪽이라 틀린 값은 안 나온다).
     """
     tot = _amounts(total)
     if tot is None or tot[2] <= 0 or len(rows) < 2:
@@ -597,7 +607,8 @@ def _parse_table(text: str) -> tuple[float, str] | None:
             got = _verify(total)
             if got is not None:
                 return got * mult, "표·합계행"
-            got = _verify_columns(_runs(seg[:tm.start()]), total)
+            got = (_verify_columns(_runs(seg[:tm.start()]), total)
+                   if _PAIR_HEAD.search(seg[:300]) else None)
             if got is not None:
                 return got * mult, "표·합계행(세로합)"
             continue
