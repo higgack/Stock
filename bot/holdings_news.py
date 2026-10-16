@@ -954,6 +954,58 @@ def requeue_note(rec: dict, now: datetime | None = None) -> str:
     return f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 {old}/{len(oks)} — {tail}"
 
 
+def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = None,
+                       st: dict | None = None) -> str:
+    """`--why` 한 줄 — 가장 최근 기록과 **지금** 자산 기록의 보유 차이, 그리고 그게 어떻게 되나(사용자 2026-10-16
+    "업로드하면 여기도 업데이트되는거지?"). 새로 생긴 보유는 `add_new_holdings` 가 붙이고 판 보유는 그 날 카드에
+    남으므로, 둘을 갈라 적는다(#82). 대조는 `add_new_holdings` 와 같은 키·같은 목록으로 한다(#35).
+    지금 목록이 비었으면(자산 기록 못 읽음 · 보유 0) 대조하지 않는다 — '전부 팔았다' 로 읽힌다(#54)."""
+    now = _now(now)
+    if not stocks:
+        return "보유 대조: ❓ 지금 자산 기록에서 보유 종목을 못 읽어 대조하지 않음"
+    have = {s.get("key"): s for s in rec.get("stocks") or []}
+    cur = {s["key"]: s for s in stocks}
+    new = [k for k in cur if k not in have]
+    gone = [k for k in have if k not in cur]
+
+    def names(keys: list[str], src: dict) -> str:
+        nm = [str(src[k].get("name") or k) for k in keys[:5]]
+        return ", ".join(nm) + (f" 외 {len(keys) - 5}" if len(keys) > 5 else "")
+
+    today = now.date().isoformat()
+    added = [a for a in rec.get("added") or [] if isinstance(a, dict)]
+    hist = (" · 낮에 붙인 이력 " + ", ".join(f"{str(a.get('at', ''))[11:16]} {a.get('n', 0)}종목" for a in added)
+            if added else "")
+    waiting = sum(1 for s in rec.get("stocks") or [] if s.get("added_at") and s.get("status") == "pending")
+    if waiting:
+        hist += f" · 그중 AI 정리 대기 {waiting}종목"
+    head = f"보유 대조({rec.get('date')} 기록 {len(have)} ↔ 지금 {len(cur)}): "
+    if not new and not gone:
+        return head + "차이 없음" + hist
+    parts = []
+    if new:
+        tick_at = _parse((st or {}).get("last_tick"))
+        if rec.get("date") == today and tick_at is not None and now - tick_at > timedelta(minutes=STALE_TICK_MIN):
+            # '다음 주기에 붙는다' 는 주기가 도는 동안만 참이다(#380) — 멈췄으면 그렇게 말한다
+            when = (f"⚠️ 마지막 주기가 {tick_at.astimezone(_KST).strftime('%m-%d %H:%M')} — 봇 주기가 멈췄으면 "
+                    "붙지 않음")
+        elif rec.get("date") == today:
+            n_ticks = math.ceil(len(new) / MAX_ADD_PER_TICK)
+            when = (f"다음 주기에 붙음({TICK_MIN}분 간격"
+                    + (f" · 마지막 주기 {tick_at.astimezone(_KST).strftime('%H:%M')}" if tick_at else "")
+                    + (f" · 주기당 {MAX_ADD_PER_TICK}종목이라 {n_ticks}주기" if n_ticks > 1 else "") + ")")
+        elif due(now):
+            when = "다음 주기의 오늘 수집이 지금 목록으로 모음"
+        else:
+            when = f"오늘 {RUN_HOUR:02d}:{RUN_MIN:02d} 수집이 지금 목록으로 모음"
+        parts.append(f"새로 생긴 {len(new)}종목({names(new, cur)}) — {when}")
+    if gone:
+        tail = ("오늘 카드에 남음(아침에 들고 있던 종목) · 내일 수집부터 빠짐" if rec.get("date") == today
+                else "이 기록엔 남음 · 다음 수집부터 빠짐")
+        parts.append(f"빠진 {len(gone)}종목({names(gone, have)}) — {tail}")
+    return head + " · ".join(parts) + hist
+
+
 def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int:
     """지금 규칙(`prompt_sig`)으로 정리하지 않은 'ok' 종목을 대기로 되돌린다 — 부른 쪽이 **가장 최근 기록**에만
     부른다(`tick` — 그날은 적어도 24 − `RUN_HOUR` 시간 더 이어서 정리되므로(`RUN_HOUR` 뒤엔 오늘 기록을 먼저
@@ -3715,6 +3767,7 @@ def why(now: datetime | None = None, out=print) -> int:
         out(f"   AI {llm.get('calls', 0)}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
             + f" · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · ${llm.get('cost_usd', 0):.4f}")
         out("   " + requeue_note(r, now))
+        out("   " + holdings_diff_line(r, stocks, now, st))
     else:
         out("④ 기록 없음 — 봇이 아직 한 번도 모으지 않음")
     kind, line = status_verdict(recs, now, st)

@@ -4899,3 +4899,72 @@ def test_empty_keys_and_tickers_never_match(hn):
 def test_missing_reason_bounds_model_written_keys(hn):
     r = hn.missing_reason(["K" * 5000, "a\nb\x00c"])
     assert len(r) < 150 and "\n" not in r and "\x00" not in r and "K" * 40 + "…" in r and "a b c" in r
+
+
+# ── `--why` 보유 대조(사용자 2026-10-16 "자산 업로드하면 여기도 업데이트되는거지?") ──────────────────────────
+def _diff_line(out):
+    return [ln for ln in out if ln.strip().startswith("보유 대조")][0]
+
+
+def test_why_says_new_and_sold_holdings_and_then_the_added_history(hn, portfolio):
+    """업로드 뒤 다음 주기 전 — 새로 생긴 종목은 '다음 주기에 붙음', 판 종목은 '오늘 카드에 남음' · 붙은 뒤엔
+    이력으로. `why()` 를 태워 배선까지 잰다(#20)."""
+    f = _fetcher({}, ([_it("소식", "2026-10-12T06:00:00+09:00", link="https://p/1")], "naver", ""))
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    portfolio["m"] = _model(_h("삼성전자", "005930", "KR"), _h("SK하이닉스", "000660", "KR"))
+    hn.why(_t("2026-10-12T07:25"), out=(out := []).append)
+    ln = _diff_line(out)
+    assert "2026-10-12 기록 2 ↔ 지금 2" in ln
+    assert "새로 생긴 1종목(SK하이닉스) — 다음 주기에 붙음(15분 간격 · 마지막 주기 07:15)" in ln
+    assert "빠진 1종목(엔비디아) — 오늘 카드에 남음" in ln and "이력" not in ln
+    hn.tick(_t("2026-10-12T07:30"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    hn.why(_t("2026-10-12T07:35"), out=(out2 := []).append)
+    ln2 = _diff_line(out2)
+    assert "새로 생긴" not in ln2 and "빠진 1종목(엔비디아)" in ln2
+    assert ln2.endswith("· 낮에 붙인 이력 07:30 1종목")              # 정리까지 끝 — 대기 꼬리 없음
+
+
+def test_diff_line_does_not_promise_when_the_tick_stopped(hn, portfolio):
+    f = _fetcher({}, ([], "naver", ""))
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    portfolio["m"] = _model(_h("삼성전자", "005930", "KR"), _h("엔비디아", "NVDA", "US", source="alias"),
+                            _h("SK하이닉스", "000660", "KR"))
+    hn.why(_t("2026-10-12T08:01"), out=(out := []).append)              # 07:15 + 46분 > 45분
+    ln = _diff_line(out)
+    assert "⚠️ 마지막 주기가 10-12 07:15" in ln and "다음 주기에 붙음" not in ln
+    hn.why(_t("2026-10-12T07:59"), out=(out2 := []).append)             # 44분 — 아직 약속한다
+    assert "다음 주기에 붙음" in _diff_line(out2)
+
+
+def _s(k, name, **kw):
+    return {"key": k, "name": name, **kw}
+
+
+def test_diff_line_branches(hn, monkeypatch):
+    now = _t("2026-10-12T13:00")
+    rec = {"date": "2026-10-12", "stocks": [_s("KR:1", "가")]}
+    assert hn.holdings_diff_line(rec, [_s("KR:1", "가")], now, {}).endswith("차이 없음")
+    # 지금 목록을 못 읽으면 '전부 팔았다' 로 읽지 않는다(#54)
+    assert hn.holdings_diff_line(rec, [], now, {}).startswith("보유 대조: ❓")
+    # 주기 상한 — 몇 주기에 걸쳐 붙는지 · 이름은 5개까지
+    monkeypatch.setattr(hn, "MAX_ADD_PER_TICK", 2)
+    many = [_s("KR:1", "가")] + [_s(f"KR:{i}", f"n{i}") for i in range(2, 9)]
+    ln = hn.holdings_diff_line(rec, many, now, {"last_tick": "2026-10-12T12:50:00+09:00"})
+    assert "새로 생긴 7종목(n2, n3, n4, n5, n6 외 2)" in ln and "주기당 2종목이라 4주기" in ln
+    # 낮에 붙였는데 아직 AI 정리 전
+    rec2 = {"date": "2026-10-12", "stocks": [_s("KR:1", "가"), _s("KR:2", "나", added_at="2026-10-12T12:45+09:00",
+                                                                 status="pending")],
+            "added": [{"at": "2026-10-12T12:45+09:00", "n": 1}]}
+    assert hn.holdings_diff_line(rec2, [_s("KR:1", "가"), _s("KR:2", "나")], now, {}).endswith(
+        "차이 없음 · 낮에 붙인 이력 12:45 1종목 · 그중 AI 정리 대기 1종목")
+
+
+def test_diff_line_before_todays_record_points_to_the_collect(hn):
+    """가장 최근 기록이 어제면 새 보유는 붙지 않고 오늘 수집이 지금 목록으로 모은다(시각 전/후로 갈린다)."""
+    rec = {"date": "2026-10-11", "stocks": [_s("KR:1", "가")]}
+    cur = [_s("KR:2", "나")]
+    a = hn.holdings_diff_line(rec, cur, _t("2026-10-12T06:00"), {})
+    b = hn.holdings_diff_line(rec, cur, _t("2026-10-12T07:12"), {})
+    assert "새로 생긴 1종목(나) — 오늘 07:10 수집이 지금 목록으로 모음" in a
+    assert "새로 생긴 1종목(나) — 다음 주기의 오늘 수집이 지금 목록으로 모음" in b
+    assert "빠진 1종목(가) — 이 기록엔 남음 · 다음 수집부터 빠짐" in a and "오늘 카드" not in a
