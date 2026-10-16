@@ -500,7 +500,7 @@ def test_analyze_retries_then_gives_up(hn):
     only_b = json.dumps({"stocks": [{"key": "KR:B", "pros": [{"t": "b", "refs": [1]}]}]})
     for i in range(1, hn.MAX_ANALYZE_TRIES + 1):
         done = hn.analyze(rec, llm=_llm(only_b))
-        assert s["tries"] == i and s["reason"] == "AI 응답에 이 종목이 없음"
+        assert s["tries"] == i and s["reason"] == "AI 응답에 이 종목이 없음(응답 key 1개: KR:B)"
     assert s["status"] == "failed" and done["failed"] == 1
     assert t["status"] == "ok" and t["tries"] == 0
 
@@ -2533,7 +2533,8 @@ def test_requeue_stale_resets_old_analyses_and_rereads_bodies(hn):
     rec = _rec(stale, fresh, failed, pend, empty)
     n = hn.requeue_stale(rec, body=lambda l: reads.append(l) or f"다시 읽은 {l}", pace=0,
                          beat=lambda: beats.append(1))
-    assert n == 1 and reads == ["https://n.news.naver.com/KR:A/1"] and beats == [1]   # 되돌린 종목마다 생존 표시
+    # 실패 종목도 되돌린다(2026-10-16 계약 변경 — 실패가 옛 규칙 탓일 수 있다 · 본문 링크가 없어 읽기는 그대로 하나)
+    assert n == 2 and reads == ["https://n.news.naver.com/KR:A/1"] and beats == [1, 1]   # 되돌린 종목마다 생존 표시
     assert rec["requeued_for"] == [cur]
     assert stale["status"] == "pending" and stale["reason"] == hn.REQUEUE_REASON
     assert stale["pros"] == [] and stale["cons"] == [] and stale["relevant"] is None
@@ -2541,7 +2542,7 @@ def test_requeue_stale_resets_old_analyses_and_rereads_bodies(hn):
     assert stale["items"][0]["_body"] == "다시 읽은 https://n.news.naver.com/KR:A/1"
     assert all("body_used" not in it for it in stale["items"])           # 이번에 보낸 것만 '읽음' 이 된다
     assert fresh["status"] == "ok" and fresh["pros"] and fresh["items"][0]["body_used"] is True
-    assert failed["status"] == "failed" and pend["status"] == "pending" and empty["status"] == "empty"
+    assert failed["status"] == "pending" and pend["status"] == "pending" and empty["status"] == "empty"
     assert hn.requeue_stale(rec, body=lambda l: 1 / 0, pace=0) == 0      # 두 번째엔 되돌릴 것이 없다
 
 
@@ -2599,7 +2600,7 @@ def test_failed_reanalysis_shows_the_old_analysis_labelled(hn):
     assert "옛 기준 정리를 보여 줍니다 — AI 응답을 못 읽음" in card and "야구 경기 패배" in card
     assert "Pros/Cons 못 만듦" not in card
     kind, line = hn.status_verdict([rec], _t("2026-10-12T09:00"), {})
-    assert kind == "fail" and "Pros/Cons 실패 1종목(그중 1종목은 옛 기준 정리 표시)" in line
+    assert kind == "fail" and "Pros/Cons 실패 1종목[KR:A](그중 1종목은 옛 기준 정리 표시)" in line
     s2 = _ok("KR:B")
     rec2 = _rec(s2)
     hn.requeue_stale(rec2, body=lambda l: "", pace=0)
@@ -4776,3 +4777,125 @@ def test_asset_card_escapes_and_survives_odd_records(hn):
     out = hn._asset_upload_html({"cur_ts": _t("2026-10-16T09:00").timestamp()}, None, _t("2026-10-15T09:00"))
     assert out.endswith("· 업로드 시각이 지금보다 뒤</span></div>")
     assert "자산 기록 없음" in hn._asset_upload_html({}, ["not", "a", "dict"], _t("2026-10-15T09:00"))
+
+
+# ── 2026-10-16 감사 ❌ 'AI 응답에 이 종목이 없음' 3종목 ────────────────────────────────────────────
+def test_analyze_accepts_keys_the_model_rewrote(hn):
+    """프롬프트 머리 `### key=KR:A` 의 `key=` 를 같이 베끼거나 대소문자·공백을 바꾸거나 티커만 돌려줘도 그 종목이다."""
+    a, b, c = _stock("KR:AAA"), _stock("KR:BBB"), _stock("KR:CCC")
+    out = {"stocks": [{"key": "key=KR:AAA", "pros": [{"t": "a", "refs": [1]}]},
+                      {"key": " kr:bbb ", "pros": [{"t": "b", "refs": [1]}]},
+                      {"key": "CCC", "pros": [{"t": "c", "refs": [1]}]}]}
+    done = hn.analyze(_rec(a, b, c), llm=_llm(json.dumps(out)))
+    assert done["analyzed"] == 3 and [x["pros"][0]["t"] for x in (a, b, c)] == ["a", "b", "c"]
+
+
+def test_analyze_does_not_guess_between_two_markets_with_the_same_ticker(hn):
+    """티커만 왔는데 묶음에 같은 티커가 둘(시장만 다름)이면 어느 쪽인지 모른다 — 받지 않고 응답 key 를 사유에(#46)."""
+    a = _stock("KR:SAME")
+    b = {**_stock("US:SAME"), "market": "US"}
+    hn.analyze(_rec(a, b), llm=_llm(json.dumps({"stocks": [{"key": "SAME", "pros": [{"t": "x", "refs": [1]}]}]})))
+    assert a["status"] == b["status"] == "pending"
+    assert a["reason"] == "AI 응답에 이 종목이 없음(응답 key 1개: SAME)"
+    # 티커로는 못 가르지만 `key=` 접두를 걷은 key 는 가른다 — 접두 걷기가 티커 폴백에 가려지지 않는 자리
+    hn.analyze(_rec(a, b), llm=_llm(json.dumps({"stocks": [{"key": "key=US:SAME", "pros": [{"t": "u", "refs": [1]}]}]})))
+    assert b["status"] == "ok" and b["pros"][0]["t"] == "u" and a["status"] == "pending"
+
+
+def test_missing_reason_names_what_came_back_and_says_it_cut(hn):
+    assert hn.missing_reason([]) == "AI 응답에 이 종목이 없음(응답에 종목이 하나도 없음)"
+    r = hn.missing_reason([f"KR:{i}" for i in range(6)])
+    assert r == "AI 응답에 이 종목이 없음(응답 key 6개: KR:0, KR:1, KR:2, KR:3 외 2)"
+
+
+def test_prompt_asks_for_every_stock_even_without_relevant_items(hn):
+    p = hn.build_prompt([_stock("KR:A")])
+    assert "하나도 빠뜨리지 않고" in p and "빈 배열로 둔다" in p and "### key=KR:A" in p
+
+
+def test_failed_verdict_names_the_stocks(hn):
+    """결산은 판정 줄 하나만 올린다 — 어느 종목인지 그 줄이 말한다(#356)."""
+    ss = [_stock(f"KR:{c}", status="failed") for c in "ABCD"]
+    for x in ss:
+        x["reason"] = "AI 응답에 이 종목이 없음(응답 key 1개: KR:Z)"
+        x["name"] = f"회사{x['ticker']}"
+    kind, line = hn.status_verdict([_rec(*ss)], _t("2026-10-12T09:00"), {})
+    assert kind == "fail" and "Pros/Cons 실패 4종목[회사A, 회사B, 회사C 외 1](뉴스만 표시)" in line
+    assert line.endswith("AI 응답에 이 종목이 없음(응답 key 1개: KR:Z)")
+
+
+def test_requeue_stale_retries_failed_stocks_once_per_rule(hn, monkeypatch):
+    """규칙(지문)이 바뀌면 그날 실패로 굳은 종목도 한 번 더 — 실패가 옛 규칙 탓일 수 있다. 옛 정리 보관본이
+    있으면 지우지 않는다 · 같은 지문으로 두 번 되돌리지 않는다."""
+    f = _stock("KR:F", status="failed")
+    f.update(tries=3, reason="AI 응답에 이 종목이 없음")
+    g = _stock("KR:G", status="failed")
+    g["prev_pc"] = {"pros": [{"t": "옛", "refs": [1]}], "cons": [], "relevant": [1], "dropped_lines": 0, "pv": "옛판"}
+    keep = _ok("KR:K", pv=hn.prompt_sig())
+    rec = _rec(f, g, keep)
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 2
+    assert f["status"] == g["status"] == "pending" and f["tries"] == 0 and "prev_pc" not in f
+    assert g["prev_pc"]["pros"][0]["t"] == "옛" and keep["status"] == "ok"
+    f.update(status="failed")
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 0
+
+
+def test_failure_under_the_current_rule_is_not_requeued(hn):
+    """같은 규칙으로 실패한 종목은 다음 주기에 되돌리지 않는다 — 되돌리면 AI 호출이 두 배이고 카드가 '기준이 바뀜' 이라
+    거짓말한다(독립 리뷰 2026-10-16). 실패에 지문(`fpv`)이 찍힌다."""
+    s = _stock("KR:A")
+    rec = _rec(s)
+    calls = []
+    none = json.dumps({"stocks": []})
+    for _ in range(hn.MAX_ANALYZE_TRIES + 2):
+        hn.requeue_stale(rec, body=lambda l: "", pace=0)
+        hn.analyze(rec, llm=lambda p: calls.append(p) or (none, 1, 1, "", ""))
+    assert s["status"] == "failed" and s["fpv"] == hn.prompt_sig()
+    assert len(calls) == hn.MAX_ANALYZE_TRIES and s["reason"] != hn.REQUEUE_REASON
+
+
+def test_ticker_fallback_respects_the_market_in_the_key(hn):
+    """응답이 다른 시장을 이름으로 댄 key(`US:SAME`)는 묶음의 `KR:SAME` 이 아니다(#46). 시장 없는 티커만이면 받는다."""
+    a = _stock("KR:SAME")
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "US:SAME", "pros": [{"t": "u", "refs": [1]}]}]})))
+    assert a["status"] == "pending"
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "kr : same", "pros": [{"t": "k", "refs": [1]}]}]})))
+    assert a["status"] == "ok" and a["pros"][0]["t"] == "k"
+
+
+def test_ticker_fallback_strips_the_market_prefix_of_another_spelling(hn):
+    """정규화 key 로는 안 맞지만(티커 표기가 다름) 시장이 같은 `KR:005930`·`005930` 은 티커 단에서 맞는다."""
+    a = {**_stock("KR:005930.KS"), "ticker": "005930"}
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "KR:005930", "pros": [{"t": "s", "refs": [1]}]}]})))
+    assert a["status"] == "ok" and a["pros"][0]["t"] == "s"
+
+
+def test_better_match_tier_wins_over_a_later_weaker_row(hn):
+    """정확히 맞은 줄을 뒤에 온 티커만의 빈 줄이 덮지 않는다 — 순서를 뒤집어도 같다."""
+    real = {"key": "KR:A", "pros": [{"t": "진짜", "refs": [1]}]}
+    junk = {"key": "A", "pros": []}
+    for rows in ([real, junk], [junk, real]):
+        a = _stock("KR:A")
+        hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": rows}, ensure_ascii=False)))
+        assert a["pros"] == [{"t": "진짜", "refs": [1]}]
+
+
+def test_exact_key_beats_a_normalized_collision(hn):
+    """대소문자만 다른 두 종목이 한 묶음에 있으면 정확히 같은 key 가 제 종목을 고른다."""
+    a, b = _stock("KR:Ab"), _stock("KR:AB")
+    out = {"stocks": [{"key": "KR:Ab", "pros": [{"t": "소문자", "refs": [1]}]},
+                      {"key": "KR:AB", "pros": [{"t": "대문자", "refs": [1]}]}]}
+    hn.analyze(_rec(a, b), llm=_llm(json.dumps(out, ensure_ascii=False)))
+    assert a["pros"][0]["t"] == "소문자" and b["pros"][0]["t"] == "대문자"
+
+
+def test_empty_keys_and_tickers_never_match(hn):
+    a = {**_stock("KR:X"), "ticker": ""}
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "key=", "pros": [{"t": "x", "refs": [1]}]},
+                                                       {"key": "KR:", "pros": [{"t": "y", "refs": [1]}]}]})))
+    assert a["status"] == "pending"
+
+
+def test_missing_reason_bounds_model_written_keys(hn):
+    r = hn.missing_reason(["K" * 5000, "a\nb\x00c"])
+    assert len(r) < 150 and "\n" not in r and "\x00" not in r and "K" * 40 + "…" in r and "a b c" in r

@@ -850,7 +850,9 @@ def build_prompt(stocks: list[dict]) -> str:
         "   작품·상품을 다루는 항목(예: 반도체 장비 회사와 이름이 같은 다른 회사의 게임)은 넣지 않는다. 같은 회사의\n"
         "   다른 사업부·자회사 소식은 업종과 달라도 관련 있다.\n"
         "   relevant 에 없는 항목은 근거로 쓰지 않는다.\n"
-        "6) 매수·매도 권유, 목표주가, 주가 예측을 쓰지 않는다.\n\n"
+        "6) 매수·매도 권유, 목표주가, 주가 예측을 쓰지 않는다.\n"
+        "7) 아래 종목을 **하나도 빠뜨리지 않고** 종목마다 한 번씩 출력한다. key 는 '### key=' 뒤의 값을 그대로\n"
+        "   쓴다(예: KR:005930). 투자와 관련된 항목이 하나도 없으면 relevant·pros·cons 를 빈 배열로 둔다.\n\n"
         "출력은 아래 JSON 하나만(설명·코드펜스 금지):\n"
         '{"stocks":[{"key":"종목 key 그대로","relevant":[1,2],'
         '"pros":[{"t":"한 문장","refs":[1]}],"cons":[{"t":"한 문장","refs":[2]}]}]}\n\n'
@@ -969,7 +971,12 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
         return 0
     n = reads = 0
     for s in rec.get("stocks") or []:
-        if s.get("status") != "ok" or s.get("pv") == sig:
+        # 실패로 굳은 종목도 규칙이 바뀌면 한 번 더 — 그 실패가 옛 규칙 탓일 수 있다(2026-10-16: 응답에서 빠진 종목을
+        # '빠뜨리지 말 것' 규칙으로 고친 뒤에도 그날 실패 3종목이 그대로 남던 구멍). 지문을 기록이 한 번만 되돌린다.
+        # 실패 지문(`fpv`)이 지금 규칙이면 되돌리지 않는다 — 같은 규칙으로 실패한 종목을 매 주기 다시 돌리면 비용만
+        # 두 배이고 카드가 '기준이 바뀜' 이라는 거짓 사유를 단다(독립 리뷰 2026-10-16). 지문 없는 옛 실패는 되돌린다.
+        failed = s.get("status") == "failed" and s.get("fpv") != sig
+        if not (failed or (s.get("status") == "ok" and s.get("pv") != sig)):
             continue
         if beat:
             beat()
@@ -986,7 +993,8 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
                 time.sleep(pace)
             if b:
                 it["_body"] = b
-        s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
+        if not failed:                   # 실패 종목은 보관할 새 정리가 없다(옛 `prev_pc` 가 있으면 그대로 둔다)
+            s["prev_pc"] = {k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")}
         s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
                  relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
         s.pop("check_reverts", None)
@@ -1255,6 +1263,58 @@ def _attach_industry(rec: dict, stocks: list[dict]) -> None:
         log.warning("holdings_news: 업종 붙이기 실패: %s", exc)
 
 
+def _norm_key(k) -> str:
+    """AI 가 돌려준 key 를 대조용으로 — 프롬프트 머리(`### key=KR:005930`)의 `key=` 를 같이 베끼거나 대소문자·
+    공백을 바꿔도 같은 종목으로 본다."""
+    t = re.sub(r"\s+", "", str(k or "")).upper()
+    return t[4:] if t.startswith("KEY=") else t
+
+
+def match_results(grp: list[dict], data) -> tuple[dict, list[str]]:
+    """({우리 key: 그 종목 결과}, 응답에 온 key 원문 목록). 세 단으로 맞추고 **앞 단이 이긴다**(뒤 단의 빈 줄이 정확히
+    맞은 정리를 덮지 않게): ① 정확한 key ② `key=`·대소문자·공백을 걷은 key ③ **묶음 안에서 하나뿐인** 티커 —
+    응답 key 에 시장이 없거나 그 시장이 그 종목의 시장일 때만(`US:SAME` 은 `KR:SAME` 이 아니다 · 같은 티커가 시장만
+    달리 묶음에 둘이면 받지 않는다, #46). 빈 key·빈 티커는 맞추지 않는다. 원문 목록은 빠진 종목의 사유에 싣는다 —
+    'AI 응답에 이 종목이 없음' 만으로는 키를 바꿔 쓴 것인지 아예 뺀 것인지 못 가른다(2026-10-16 감사 ❌ 3종목, #82)."""
+    rows = data.get("stocks") if isinstance(data, dict) else None
+    rows = [r for r in rows if isinstance(r, dict) and r.get("key")] if isinstance(rows, list) else []
+    seen = [str(r["key"]) for r in rows]
+    exact = {s["key"] for s in grp}
+    by_norm = {_norm_key(s["key"]): s["key"] for s in grp}
+    mkt = {s["key"]: _norm_key(s.get("market")) for s in grp}
+    tick: dict[str, list[str]] = {}
+    for s in grp:
+        t = _norm_key(s.get("ticker"))
+        if t:
+            tick.setdefault(t, []).append(s["key"])
+    got: dict[str, tuple[int, dict]] = {}
+    for r in rows:
+        k = str(r["key"])
+        nk = _norm_key(k)
+        if k in exact:
+            ours, tier = k, 0
+        elif nk in by_norm:
+            ours, tier = by_norm[nk], 1
+        else:
+            pre, _, code = nk.rpartition(":")
+            cand = [c for c in tick.get(code) or [] if not pre or mkt.get(c) == pre]
+            ours, tier = (cand[0], 2) if len(cand) == 1 else (None, 3)
+        if ours is not None and (ours not in got or tier < got[ours][0]):
+            got[ours] = (tier, r)
+    return {k: v[1] for k, v in got.items()}, seen
+
+
+def missing_reason(seen: list[str]) -> str:
+    """응답은 읽었는데 이 종목이 없을 때의 사유 — 응답에 온 key 를 같이 적는다(몇 개만 · 자른 사실도, #45)."""
+    if not seen:
+        return "AI 응답에 이 종목이 없음(응답에 종목이 하나도 없음)"
+    def _one(k: str) -> str:            # AI 가 쓴 글이다 — 제어문자·줄바꿈을 걷고 짧게(사유는 카드·결산 줄에 실린다)
+        k = " ".join("".join(ch if ch.isprintable() else " " for ch in k).split())
+        return k[:40] + ("…" if len(k) > 40 else "")
+    shown = ", ".join(_one(k) for k in seen[:4]) + (f" 외 {len(seen) - 4}" if len(seen) > 4 else "")
+    return f"AI 응답에 이 종목이 없음(응답 key {len(seen)}개: {shown})"
+
+
 def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             on_progress=None) -> dict:
     """대기 중인 종목을 묶어 AI 에 보낸다(한 주기 `max_calls` 회까지). 묶음마다 `on_progress(rec)`
@@ -1295,11 +1355,7 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
                 on_progress(rec)
             break
         data = _parse_json(text) if text else None
-        got = {}
-        if data and isinstance(data.get("stocks"), list):
-            for r in data["stocks"]:
-                if isinstance(r, dict) and r.get("key"):
-                    got[str(r["key"])] = r
+        got, seen = match_results(grp, data)
         for s in grp:
             r = got.get(s["key"])
             if r is not None:
@@ -1311,9 +1367,10 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
                 continue
             s["retry"] = False
             s["tries"] = int(s.get("tries") or 0) + 1
-            s["reason"] = why or ("AI 응답을 못 읽음" if not data else "AI 응답에 이 종목이 없음")
+            s["reason"] = why or ("AI 응답을 못 읽음" if not data else missing_reason(seen))
             if s["tries"] >= MAX_ANALYZE_TRIES:
                 s["status"] = "failed"
+                s["fpv"] = prompt_sig()           # 어느 규칙으로 실패했나 — `requeue_stale` 이 규칙이 바뀔 때만 되돌린다
                 done["failed"] += 1
         chk = check_offtopic(grp, rec, llm=llm)
         done["analyzed"] -= chk["reverted"]
@@ -1732,7 +1789,10 @@ def status_verdict(records: list[dict], now: datetime | None = None,
     if failed:
         n_old = sum(1 for s in failed if isinstance(s.get("prev_pc"), dict))   # 카드가 옛 기준 정리를 보여 준다
         shown = "뉴스만 표시" if not n_old else f"그중 {n_old}종목은 옛 기준 정리 표시"
-        return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목({shown}) — "
+        # 어느 종목인지 판정 줄이 말한다 — 결산은 이 한 줄만 올린다(#356 · 2026-10-16 감사 ❌ 에 종목이 없었다)
+        names = ", ".join(str(s.get("name") or s.get("key")) for s in failed[:3]) + \
+            (f" 외 {len(failed) - 3}" if len(failed) > 3 else "")
+        return "fail", (f"{head} · Pros/Cons 실패 {len(failed)}종목[{names}]({shown}) — "
                         f"{failed[0].get('reason') or '사유 미기록'}")
     if src.get("fail"):          # 장애 기준 밑 — 판정은 ✅ 이되 사실은 말한다(#41)
         return "ok", f"{head} · 원천 못 받은 종목 {src['fail']}"
