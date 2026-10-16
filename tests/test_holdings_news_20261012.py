@@ -4838,3 +4838,64 @@ def test_requeue_stale_retries_failed_stocks_once_per_rule(hn, monkeypatch):
     assert g["prev_pc"]["pros"][0]["t"] == "옛" and keep["status"] == "ok"
     f.update(status="failed")
     assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 0
+
+
+def test_failure_under_the_current_rule_is_not_requeued(hn):
+    """같은 규칙으로 실패한 종목은 다음 주기에 되돌리지 않는다 — 되돌리면 AI 호출이 두 배이고 카드가 '기준이 바뀜' 이라
+    거짓말한다(독립 리뷰 2026-10-16). 실패에 지문(`fpv`)이 찍힌다."""
+    s = _stock("KR:A")
+    rec = _rec(s)
+    calls = []
+    none = json.dumps({"stocks": []})
+    for _ in range(hn.MAX_ANALYZE_TRIES + 2):
+        hn.requeue_stale(rec, body=lambda l: "", pace=0)
+        hn.analyze(rec, llm=lambda p: calls.append(p) or (none, 1, 1, "", ""))
+    assert s["status"] == "failed" and s["fpv"] == hn.prompt_sig()
+    assert len(calls) == hn.MAX_ANALYZE_TRIES and s["reason"] != hn.REQUEUE_REASON
+
+
+def test_ticker_fallback_respects_the_market_in_the_key(hn):
+    """응답이 다른 시장을 이름으로 댄 key(`US:SAME`)는 묶음의 `KR:SAME` 이 아니다(#46). 시장 없는 티커만이면 받는다."""
+    a = _stock("KR:SAME")
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "US:SAME", "pros": [{"t": "u", "refs": [1]}]}]})))
+    assert a["status"] == "pending"
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "kr : same", "pros": [{"t": "k", "refs": [1]}]}]})))
+    assert a["status"] == "ok" and a["pros"][0]["t"] == "k"
+
+
+def test_ticker_fallback_strips_the_market_prefix_of_another_spelling(hn):
+    """정규화 key 로는 안 맞지만(티커 표기가 다름) 시장이 같은 `KR:005930`·`005930` 은 티커 단에서 맞는다."""
+    a = {**_stock("KR:005930.KS"), "ticker": "005930"}
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "KR:005930", "pros": [{"t": "s", "refs": [1]}]}]})))
+    assert a["status"] == "ok" and a["pros"][0]["t"] == "s"
+
+
+def test_better_match_tier_wins_over_a_later_weaker_row(hn):
+    """정확히 맞은 줄을 뒤에 온 티커만의 빈 줄이 덮지 않는다 — 순서를 뒤집어도 같다."""
+    real = {"key": "KR:A", "pros": [{"t": "진짜", "refs": [1]}]}
+    junk = {"key": "A", "pros": []}
+    for rows in ([real, junk], [junk, real]):
+        a = _stock("KR:A")
+        hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": rows}, ensure_ascii=False)))
+        assert a["pros"] == [{"t": "진짜", "refs": [1]}]
+
+
+def test_exact_key_beats_a_normalized_collision(hn):
+    """대소문자만 다른 두 종목이 한 묶음에 있으면 정확히 같은 key 가 제 종목을 고른다."""
+    a, b = _stock("KR:Ab"), _stock("KR:AB")
+    out = {"stocks": [{"key": "KR:Ab", "pros": [{"t": "소문자", "refs": [1]}]},
+                      {"key": "KR:AB", "pros": [{"t": "대문자", "refs": [1]}]}]}
+    hn.analyze(_rec(a, b), llm=_llm(json.dumps(out, ensure_ascii=False)))
+    assert a["pros"][0]["t"] == "소문자" and b["pros"][0]["t"] == "대문자"
+
+
+def test_empty_keys_and_tickers_never_match(hn):
+    a = {**_stock("KR:X"), "ticker": ""}
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "key=", "pros": [{"t": "x", "refs": [1]}]},
+                                                       {"key": "KR:", "pros": [{"t": "y", "refs": [1]}]}]})))
+    assert a["status"] == "pending"
+
+
+def test_missing_reason_bounds_model_written_keys(hn):
+    r = hn.missing_reason(["K" * 5000, "a\nb\x00c"])
+    assert len(r) < 150 and "\n" not in r and "\x00" not in r and "K" * 40 + "…" in r and "a b c" in r

@@ -973,7 +973,9 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
     for s in rec.get("stocks") or []:
         # 실패로 굳은 종목도 규칙이 바뀌면 한 번 더 — 그 실패가 옛 규칙 탓일 수 있다(2026-10-16: 응답에서 빠진 종목을
         # '빠뜨리지 말 것' 규칙으로 고친 뒤에도 그날 실패 3종목이 그대로 남던 구멍). 지문을 기록이 한 번만 되돌린다.
-        failed = s.get("status") == "failed"
+        # 실패 지문(`fpv`)이 지금 규칙이면 되돌리지 않는다 — 같은 규칙으로 실패한 종목을 매 주기 다시 돌리면 비용만
+        # 두 배이고 카드가 '기준이 바뀜' 이라는 거짓 사유를 단다(독립 리뷰 2026-10-16). 지문 없는 옛 실패는 되돌린다.
+        failed = s.get("status") == "failed" and s.get("fpv") != sig
         if not (failed or (s.get("status") == "ok" and s.get("pv") != sig)):
             continue
         if beat:
@@ -1269,35 +1271,47 @@ def _norm_key(k) -> str:
 
 
 def match_results(grp: list[dict], data) -> tuple[dict, list[str]]:
-    """({우리 key: 그 종목 결과}, 응답에 온 key 원문 목록). 정확한 key 가 먼저, 다음은 `key=`·대소문자·공백을 걷은
-    key, 마지막은 **묶음 안에서 하나뿐인** 티커(`005930`·`AAPL` 만 돌려준 경우) — 같은 티커가 묶음에 둘이면
-    (시장만 다름) 어느 쪽인지 모르므로 받지 않는다(#46). 원문 목록은 빠진 종목의 사유에 싣는다 — 'AI 응답에
-    이 종목이 없음' 만으로는 키를 바꿔 쓴 것인지 아예 뺀 것인지 못 가른다(2026-10-16 감사 ❌ 3종목, #82)."""
+    """({우리 key: 그 종목 결과}, 응답에 온 key 원문 목록). 세 단으로 맞추고 **앞 단이 이긴다**(뒤 단의 빈 줄이 정확히
+    맞은 정리를 덮지 않게): ① 정확한 key ② `key=`·대소문자·공백을 걷은 key ③ **묶음 안에서 하나뿐인** 티커 —
+    응답 key 에 시장이 없거나 그 시장이 그 종목의 시장일 때만(`US:SAME` 은 `KR:SAME` 이 아니다 · 같은 티커가 시장만
+    달리 묶음에 둘이면 받지 않는다, #46). 빈 key·빈 티커는 맞추지 않는다. 원문 목록은 빠진 종목의 사유에 싣는다 —
+    'AI 응답에 이 종목이 없음' 만으로는 키를 바꿔 쓴 것인지 아예 뺀 것인지 못 가른다(2026-10-16 감사 ❌ 3종목, #82)."""
     rows = data.get("stocks") if isinstance(data, dict) else None
     rows = [r for r in rows if isinstance(r, dict) and r.get("key")] if isinstance(rows, list) else []
     seen = [str(r["key"]) for r in rows]
+    exact = {s["key"] for s in grp}
     by_norm = {_norm_key(s["key"]): s["key"] for s in grp}
+    mkt = {s["key"]: _norm_key(s.get("market")) for s in grp}
     tick: dict[str, list[str]] = {}
     for s in grp:
-        tick.setdefault(_norm_key(s.get("ticker")), []).append(s["key"])
-    got: dict[str, dict] = {}
+        t = _norm_key(s.get("ticker"))
+        if t:
+            tick.setdefault(t, []).append(s["key"])
+    got: dict[str, tuple[int, dict]] = {}
     for r in rows:
         k = str(r["key"])
         nk = _norm_key(k)
-        ours = k if any(s["key"] == k for s in grp) else by_norm.get(nk)
-        if ours is None:
-            cand = tick.get(nk.split(":")[-1]) or []
-            ours = cand[0] if len(cand) == 1 else None
-        if ours is not None:
-            got[ours] = r
-    return got, seen
+        if k in exact:
+            ours, tier = k, 0
+        elif nk in by_norm:
+            ours, tier = by_norm[nk], 1
+        else:
+            pre, _, code = nk.rpartition(":")
+            cand = [c for c in tick.get(code) or [] if not pre or mkt.get(c) == pre]
+            ours, tier = (cand[0], 2) if len(cand) == 1 else (None, 3)
+        if ours is not None and (ours not in got or tier < got[ours][0]):
+            got[ours] = (tier, r)
+    return {k: v[1] for k, v in got.items()}, seen
 
 
 def missing_reason(seen: list[str]) -> str:
     """응답은 읽었는데 이 종목이 없을 때의 사유 — 응답에 온 key 를 같이 적는다(몇 개만 · 자른 사실도, #45)."""
     if not seen:
         return "AI 응답에 이 종목이 없음(응답에 종목이 하나도 없음)"
-    shown = ", ".join(seen[:4]) + (f" 외 {len(seen) - 4}" if len(seen) > 4 else "")
+    def _one(k: str) -> str:            # AI 가 쓴 글이다 — 제어문자·줄바꿈을 걷고 짧게(사유는 카드·결산 줄에 실린다)
+        k = " ".join("".join(ch if ch.isprintable() else " " for ch in k).split())
+        return k[:40] + ("…" if len(k) > 40 else "")
+    shown = ", ".join(_one(k) for k in seen[:4]) + (f" 외 {len(seen) - 4}" if len(seen) > 4 else "")
     return f"AI 응답에 이 종목이 없음(응답 key {len(seen)}개: {shown})"
 
 
@@ -1356,6 +1370,7 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             s["reason"] = why or ("AI 응답을 못 읽음" if not data else missing_reason(seen))
             if s["tries"] >= MAX_ANALYZE_TRIES:
                 s["status"] = "failed"
+                s["fpv"] = prompt_sig()           # 어느 규칙으로 실패했나 — `requeue_stale` 이 규칙이 바뀔 때만 되돌린다
                 done["failed"] += 1
         chk = check_offtopic(grp, rec, llm=llm)
         done["analyzed"] -= chk["reverted"]
