@@ -2239,10 +2239,16 @@ def pnl_base(now: datetime | None = None, model: dict | None = None, *, bak: dic
             continue
         d, ts = sk
         cur = led.get(d) if isinstance(led.get(d), dict) else None
-        if cur and float(cur.get("ts") or 0) >= ts:
+        rev = m.get("_rematch_ts")      # 업로드 없이 티커가 붙은 재매칭 판(`portfolio.rematch_unmatched`)
+        same = cur and float(cur.get("ts") or 0) == ts
+        if cur and float(cur.get("ts") or 0) >= ts and (not same or cur.get("rev") == rev):
             continue
         pos, _ = pnl_positions(m)
         led[d] = {"ts": ts, "vals": {p["key"]: round(p["value"]) for p in pos}}
+        if rev is not None:
+            led[d]["rev"] = rev
+        if same and isinstance(cur.get("fx"), dict):
+            led[d]["fx"] = cur["fx"]    # 같은 업로드를 다시 적을 뿐 — 그 무렵 환율은 그대로 둔다
         # 그 업로드 무렵의 원화 환율 수준 — 여러 날 기준의 해외 원화 손익(지금 ÷ 기준)에 쓴다. 업로드 뒤 한 시간
         # 안에 처음 보는 기록에만, 그리고 값 풀이 **그 업로드 무렵**에 받은 것일 때만 적는다(새벽 값 풀을 아침 업로드의
         # 환율로 적으면 그날 환율인 척한다, #165 · 리뷰 2026-10-14).

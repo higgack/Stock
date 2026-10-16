@@ -291,8 +291,25 @@ async def _run_async() -> int:
     return 0
 
 
+def _rematch() -> None:
+    """저장된 자산 기록의 미매칭 종목을 다시 매칭(일시 실패가 다음 업로드까지 남지 않게, 2026-10-16). 붙은 게
+    있으면 자산 대시보드를 다시 그린다. 실패는 이 주기의 일만 잃는다."""
+    try:
+        from bot.portfolio import rematch_unmatched
+        if rematch_unmatched():
+            from bot.dashboard import regenerate_portfolio_index
+            regenerate_portfolio_index()
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("portfolio_watch: 미매칭 재매칭 실패: %s", exc)
+
+
 def run() -> int:
-    return asyncio.run(_run_async())
+    """텔레그램 쪽 결과와 무관하게 재매칭은 돈다 — 세션 잠금·FloodWait 로 일찍 끝나는 주기에도(독립 리뷰 M3).
+    업로드가 있었으면 그 업로드(ingest)가 이미 끝난 뒤다."""
+    try:
+        return asyncio.run(_run_async())
+    finally:
+        _rematch()
 
 
 def main() -> int:

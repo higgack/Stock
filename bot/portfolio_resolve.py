@@ -32,6 +32,7 @@ _OVERSEAS_ALIAS: dict[str, tuple[str, str]] = {
     "앰코테크놀로지": ("AMKR", "US"),
     "비코인스트루먼츠": ("VECO", "US"),
     "에흐르테스트시스템즈": ("AEHR", "US"),
+    "에흐르테스트시스템스": ("AEHR", "US"),      # 뱅크샐러드 표기(2026-10-16 export) — '즈' 판만 있어 미매칭이었다
     "st마이크로일렉트로닉스": ("STM", "US"),  # ADR
     "ase테크놀로지홀딩": ("ASX", "US"),       # ADR (TW 본사)
     "klacorp": ("KLAC", "US"),
@@ -376,11 +377,21 @@ def name_tokens(name: str) -> set[str]:
             if len(w) >= 3 and w not in _GENERIC_NAME_TOKENS}
 
 
+def _name_core(name: str) -> str:
+    """일반 낱말을 뺀 나머지 낱말(길이 무관)을 이어 붙인 것 — 'AT&T Inc.' → 'att', 'HP Inc.' → 'hp'."""
+    return "".join(w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if w not in _GENERIC_NAME_TOKENS)
+
+
 def same_company(want: str, got: str) -> bool:
     """`want`(찾는 회사의 영문 이름) 과 `got`(원천이 그 티커에 붙인 이름)이 신원 낱말을 하나라도 공유하나 —
-    'SK Ecoplant' vs 'SK hynix ...' 는 'SK'(2자)만 겹쳐 아니다. 어느 쪽이든 낱말이 없으면 확인 불가 = False."""
+    'SK Ecoplant' vs 'SK hynix ...' 는 'SK'(2자)만 겹쳐 아니다. 한쪽이라도 신원 낱말(3자 이상)이 없으면
+    ('AT&T'·'HP'·'3M') 일반 낱말을 뺀 이름 전체가 같은지로 본다(리뷰 2026-10-16 — 짧은 이름이 늘 '다른 회사' 였다).
+    그래도 비면 확인 불가 = False."""
     a, b = name_tokens(want), name_tokens(got)
-    return bool(a and b and a & b)
+    if a and b:
+        return bool(a & b)
+    ca, cb = _name_core(want), _name_core(got)
+    return bool(ca and ca == cb)
 
 
 def _has_hangul(s: str) -> bool:

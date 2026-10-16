@@ -13,12 +13,15 @@ NOAH 분석 오버레이는 증분4·5에서 모델 위에 얹는다.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 
 from bot.portfolio_parser import parse_export, is_banksalad_export
 from bot.portfolio_resolve import resolve_ticker
+
+log = logging.getLogger(__name__)
 
 PORTFOLIO_PATH = Path.home() / ".tradingagents" / "portfolio.json"
 
@@ -78,6 +81,73 @@ def _distinct_stock_keys(holdings: list[dict]) -> set:
     return keys
 
 
+def _unmatched_why(holdings: list) -> dict:
+    """미매칭 종목 이름 → 자동 매칭이 왜 못 붙였나(사유를 안 남기면 '수동 확인 필요' 만으로는 티커가 분명한
+    종목이 왜 빠졌는지 알 수 없다 — 2026-10-16 ASML·아날로그 디바이시스, #82)."""
+    names = {h.get("상품명") or "" for h in holdings if not h.get("matched") and not h.get("source")}
+    names.discard("")
+    if not names:
+        return {}
+    try:
+        from bot.portfolio_auto_resolve import miss_reason
+        return {n: w for n in sorted(names) if (w := miss_reason(n))}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("portfolio: 미매칭 사유 읽기 실패: %s", exc)
+        return {}
+
+
+def rematch_unmatched(now: float | None = None) -> int:
+    """저장된 자산 기록의 미매칭 종목을 자동 매칭에 다시 태운다 — 붙은 수를 돌려준다.
+
+    옛 판은 업로드 때 한 번만 물어 일시 실패(AI·Yahoo)가 다음 업로드까지 남았다. portfolio_watch 가 매 주기
+    부르고, 묻는 것은 재시도 시각이 된 것뿐이라(`batch_resolve`) 대부분의 주기는 네트워크 0 이다.
+    ⚠️ `save()` 를 쓰지 않는다 — 그건 `.bak`(전일대비 기준이 읽는 직전 업로드)과 `_saved_ts`(업로드 시각)를
+    갈아 끼운다. 이건 업로드가 아니므로 둘 다 그대로 두고 본 파일만 바꾼다."""
+    model = load()
+    if not isinstance(model, dict) or not model.get("holdings"):
+        return 0
+    holdings = model["holdings"]
+    names = [h.get("상품명") or "" for h in holdings if not h.get("matched") and not h.get("source")]
+    names = [n for n in names if n]
+    if not names:
+        return 0
+    from bot.portfolio_auto_resolve import batch_resolve
+    from bot.portfolio_resolve import _normalize
+    auto = batch_resolve(names, now=now)
+    # 묻는 동안(수 초~수십 초) 다른 쓰기(업로드·예수금 백필)가 끼면 처음 읽은 모델로 덮어 그것을 되돌린다 —
+    # 쓰기 직전에 다시 읽고, 업로드가 바뀌었으면 손대지 않는다(다음 주기가 새 기록으로 다시 본다, 독립 리뷰 2026-10-16)
+    fresh = load()
+    if not isinstance(fresh, dict) or fresh.get("_saved_ts") != model.get("_saved_ts"):
+        log.info("portfolio: 재매칭 중 자산 기록이 바뀌어 이번엔 쓰지 않음")
+        return 0
+    model = fresh
+    holdings = model.get("holdings") or []
+    fixed = 0
+    for h in holdings:
+        if h.get("matched") or h.get("source"):
+            continue
+        ar = auto.get(_normalize(h.get("상품명") or ""))
+        if ar:
+            h["ticker"], h["market"], h["matched"] = ar[0], ar[1], True
+            fixed += 1
+    old_why = model.get("unmatched_why")
+    model["matched_count"] = sum(1 for h in holdings if h.get("matched"))
+    model["unmatched_names"] = [h.get("상품명", "") for h in holdings
+                                if not h.get("matched") and not h.get("source")]
+    model["unmatched_why"] = _unmatched_why(holdings)
+    if fixed:
+        # 업로드 시각(`_saved_ts`)은 그대로 두되 '보유 구성이 바뀌었다' 는 표식을 남긴다 — 전일대비 기준 장부가 같은
+        # 업로드라도 이 표식이 바뀌면 그날 항목을 다시 적어, 내일 붙은 종목이 '새로 생긴 종목' 으로 세지 않게(리뷰 M2)
+        model["_rematch_ts"] = time.time() if now is None else now
+    if fixed or model["unmatched_why"] != old_why:
+        tmp = PORTFOLIO_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, PORTFOLIO_PATH)
+    if fixed:
+        log.info("portfolio: 미매칭 %d종목 재매칭 붙음", fixed)
+    return fixed
+
+
 def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
     """파서 결과 → 대시보드/요약용 집계 모델.
 
@@ -112,8 +182,8 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
                 ar = auto.get(key)
                 if ar:
                     h["ticker"], h["market"], h["matched"] = ar[0], ar[1], True
-        except Exception:
-            pass
+        except Exception as exc:                               # noqa: BLE001 — 자동 매칭은 곁들이(#315)
+            log.warning("portfolio: 자동 매칭 실패: %s", exc)
     by_broker: dict[str, dict] = {}
     for h in holdings:
         b = h.get("금융사") or "?"
@@ -181,6 +251,7 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         "matched_count": sum(1 for h in holdings if h["matched"]),
         "unmatched_names": [h.get("상품명", "") for h in holdings
                            if not h["matched"] and not h.get("source")],
+        "unmatched_why": _unmatched_why(holdings),
         "cash_in_invest": cash_in_invest,
         "fund_in_pension": fund_in_pension,
         "snapshot": {
@@ -226,8 +297,10 @@ def format_summary_text(model: dict) -> str:
     if um:
         unique = sorted(set(um))
         lines.append(f"\n⚠️ 미매칭 {len(unique)}종목 (수동 확인 필요)")
+        whys = model.get("unmatched_why") or {}
         for n in unique:
-            lines.append(f"  · {n}")
+            w = whys.get(n)
+            lines.append(f"  · {n} — {w}" if w else f"  · {n}")
     return "\n".join(lines)
 
 
