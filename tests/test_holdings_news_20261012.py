@@ -4936,35 +4936,97 @@ def test_diff_line_does_not_promise_when_the_tick_stopped(hn, portfolio):
     assert "다음 주기에 붙음" in _diff_line(out2)
 
 
-def _s(k, name, **kw):
+def _ds(k, name, **kw):
     return {"key": k, "name": name, **kw}
 
 
 def test_diff_line_branches(hn, monkeypatch):
     now = _t("2026-10-12T13:00")
-    rec = {"date": "2026-10-12", "stocks": [_s("KR:1", "가")]}
-    assert hn.holdings_diff_line(rec, [_s("KR:1", "가")], now, {}).endswith("차이 없음")
+    rec = {"date": "2026-10-12", "stocks": [_ds("KR:1", "가")]}
+    assert hn.holdings_diff_line(rec, [_ds("KR:1", "가")], now, {}).endswith("차이 없음")
     # 지금 목록을 못 읽으면 '전부 팔았다' 로 읽지 않는다(#54)
     assert hn.holdings_diff_line(rec, [], now, {}).startswith("보유 대조: ❓")
     # 주기 상한 — 몇 주기에 걸쳐 붙는지 · 이름은 5개까지
     monkeypatch.setattr(hn, "MAX_ADD_PER_TICK", 2)
-    many = [_s("KR:1", "가")] + [_s(f"KR:{i}", f"n{i}") for i in range(2, 9)]
+    many = [_ds("KR:1", "가")] + [_ds(f"KR:{i}", f"n{i}") for i in range(2, 9)]
     ln = hn.holdings_diff_line(rec, many, now, {"last_tick": "2026-10-12T12:50:00+09:00"})
     assert "새로 생긴 7종목(n2, n3, n4, n5, n6 외 2)" in ln and "주기당 2종목이라 4주기" in ln
     # 낮에 붙였는데 아직 AI 정리 전
-    rec2 = {"date": "2026-10-12", "stocks": [_s("KR:1", "가"), _s("KR:2", "나", added_at="2026-10-12T12:45+09:00",
+    rec2 = {"date": "2026-10-12", "stocks": [_ds("KR:1", "가"), _ds("KR:2", "나", added_at="2026-10-12T12:45+09:00",
                                                                  status="pending")],
             "added": [{"at": "2026-10-12T12:45+09:00", "n": 1}]}
-    assert hn.holdings_diff_line(rec2, [_s("KR:1", "가"), _s("KR:2", "나")], now, {}).endswith(
+    assert hn.holdings_diff_line(rec2, [_ds("KR:1", "가"), _ds("KR:2", "나")], now, {}).endswith(
         "차이 없음 · 낮에 붙인 이력 12:45 1종목 · 그중 AI 정리 대기 1종목")
 
 
 def test_diff_line_before_todays_record_points_to_the_collect(hn):
     """가장 최근 기록이 어제면 새 보유는 붙지 않고 오늘 수집이 지금 목록으로 모은다(시각 전/후로 갈린다)."""
-    rec = {"date": "2026-10-11", "stocks": [_s("KR:1", "가")]}
-    cur = [_s("KR:2", "나")]
+    rec = {"date": "2026-10-11", "stocks": [_ds("KR:1", "가")]}
+    cur = [_ds("KR:2", "나")]
     a = hn.holdings_diff_line(rec, cur, _t("2026-10-12T06:00"), {})
     b = hn.holdings_diff_line(rec, cur, _t("2026-10-12T07:12"), {})
     assert "새로 생긴 1종목(나) — 오늘 07:10 수집이 지금 목록으로 모음" in a
     assert "새로 생긴 1종목(나) — 다음 주기의 오늘 수집이 지금 목록으로 모음" in b
     assert "빠진 1종목(가) — 이 기록엔 남음 · 다음 수집부터 빠짐" in a and "오늘 카드" not in a
+
+
+def test_diff_line_stale_tick_is_checked_on_every_branch(hn):
+    """어제 기록 + 집계 시각 지남 + 주기 멈춤 — 판정 줄의 ❌ 와 반대로 '수집이 모음' 을 약속하지 않는다(리뷰)."""
+    rec = {"date": "2026-10-11", "stocks": [_ds("KR:1", "가")]}
+    ln = hn.holdings_diff_line(rec, [_ds("KR:2", "나")], _t("2026-10-12T10:00"),
+                               {"last_tick": "2026-10-12T06:00:00+09:00"})
+    assert "⚠️ 마지막 주기가 10-12 06:00" in ln and "수집이 지금 목록으로" not in ln
+    at45 = hn.holdings_diff_line({"date": "2026-10-12", "stocks": []}, [_ds("KR:2", "나")], _t("2026-10-12T10:45"),
+                                 {"last_tick": "2026-10-12T10:00:00+09:00"})
+    assert "다음 주기에 붙음" in at45                                    # 정확히 45분은 아직 멈춤이 아니다
+
+
+def test_diff_line_counts_only_added_pending_and_reads_utc_times(hn):
+    rec = {"date": "2026-10-12", "stocks": [_ds("KR:1", "가", status="pending"),
+                                            _ds("KR:2", "나", added_at="2026-10-12T03:45:00+00:00", status="pending")],
+           "added": [{"at": "2026-10-12T03:45:00+00:00", "n": 1}, 5, "x"]}
+    ln = hn.holdings_diff_line(rec, [_ds("KR:1", "가"), _ds("KR:2", "나"), _ds("KR:3", "다")], _t("2026-10-12T13:00"),
+                               {"last_tick": "2026-10-12T03:50:00+00:00"})
+    assert ln.endswith("· 낮에 붙인 이력 12:45 1종목 · 그중 AI 정리 대기 1종목")
+    assert "마지막 주기 12:50" in ln
+
+
+def test_diff_line_survives_malformed_records(hn):
+    rec = {"date": "2026-10-12", "stocks": [5, None, {"name": "키없음"}, _ds("KR:1", "가")], "added": 5}
+    ln = hn.holdings_diff_line(rec, [_ds("KR:1", "가")], _t("2026-10-12T13:00"), None)
+    assert ln.endswith("기록 1 ↔ 지금 1): 차이 없음")
+
+
+def test_diff_line_failure_keeps_the_verdict(hn, portfolio, monkeypatch):
+    hn.save_record(_page_rec())
+    monkeypatch.setattr(hn, "holdings_diff_line", lambda *a, **k: 1 / 0)
+    hn.why(_t("2026-10-12T09:00"), out=(out := []).append)
+    assert "   보유 대조: ❓ 계산 실패(ZeroDivisionError" in "\n".join(out) and out[-1].startswith("판정: ")
+
+
+def test_diff_line_does_not_promise_across_midnight(hn):
+    rec = {"date": "2026-10-12", "stocks": []}
+    late = hn.holdings_diff_line(rec, [_ds("KR:2", "나")], _t("2026-10-12T23:50"),
+                                 {"last_tick": "2026-10-12T23:46:00+09:00"})
+    assert "자정을 넘어 오늘 기록엔 안 붙음 — 내일 07:10 수집" in late and "다음 주기에 붙음" not in late
+    early = hn.holdings_diff_line(rec, [_ds("KR:2", "나")], _t("2026-10-12T23:35"),
+                                  {"last_tick": "2026-10-12T23:30:00+09:00"})
+    assert "다음 주기에 붙음" in early
+
+
+def test_tick_records_attach_failure_and_why_says_it(hn, portfolio, monkeypatch):
+    """붙이기가 매 주기 실패하면 주기는 돌아도 붙지 않는다 — 진단이 그걸 말하고, 성공하면 지운다(리뷰 #380)."""
+    f = _fetcher({}, ([], "naver", ""))
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    portfolio["m"] = _model(_h("삼성전자", "005930", "KR"), _h("SK하이닉스", "000660", "KR"))
+    real = hn.add_new_holdings
+    monkeypatch.setattr(hn, "add_new_holdings", lambda *a, **k: 1 / 0)
+    hn.tick(_t("2026-10-12T07:30"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert hn.load_state()["add_fail"]["why"].startswith("ZeroDivisionError")
+    hn.why(_t("2026-10-12T07:35"), out=(out := []).append)
+    assert "⚠️ 07:30 주기의 붙이기가 실패(ZeroDivisionError" in _diff_line(out)
+    monkeypatch.setattr(hn, "add_new_holdings", real)
+    hn.tick(_t("2026-10-12T07:45"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert "add_fail" not in hn.load_state()
+    hn.why(_t("2026-10-12T07:50"), out=(out2 := []).append)
+    assert "새로 생긴" not in _diff_line(out2) and "낮에 붙인 이력 07:45 1종목" in _diff_line(out2)

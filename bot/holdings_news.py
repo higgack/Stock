@@ -954,17 +954,27 @@ def requeue_note(rec: dict, now: datetime | None = None) -> str:
     return f"정리 기준 지문 {sig} · 옛 기준으로 정리된 종목 {old}/{len(oks)} — {tail}"
 
 
+def _hm(v) -> str:
+    """저장된 ISO 시각 → KST 'HH:MM'(못 읽으면 '?' — 잘라 쓰지 않는다, 리뷰 2026-10-16)."""
+    d = _parse(v)
+    return d.astimezone(_KST).strftime("%H:%M") if d else "?"
+
+
 def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = None,
                        st: dict | None = None) -> str:
     """`--why` 한 줄 — 가장 최근 기록과 **지금** 자산 기록의 보유 차이, 그리고 그게 어떻게 되나(사용자 2026-10-16
-    "업로드하면 여기도 업데이트되는거지?"). 새로 생긴 보유는 `add_new_holdings` 가 붙이고 판 보유는 그 날 카드에
+    "업로드하면 여기도 업데이트되는거지?"). 새로 생긴 보유는 `add_new_holdings` 가 붙이고 빠진 보유는 그 날 카드에
     남으므로, 둘을 갈라 적는다(#82). 대조는 `add_new_holdings` 와 같은 키·같은 목록으로 한다(#35).
+    '다음 주기에 붙음' 은 그 경로가 실제로 다시 돌 때만 적는다(#380) — 주기가 멈췄거나, 직전 주기의 붙이기가
+    실패했거나(`add_fail`), 다음 주기가 자정을 넘어 날짜가 바뀌면(그 주기엔 오늘 기록이 없다) 그렇게 말한다.
     지금 목록이 비었으면(자산 기록 못 읽음 · 보유 0) 대조하지 않는다 — '전부 팔았다' 로 읽힌다(#54)."""
     now = _now(now)
+    st = st if isinstance(st, dict) else {}
     if not stocks:
         return "보유 대조: ❓ 지금 자산 기록에서 보유 종목을 못 읽어 대조하지 않음"
-    have = {s.get("key"): s for s in rec.get("stocks") or []}
-    cur = {s["key"]: s for s in stocks}
+    rs = [x for x in rec.get("stocks") or [] if isinstance(x, dict) and x.get("key")]
+    have = {x["key"]: x for x in rs}
+    cur = {x["key"]: x for x in stocks}
     new = [k for k in cur if k not in have]
     gone = [k for k in have if k not in cur]
 
@@ -973,10 +983,11 @@ def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = Non
         return ", ".join(nm) + (f" 외 {len(keys) - 5}" if len(keys) > 5 else "")
 
     today = now.date().isoformat()
-    added = [a for a in rec.get("added") or [] if isinstance(a, dict)]
-    hist = (" · 낮에 붙인 이력 " + ", ".join(f"{str(a.get('at', ''))[11:16]} {a.get('n', 0)}종목" for a in added)
+    added = rec.get("added")
+    added = [a for a in added if isinstance(a, dict)] if isinstance(added, list) else []
+    hist = (" · 낮에 붙인 이력 " + ", ".join(f"{_hm(a.get('at'))} {a.get('n', 0)}종목" for a in added)
             if added else "")
-    waiting = sum(1 for s in rec.get("stocks") or [] if s.get("added_at") and s.get("status") == "pending")
+    waiting = sum(1 for x in rs if x.get("added_at") and x.get("status") == "pending")
     if waiting:
         hist += f" · 그중 AI 정리 대기 {waiting}종목"
     head = f"보유 대조({rec.get('date')} 기록 {len(have)} ↔ 지금 {len(cur)}): "
@@ -984,11 +995,17 @@ def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = Non
         return head + "차이 없음" + hist
     parts = []
     if new:
-        tick_at = _parse((st or {}).get("last_tick"))
-        if rec.get("date") == today and tick_at is not None and now - tick_at > timedelta(minutes=STALE_TICK_MIN):
-            # '다음 주기에 붙는다' 는 주기가 도는 동안만 참이다(#380) — 멈췄으면 그렇게 말한다
+        tick_at = _parse(st.get("last_tick"))
+        fail = st.get("add_fail") if isinstance(st.get("add_fail"), dict) else None
+        nxt = (tick_at or now) + timedelta(minutes=TICK_MIN)
+        if tick_at is not None and now - tick_at > timedelta(minutes=STALE_TICK_MIN):
             when = (f"⚠️ 마지막 주기가 {tick_at.astimezone(_KST).strftime('%m-%d %H:%M')} — 봇 주기가 멈췄으면 "
                     "붙지 않음")
+        elif rec.get("date") == today and fail:
+            when = f"⚠️ {_hm(fail.get('at'))} 주기의 붙이기가 실패({str(fail.get('why') or '?')[:100]}) — 다음 주기가 다시 시도"
+        elif rec.get("date") == today and nxt.astimezone(_KST).date().isoformat() != today:
+            when = (f"다음 주기가 자정을 넘어 오늘 기록엔 안 붙음 — 내일 {RUN_HOUR:02d}:{RUN_MIN:02d} 수집이 "
+                    "지금 목록으로 모음")
         elif rec.get("date") == today:
             n_ticks = math.ceil(len(new) / MAX_ADD_PER_TICK)
             when = (f"다음 주기에 붙음({TICK_MIN}분 간격"
@@ -1000,7 +1017,8 @@ def holdings_diff_line(rec: dict, stocks: list[dict], now: datetime | None = Non
             when = f"오늘 {RUN_HOUR:02d}:{RUN_MIN:02d} 수집이 지금 목록으로 모음"
         parts.append(f"새로 생긴 {len(new)}종목({names(new, cur)}) — {when}")
     if gone:
-        tail = ("오늘 카드에 남음(아침에 들고 있던 종목) · 내일 수집부터 빠짐" if rec.get("date") == today
+        # '팔았다' 로 단정하지 않는다 — 티커 확인·ETF 판정이 바뀌어도 빠진다(#165, 리뷰 2026-10-16)
+        tail = ("오늘 카드에 남음 · 내일 수집부터 빠짐" if rec.get("date") == today
                 else "이 기록엔 남음 · 다음 수집부터 빠짐")
         parts.append(f"빠진 {len(gone)}종목({names(gone, have)}) — {tail}")
     return head + " · ".join(parts) + hist
@@ -1705,8 +1723,14 @@ def tick(now: datetime | None = None, *, llm=call_llm, fetch=fetch_stock_news,
                     if na:
                         log.info("holdings_news: %s — 자산 기록에 새로 생긴 %d종목을 모아 붙임", date, na)
                         save_record(rec)
+                    if st.pop("add_fail", None) is not None:
+                        _save_state(st)
                 except Exception as exc:                       # noqa: BLE001
                     log.warning("holdings_news: 새 보유 추가 수집 실패: %s", exc)
+                    # `--why` 보유 대조가 '다음 주기에 붙음' 을 약속하지 않게 남긴다(#380 — 로그만으론 진단이 모른다)
+                    st["add_fail"] = {"at": now.isoformat(timespec="seconds"),
+                                      "why": f"{type(exc).__name__}: {_exc_msg(exc, 80)}"}
+                    _save_state(st)
             live = _live_dates([r["date"] for r in recs], date)
             todo = ([rec] if rec else []) + [r for r in sorted(recs, key=lambda r: r["date"], reverse=True)
                                              if r["date"] != date and r["date"] in live]
@@ -3767,7 +3791,10 @@ def why(now: datetime | None = None, out=print) -> int:
         out(f"   AI {llm.get('calls', 0)}회" + (f"(그중 무관 소식 확인 {ck}회)" if ck else "")
             + f" · 입력 {llm.get('pt', 0):,} · 출력 {llm.get('ot', 0):,} 토큰 · ${llm.get('cost_usd', 0):.4f}")
         out("   " + requeue_note(r, now))
-        out("   " + holdings_diff_line(r, stocks, now, st))
+        try:                             # 곁들이 줄 — 실패해도 판정 줄은 남긴다(#315)
+            out("   " + holdings_diff_line(r, stocks, now, st))
+        except Exception as exc:                                # noqa: BLE001
+            out(f"   보유 대조: ❓ 계산 실패({type(exc).__name__}: {_exc_msg(exc, 80)})")
     else:
         out("④ 기록 없음 — 봇이 아직 한 번도 모으지 않음")
     kind, line = status_verdict(recs, now, st)
