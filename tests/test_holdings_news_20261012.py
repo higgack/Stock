@@ -420,6 +420,19 @@ def test_collect_dedupes_against_the_last_two_records(hn):
     assert rec["stocks"][0]["items"] == []
 
 
+def test_collect_dedupes_a_republished_headline_with_another_link(hn):
+    """같은 기사가 원천마다 다른 링크로 다시 잡히면(네이버 원문 ↔ 구글 리다이렉트) 링크 키는 안 맞는다 — 앞선 기록의
+    **제목**과 대조해 프롬프트에 두 번 싣지 않는다(사용자 2026-10-18 'since_last' 중복 제거). 텔레그램은 제목 대조
+    대상이 아니다(같은 메시지 발췌가 우연히 같을 수 있다)."""
+    prev1 = {"date": "2026-10-11", "window": {"until": "2026-10-11T07:15:00+09:00"},
+             "stocks": [{"key": "KR:005930", "items": [{"k": "https://press/old", "src": "naver",
+                                                        "title": "삼성전자 반도체 증설 발표"}]}]}
+    news = [_it("삼성전자 반도체 증설 발표", date="2026-10-11", link="https://news.google/new")]
+    rec = hn.collect(_t(_NOW), model=_model(_h("삼성전자", "005930", "KR")), records=[prev1],
+                     fetch=_fetcher({"KR:005930": (news, "google", "")}), pace=0)
+    assert rec["stocks"][0]["items"] == []
+
+
 def test_collect_body_reads_have_a_run_budget_and_only_naver_copies(hn, monkeypatch):
     monkeypatch.setattr(hn, "MAX_BODY_PER_RUN", 1)
     calls = []
