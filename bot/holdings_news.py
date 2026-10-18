@@ -652,6 +652,9 @@ def _seen_keys(records: list[dict], date: str) -> set:
         for s in r.get("stocks") or []:
             for it in s.get("items") or []:
                 out.add((s.get("key"), it.get("k")))
+                if it.get("src") != "telegram" and _norm_title(it.get("title")):
+                    # 같은 기사라도 원천마다 링크가 달라 `k` 가 다르다(네이버·구글 리다이렉트) — 제목으로도 맞춘다.
+                    out.add((s.get("key"), "t:" + _norm_title(it.get("title"))))
     return out
 
 
@@ -748,6 +751,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
             if (st["key"], item["k"]) in seen or any(_norm_title(x["title"]) == _norm_title(item["title"])
                                                      for x in items):
                 continue
+            if _norm_title(item["title"]) and (st["key"], "t:" + _norm_title(item["title"])) in seen:
+                continue                                        # 앞선 기록에 같은 제목 — 링크만 다른 재배포
             items.append(item)
             if len(items) >= MAX_NEWS_PER_STOCK:
                 break
