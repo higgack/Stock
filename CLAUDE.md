@@ -5822,8 +5822,8 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
   `KORDOC_ROOT` 로 범위를 제한. 머신별 설치(`npx kordoc`), repo 커밋 불요.
 - **미채택 4종**(2026-10-18, 이유·상세 = REFERENCE §외부 레포 검토 2026-10-18): backpass(세션 기록으로
   CLAUDE.md 학습 — 우리 기록 위치 미확인 · 비밀값은 '명백한 것'만 가림) · agent-memory(자동 증류가 "규칙은
-  테스트로 못박는다" 와 충돌, 0.1.0) · hippo-memory(감쇠가 효과 없다고 README 가 인정 · `sleep` 이 메모리를
-  외부로 보낸다) · cnki-skills(레포와 무관 · 약관 미확인). 차용한 것은 아이디어 둘뿐이다 — 상시 로드는 한 줄
+  테스트로 못박는다" 와 충돌, 0.1.0) · hippo-memory(감쇠가 효과 없다고 README 가 인정 · API 키가 있으면 `sleep` 이
+  메모리를 외부로 보낸다) · cnki-skills(레포와 무관 · 약관 미확인). 차용한 것은 아이디어 둘뿐이다 — 상시 로드는 한 줄
   색인, 전문은 필요할 때(이미 `--relocate`) · 승격은 반복 근거로(이미 '2회 이상 인용' 게이트).
 - 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
 
