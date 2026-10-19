@@ -251,3 +251,34 @@ def test_lookup_nan_fresh_falls_back_to_the_default(table):
     table["005930"] = (now - 120, {"pct": 1.0})
     assert lp.lookup(["005930"], now, kick=False, fresh="nan")["pending"] == 1
     assert lp.lookup(["005930"], now, kick=False, fresh=float("nan"))["pending"] == 1
+
+
+# ── 독립 리뷰 반영(2026-10-19) ───────────────────────────────────────────────
+def test_page_carries_when_to_stop_asking(hn, ws_snaps):
+    """M1 — 열어 둔 탭은 다시 읽기 전엔 재료가 그대로라, 그 세션 종가를 받고 페이지가 다시 구워질 시각(`lx`)을 싣는다."""
+    ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
+    rec = _rec({**_stock("KR:005930"), "name": "삼성전자", "value": 150_000_000.0})
+    html = hn.render_page([rec], {}, _t("2026-10-12T10:00"), gen="GEN", portfolio=_pf("2026-10-08T08:00"))
+    el = html.split("id='hn-pnl-data'")[1]
+    data = {d["k"]: d for d in json.loads(el.split(">", 1)[1].split("</script>")[0])}
+    assert data["KR:005930"]["lx"] == int(_t("2026-10-12T18:45").timestamp())
+
+
+def test_js_stops_asking_once_every_session_is_past_its_stop_time(hn):
+    gone = dict(_KR, lx=1)                                                         # 1970 — 이미 지남
+    o = _run(hn, [gone], {"q": {}, "pending": 0})
+    assert o["urls"] == [] and o["delays"] == []
+    later = dict(_KR, k="KR:000660", t="000660", lx=4_000_000_000)
+    o = _run(hn, [gone, later], {"q": {}, "pending": 0})
+    assert o["urls"] == ["api/live_pct?t=000660&fresh=600"]                      # 남은 것만 묻는다
+
+
+def test_js_marks_a_market_live_only_when_all_its_targets_got_live(hn):
+    """L4 — '시세 반영' 칸도 요약 칸 이름과 같은 규칙(그 시장 대상 전부)."""
+    b = dict(_KR, k="KR:000660", t="000660")
+    q = {"005930": {"pct": 2.0, "d": "2026-10-12", "age": 1, "src": "네이버"}}
+    o = _run(hn, [_KR, b], {"q": q, "pending": 0}, asof=[{"m": "KR", "n": "한국", "d": "10-08"}])
+    assert o["asofv"] == "한국 10-08" and o["asofk"] == "시세 반영(마지막 종가)"
+    q["000660"] = {"pct": 1.0, "d": "2026-10-12", "age": 1, "src": "네이버"}
+    o = _run(hn, [_KR, b], {"q": q, "pending": 0}, asof=[{"m": "KR", "n": "한국", "d": "10-08"}])
+    assert o["asofv"].startswith("한국 10-12 실시간 · 실시간 ")

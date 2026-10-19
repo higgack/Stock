@@ -62,7 +62,8 @@ RUN_HOUR, RUN_MIN = 7, 0           # 매일 이 시각(KST) 이후 하루치를 
 #                                     "8시면 9시 개장에 너무 촉박")
 TOPUP_HOUR, TOPUP_MIN = 19, 0      # 같은 날 이 시각(KST) 이후 한 번 더 모아 그날 기록에 붙인다(사용자 2026-10-19 "하루에 두번
 #                                     12시간 간격") — 아침 창 끝 이후의 새 뉴스만, 새 뉴스가 붙은 종목만 다시 정리
-TOPUP_RETRY_MIN = 60               # 저녁 보강이 예외로 끝났을 때 다시 시도하기까지(매 주기 전 종목을 다시 받지 않게)
+TOPUP_RETRY_MIN = 60               # 저녁 보강이 예외·원천 장애로 끝났을 때 다시 시도하기까지(매 주기 전 종목을 다시 받지 않게)
+TOPUP_MAX_TRIES = 3                # 원천 장애로 끝난 저녁 보강을 그날 몇 번까지 하나(넘으면 다음 날 아침 수집이 그 시간대를 덮는다)
 DEFAULT_WINDOW_H = 24              # 직전 기록이 없을 때 거슬러 보는 시간
 MAX_WINDOW_H = 72                  # 봇이 며칠 멈췄어도 이보다 오래된 뉴스는 '오늘 뉴스' 로 싣지 않는다
 WINDOW_OVERLAP_H = 6               # 다음 창은 직전 창 끝보다 이만큼 앞에서 연다 — 입력이 늦게 닿는다(수신함은 2분
@@ -697,14 +698,22 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
         return None
     recs = load_records(limit=3) if records is None else records
     date = now.date().isoformat()
-    prev_until = None
+    prev_until, prev_miss = None, {}
     for r in sorted(recs, key=lambda r: r["date"], reverse=True):
         if r.get("date", "") < date:
             prev_until = _parse((r.get("window") or {}).get("until"))
+            pm = (r.get("window") or {}).get("miss")
+            prev_miss = pm if isinstance(pm, dict) else {}
             break
     since = (prev_until - timedelta(hours=WINDOW_OVERLAP_H)) if prev_until else \
         (now - timedelta(hours=DEFAULT_WINDOW_H))
     since = max(since, now - timedelta(hours=MAX_WINDOW_H))
+    # 직전 기록의 저녁 보강에서 원천을 못 받은 종목 — 그 종목만 그 앞 창 끝에서 연다(`top_up`, 독립 리뷰 H1)
+    since_by_key = {}
+    for k, v in prev_miss.items() if since_at is None else ():
+        d = _parse(v)
+        if d is not None:
+            since_by_key[k] = max(min(since, d - timedelta(hours=WINDOW_OVERLAP_H)), now - timedelta(hours=MAX_WINDOW_H))
     if since_at is not None:             # 낮 추가 수집 — 오늘 아침 기록과 같은 창 시작(그날 소식을 다 담게)
         since = since_at
     until = now
@@ -743,8 +752,9 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
             src["fail_reasons"][why] = src["fail_reasons"].get(why, 0) + 1
         dropped = 0
         raw_n = len(raw or [])
+        since_k = since_by_key.get(st["key"], since)
         for it in raw or []:
-            if not _in_window(it, since, until):
+            if not _in_window(it, since_k, until):
                 continue
             if used in ("naver", "google") and st["market"] == "KR":
                 # 이름 검색이라 다른 회사 기사가 섞인다 — 제목·요약에 그 이름이 **낱말로** 있어야 한다.
@@ -1082,7 +1092,8 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
         reads += _reload_bodies(s, body, pace, max(0, MAX_BODY_PER_RUN - reads))
         if not failed:                   # 실패 종목은 보관할 새 정리가 없다(옛 `prev_pc` 가 있으면 그대로 둔다)
             s["prev_pc"] = {**{k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")},
-                            "kind": "requeue"}
+                            "kind": "requeue",
+                            "max_n": max((int(it.get("n") or 0) for it in s.get("items") or []), default=0)}
         s.update(status="pending", tries=0, retry=False, reason=REQUEUE_REASON, pros=[], cons=[],
                  relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
         s.pop("check_reverts", None)
@@ -1704,15 +1715,29 @@ def topup_slot(now: datetime) -> datetime:
     return _now(now).replace(hour=TOPUP_HOUR, minute=TOPUP_MIN, second=0, microsecond=0)
 
 
+def _topups_since_slot(rec: dict, slot: datetime) -> list[dict]:
+    return [t for t in rec.get("topups") or [] if isinstance(t, dict) and (_parse(t.get("at")) or _EPOCH) >= slot]
+
+
 def topup_due(rec: dict | None, now: datetime | None = None) -> bool:
     """오늘 기록에 저녁 보강이 남았나 — 저녁 시각이 지났고 그 기록의 창이 그 시각 전에 끝났다. 아침 수집 자체가 저녁
-    시각 뒤에 돌았으면(봇이 낮 내내 멈춤) 그 창이 이미 저녁까지 덮으므로 다시 하지 않는다."""
+    시각 뒤에 돌았으면(봇이 낮 내내 멈춤) 그 창이 이미 저녁까지 덮으므로 다시 하지 않는다. 원천 장애로 끝난 보강은 창
+    끝을 옮기지 않으므로(`top_up`) 시도 기록으로 가른다 — `TOPUP_RETRY_MIN` 뒤 다시, 그날 `TOPUP_MAX_TRIES` 번까지."""
     now = _now(now)
     if not rec or rec.get("date") != now.date().isoformat():
         return False
     slot = topup_slot(now)
+    if now < slot:
+        return False
+    tps = _topups_since_slot(rec, slot)
+    if tps:
+        last = tps[-1]
+        if not last.get("outage") or len(tps) >= TOPUP_MAX_TRIES:
+            return False
+        at = _parse(last.get("at"))
+        return at is None or now - at >= timedelta(minutes=TOPUP_RETRY_MIN)
     until = _parse((rec.get("window") or {}).get("until"))
-    return now >= slot and until is not None and until < slot
+    return until is not None and until < slot
 
 
 def _reload_bodies(s: dict, body, pace: float, budget: int) -> int:
@@ -1772,25 +1797,39 @@ def top_up(rec: dict, now: datetime | None = None, *, records: list[dict] | None
         for i, it in enumerate(new, 1):
             it["n"] = base_n + i
             it["topup"] = at
-        old_items = list(s.get("items") or [])
-        s["items"] = new + old_items     # 새 항목이 위(최신순 화면)
+        st0 = s.get("status")
+        # 상태 바꾸기와 항목 붙이기는 던질 것이 없는 한 덩어리 — 본문 다시 읽기(네트워크)는 그 뒤. 사이에 예외가 나면
+        # 항목만 붙고 'ok' 로 남아(다음 재시도는 `_rec_keys` 로 그 항목을 빼므로) 영영 다시 정리되지 않는다(독립 리뷰 L8)
+        if st0 != "pending":             # 아직 정리 전이면 항목만 늘어난다(사유·시도 수는 그대로)
+            if st0 == "ok":
+                s["prev_pc"] = {**{k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")},
+                                "kind": "topup", "max_n": base_n}
+            s.update(status="pending", tries=0, retry=False, reason=TOPUP_REASON if st0 != "empty" else "",
+                     pros=[], cons=[], relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
+            s.pop("check_reverts", None)
+        s["items"] = new + list(s.get("items") or [])     # 새 항목이 위(최신순 화면)
         n_items += len(new)
         n_st += 1
-        st0 = s.get("status")
-        if st0 == "pending":             # 아직 정리 전 — 항목만 늘어난다(사유·시도 수는 그대로)
-            continue
-        reads += _reload_bodies(s, body, pace, max(0, MAX_BODY_PER_RUN - reads))
-        if st0 == "ok":
-            s["prev_pc"] = {**{k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")},
-                            "kind": "topup"}
-        s.update(status="pending", tries=0, retry=False, reason=TOPUP_REASON if st0 != "empty" else "",
-                 pros=[], cons=[], relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
-        s.pop("check_reverts", None)
-    rec.setdefault("window", {})["until"] = part["window"]["until"]
+        if st0 != "pending":
+            try:
+                reads += _reload_bodies(s, body, pace, max(0, MAX_BODY_PER_RUN - reads))
+            except Exception as exc:                           # noqa: BLE001 — 본문 없이 정리한다(#315)
+                log.warning("holdings_news: %s 저녁 보강 본문 다시 읽기 실패: %s", s.get("key"), exc)
+    out = _outage(part)
+    w = rec.setdefault("window", {})
+    if not out:
+        # 원천을 못 받은 종목은 창 끝을 옮기면 아침 창 끝 ~ 지금 기사를 영영 못 모은다(독립 리뷰 H1) — 그 종목만 옛 창
+        # 끝을 남겨 다음 날 아침 수집이 거기서 연다(`collect` 의 `since_by_key`). 장애(종목 다수·시장 전체)면 창 끝을
+        # 아예 옮기지 않고 `TOPUP_RETRY_MIN` 뒤 다시 한다(`topup_due`).
+        miss = w.setdefault("miss", {}) if any(_src_failed(ps) for ps in part["stocks"]) else w.get("miss") or {}
+        for ps in part["stocks"]:
+            if _src_failed(ps):
+                miss.setdefault(ps["key"], until.isoformat(timespec="seconds"))
+        w["until"] = part["window"]["until"]
     _merge_sources(rec, part, counts=False)
     psrc = part.get("sources") or {}
     ent = {"at": at, "items": n_items, "stocks": n_st, "asked": len(part["stocks"]),
-           "fail": int(psrc.get("fail") or 0), "outage": _outage(part),
+           "fail": int(psrc.get("fail") or 0), "outage": out,
            "tg": int((psrc.get("telegram") or {}).get("matched") or 0)}
     rec.setdefault("topups", []).append(ent)
     return ent
@@ -2016,15 +2055,22 @@ def status_verdict(records: list[dict], now: datetime | None = None,
             head += f" · {TOPUP_HOUR:02d}:{TOPUP_MIN:02d} 저녁 보강 대기(다음 주기)"
     out = _outage(rec)
     if not out and tps and tps[-1].get("outage"):   # 저녁 보강의 원천 장애도 그날의 장애다
-        out = f"저녁 보강 {tps[-1]['outage']}"
+        left = TOPUP_MAX_TRIES - len(_topups_since_slot(rec, topup_slot(now)))
+        out = (f"저녁 보강 {tps[-1]['outage']} — 창을 옮기지 않음("
+               + (f"{TOPUP_RETRY_MIN}분 뒤 다시 · 남은 시도 {left}" if left > 0 else
+                  "오늘 시도를 다 씀 — 다음 날 아침 수집이 이 시간대를 모음") + ")")
     if out:                      # 장애(❌)가 대기(⚠️)보다 먼저 — 대기가 오래 가면 장애가 안 보였다
         return "fail", f"{head} · {out}" + (f" · Pros/Cons 대기 {len(pend)}종목" if pend else "")
     if pend:
         reason = _pending_reason(pend[0]) if pend[0].get("reason") else "다음 주기에 이어서"
         return "pending", f"{head} · Pros/Cons 대기 {len(pend)}종목 — {reason}"
     if failed:
-        n_old = sum(1 for s in failed if isinstance(s.get("prev_pc"), dict))   # 카드가 옛 기준 정리를 보여 준다
-        shown = "뉴스만 표시" if not n_old else f"그중 {n_old}종목은 옛 기준 정리 표시"
+        # 카드가 보관 정리를 보여 준다 — 까닭이 둘이라 갈라 적는다(옛 기준 · 저녁 보강 전 아침 정리, 독립 리뷰 L1 · #34)
+        kinds = [s["prev_pc"].get("kind") for s in failed if isinstance(s.get("prev_pc"), dict)]
+        n_am = sum(1 for k in kinds if k == "topup")
+        parts = [x for x in (f"{len(kinds) - n_am}종목은 옛 기준 정리" if len(kinds) - n_am else "",
+                             f"{n_am}종목은 아침 정리" if n_am else "") if x]
+        shown = "뉴스만 표시" if not kinds else "그중 " + " · ".join(parts) + " 표시"
         # 어느 종목인지 판정 줄이 말한다 — 결산은 이 한 줄만 올린다(#356 · 2026-10-16 감사 ❌ 에 종목이 없었다)
         names = ", ".join(str(s.get("name") or s.get("key")) for s in failed[:3]) + \
             (f" 외 {len(failed) - 3}" if len(failed) > 3 else "")
@@ -2102,8 +2148,9 @@ _PNL_JS = r"""
     else{n=Math.floor(x+0.5); body=n.toLocaleString('en-US')+'원';}
     return (n===0?'':a>0?'+':'-')+body;}
   window.hnAmt=amt;    // 회귀가 파이썬 `_signed_krw` 와 값으로 대조한다
-  // 파이썬 `quarterly_series.fmt_price` 와 같은 자리수(원·엔 정수 · 그 밖은 1000 이상 정수, 아니면 소수 2자리) · 같은
-  // 반올림(정확히 반이면 짝수 쪽 — 파이썬 서식이 그렇다: 1234.5 → 1,234)
+  // 파이썬 `quarterly_series.fmt_price` 와 같은 자리수(원·엔 정수 · 그 밖은 1000 이상 정수, 아니면 소수 2자리) · 반올림은
+  // 정확히 반이면 짝수 쪽(1234.5 → 1,234 — 파이썬 서식과 같다). ⚠️ '정확히 반' 은 JS 곱셈 기준이라 1.115×100 처럼 이진
+  // 표현이 반 아래인 값은 파이썬(1.11)과 갈릴 수 있다(독립 리뷰 L6 — 실시간 가격엔 서버 대응값이 없어 대조할 칸은 없다)
   function fmtPx(n,cu,sym){var dec=(cu==='KRW'||cu==='JPY'||Math.abs(n)>=1000)?0:2, m=Math.pow(10,dec),
       y=n*m, f=Math.floor(y), r=(y-f===0.5)?(f%2===0?f:f+1):Math.round(y);
     return (sym||'')+(r/m).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});}
@@ -2159,9 +2206,12 @@ _PNL_JS = r"""
   // 맨 위 '시세 반영' 칸 — 실시간을 이어 붙인 시장은 그 세션 날짜와 '실시간', 받은 시각(가장 이른 것)
   function asof(){
     var box=document.getElementById('hn-st-asof'); if(!box||!asofData.length) return;
-    var vv=box.querySelector('.v'), kk=box.querySelector('.k'), mk={}, first=0;
-    Object.keys(live).forEach(function(k){var p=byKey[k], L=live[k]; if(!p||!L) return;
-      var m=p.m||''; if(!m) return; mk[m]=L.ld; if(!first||L.at<first) first=L.at;});
+    var vv=box.querySelector('.v'), kk=box.querySelector('.k'), mk={}, cnt={}, first=0;
+    // 그 시장의 이어 붙일 대상 **전부**에 붙였을 때만 그 시장을 '실시간' 으로 적는다 — 요약 칸 이름과 같은 규칙(독립 리뷰 L4 · #38)
+    pos.forEach(function(p){if(!(p.ld&&p.t&&p.p!==null&&p.p!==undefined)) return;
+      var c=cnt[p.m||'']=cnt[p.m||'']||{n:0,got:0,ld:'',at:0}; c.n++; var L=live[p.k];
+      if(L){c.got++; c.ld=L.ld; if(!c.at||L.at<c.at) c.at=L.at;}});
+    Object.keys(cnt).forEach(function(m){var c=cnt[m]; if(m&&c.got&&c.got===c.n){mk[m]=c.ld; if(!first||c.at<first) first=c.at;}});
     if(vv.getAttribute('data-v0')===null) vv.setAttribute('data-v0',vv.textContent);
     if(kk&&kk.getAttribute('data-k0')===null) kk.setAttribute('data-k0',kk.textContent);
     if(!first){vv.textContent=vv.getAttribute('data-v0'); if(kk) kk.textContent=kk.getAttribute('data-k0'); return;}
@@ -2191,12 +2241,17 @@ _PNL_JS = r"""
   // 낡은 값이 있었으면(pending) 15초 뒤 몇 번만 다시 묻고 평소엔 `pollSec` 마다.
   var targets={}; pos.forEach(function(p){if(p.ld&&p.t&&p.p!==null&&p.p!==undefined) (targets[p.t]=targets[p.t]||[]).push(p);});
   var tlist=Object.keys(targets), lquick=0;
+  // 그 세션의 종가를 받고 페이지가 다시 구워질 시각(`lx`)이 지난 종목은 더 묻지 않는다 — 열어 둔 탭이 닫힌 장을 밤새
+  // 묻지 않게(이미 받은 값은 그대로 둔다 — 마감 뒤 실시간 = 그 세션 등락이라 맞다). 다 지나면 멈춘다.
+  function active(){var n=Date.now();
+    return tlist.filter(function(t){return targets[t].some(function(p){return !p.lx||p.lx*1000>n;});});}
   function lpoll(){
-    fetch('api/live_pct?t='+encodeURIComponent(tlist.slice(0,400).join(','))+'&fresh='+pollSec,{cache:'no-store'})
+    var act=active(); if(!act.length) return;
+    fetch('api/live_pct?t='+encodeURIComponent(act.slice(0,400).join(','))+'&fresh='+pollSec,{cache:'no-store'})
       .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status); return r.json();})
       .then(function(js){
         var q=(js&&js.q)||{}, now=Date.now();
-        tlist.forEach(function(t){var v=q[t];
+        act.forEach(function(t){var v=q[t];
           targets[t].forEach(function(p){
             if(v&&typeof v.pct==='number'&&v.d===p.ld)
               live[p.k]={pct:v.pct,price:(typeof v.price==='number'?v.price:null),at:now-(+v.age||0)*1000,
@@ -2767,7 +2822,8 @@ def _pnl_html(positions: list[dict], skip: dict, look, *, fx: dict | None = None
         c = cum.get(p["key"]) or {}
         if not c.get("live_d") or c.get("ka") is None:
             return {}
-        return {"t": live_ticker(p), "ld": c["live_d"], "m": p["market"]}
+        return {"t": live_ticker(p), "ld": c["live_d"], "m": p["market"],
+                **({"lx": c["live_x"]} if c.get("live_x") else {})}
     data = [{"k": p["key"], "v": round(p["value"]), "g": "KR" if p["market"] == "KR" else "XX",
              "p": look(p)[0], **({"c": currency_of(p["market"])} if currency_of(p["market"]) else {}),
              **({"fb": fbm[p["key"]]} if p["key"] in fbm else {}), **_ld(p)}
@@ -2820,7 +2876,7 @@ def _safe_link(u: str) -> str:
     return u if u.lower().startswith(("http://", "https://")) else ""
 
 
-def _item_li(it: dict, off: bool) -> str:
+def _item_li(it: dict, off: bool, *, unseen: bool = False) -> str:
     import html as _h
     src = "📨 텔레그램" if it["src"] == "telegram" else f"📰 {it.get('source') or it['src']}"
     when = it["ts"][5:10] if it.get("dated_only") else it["ts"][5:16].replace("T", " ")
@@ -2837,6 +2893,8 @@ def _item_li(it: dict, off: bool) -> str:
     body = " · 본문 앞부분을 AI 가 읽음" if it.get("body_used") else ""
     if it.get("topup"):                  # 저녁 보강으로 붙은 항목 — 아침 수집분과 모은 시각이 다르다(#43)
         body += f" · 저녁 보강({_hm(it['topup'])})"
+    if unseen:                           # 보관 정리 뒤에 붙은 항목 — AI 가 아직 안 봤다(무관 판정이 아니다)
+        body += " · 아직 정리 안 됨"
     cls = " class='hn-off'" if off else ""
     return (f"<li{cls}>[{it['n']}] {_h.escape(src)} · {when}{body}"
             f"<br>{title}{extra}</li>")
@@ -3069,6 +3127,7 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
                 t = ws.session_times(cal, d)
                 if t and t[0] <= now_utc < t[1] and t[1] > base_utc:
                     opn = d                  # 지금 열려 있는 세션 — 실시간 등락이 이어 붙을 수 있는 자리(`live_d`)
+                    ctime[d] = t[1].timestamp()          # 그 세션의 마감(`live_x` — 화면이 언제 그만 묻나)
                 if not t or t[1] > now_utc:
                     continue
                 if t[1] <= base_utc:
@@ -3126,7 +3185,11 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
         # 하나를 빼먹은 값이 된다(그때는 종가 누적 그대로 · 화면이 세션 날짜를 맞춰 보고 붙인다)
         unc = list(wait) + ([opn] if opn and opn not in wait else [])
         live_d = unc[0] if len(unc) == 1 else None
+        # 화면이 그 세션 시세를 그만 묻는 시각 — 마감 뒤 그 종가를 받고(`lag`) 페이지가 한 번 더 구워질 때까지(`TICK_MIN`).
+        # 열어 둔 탭은 다시 읽기 전엔 페이지 재료가 그대로라, 이게 없으면 닫힌 장을 밤새 10분마다 묻는다(독립 리뷰 M1)
+        live_x = int(ctime[live_d] + (lag + TICK_MIN) * 60) if live_d and live_d in ctime else None
         out = {"ka": 1, "n": len(days), "asof": days[-1][0] if days else bsess, "wait": list(wait), "live_d": live_d,
+               "live_x": live_x,
                "hol": [d for d, tbl in days if tbl is None], "src": "tv", "need": None, "lag": lag,
                "nosnap": not snap, "why": "",
                # 실제로 등락을 반영한 세션 수 — 휴장 추정(등락 0)은 빼고 놓친 세션(Yahoo 종가 비가 덮는다)은 넣는다.
@@ -3554,6 +3617,10 @@ def _card(s: dict, *, final: bool = False, prev=None, latest: bool = False, valu
     shown = old or s
     rel = shown.get("relevant")
     relset = set(rel) if isinstance(rel, list) else {it["n"] for it in items}
+    # 보관 정리를 보여 줄 때 그 정리 뒤에 붙은 항목(저녁 보강 · `max_n` 보다 큰 번호)은 AI 가 본 적이 없다 — '무관하다고
+    # 본' 것으로 흐리거나 세지 않고 '아직 정리 안 됨' 이라 적는다(독립 리뷰 M2 · #165)
+    mx = old.get("max_n") if old else None
+    unseen = {it["n"] for it in items if isinstance(mx, int) and it["n"] > mx}
     n_tg = sum(1 for it in items if it["src"] == "telegram")
     # 평가금액 — 최신일은 요약(`pnl_positions`)과 같은 지금의 자산 기록 값, 지난 날은 그날 기록의 값(#33)
     val = value if value is not None else float(s.get("value") or 0)
@@ -3599,8 +3666,9 @@ def _card(s: dict, *, final: bool = False, prev=None, latest: bool = False, valu
               f"{_h.escape(s.get('reason') or '사유 미기록')} · 뉴스만 표시</div>")
     else:
         pc = f"<div class='hn-why'>Pros/Cons 대기 — {_h.escape(_pending_reason(s))}</div>"
-    lis = "".join(_item_li(it, it["n"] not in relset) for it in items)
-    off = len(items) - len([it for it in items if it["n"] in relset])
+    lis = "".join(_item_li(it, it["n"] not in relset and it["n"] not in unseen, unseen=it["n"] in unseen)
+                  for it in items)
+    off = len([it for it in items if it["n"] not in relset and it["n"] not in unseen])
     offnote = f" · 종목·투자와 무관하다고 본 {off}건은 흐리게" if off and (st == "ok" or old) else ""
     q = f"{s['name']} {s['ticker']}" + (f" {s['ko']}" if s.get("ko") else "")
     return (f"<div class='hn-card' data-hncard='1' data-mk='{_h.escape(s['market'])}' "
@@ -3942,7 +4010,9 @@ def render_page(records: list[dict], state: dict | None = None,
 <b>장 중인 세션</b>과 <b>마감했지만 종가를 아직 안 받은 세션</b>은 화면이 {LIVE_POLL_SEC // 60}분마다 그 종목의 <b>실시간 등락</b>(정규장 ·
 직전 종가 대비 — 국내·미·일·홍·중은 네이버, 대만은 TWSE)을 받아 종가 누적에 곱해 이어 붙입니다. 그 세션만 남았을 때만
 붙이고(안 센 세션이 둘이면 하나를 빼먹은 값이 되어 종가 누적 그대로), 원천이 준 세션 날짜가 그 세션이 아니면 붙이지
-않습니다. 이때 카드 괄호의 가격은 그 현재가이고(마우스를 올리면 받은 시각), 요약 칸 아래에 '실시간 n종목' 이 붙습니다. 서버는 한
+않습니다. 이때 카드 괄호의 가격은 그 현재가이고(마우스를 올리면 받은 시각), 요약 칸 아래에 '실시간 n종목' 이 붙습니다. 어느
+세션을 이을지는 페이지가 {TICK_MIN}분마다 다시 만들어질 때 정해지므로, 장이 열리기 전에 연 화면은 개장 뒤 첫 갱신이 실리면
+아래 '새 업데이트' 알림으로 다시 읽어야 실시간이 붙고, 열어 둔 화면은 그 세션 종가를 받을 무렵 묻기를 멈춥니다. 서버는 한
 종목을 {LIVE_POLL_SEC // 60}분에 한 번만 받으므로 화면을 여러 개 열어도 요청이 늘지 않고, 아무도 안 열면 묻지 않습니다. 맨 위
 <b>시세 반영</b> 칸이 시장마다 <b>어느 날 종가까지</b> 반영했는지(실시간을 붙인 시장은 그 날짜와 '실시간' · 받은 시각) 적고(시장마다
 장이 닫히는 시각이 달라 한 칸에 서로 다른 날의 종가가 섞입니다), 마감했지만 아직 안 받은 종가는 요약 아래 줄이 적습니다. 금액은

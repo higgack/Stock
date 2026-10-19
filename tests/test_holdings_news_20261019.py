@@ -209,3 +209,127 @@ def test_topup_on_a_pending_stock_only_adds_items(hn):
     s = rec["stocks"][0]
     assert s["status"] == "pending" and s["tries"] == 2 and s["reason"] == "AI 응답을 못 읽음"
     assert [it["n"] for it in s["items"]] == [2, 1] and "prev_pc" not in s
+
+
+# ── 독립 리뷰 반영(2026-10-19) ───────────────────────────────────────────────
+def _outage_evening(hn, portfolio, n=4):
+    am = _it("아침 소식", "2026-10-12T06:00:00+09:00", link="https://p/am")
+    portfolio["m"] = _model(*[_h(f"종목{i}", f"00000{i}", "KR") for i in range(1, n + 1)])
+    box = {"ok": True}
+
+    def f(stock):
+        f.calls.append(stock["key"])
+        return ([am], "naver", "") if box["ok"] else ([], "", "HTTP 503")
+    f.calls = []
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    box["ok"] = False
+    return f, box
+
+
+def test_outage_topup_keeps_the_window_and_retries_up_to_the_cap(hn, portfolio):
+    """H1 — 원천 장애로 끝난 보강이 창 끝을 옮기면 아침 창 끝 ~ 그 시각 기사를 영영 못 모은다. 옮기지 않고 한 시간 뒤
+    다시, 그날 `TOPUP_MAX_TRIES` 번까지 — 그 뒤엔 다음 날 아침 창이 그 시간대를 덮는다."""
+    f, box = _outage_evening(hn, portfolio)
+    hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    rec = hn.load_records()[0]
+    assert rec["window"]["until"] == "2026-10-12T07:15:00+09:00" and rec["topups"][0]["outage"]
+    kind, line = hn.status_verdict([rec], _t("2026-10-12T19:10"), {"last_tick": "2026-10-12T19:05:00+09:00"})
+    assert kind == "fail" and "창을 옮기지 않음(60분 뒤 다시 · 남은 시도 2)" in line
+    assert not hn.topup_due(rec, _t("2026-10-12T19:50"))
+    assert hn.topup_due(rec, _t("2026-10-12T20:05"))
+    for at in ("2026-10-12T20:05", "2026-10-12T21:05"):
+        hn.tick(_t(at), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    rec = hn.load_records()[0]
+    assert len(rec["topups"]) == 3 and not hn.topup_due(rec, _t("2026-10-12T23:00"))
+    _, line = hn.status_verdict([rec], _t("2026-10-12T23:00"), {"last_tick": "2026-10-12T23:00:00+09:00"})
+    assert "오늘 시도를 다 씀 — 다음 날 아침 수집이 이 시간대를 모음" in line
+    box["ok"] = True
+    hn.tick(_t("2026-10-13T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    nxt = [r for r in hn.load_records() if r["date"] == "2026-10-13"][0]
+    assert nxt["window"]["since"] == "2026-10-12T01:15:00+09:00"                # 아침 창 끝에서 이어진다
+
+
+def test_outage_retry_that_succeeds_moves_the_window(hn, portfolio):
+    f, box = _outage_evening(hn, portfolio)
+    hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    box["ok"] = True
+    hn.tick(_t("2026-10-12T20:06"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    rec = hn.load_records()[0]
+    assert rec["window"]["until"] == "2026-10-12T20:06:00+09:00" and not rec["topups"][-1]["outage"]
+    assert not hn.topup_due(rec, _t("2026-10-12T22:00"))
+    kind, _ = hn.status_verdict([rec], _t("2026-10-12T22:00"), {"last_tick": "2026-10-12T22:00:00+09:00"})
+    assert kind == "ok"
+
+
+def test_a_few_failed_stocks_reopen_from_the_morning_window_next_day(hn, portfolio):
+    """H1 — 장애 기준 밑의 종목별 실패는 창을 옮기되 그 종목만 옛 창 끝을 남겨 다음 날 아침이 거기서 연다."""
+    portfolio["m"] = _model(*[_h(f"종목{i}", f"00000{i}", "KR") for i in range(1, 6)])
+    am = _it("아침 소식", "2026-10-12T06:00:00+09:00", link="https://p/am")
+    noon = _it("종목1 낮 소식", "2026-10-12T10:00:00+09:00", link="https://p/noon")
+    box = {"fail": False}
+
+    def f(stock):
+        if box["fail"] and stock["key"] == "KR:000001":
+            return [], "", "HTTP 503"
+        return ([noon, am] if stock["key"] == "KR:000001" else [am]), "naver", ""
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=lambda s: ([am], "naver", ""),
+            body=lambda l: "", pace=0)
+    box["fail"] = True
+    hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    rec = hn.load_records()[0]
+    assert rec["window"]["until"] == "2026-10-12T19:05:00+09:00" and not rec["topups"][0]["outage"]
+    assert rec["window"]["miss"] == {"KR:000001": "2026-10-12T07:15:00+09:00"}
+    box["fail"] = False
+    hn.tick(_t("2026-10-13T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    nxt = [r for r in hn.load_records() if r["date"] == "2026-10-13"][0]
+    one = [s for s in nxt["stocks"] if s["key"] == "KR:000001"][0]
+    assert [it["title"] for it in one["items"]] == ["종목1 낮 소식"]           # 13:05 앞 기사도 그 종목은 모은다
+    assert all(not s["items"] for s in nxt["stocks"] if s["key"] != "KR:000001")
+
+
+def test_card_does_not_call_unseen_evening_items_unrelated(hn):
+    """M2 — 아침 정리로 되돌아간 카드에서 저녁 항목은 AI 가 본 적이 없다 — 흐리거나 '무관' 으로 세지 않는다."""
+    items = [{"n": 2, "src": "naver", "title": "저녁", "ts": "2026-10-12T15:00+09:00", "topup": "2026-10-12T19:05+09:00"},
+             {"n": 1, "src": "naver", "title": "아침", "ts": "2026-10-12T06:00+09:00"}]
+    s = {"key": "KR:A", "name": "A", "ticker": "A", "market": "KR", "items": items, "status": "failed",
+         "reason": "x", "prev_pc": {"pros": [{"t": "p", "refs": [1]}], "cons": [], "relevant": [1], "kind": "topup",
+                                    "max_n": 1}}
+    html = hn._card(s)
+    lis = html.split("<ol>")[1].split("</ol>")[0].split("<li")[1:]
+    assert "class='hn-off'" not in lis[0] and "아직 정리 안 됨" in lis[0] and "저녁 보강(19:05)" in lis[0]
+    assert "아직 정리 안 됨" not in lis[1] and "무관하다고 본" not in html
+    s["prev_pc"]["relevant"] = []                                            # 아침 항목을 무관하다고 봤다면 그건 센다
+    assert "무관하다고 본 1건" in hn._card(s)
+
+
+def test_verdict_names_the_morning_analysis_kind(hn):
+    """L1 — 실패 줄이 보관 정리의 까닭을 갈라 적는다."""
+    def st(k, kind):
+        return {"key": k, "name": k, "status": "failed", "reason": "r", "items": [{"n": 1}],
+                "prev_pc": {"kind": kind}}
+    rec = {"date": "2026-10-12", "stocks": [st("A", "topup"), st("B", "requeue")], "sources": {}}
+    _, line = hn.status_verdict([rec], _t("2026-10-12T12:00"), {"last_tick": "2026-10-12T12:00:00+09:00"})
+    assert "그중 1종목은 옛 기준 정리 · 1종목은 아침 정리 표시" in line
+
+
+def test_body_reload_failure_leaves_the_stock_queued(hn):
+    """L8 — 본문 다시 읽기가 던져도 항목과 '대기' 가 함께 남는다(항목만 붙고 ok 로 남으면 다시 정리되지 않는다)."""
+    rec = {"date": "2026-10-12", "window": {"since": "2026-10-11T07:15:00+09:00",
+                                            "until": "2026-10-12T07:15:00+09:00"},
+           "sources": {"telegram": {"matched": 0}},
+           "stocks": [{"key": "KR:005930", "market": "KR", "ticker": "005930", "name": "삼성전자", "value": 1.0,
+                       "items": [{"n": 1, "src": "naver", "title": "아침", "k": "https://n.news.naver.com/a/1",
+                                  "link": "https://n.news.naver.com/a/1", "body_chars": 300,
+                                  "ts": "2026-10-12T06:00+09:00"}],
+                       "status": "ok", "tries": 0, "pros": [{"t": "p", "refs": [1]}], "cons": [], "relevant": [1],
+                       "reason": ""}]}
+    pm = _it("삼성전자 오후 공시", "2026-10-12T15:00:00+09:00", link="https://p/pm")
+
+    def body(link):
+        if link.endswith("/a/1"):
+            raise RuntimeError("boom")
+        return ""
+    hn.top_up(rec, _t("2026-10-12T19:05"), records=[rec], model=_model(_h("삼성전자", "005930", "KR")),
+              fetch=lambda s: ([pm], "naver", ""), body=body, pace=0, us_etf=set(), ko=lambda c: "")
+    s = rec["stocks"][0]
+    assert s["status"] == "pending" and len(s["items"]) == 2 and s["prev_pc"]["max_n"] == 1

@@ -3645,11 +3645,13 @@ def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
     base = _t("2026-10-05T18:00").timestamp()
     want = {"ka": pytest.approx(1.01 * 1.02 * 0.99), "n": 3, "asof": "2026-10-08", "wait": [], "hol": [],
             "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 3}
-    assert hn.cum_lookup(base, _t("2026-10-12T10:00"))(st) == {**want, "live_d": "2026-10-12"}   # 장중(아직 안 닫힘)
-    assert hn.cum_lookup(base, _t("2026-10-12T08:00"))(st) == {**want, "live_d": None}           # 장 전 — 이어 붙일 것 없음
+    # 장중(아직 안 닫힘) — 화면은 그 세션 마감 15:30 + 종가 수집 180분 + 페이지 재생성 15분 뒤 묻기를 멈춘다
+    assert hn.cum_lookup(base, _t("2026-10-12T10:00"))(st) == {
+        **want, "live_d": "2026-10-12", "live_x": int(_t("2026-10-12T18:45").timestamp())}
+    assert hn.cum_lookup(base, _t("2026-10-12T08:00"))(st) == {**want, "live_d": None, "live_x": None}   # 장 전
     c = hn.cum_lookup(_t("2026-10-08T20:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c == {"ka": 1, "n": 0, "asof": "2026-10-08", "wait": [], "hol": [], "src": "tv", "need": None,
-                 "lag": 180, "nosnap": False, "why": "", "sess": 0, "live_d": None}                                           # 기준 뒤 마감 없음 → 0
+                 "lag": 180, "nosnap": False, "why": "", "sess": 0, "live_d": None, "live_x": None}                                           # 기준 뒤 마감 없음 → 0
     # 기준 무렵 종가 세션은 며칠 앞일 수 있다 — 일요일 업로드면 목요일(10-09 한글날 · 주말) 종가
     c = hn.cum_lookup(_t("2026-10-11T12:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c["n"] == 0 and c["asof"] == "2026-10-08"
@@ -3694,7 +3696,8 @@ def test_cum_lookup_stops_at_the_last_collected_close_and_names_the_pending_one(
     c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-08T17:00"))({"market": "KR", "ticker": "000001"})
     assert c == {"ka": pytest.approx(1.01 * 1.02), "n": 2, "asof": "2026-10-07", "wait": ["2026-10-08"], "hol": [],
                  "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 2,
-                 "live_d": "2026-10-08"}                    # 마감했지만 종가 전 — 화면이 실시간으로 이어 붙일 세션
+                 "live_d": "2026-10-08",                    # 마감했지만 종가 전 — 화면이 실시간으로 이어 붙일 세션
+                 "live_x": int(_t("2026-10-08T18:45").timestamp())}
     ca = hn.close_asof([{"market": "KR", "key": "k"}], {"k": c})
     assert hn.asof_line(ca) == "한국 10-07"                                     # 반영한 날 = 맨 위 '시세 반영' 칸
     assert hn.asof_wait_note(ca) == "아직 안 받은 종가: 한국 10-08(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)"
