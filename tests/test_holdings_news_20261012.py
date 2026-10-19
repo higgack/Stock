@@ -3050,14 +3050,15 @@ def test_pnl_block_rendered_on_the_page(hn, ws_snaps):
     # 기준 뒤 반영한 KR 세션은 10-08 하나(10-09 한글날) — 칸 이름이 '전일대비'(사용자 2026-10-15)
     assert "<div class='k'>전일대비 · 국내</div>" in html
     el = html.split("id='hn-pnl-data'")[1]
-    assert el.startswith(" data-basis='종가 기준'>")                       # JS 가 서버 칸과 같은 이름을 쓴다(#38)
+    assert el.startswith(" data-basis='종가 기준' data-poll='600'>")      # JS 가 서버 칸과 같은 이름을 쓴다(#38)
     data = {d["k"]: d for d in json.loads(el.split(">", 1)[1].split("</script>")[0])}
     assert data["KR:005930"] == {"k": "KR:005930", "v": 150000000, "g": "KR", "p": pytest.approx(-2.0)}
     assert data["US:AAPL"]["p"] is None and data["US:AAPL"]["c"] == "USD"
-    # 종목 시세는 묻지 않는다 — 카드 실시간 칸도, 실시간 스크립트도 없다
+    # 국가별 표의 1분 실시간 칸·스크립트는 없다(사용자 2026-10-14). 2026-10-19 부터 화면은 10분마다 실시간 등락을 묻되
+    # (#222) 이어 붙일 세션(`ld`)이 있는 종목만이다 — 10-12 08:00(장 전 · 10-08 종가까지 받음)엔 그런 종목이 없다
     from bot.live_pct import LIVE_JS
     assert LIVE_JS not in html and "js-live-pct" not in html and "data-t=" not in html
-    assert "api/live_pct?t=" not in html and "fetch('api/live_pct?fx=1'" in html
+    assert not any("ld" in d or "t" in d for d in data.values()) and "fetch('api/live_pct?fx=1'" in html
 
 
 def test_pnl_block_absent_without_portfolio_and_failure_does_not_break_page(hn, monkeypatch):
@@ -3072,7 +3073,7 @@ def test_pnl_block_absent_without_portfolio_and_failure_does_not_break_page(hn, 
 def test_pnl_json_cannot_close_the_script(hn):
     pos = [{"key": "</script><b>", "market": "KR", "ticker": "1", "sym": "1", "name": "x", "value": 1.0}]
     out = hn._pnl_html(pos, {"n": 0}, lambda p: (1.0, None, ""), fx={"</script>": 1.0})
-    assert out.count("</script>") == 2                                    # 재료 둘(종목 · 환율) 각자 하나씩
+    assert out.count("</script>") == 3                                    # 재료 셋(종목 · 시장별 반영일 · 환율) 각자 하나씩
 
 
 _PNL_HARNESS = r"""
@@ -3087,6 +3088,8 @@ if(typeof FX!=='undefined'){mk('hn-fx-data',FX);}
 ['all','KR','XX'].forEach(function(g){mk('hn-pnl-'+g,'SERVER'); mk('hn-pnl-'+g+'-sub','SERVER');});
 var cell=null; if(typeof CELL!=='undefined'){cell={textContent:'SERVER',attrs:CELL,
   className:(typeof CLS!=='undefined')?CLS:'hn-chg js-hn-amt',
+  classList:{toggle:function(c,on){var a=cell.className.split(' ').filter(function(x){return x&&x!==c;});
+    if(on) a.push(c); cell.className=a.join(' ');}},
   getAttribute:function(k){return this.attrs[k]===undefined?null:this.attrs[k];},
   setAttribute:function(k,v){this.attrs[k]=v;}};}
 global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
@@ -3203,7 +3206,9 @@ def test_signed_krw_matches_js_rounding_and_drops_sign_at_zero(hn):
 
 def test_latest_card_shows_close_based_amount_from_current_portfolio(hn, ws_snaps):
     """최신일 카드 = 요약과 같은 장종료가 누적 · 금액은 요약과 같은 지금의 자산 기록 값(#33) · 툴팁이 무엇의 값인지
-    (기준 시각 · 반영한 마지막 종가)를 말한다 · 실시간 칸이 아니다(사용자 2026-10-14)."""
+    (기준 시각 · 반영한 마지막 종가)를 말한다 · 국가별 표의 1분 실시간 칸이 아니다(사용자 2026-10-14). 국내 카드도
+    화면이 다시 그릴 재료(`js-hn-amt` — 환율 없이 · 종목 키)를 싣는다: 2026-10-19 부터 장 중엔 10분 실시간을 이어
+    붙인다(#222 — 옛 단언 '국내는 다시 그릴 것이 없다' 를 뒤집음)."""
     ws_snaps("KR", "2026-10-08", [("KRX:005930", -2.0)])
     rec = _rec({**_stock("KR:005930"), "name": "삼성전자", "value": 1.0})
     html = hn.render_page([rec], {}, _t("2026-10-12T08:00"), gen="GEN", portfolio=_pf("2026-10-08T08:00"))
@@ -3211,7 +3216,8 @@ def test_latest_card_shows_close_based_amount_from_current_portfolio(hn, ws_snap
     head = card.split("class='hn-chg")[1].split("</span>")[0]
     assert "(-2.00% · -300만원)" in head and "보유 1.5억원" in card
     assert "장종료가 누적 등락" in head and "2026-10-08 종가까지" in head and "10-08 08:00(KST)" in head
-    assert "js-live-pct" not in card and "js-hn-amt" not in head            # 국내는 환율이 없어 다시 그릴 것이 없다
+    assert "js-live-pct" not in card and "js-hn-amt" in head and "data-c=" not in head    # 국내 = 환율 없음
+    assert "data-k='KR:005930'" in head and "data-cu='KRW'" in head and "data-sym='₩'" in head
 
 
 def test_overseas_cell_says_it_is_krw_with_fx(hn, ws_snaps):
@@ -3630,7 +3636,8 @@ def test_pnl_base_records_fx_level_only_for_a_fresh_upload(hn, monkeypatch):
 
 def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
     """기준 10-05 18:00 뒤 마감한 KR 세션 = 10-06·10-07·10-08(10-09 한글날) — 그날 종가 등락을 곱한다(장종료가 기준 ·
-    사용자 2026-10-14). 장중이든 장 전이든 같은 값이다(실시간을 곱하지 않는다)."""
+    사용자 2026-10-14). 장중이든 장 전이든 서버 값(`ka`)은 같다 — 2026-10-19 부터 장중엔 실시간을 이어 붙일 세션
+    (`live_d`)만 더 말하고 곱하는 건 화면이 한다(#222 — 옛 계약 '실시간을 곱하지 않는다' 의 서버 쪽은 그대로)."""
     ws_snaps("KR", "2026-10-06", [("KRX:000001", 1.0)])
     ws_snaps("KR", "2026-10-07", [("KRX:000001", 2.0)])
     ws_snaps("KR", "2026-10-08", [("KRX:000001", -1.0)])
@@ -3638,11 +3645,11 @@ def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
     base = _t("2026-10-05T18:00").timestamp()
     want = {"ka": pytest.approx(1.01 * 1.02 * 0.99), "n": 3, "asof": "2026-10-08", "wait": [], "hol": [],
             "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 3}
-    assert hn.cum_lookup(base, _t("2026-10-12T10:00"))(st) == want              # 장중(10-12 세션은 아직 안 닫힘)
-    assert hn.cum_lookup(base, _t("2026-10-12T08:00"))(st) == want              # 장 전
+    assert hn.cum_lookup(base, _t("2026-10-12T10:00"))(st) == {**want, "live_d": "2026-10-12"}   # 장중(아직 안 닫힘)
+    assert hn.cum_lookup(base, _t("2026-10-12T08:00"))(st) == {**want, "live_d": None}           # 장 전 — 이어 붙일 것 없음
     c = hn.cum_lookup(_t("2026-10-08T20:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c == {"ka": 1, "n": 0, "asof": "2026-10-08", "wait": [], "hol": [], "src": "tv", "need": None,
-                 "lag": 180, "nosnap": False, "why": "", "sess": 0}                                           # 기준 뒤 마감 없음 → 0
+                 "lag": 180, "nosnap": False, "why": "", "sess": 0, "live_d": None}                                           # 기준 뒤 마감 없음 → 0
     # 기준 무렵 종가 세션은 며칠 앞일 수 있다 — 일요일 업로드면 목요일(10-09 한글날 · 주말) 종가
     c = hn.cum_lookup(_t("2026-10-11T12:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c["n"] == 0 and c["asof"] == "2026-10-08"
@@ -3686,7 +3693,8 @@ def test_cum_lookup_stops_at_the_last_collected_close_and_names_the_pending_one(
     ws_snaps("KR", "2026-10-07", [("KRX:000001", 2.0)])
     c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-08T17:00"))({"market": "KR", "ticker": "000001"})
     assert c == {"ka": pytest.approx(1.01 * 1.02), "n": 2, "asof": "2026-10-07", "wait": ["2026-10-08"], "hol": [],
-                 "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 2}
+                 "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 2,
+                 "live_d": "2026-10-08"}                    # 마감했지만 종가 전 — 화면이 실시간으로 이어 붙일 세션
     ca = hn.close_asof([{"market": "KR", "key": "k"}], {"k": c})
     assert hn.asof_line(ca) == "한국 10-07"                                     # 반영한 날 = 맨 위 '시세 반영' 칸
     assert hn.asof_wait_note(ca) == "아직 안 받은 종가: 한국 10-08(마감 3시간 뒤 수집 — 받으면 다음 갱신에 반영)"
