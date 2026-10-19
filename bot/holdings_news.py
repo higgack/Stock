@@ -680,7 +680,7 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
             records: list[dict] | None = None, fetch=fetch_stock_news,
             body=_fetch_body, pace: float = 0.25, us_etf: set | None = None, ko=None,
             beat=None, only: set | None = None, since_at: datetime | None = None,
-            seen_extra: set | None = None) -> dict | None:
+            seen_extra: set | None = None, since_by_key: dict | None = None) -> dict | None:
     """하루 기록 하나를 만든다(분석 전 — 종목마다 status 'pending' 또는 'empty'). 보유 종목이 없으면
     None(쓸 것이 없다). 저장은 부른 쪽이. `pace` = 원천 요청 사이 쉬는 초(구글 뉴스는 데이터센터 IP
     에서 몰아 치면 막힌다 — 네이버 키가 없으면 국내 전부가 구글로 간다). `us_etf`·`ko` = 미국 ETF 목록·
@@ -708,14 +708,20 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
     since = (prev_until - timedelta(hours=WINDOW_OVERLAP_H)) if prev_until else \
         (now - timedelta(hours=DEFAULT_WINDOW_H))
     since = max(since, now - timedelta(hours=MAX_WINDOW_H))
-    # 직전 기록의 저녁 보강에서 원천을 못 받은 종목 — 그 종목만 그 앞 창 끝에서 연다(`top_up`, 독립 리뷰 H1)
-    since_by_key = {}
-    for k, v in prev_miss.items() if since_at is None else ():
-        d = _parse(v)
-        if d is not None:
-            since_by_key[k] = max(min(since, d - timedelta(hours=WINDOW_OVERLAP_H)), now - timedelta(hours=MAX_WINDOW_H))
-    if since_at is not None:             # 낮 추가 수집 — 오늘 아침 기록과 같은 창 시작(그날 소식을 다 담게)
+    if since_at is not None:             # 낮 추가 수집·저녁 보강 — 부른 쪽이 창 시작을 정한다
         since = since_at
+    # 앞선 수집에서 원천을 못 받은 종목(`window.miss` = {키: 그때 열려던 창 시작}) — 그 종목만 거기서 연다(독립 리뷰
+    # H1). 아침 수집은 직전 기록의 것을, 저녁 보강은 오늘 기록의 것을 부른 쪽이 넘긴다. 이번에도 못 받으면 같은 시작을
+    # 이 기록의 `window.miss` 로 넘긴다 — 두 번 연달아 실패해도 구간이 사라지지 않는다(상한 `MAX_WINDOW_H`).
+    if since_by_key is None:
+        since_by_key = {}
+        for k, v in (prev_miss.items() if since_at is None else ()):
+            d = _parse(v)
+            if d is not None:
+                since_by_key[k] = d
+    floor = now - timedelta(hours=MAX_WINDOW_H)
+    since_by_key = {k: max(min(since, d), floor) for k, d in since_by_key.items() if isinstance(d, datetime)}
+    miss_out: dict[str, str] = {}
     until = now
     seen = _seen_keys(recs, date) | (seen_extra or set())     # 저녁 보강 — 같은 날 아침에 실린 항목도 뺀다
     tg_all, tg_bad = _tg_read()
@@ -779,6 +785,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
             if len(items) >= MAX_NEWS_PER_STOCK:
                 break
         src["dropped_name"] += dropped
+        if not used and why:             # 원천을 못 받았다 — 다음 수집이 이 종목만 이 창 시작에서 다시 연다
+            miss_out[st["key"]] = since_k.isoformat(timespec="seconds")
         n_tg = 0
         for m in reversed(tg_win):                              # 최근 글 먼저
             spans = mentioned(m["text"], als)
@@ -823,7 +831,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
                            "status": "pending" if items else "empty", "tries": 0,
                            "pros": [], "cons": [], "relevant": None, "reason": ""})
     return {"date": date, "window": {"since": since.isoformat(timespec="seconds"),
-                                     "until": until.isoformat(timespec="seconds")},
+                                     "until": until.isoformat(timespec="seconds"),
+                                     **({"miss": miss_out} if miss_out else {})},
             "collected_at": now.isoformat(timespec="seconds"),
             "universe": {"n": len(stocks), "unmatched": skipped["unmatched"],
                          "etf": skipped["etf"], "as_of": skipped.get("as_of"),
@@ -1732,7 +1741,7 @@ def topup_due(rec: dict | None, now: datetime | None = None) -> bool:
     tps = _topups_since_slot(rec, slot)
     if tps:
         last = tps[-1]
-        if not last.get("outage") or len(tps) >= TOPUP_MAX_TRIES:
+        if not last.get("retry", bool(last.get("outage"))) or len(tps) >= TOPUP_MAX_TRIES:
             return False
         at = _parse(last.get("at"))
         return at is None or now - at >= timedelta(minutes=TOPUP_RETRY_MIN)
@@ -1766,7 +1775,9 @@ def top_up(rec: dict, now: datetime | None = None, *, records: list[dict] | None
     """저녁 보강(사용자 2026-10-19 "19:00 에도") — 오늘 기록의 종목을 아침 창 끝 `WINDOW_OVERLAP_H` 시간 전부터 지금까지
     다시 모아 **새 항목만** 그 종목에 붙이고(오늘 아침·앞선 날에 실린 항목은 `_rec_keys` 로 뺀다) 그 종목만 대기로
     되돌린다. 옛 항목의 번호는 그대로 두고 새 항목에 다음 번호를 준다(옛 정리의 근거 번호가 바뀌지 않게). 아침 정리는
-    `prev_pc`(kind='topup')에 보관 — 다시 정리가 실패하거나 그날 안에 못 끝나면 카드가 '아침 정리' 라벨로 보여 준다.
+    `prev_pc`(kind='topup' · `max_n` · 앞선 보강까지 본 정리면 `evening`)에 보관 — 다시 정리가 실패하거나 그날 안에 못
+    끝나면 카드가 '아침 정리'(또는 '직전 정리') 라벨로 보여 준다. 원천을 못 받은 종목은 `window.miss` 로 넘기고, 장애면
+    창 끝을 옮기지 않는다(`topup_due` 가 다시 연다).
     창 끝(`window.until`)을 지금으로 옮겨 다음 날 아침 창이 여기서 이어지게 한다. 지금 목록에 없는 종목(판 종목)은 다시
     모으지 않는다. 반환 = `topups` 에 남긴 항목(보유를 못 읽어 아무것도 안 했으면 None — 다음 주기에 다시)."""
     now = _now(now)
@@ -1775,9 +1786,11 @@ def top_up(rec: dict, now: datetime | None = None, *, records: list[dict] | None
         return None
     etfs = _us_etf(cache_only=True) if us_etf is None else us_etf
     have = {s.get("key") for s in rec.get("stocks") or []}
+    w = rec.setdefault("window", {})
+    rec_miss = w.get("miss") if isinstance(w.get("miss"), dict) else {}
     part = collect(now, model=model, records=records, fetch=fetch, body=body, pace=pace, us_etf=etfs, ko=ko,
                    beat=beat, only=have, since_at=until - timedelta(hours=WINDOW_OVERLAP_H),
-                   seen_extra=_rec_keys(rec))
+                   seen_extra=_rec_keys(rec), since_by_key={k: d for k, v in rec_miss.items() if (d := _parse(v))})
     if not part:
         return None
     at = now.isoformat(timespec="minutes")
@@ -1790,20 +1803,26 @@ def top_up(rec: dict, now: datetime | None = None, *, records: list[dict] | None
             continue
         if beat:
             beat()
-        if s.get("status") == "pending":
+        st0 = s.get("status")
+        if st0 == "pending":
             # 아직 정리 전 — 그 본문은 사이드카에만 있다. 메모리에 안 붙이면 저장이 새 항목 본문만 남기고 덮는다
-            _attach_bodies(rec, [s])
+            try:
+                _attach_bodies(rec, [s])
+            except Exception as exc:                           # noqa: BLE001 — 본문 없이 정리한다(#315)
+                log.warning("holdings_news: %s 본문 사이드카 붙이기 실패: %s", s.get("key"), exc)
         base_n = max((int(it.get("n") or 0) for it in s.get("items") or []), default=0)
         for i, it in enumerate(new, 1):
             it["n"] = base_n + i
             it["topup"] = at
-        st0 = s.get("status")
         # 상태 바꾸기와 항목 붙이기는 던질 것이 없는 한 덩어리 — 본문 다시 읽기(네트워크)는 그 뒤. 사이에 예외가 나면
         # 항목만 붙고 'ok' 로 남아(다음 재시도는 `_rec_keys` 로 그 항목을 빼므로) 영영 다시 정리되지 않는다(독립 리뷰 L8)
         if st0 != "pending":             # 아직 정리 전이면 항목만 늘어난다(사유·시도 수는 그대로)
             if st0 == "ok":
+                # `evening` = 보관하는 정리가 이미 앞선 저녁 보강 항목까지 본 것(재시도로 둘째 보강) — 라벨이 '아침
+                # 정리' 라고 하면 거짓이다(델타 리뷰 · #34)
                 s["prev_pc"] = {**{k: s.get(k) for k in ("pros", "cons", "relevant", "dropped_lines", "pv")},
-                                "kind": "topup", "max_n": base_n}
+                                "kind": "topup", "max_n": base_n,
+                                "evening": any(it.get("topup") for it in s.get("items") or [])}
             s.update(status="pending", tries=0, retry=False, reason=TOPUP_REASON if st0 != "empty" else "",
                      pros=[], cons=[], relevant=None, dropped_lines=0, offtopic_lines=0, check_why="")
             s.pop("check_reverts", None)
@@ -1816,20 +1835,26 @@ def top_up(rec: dict, now: datetime | None = None, *, records: list[dict] | None
             except Exception as exc:                           # noqa: BLE001 — 본문 없이 정리한다(#315)
                 log.warning("holdings_news: %s 저녁 보강 본문 다시 읽기 실패: %s", s.get("key"), exc)
     out = _outage(part)
-    w = rec.setdefault("window", {})
-    if not out:
-        # 원천을 못 받은 종목은 창 끝을 옮기면 아침 창 끝 ~ 지금 기사를 영영 못 모은다(독립 리뷰 H1) — 그 종목만 옛 창
-        # 끝을 남겨 다음 날 아침 수집이 거기서 연다(`collect` 의 `since_by_key`). 장애(종목 다수·시장 전체)면 창 끝을
-        # 아예 옮기지 않고 `TOPUP_RETRY_MIN` 뒤 다시 한다(`topup_due`).
-        miss = w.setdefault("miss", {}) if any(_src_failed(ps) for ps in part["stocks"]) else w.get("miss") or {}
-        for ps in part["stocks"]:
-            if _src_failed(ps):
-                miss.setdefault(ps["key"], until.isoformat(timespec="seconds"))
+    failed = [ps["key"] for ps in part["stocks"] if _src_failed(ps)]
+    # 장애로 재시도할 것은 원천을 **못 받은** 장애뿐이다 — '시장 전부 0건' 은 늘 그런 시장이면 매일 세 번 전 종목을 다시
+    # 받게 되므로 사실로만 적는다(델타 리뷰)
+    hard = bool(out) and bool(failed)
+    if not hard:
+        # 원천을 못 받은 종목은 창 끝을 옮기면 아침 창 끝 ~ 지금 기사를 영영 못 모은다(독립 리뷰 H1) — 그 종목만 이번에
+        # 열려던 창 시작을 남겨 다음 수집이 거기서 연다(`collect` 의 `since_by_key`). 이번에 받은 종목은 지운다.
+        # 장애(종목 다수·시장 전체)면 창 끝을 아예 옮기지 않고 `TOPUP_RETRY_MIN` 뒤 다시 한다(`topup_due`).
+        miss = {k: v for k, v in rec_miss.items() if k in failed or k not in have}
+        for k in failed:                 # 이미 넘겨받은 종목은 그 시작을 그대로(`rec_miss`), 처음이면 이번 창 시작
+            miss.setdefault(k, (until - timedelta(hours=WINDOW_OVERLAP_H)).isoformat(timespec="seconds"))
+        if miss:
+            w["miss"] = miss
+        else:
+            w.pop("miss", None)
         w["until"] = part["window"]["until"]
     _merge_sources(rec, part, counts=False)
     psrc = part.get("sources") or {}
     ent = {"at": at, "items": n_items, "stocks": n_st, "asked": len(part["stocks"]),
-           "fail": int(psrc.get("fail") or 0), "outage": out,
+           "fail": int(psrc.get("fail") or 0), "outage": out, "retry": hard, "miss": 0 if hard else len(failed),
            "tg": int((psrc.get("telegram") or {}).get("matched") or 0)}
     rec.setdefault("topups", []).append(ent)
     return ent
@@ -2041,8 +2066,13 @@ def status_verdict(records: list[dict], now: datetime | None = None,
             f"{(src.get('telegram') or {}).get('matched', 0)}건")
     tps = [t for t in rec.get("topups") or [] if isinstance(t, dict)]
     if tps:
-        t = tps[-1]
-        head += f" · {_hm(t.get('at'))} 저녁 보강 새 항목 {t.get('items', 0)}건/{t.get('stocks', 0)}종목"
+        # 재시도로 보강이 여러 번이면 합한다(마지막 것만 적으면 앞서 붙은 항목이 빠진다, 델타 리뷰 · #45)
+        n_it, n_st = sum(int(t.get("items") or 0) for t in tps), sum(int(t.get("stocks") or 0) for t in tps)
+        head += (f" · {_hm(tps[-1].get('at'))} 저녁 보강 새 항목 {n_it}건/{n_st}종목"
+                 + (f"({len(tps)}회)" if len(tps) > 1 else ""))
+        nm = len((rec.get("window") or {}).get("miss") or {})
+        if nm and tps[-1].get("miss"):
+            head += f" · 원천을 못 받은 {nm}종목은 다음 수집이 놓친 구간부터 다시 모음"
     if topup_due(rec, now):
         tick_at = _parse(st.get("last_tick"))
         tf = st.get("topup_fail") if isinstance(st.get("topup_fail"), dict) else None
@@ -2055,10 +2085,13 @@ def status_verdict(records: list[dict], now: datetime | None = None,
             head += f" · {TOPUP_HOUR:02d}:{TOPUP_MIN:02d} 저녁 보강 대기(다음 주기)"
     out = _outage(rec)
     if not out and tps and tps[-1].get("outage"):   # 저녁 보강의 원천 장애도 그날의 장애다
-        left = TOPUP_MAX_TRIES - len(_topups_since_slot(rec, topup_slot(now)))
-        out = (f"저녁 보강 {tps[-1]['outage']} — 창을 옮기지 않음("
-               + (f"{TOPUP_RETRY_MIN}분 뒤 다시 · 남은 시도 {left}" if left > 0 else
-                  "오늘 시도를 다 씀 — 다음 날 아침 수집이 이 시간대를 모음") + ")")
+        if tps[-1].get("retry", True):
+            left = TOPUP_MAX_TRIES - len(_topups_since_slot(rec, topup_slot(now)))
+            out = (f"저녁 보강 {tps[-1]['outage']} — 창을 옮기지 않음("
+                   + (f"{TOPUP_RETRY_MIN}분 뒤 다시 · 남은 시도 {left}" if left > 0 else
+                      "오늘 시도를 다 씀 — 다음 날 아침 수집이 이 시간대를 모음") + ")")
+        else:                            # 0건 갈래 — 다시 묻지 않는다(사실로만)
+            out = f"저녁 보강 {tps[-1]['outage']}"
     if out:                      # 장애(❌)가 대기(⚠️)보다 먼저 — 대기가 오래 가면 장애가 안 보였다
         return "fail", f"{head} · {out}" + (f" · Pros/Cons 대기 {len(pend)}종목" if pend else "")
     if pend:
@@ -2069,7 +2102,7 @@ def status_verdict(records: list[dict], now: datetime | None = None,
         kinds = [s["prev_pc"].get("kind") for s in failed if isinstance(s.get("prev_pc"), dict)]
         n_am = sum(1 for k in kinds if k == "topup")
         parts = [x for x in (f"{len(kinds) - n_am}종목은 옛 기준 정리" if len(kinds) - n_am else "",
-                             f"{n_am}종목은 아침 정리" if n_am else "") if x]
+                             f"{n_am}종목은 저녁 보강 전 정리" if n_am else "") if x]
         shown = "뉴스만 표시" if not kinds else "그중 " + " · ".join(parts) + " 표시"
         # 어느 종목인지 판정 줄이 말한다 — 결산은 이 한 줄만 올린다(#356 · 2026-10-16 감사 ❌ 에 종목이 없었다)
         names = ", ".join(str(s.get("name") or s.get("key")) for s in failed[:3]) + \
@@ -3188,6 +3221,10 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
         # 화면이 그 세션 시세를 그만 묻는 시각 — 마감 뒤 그 종가를 받고(`lag`) 페이지가 한 번 더 구워질 때까지(`TICK_MIN`).
         # 열어 둔 탭은 다시 읽기 전엔 페이지 재료가 그대로라, 이게 없으면 닫힌 장을 밤새 10분마다 묻는다(독립 리뷰 M1)
         live_x = int(ctime[live_d] + (lag + TICK_MIN) * 60) if live_d and live_d in ctime else None
+        if live_x is not None and live_x <= now_utc.timestamp():
+            # 그 시각이 지났는데 종가가 아직 안 왔다(원천이 늦음 · 렌더가 늦음) — 지난 기한을 실으면 지금 연 탭은 한 번도
+            # 묻지 않는다(델타 리뷰). 지금부터 한 바퀴(수집 여유 + 재생성) 더 묻게 민다
+            live_x = int(now_utc.timestamp() + (lag + TICK_MIN) * 60)
         out = {"ka": 1, "n": len(days), "asof": days[-1][0] if days else bsess, "wait": list(wait), "live_d": live_d,
                "live_x": live_x,
                "hol": [d for d, tbl in days if tbl is None], "src": "tv", "need": None, "lag": lag,
@@ -3638,8 +3675,8 @@ def _card(s: dict, *, final: bool = False, prev=None, latest: bool = False, valu
         why = ("이어서 정리하는 기간 안에 차례가 오지 않음" if r in (REQUEUE_REASON, TOPUP_REASON) else r)
         # 보관한 까닭이 둘이다 — 정리 기준이 바뀜(`requeue_stale`) · 저녁 보강으로 새 뉴스가 붙음(`top_up`, #34)
         am = old.get("kind") == "topup"
-        tag = "아침 정리" if am else "옛 기준"
-        lead = ("저녁에 붙은 새 뉴스까지 넣어 다시 정리하지 못해 아침 정리를 보여 줍니다(새 뉴스는 반영 안 됨)" if am
+        tag = ("직전 정리" if old.get("evening") else "아침 정리") if am else "옛 기준"
+        lead = (f"저녁에 붙은 새 뉴스까지 넣어 다시 정리하지 못해 {tag}를 보여 줍니다(새 뉴스는 반영 안 됨)" if am
                 else "새 기준으로 다시 정리하지 못해 옛 기준 정리를 보여 줍니다")
         pc = (f"<div class='hn-why'>⚠️ {lead} — {_h.escape(why)}</div>"
               + ("<div class='hn-pc'>" + _side(f"👍 Pros · 호재 관점({tag})", "hn-pro", old.get("pros") or [])
@@ -4068,7 +4105,10 @@ AI 판단이라 놓치거나 지나치게 빼는 항목이 있을 수 있습니�
 겹치며, 이미 실린 항목은 빼고 싣습니다). <b>저녁 보강</b> — 같은 날 {TOPUP_HOUR:02d}:{TOPUP_MIN:02d} KST 이후 한 번 더 모아
 아침 창 이후의 <b>새 항목만</b> 그날 칸에 붙입니다(근거 목록에 '저녁 보강(HH:MM)' · 아침 항목 번호는 그대로). 새 항목이 붙은
 종목만 아침 뉴스와 함께 다시 정리하고(그동안 '대기'), 다시 정리를 마치지 못하면 아침 정리를 '아침 정리' 라벨로 보여
-줍니다. 다음 날 아침 창은 저녁 보강 시각에서 이어집니다. 봇이 며칠 멈췄어도 {MAX_WINDOW_H}시간보다 오래된 뉴스는 싣지 않습니다.
+줍니다(그 카드의 저녁 항목은 '아직 정리 안 됨'). 다음 날 아침 창은 저녁 보강 시각에서 이어집니다. 원천 장애로 저녁 보강을
+못 받으면 창을 옮기지 않고 {TOPUP_RETRY_MIN}분 뒤 다시 하며(그날 {TOPUP_MAX_TRIES}번까지 — 그래도 안 되면 다음 날 아침
+수집이 그 시간대를 덮습니다), 몇 종목만 못 받았으면 그 종목은 다음 수집이 놓친 구간부터 다시 엽니다(다만 종목당
+{MAX_NEWS_PER_STOCK}건 상한은 같아서 그 사이 기사가 많으면 최근 것만 담깁니다). 봇이 며칠 멈췄어도 {MAX_WINDOW_H}시간보다 오래된 뉴스는 싣지 않습니다.
 AI 정리는 한 주기에 {MAX_LLM_CALLS}번까지 부르고 남으면 15분 뒤 이어서 합니다('대기' — 바로 전 날의 대기분도
 이어서 정리하고, 그보다 앞선 날은 '마치지 못함' 으로 적습니다). AI 의 일시 오류(요청 한도·서버 장애·시간 초과)는
 실패로 세지 않고 다음 주기에 다시 합니다. AI 가 답했는데 쓸 수 없는 경우가 같은 종목에서

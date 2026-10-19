@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from tests.test_holdings_news_20261012 import (  # noqa: F401 — 픽스처는 이름으로 잡힌다
-    _answer_all, _fetcher, _h, _it, _llm, _model, _t, hn, portfolio)
+    _answer_all, _fetcher, _h, _it, _llm, _model, _t, hn, portfolio, ws_snaps)
 
 
 def _two_runs(hn, portfolio, *, evening):
@@ -278,7 +278,8 @@ def test_a_few_failed_stocks_reopen_from_the_morning_window_next_day(hn, portfol
     hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
     rec = hn.load_records()[0]
     assert rec["window"]["until"] == "2026-10-12T19:05:00+09:00" and not rec["topups"][0]["outage"]
-    assert rec["window"]["miss"] == {"KR:000001": "2026-10-12T07:15:00+09:00"}
+    assert rec["window"]["miss"] == {"KR:000001": "2026-10-12T01:15:00+09:00"}   # 그때 열려던 창 시작
+    assert rec["topups"][0]["miss"] == 1 and rec["topups"][0]["retry"] is False
     box["fail"] = False
     hn.tick(_t("2026-10-13T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
     nxt = [r for r in hn.load_records() if r["date"] == "2026-10-13"][0]
@@ -302,14 +303,14 @@ def test_card_does_not_call_unseen_evening_items_unrelated(hn):
     assert "무관하다고 본 1건" in hn._card(s)
 
 
-def test_verdict_names_the_morning_analysis_kind(hn):
+def test_verdict_names_the_preserved_analysis_kind(hn):
     """L1 — 실패 줄이 보관 정리의 까닭을 갈라 적는다."""
     def st(k, kind):
         return {"key": k, "name": k, "status": "failed", "reason": "r", "items": [{"n": 1}],
                 "prev_pc": {"kind": kind}}
     rec = {"date": "2026-10-12", "stocks": [st("A", "topup"), st("B", "requeue")], "sources": {}}
     _, line = hn.status_verdict([rec], _t("2026-10-12T12:00"), {"last_tick": "2026-10-12T12:00:00+09:00"})
-    assert "그중 1종목은 옛 기준 정리 · 1종목은 아침 정리 표시" in line
+    assert "그중 1종목은 옛 기준 정리 · 1종목은 저녁 보강 전 정리 표시" in line
 
 
 def test_body_reload_failure_leaves_the_stock_queued(hn):
@@ -333,3 +334,101 @@ def test_body_reload_failure_leaves_the_stock_queued(hn):
               fetch=lambda s: ([pm], "naver", ""), body=body, pace=0, us_etf=set(), ko=lambda c: "")
     s = rec["stocks"][0]
     assert s["status"] == "pending" and len(s["items"]) == 2 and s["prev_pc"]["max_n"] == 1
+
+
+# ── 델타 리뷰 반영(2026-10-19) ───────────────────────────────────────────────
+def test_a_stock_failing_twice_still_reopens_from_where_it_first_missed(hn, portfolio):
+    """아침에 못 받고 저녁에도 못 받은 종목 — `miss` 가 이어져 다음 날 아침에 첫 구간부터 연다(한 번만 넘기면 사라진다)."""
+    portfolio["m"] = _model(*[_h(f"종목{i}", f"00000{i}", "KR") for i in range(1, 6)])
+    old = _it("종목1 전날 낮 소식", "2026-10-11T12:00:00+09:00", link="https://p/old")
+    box = {"fail": True}
+
+    def f(stock):
+        if box["fail"] and stock["key"] == "KR:000001":
+            return [], "", "HTTP 503"
+        return ([old] if stock["key"] == "KR:000001" else []), "naver", ""
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    r1 = hn.load_records()[0]
+    assert r1["window"]["miss"] == {"KR:000001": "2026-10-11T07:15:00+09:00"}
+    hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    assert hn.load_records()[0]["window"]["miss"] == {"KR:000001": "2026-10-11T07:15:00+09:00"}   # 그대로 이어진다
+    box["fail"] = False
+    hn.tick(_t("2026-10-13T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    nxt = [r for r in hn.load_records() if r["date"] == "2026-10-13"][0]
+    one = [s for s in nxt["stocks"] if s["key"] == "KR:000001"][0]
+    assert [it["title"] for it in one["items"]] == ["종목1 전날 낮 소식"] and "miss" not in nxt["window"]
+
+
+def test_topup_success_clears_the_miss(hn, portfolio):
+    """아침에 못 받은 종목을 저녁 보강이 놓친 구간(전날 07:15~)부터 연다 — 저녁 창(01:15~) 밖 기사도 모은다."""
+    portfolio["m"] = _model(*[_h(f"종목{i}", f"00000{i}", "KR") for i in range(1, 6)])
+    noon = _it("종목1 낮 소식", "2026-10-11T20:00:00+09:00", link="https://p/noon")
+    box = {"fail": True}
+
+    def f(stock):
+        if box["fail"] and stock["key"] == "KR:000001":
+            return [], "", "HTTP 503"
+        return ([noon] if stock["key"] == "KR:000001" else []), "naver", ""
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    box["fail"] = False
+    hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=f, body=lambda l: "", pace=0)
+    rec = hn.load_records()[0]
+    assert "miss" not in rec["window"]
+    one = [s for s in rec["stocks"] if s["key"] == "KR:000001"][0]
+    assert [it["title"] for it in one["items"]] == ["종목1 낮 소식"]
+
+
+def test_zero_result_market_is_reported_but_not_retried(hn, portfolio):
+    """'시장 전부 0건' 은 늘 그런 시장이면 매일 세 번 다시 받게 된다 — 사실로만 적고 창은 옮긴다."""
+    portfolio["m"] = _model(*[_h(f"종목{i}", f"00000{i}", "KR") for i in range(1, 5)])
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm(_answer_all), fetch=lambda s: ([], "naver", ""), body=lambda l: "",
+            pace=0)
+    hn.tick(_t("2026-10-12T19:05"), llm=_llm(_answer_all), fetch=lambda s: ([], "naver", ""), body=lambda l: "",
+            pace=0)
+    rec = hn.load_records()[0]
+    t = rec["topups"][0]
+    assert t["outage"] and t["retry"] is False and rec["window"]["until"] == "2026-10-12T19:05:00+09:00"
+    assert not hn.topup_due(rec, _t("2026-10-12T21:00"))
+    _, line = hn.status_verdict([rec], _t("2026-10-12T21:00"), {"last_tick": "2026-10-12T21:00:00+09:00"})
+    assert "창을 옮기지 않음" not in line
+
+
+def test_a_late_opened_tab_still_gets_a_live_window(hn, ws_snaps, monkeypatch):
+    """종가가 기한(마감 + 수집 + 재생성)을 넘겨도 아직 안 왔으면 지난 기한을 싣지 않는다 — 지금 연 탭이 한 번도 안 묻는다."""
+    import bot.world_sectors as ws
+    monkeypatch.setattr(ws, "market_day_status", lambda mk, d, now, state=None: "pending")
+    ws_snaps("KR", "2026-10-08", [("KRX:000001", 1.0)])
+    c = hn.cum_lookup(_t("2026-10-07T18:00").timestamp(), _t("2026-10-12T20:00"))({"market": "KR", "ticker": "000001"})
+    assert c["live_d"] == "2026-10-12" and c["live_x"] == int(_t("2026-10-12T23:15").timestamp())
+
+
+def test_second_topup_labels_the_preserved_analysis_as_the_previous_one(hn):
+    rec = {"date": "2026-10-12", "window": {"since": "2026-10-11T07:15:00+09:00",
+                                            "until": "2026-10-12T19:05:00+09:00"},
+           "sources": {"telegram": {"matched": 0}},
+           "stocks": [{"key": "KR:005930", "market": "KR", "ticker": "005930", "name": "삼성전자", "value": 1.0,
+                       "items": [{"n": 2, "src": "naver", "title": "저녁1", "k": "https://p/e1",
+                                  "ts": "2026-10-12T15:00+09:00", "topup": "2026-10-12T19:05+09:00"},
+                                 {"n": 1, "src": "naver", "title": "아침", "k": "https://p/am",
+                                  "ts": "2026-10-12T06:00+09:00"}],
+                       "status": "ok", "tries": 0, "pros": [{"t": "p", "refs": [2]}], "cons": [], "relevant": [1, 2],
+                       "reason": ""}]}
+    e2 = _it("삼성전자 밤 공시", "2026-10-12T19:30:00+09:00", link="https://p/e2")
+    hn.top_up(rec, _t("2026-10-12T20:06"), records=[rec], model=_model(_h("삼성전자", "005930", "KR")),
+              fetch=lambda s: ([e2], "naver", ""), body=lambda l: "", pace=0, us_etf=set(), ko=lambda c: "")
+    s = rec["stocks"][0]
+    assert s["prev_pc"]["evening"] is True and s["prev_pc"]["max_n"] == 2
+    s.update(status="failed", reason="x")
+    html = hn._card(s)
+    assert "직전 정리를 보여 줍니다" in html and "호재 관점(직전 정리)" in html and "아침 정리" not in html
+
+
+def test_verdict_sums_all_topups_and_says_about_misses(hn):
+    rec = {"date": "2026-10-12", "stocks": [{"key": "A", "status": "ok", "items": [{"n": 1}]}], "sources": {},
+           "window": {"until": "2026-10-12T20:06:00+09:00", "miss": {"A": "2026-10-12T01:15:00+09:00"}},
+           "topups": [{"at": "2026-10-12T19:05+09:00", "items": 30, "stocks": 10, "outage": "x", "retry": True},
+                      {"at": "2026-10-12T20:06+09:00", "items": 2, "stocks": 1, "outage": "", "retry": False,
+                       "miss": 1}]}
+    _, line = hn.status_verdict([rec], _t("2026-10-12T21:00"), {"last_tick": "2026-10-12T21:00:00+09:00"})
+    assert "20:06 저녁 보강 새 항목 32건/11종목(2회)" in line
+    assert "원천을 못 받은 1종목은 다음 수집이 놓친 구간부터 다시 모음" in line

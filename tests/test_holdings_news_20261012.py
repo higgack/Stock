@@ -336,7 +336,9 @@ def test_collect_window_filters_dedupe_telegram_and_body(hn):
     model, recs, fetch, body, bodies = _collect_fixture(hn)
     rec = hn.collect(_t(_NOW), model=model, records=recs, fetch=fetch, body=body, pace=0)
     # 직전 창 끝(10-11 07:15)보다 6시간 앞에서 연다 — 늦게 닿은 입력을 놓치지 않게(겹친 건 지난 기록과 대조)
-    assert rec["window"] == {"since": "2026-10-11T01:15:00+09:00", "until": "2026-10-12T07:15:00+09:00"}
+    # 원천을 못 받은 카카오는 다음 수집이 이 창 시작에서 다시 연다(2026-10-19 독립 리뷰 H1 — #222 옛 단언에 `miss` 를 더함)
+    assert rec["window"] == {"since": "2026-10-11T01:15:00+09:00", "until": "2026-10-12T07:15:00+09:00",
+                             "miss": {"KR:035720": "2026-10-11T01:15:00+09:00"}}
     by = {s["key"]: s for s in rec["stocks"]}
     sam = by["KR:005930"]
     titles = [it["title"] for it in sam["items"]]
