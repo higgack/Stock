@@ -1,6 +1,7 @@
 """종목명 옆 `(+1.23%)` 실시간 등락률 — 국가별 3보드 종목 표(사용자 2026-10-13 "() 안에 등락률은 가능한
-실시간으로"). 보유종목 News 는 2026-10-14 부터 종목 시세를 묻지 않고(장종료가 기준 — 열어 둔 화면이 분당 수백 건을
-물었다) 원화 환율(`fx_lookup`)만 쓴다.
+실시간으로"). 보유종목 News 는 2026-10-14 에 종목 시세를 뺐다가(장종료가 기준 — 열어 둔 화면이 1분마다 묻던 부하)
+2026-10-19 부터 **10분 간격**(`lookup(fresh=600)`)으로 장 중·종가 수집 전 세션의 종목만 다시 묻는다(사용자 "10분에
+한번씩") — 원화 환율(`fx_lookup`)은 그대로 1시간.
 
 시세는 화면들이 이미 쓰는 실시간 경로 그대로다(`chart_data` 와 같은 갈래, #38): 국내 = 네이버 polling
 (`naver_quote`) · 대만 = TWSE 공식(`tw_quote`, 네이버 미지원) · 미·일·홍·중 = 네이버 해외(`world_quote`).
@@ -18,6 +19,7 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +78,33 @@ def fetch_one(t: str) -> dict | None:
         return None
     if pct != pct or abs(pct) > 1000:          # NaN·말도 안 되는 값은 싣지 않는다
         return None
-    return {"pct": round(pct, 2), "ts": q.get("ts"), "src": src}
+    out = {"pct": round(pct, 2), "ts": q.get("ts"), "src": src}
+    d = session_date(q.get("ts"))
+    if d:                                      # 그 등락이 어느 세션의 것인지(보유종목 News 가 맞춰 보고 이어 붙인다)
+        out["d"] = d
+    try:
+        px = float(q.get("price"))
+        if px > 0 and px == px:
+            out["price"] = px
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def session_date(ts) -> str | None:
+    """원천 체결시각 → 그 거래소 현지 세션 날짜 'YYYY-MM-DD'(못 읽으면 None — 추측하지 않는다). 형식: ISO(거래소 현지
+    오프셋을 단 '..+09:00') 또는 TWSE 'YYYYMMDD'. ⚠️ 해외(네이버 worldstock)의 오프셋이 거래소 현지인지는 재지
+    않았다(#165) — `chart_data._quote_date` 가 같은 가정으로 당일 봉을 붙이므로 둘이 이 함수 하나를 쓴다(#38). 틀리면
+    날짜가 어긋나 보유종목 News 는 이어 붙이지 않는다(안전한 쪽)."""
+    s = str(ts or "").strip()
+    if not s:
+        return None
+    try:
+        if len(s) == 8 and s.isdigit():               # TWSE '20260615'
+            return datetime.strptime(s, "%Y%m%d").date().isoformat()
+        return datetime.fromisoformat(s).date().isoformat()
+    except (TypeError, ValueError):
+        return None
 
 
 # ── 원화 환율 전일대비(보유종목 News 해외 원화 손익, 사용자 2026-10-14 "환율 반영 원화손익으로") ──────────
@@ -246,10 +274,22 @@ def _prune(now: float) -> None:
         _TABLE.pop(t, None)
 
 
-def lookup(tickers, now: float | None = None, *, kick: bool = True) -> dict:
-    """화면용 {q: {티커: {pct, ts, src, age}}, pending, capped} — 네트워크를 부르지 않는다."""
+FRESH_MAX_SEC = 3600    # 화면이 늦출 수 있는 상한(`fresh`)
+
+
+def lookup(tickers, now: float | None = None, *, kick: bool = True, fresh: float = FRESH_SEC) -> dict:
+    """화면용 {q: {티커: {pct, ts, src, age, d?, price?}}, pending, capped} — 네트워크를 부르지 않는다. `fresh` = 이보다
+    낡은 값만 다시 받는다(보유종목 News = 10분 — 사용자 2026-10-19 "10분에 한번씩", `FRESH_SEC`~`FRESH_MAX_SEC`). 표는
+    화면끼리 같이 쓰므로 탭이 몇 개든 한 티커는 그 간격에 한 번만 받는다."""
     global _RUNNING
     now = time.time() if now is None else now
+    try:
+        fresh = float(fresh)
+    except (TypeError, ValueError):
+        fresh = FRESH_SEC
+    if fresh != fresh:                 # NaN — 비교가 늘 거짓이라 그 티커가 영영 다시 안 받힌다
+        fresh = FRESH_SEC
+    fresh = min(max(fresh, FRESH_SEC), FRESH_MAX_SEC)
     ts, capped = normalize(tickers)
     q: dict[str, dict] = {}
     stale: list[str] = []
@@ -258,7 +298,7 @@ def lookup(tickers, now: float | None = None, *, kick: bool = True) -> dict:
         for t in ts:
             _ASKED[t] = now
             hit = _TABLE.get(t)
-            if hit is None or now - hit[0] >= FRESH_SEC:
+            if hit is None or now - hit[0] >= fresh:
                 stale.append(t)
             if hit and hit[1]:
                 q[t] = dict(hit[1], age=round(now - hit[0]))

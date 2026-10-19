@@ -696,17 +696,13 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
 
 
 def _quote_date(ts):
-    """라이브 시세 ts(ISO '..+09:00' 또는 'YYYYMMDD') → date. 실패 시 None."""
-    if not ts:
-        return None
+    """라이브 시세 ts(ISO '..+09:00' 또는 'YYYYMMDD') → date. 실패 시 None. 판정은 `live_pct.session_date`
+    한 곳(보유종목 News 가 같은 날짜로 실시간 등락을 이어 붙인다, #38)."""
     import datetime as _d
-    s = str(ts)
-    try:
-        if len(s) == 8 and s.isdigit():            # TWSE '20260615'
-            return _d.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
-        return _d.datetime.fromisoformat(s).date()  # ISO (거래소 현지 tz)
-    except Exception:
-        return None
+
+    from bot.live_pct import session_date
+    s = session_date(ts)
+    return _d.date.fromisoformat(s) if s else None
 
 
 def _merge_today_bar(ticker, close, vol, op, hi, lo):

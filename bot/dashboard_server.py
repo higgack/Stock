@@ -1888,14 +1888,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_live_pct(self) -> None:
-        """GET /api/live_pct?t=A,B,…[&fx=1] — `live_pct.lookup` 그대로(요청 경로는 메모리만 읽고, 낡은 티커는
+        """GET /api/live_pct?t=A,B,…[&fx=1][&fresh=초] — `live_pct.lookup` 그대로(요청 경로는 메모리만 읽고, 낡은 티커는
         뒤에서 받는다). `fx=1` 이면 원화 환율 전일대비(`fx_lookup`)도 싣는다. ₩0."""
         import urllib.parse as _uparse
         try:
             qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
             raw = ",".join(qs.get("t", [])).split(",")
             from bot.live_pct import fx_lookup, fx_pending, lookup
-            body = {"ok": True, **lookup(raw)}
+            fr = qs.get("fresh", [""])[0]
+            body = {"ok": True, **(lookup(raw, fresh=fr) if fr else lookup(raw))}   # fresh = 화면이 늦춘 간격(초)
             if qs.get("fx"):                       # 보유종목 News 해외 원화 손익 — 원화 환율 전일대비(메모리만)
                 body["fx"] = fx_lookup()
                 if not body["fx"]:                 # 빈 표 — 받는 중(재시작 직후)인지 못 받은 것인지 화면이 가르게
