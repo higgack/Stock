@@ -79,7 +79,7 @@ def fetch_one(t: str) -> dict | None:
     if pct != pct or abs(pct) > 1000:          # NaN·말도 안 되는 값은 싣지 않는다
         return None
     out = {"pct": round(pct, 2), "ts": q.get("ts"), "src": src}
-    d = session_date(q.get("ts"))
+    d = session_date(q.get("ts"), m)
     if d:                                      # 그 등락이 어느 세션의 것인지(보유종목 News 가 맞춰 보고 이어 붙인다)
         out["d"] = d
     try:
@@ -91,20 +91,49 @@ def fetch_one(t: str) -> dict | None:
     return out
 
 
-def session_date(ts) -> str | None:
-    """원천 체결시각 → 그 거래소 현지 세션 날짜 'YYYY-MM-DD'(못 읽으면 None — 추측하지 않는다). 형식: ISO(거래소 현지
-    오프셋을 단 '..+09:00') 또는 TWSE 'YYYYMMDD'. ⚠️ 해외(네이버 worldstock)의 오프셋이 거래소 현지인지는 재지
-    않았다(#165) — `chart_data._quote_date` 가 같은 가정으로 당일 봉을 붙이므로 둘이 이 함수 하나를 쓴다(#38). 틀리면
-    날짜가 어긋나 보유종목 News 는 이어 붙이지 않는다(안전한 쪽)."""
+# 시장별 거래소 시간대와 '이 시각이면 거래소가 열려 있거나 막 닫힌 때' 창(현지 시, 열기 1시간 전 ~ 닫고 5시간 후 —
+# 미국 시간외까지 덮는다). 오프셋을 믿을 수 없을 때 두 해석 중 어느 쪽이 거래 시간대에 드는지 가르는 데만 쓴다.
+_EXCH = {"US": ("America/New_York", 8.5, 21.0), "JP": ("Asia/Tokyo", 8.0, 20.5), "HK": ("Asia/Hong_Kong", 8.5, 21.0),
+         "CN_A": ("Asia/Shanghai", 8.5, 20.0), "TW": ("Asia/Taipei", 8.0, 18.5), "KR": ("Asia/Seoul", 7.0, 21.0)}
+_SEEN_FMT: set = set()           # 시장별로 원문 표본을 한 번만 로그에 남긴다(오프셋이 현지인지 운영에서 재기 위해, #165)
+
+
+def _in_window(dt, market: str) -> bool:
+    _, lo, hi = _EXCH[market]
+    h = dt.hour + dt.minute / 60
+    return lo <= h <= hi and dt.weekday() < 5
+
+
+def session_date(ts, market: str | None = None) -> str | None:
+    """원천 체결시각 → 그 거래소 현지 세션 날짜 'YYYY-MM-DD'(못 읽으면 None — 추측하지 않는다). 형식: ISO 또는 TWSE
+    'YYYYMMDD'. `market` 을 주면(해외 포함) 오프셋이 **거래소 현지인지 재지 못한 것**(#165)을 두 해석으로 가른다 —
+    (a) 오프셋을 현지 시각으로 본 날짜 (b) 실제 시각을 거래소 시간대로 옮긴 날짜. 둘이 같으면 그 날짜, 다르면
+    **현지 시각이 거래 시간대에 드는 쪽**, 둘 다/둘 다 아니면 None(틀린 날짜를 이어 붙이지 않는 안전한 쪽).
+    시간대 없는 값은 거래소 현지로 본다. `market` 이 없으면 오프셋이 곧 현지(종전 동작 — 국내·대만)."""
     s = str(ts or "").strip()
     if not s:
         return None
     try:
         if len(s) == 8 and s.isdigit():               # TWSE '20260615'
             return datetime.strptime(s, "%Y%m%d").date().isoformat()
-        return datetime.fromisoformat(s).date().isoformat()
+        dt = datetime.fromisoformat(s)
     except (TypeError, ValueError):
         return None
+    if market not in _EXCH or dt.tzinfo is None:
+        return dt.date().isoformat()
+    if market not in _SEEN_FMT:
+        _SEEN_FMT.add(market)
+        log.info("live_pct ts 표본 %s: %r", market, s)
+    from zoneinfo import ZoneInfo
+    try:
+        conv = dt.astimezone(ZoneInfo(_EXCH[market][0]))
+    except Exception:                                  # tzdata 없음 — 추측하지 않는다
+        return None
+    a, b = dt.date().isoformat(), conv.date().isoformat()
+    if a == b:
+        return a
+    ia, ib = _in_window(dt.replace(tzinfo=None), market), _in_window(conv.replace(tzinfo=None), market)
+    return (a if ia else b) if ia != ib else None
 
 
 # ── 원화 환율 전일대비(보유종목 News 해외 원화 손익, 사용자 2026-10-14 "환율 반영 원화손익으로") ──────────

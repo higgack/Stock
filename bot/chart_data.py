@@ -695,13 +695,13 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
         return None
 
 
-def _quote_date(ts):
+def _quote_date(ts, market=None):
     """라이브 시세 ts(ISO '..+09:00' 또는 'YYYYMMDD') → date. 실패 시 None. 판정은 `live_pct.session_date`
     한 곳(보유종목 News 가 같은 날짜로 실시간 등락을 이어 붙인다, #38)."""
     import datetime as _d
 
     from bot.live_pct import session_date
-    s = session_date(ts)
+    s = session_date(ts, market)
     return _d.date.fromisoformat(s) if s else None
 
 
@@ -732,7 +732,7 @@ def _merge_today_bar(ticker, close, vol, op, hi, lo):
         if not c or close is None or len(close) == 0:
             return close, vol, op, hi, lo
         import pandas as pd
-        qdate = _quote_date(o.get("ts"))
+        qdate = _quote_date(o.get("ts"), mkt)
         last_date = close.index[-1].date()
         if qdate is None:                  # ts 없으면 마지막 봉을 당일로 간주(교체만)
             qdate = last_date

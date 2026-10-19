@@ -282,3 +282,31 @@ def test_js_marks_a_market_live_only_when_all_its_targets_got_live(hn):
     q["000660"] = {"pct": 1.0, "d": "2026-10-12", "age": 1, "src": "네이버"}
     o = _run(hn, [_KR, b], {"q": q, "pending": 0}, asof=[{"m": "KR", "n": "한국", "d": "10-08"}])
     assert o["asofv"].startswith("한국 10-12 실시간 · 실시간 ")
+
+
+# ── 해외 체결시각의 오프셋을 재지 못했다(#165) — 두 해석을 거래 시간대로 가른다 ──────────────────────
+@pytest.mark.parametrize("ts,mkt,want", [
+    ("2026-10-16T16:00:00-04:00", "US", "2026-10-16"),      # 오프셋이 현지(ET)
+    ("2026-10-17T05:00:00+09:00", "US", "2026-10-16"),      # KST 표기 — 실제로는 ET 금 16:00 (오프셋을 믿으면 토요일)
+    ("2026-10-16T20:00:00Z", "US", "2026-10-16"),           # UTC
+    ("2026-10-16T16:00:00+09:00", "US", "2026-10-16"),      # 현지 벽시계에 KST 오프셋을 붙인 경우
+    ("2026-10-16T15:00:00+09:00", "JP", "2026-10-16"),
+    ("2026-10-16T07:00:00Z", "HK", "2026-10-16"),           # 홍콩 15:00
+    ("2026-10-16T10:00:00", "HK", "2026-10-16"),            # 시간대 없음 = 거래소 현지
+    ("2026-10-16T12:00:00+00:00", "CN_A", "2026-10-16"),    # 상하이 20:00 → 시간외 창 끝, a=b 라 그대로
+])
+def test_overseas_session_date_does_not_trust_the_offset(ts, mkt, want):
+    assert lp.session_date(ts, mkt) == want
+
+
+def test_overseas_session_date_refuses_when_both_readings_are_off_hours():
+    # 오프셋 해석(10-17 토 03:00)도 변환 해석(10-16 금 14:00 ET)도... 후자는 거래 시간대라 채택 — 반대로 둘 다 밖이면 None
+    assert lp.session_date("2026-10-18T03:00:00+09:00", "US") is None            # 일요일 03:00 / 토요일 14:00 ET — 둘 다 닫힘
+    assert lp.session_date("2026-10-16T03:00:00+09:00", "US") == "2026-10-15"   # ET 목 14:00 — 변환 쪽만 거래 시간
+    assert lp.session_date("2026-10-16T16:00:00-04:00") == "2026-10-16"          # 시장 없음 = 종전(오프셋이 현지)
+
+
+def test_chart_data_passes_the_market_to_session_date():
+    import bot.chart_data as cd
+    from datetime import date
+    assert cd._quote_date("2026-10-17T05:00:00+09:00", "US") == date(2026, 10, 16)
