@@ -243,3 +243,11 @@ def test_js_price_format_matches_python(hn, n, cu, want):
     r = subprocess.run([node, "-e", "var RESP={};" + src], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip().splitlines()[-1] == want
+
+
+def test_lookup_nan_fresh_falls_back_to_the_default(table):
+    """`fresh=nan` 은 비교가 늘 거짓이라 그 티커가 영영 다시 안 받힌다 — 기본 간격으로 읽는다."""
+    now = time.time()
+    table["005930"] = (now - 120, {"pct": 1.0})
+    assert lp.lookup(["005930"], now, kick=False, fresh="nan")["pending"] == 1
+    assert lp.lookup(["005930"], now, kick=False, fresh=float("nan"))["pending"] == 1

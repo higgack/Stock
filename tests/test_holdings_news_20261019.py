@@ -171,3 +171,41 @@ def test_topup_on_a_stock_with_no_morning_news_just_queues_it(hn):
     assert ent["items"] == 1 and s["status"] == "pending" and s["reason"] == "" and "prev_pc" not in s
     assert [it["n"] for it in s["items"]] == [1]
     assert json.dumps(rec, ensure_ascii=False)                                # 저장 가능한 모양
+
+
+def test_topup_on_a_still_pending_stock_keeps_its_morning_bodies(hn, portfolio):
+    """아침 정리가 아직 대기 중인 종목에 저녁 항목이 붙어도 아침 본문(사이드카)을 잃지 않는다."""
+    am = _it("삼성전자 아침 소식", "2026-10-12T06:00:00+09:00", link="https://n.news.naver.com/a/1")
+    pm = _it("삼성전자 오후 공시", "2026-10-12T15:00:00+09:00", link="https://n.news.naver.com/a/2")
+    portfolio["m"] = _model(_h("삼성전자", "005930", "KR"))
+    box = {"v": [am]}
+    f = lambda s: (box["v"], "naver", "")                               # noqa: E731
+    body = lambda l: "본문 " + l[-1] * 100                                # noqa: E731
+    hn.tick(_t("2026-10-12T07:15"), llm=_llm("", why="503", kind="transient"), fetch=f, body=body, pace=0)
+    side = json.loads(hn._bodies_path("2026-10-12").read_text(encoding="utf-8"))["KR:005930"]
+    assert len(side) == 1
+    box["v"] = [pm, am]
+    llm = _llm("", why="503", kind="transient")
+    hn.tick(_t("2026-10-12T19:05"), llm=llm, fetch=f, body=body, pace=0)
+    side = json.loads(hn._bodies_path("2026-10-12").read_text(encoding="utf-8"))["KR:005930"]
+    assert len(side) == 2                                                    # 아침 본문 + 저녁 본문
+    assert "본문 1111" in llm.calls[0] and "본문 2222" in llm.calls[0]
+
+
+def test_topup_on_a_pending_stock_only_adds_items(hn):
+    """아직 정리 전인 종목 — 항목만 늘어난다. 시도 수·사유를 지우면 실패 상한(`MAX_ANALYZE_TRIES`)이 저녁마다 다시
+    시작되고, 일시 오류 사유가 '저녁 수집' 으로 바뀌어 거짓 사유가 된다(#82)."""
+    rec = {"date": "2026-10-12", "window": {"since": "2026-10-11T07:15:00+09:00",
+                                            "until": "2026-10-12T07:15:00+09:00"},
+           "sources": {"telegram": {"matched": 0}},
+           "stocks": [{"key": "KR:005930", "market": "KR", "ticker": "005930", "name": "삼성전자", "value": 1.0,
+                       "items": [{"n": 1, "src": "naver", "title": "아침", "k": "https://p/am",
+                                  "ts": "2026-10-12T06:00+09:00"}],
+                       "status": "pending", "tries": 2, "pros": [], "cons": [], "relevant": None,
+                       "reason": "AI 응답을 못 읽음"}]}
+    pm = _it("삼성전자 오후 공시", "2026-10-12T15:00:00+09:00", link="https://p/pm")
+    hn.top_up(rec, _t("2026-10-12T19:05"), records=[rec], model=_model(_h("삼성전자", "005930", "KR")),
+              fetch=lambda s: ([pm], "naver", ""), body=lambda l: "", pace=0, us_etf=set(), ko=lambda c: "")
+    s = rec["stocks"][0]
+    assert s["status"] == "pending" and s["tries"] == 2 and s["reason"] == "AI 응답을 못 읽음"
+    assert [it["n"] for it in s["items"]] == [2, 1] and "prev_pc" not in s

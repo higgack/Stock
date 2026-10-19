@@ -284,9 +284,12 @@ def lookup(tickers, now: float | None = None, *, kick: bool = True, fresh: float
     global _RUNNING
     now = time.time() if now is None else now
     try:
-        fresh = min(max(float(fresh), FRESH_SEC), FRESH_MAX_SEC)
+        fresh = float(fresh)
     except (TypeError, ValueError):
         fresh = FRESH_SEC
+    if fresh != fresh:                 # NaN — 비교가 늘 거짓이라 그 티커가 영영 다시 안 받힌다
+        fresh = FRESH_SEC
+    fresh = min(max(fresh, FRESH_SEC), FRESH_MAX_SEC)
     ts, capped = normalize(tickers)
     q: dict[str, dict] = {}
     stale: list[str] = []

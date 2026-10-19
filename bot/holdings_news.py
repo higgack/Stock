@@ -1765,6 +1765,9 @@ def top_up(rec: dict, now: datetime | None = None, *, records: list[dict] | None
             continue
         if beat:
             beat()
+        if s.get("status") == "pending":
+            # 아직 정리 전 — 그 본문은 사이드카에만 있다. 메모리에 안 붙이면 저장이 새 항목 본문만 남기고 덮는다
+            _attach_bodies(rec, [s])
         base_n = max((int(it.get("n") or 0) for it in s.get("items") or []), default=0)
         for i, it in enumerate(new, 1):
             it["n"] = base_n + i
