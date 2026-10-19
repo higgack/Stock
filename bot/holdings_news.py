@@ -756,11 +756,12 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
         elif why:
             src["fail"] += 1
             src["fail_reasons"][why] = src["fail_reasons"].get(why, 0) + 1
-        dropped = 0
+        dropped = n_out = n_seen = 0          # 새 뉴스가 0건일 때 왜인지(화면 '새 뉴스 없음' 줄이 말한다)
         raw_n = len(raw or [])
         since_k = since_by_key.get(st["key"], since)
         for it in raw or []:
             if not _in_window(it, since_k, until):
+                n_out += 1
                 continue
             if used in ("naver", "google") and st["market"] == "KR":
                 # 이름 검색이라 다른 회사 기사가 섞인다 — 제목·요약에 그 이름이 **낱말로** 있어야 한다.
@@ -778,8 +779,10 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
             item["k"] = _item_key(item)
             if (st["key"], item["k"]) in seen or any(_norm_title(x["title"]) == _norm_title(item["title"])
                                                      for x in items):
+                n_seen += 1
                 continue
             if _norm_title(item["title"]) and (st["key"], "t:" + _norm_title(item["title"])) in seen:
+                n_seen += 1
                 continue                                        # 앞선 기록에 같은 제목 — 링크만 다른 재배포
             items.append(item)
             if len(items) >= MAX_NEWS_PER_STOCK:
@@ -828,6 +831,8 @@ def collect(now: datetime | None = None, *, model: dict | None = None,
         out_stocks.append({**{k: st[k] for k in ("key", "market", "ticker", "name", "value")},
                            **({"ko": st["ko"]} if st.get("ko") else {}),
                            "items": items, "via": used or "", "via_why": why, "raw_n": raw_n,
+                           **({"skip": {k: v for k, v in (("win", n_out), ("seen", n_seen), ("name", dropped)) if v}}
+                              if n_out or n_seen or dropped else {}),
                            "status": "pending" if items else "empty", "tries": 0,
                            "pros": [], "cons": [], "relevant": None, "reason": ""})
     return {"date": date, "window": {"since": since.isoformat(timespec="seconds"),
@@ -3778,6 +3783,25 @@ def _day_summary(rec: dict) -> str:
             f"<span class='hn-meta'>{_h.escape(_day_meta(rec))}</span></summary>")
 
 
+QUIET_WHY_N = 10      # '새 뉴스 없음' 줄에서 사유를 붙이는 앞쪽(보유 큰 순) 종목 수
+
+
+def quiet_why(s: dict) -> str:
+    """새 뉴스가 0건인 종목의 사유 — 원천 실패 / 검색 0건 / 받은 기사가 창 밖·앞서 실림·이름 불일치로 빠짐.
+    갈래를 적지 않은 옛 기록은 받은 건수만 말한다(지어내지 않는다, #165). 못 읽으면 ''."""
+    if not s.get("via") and s.get("via_why"):
+        return "원천 실패"
+    n = s.get("raw_n")
+    if not isinstance(n, int):
+        return ""
+    if n == 0:
+        return "검색 결과 0건"
+    sk = s.get("skip") or {}
+    parts = [f"{lab} {sk[k]}" for k, lab in (("win", "창 밖"), ("seen", "앞서 실림"), ("name", "이름 불일치"))
+             if sk.get(k)]
+    return f"검색 {n}건: " + " · ".join(parts) if parts else f"검색 {n}건 — 이 창의 새 기사 없음"
+
+
 def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, latest: bool = False,
               values: dict | None = None, fx: dict | None = None, pnl: dict | None = None) -> str:
     """하루 칸의 본문(카드 · 새 뉴스 없음 · 뺀 상품) — 최신일은 페이지에, 지난 날은 조각 파일에 같은
@@ -3798,7 +3822,10 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, la
                     for prev in [(_cum_prev(pnl, s) if pnl and latest else None) or look(s)])
     quiet_html = ""
     if quiet:
-        names = ", ".join(_h.escape(s["name"]) for s in quiet[:60])
+        # 보유 큰 순(수집 순서 그대로) · 앞 QUIET_WHY_N 종목은 왜 없는지 — 카드 위에 둔다(맨 아래면 카드 수백 장 뒤라
+        # 큰 보유 종목이 화면에서 사라진 것처럼 보였다, 사용자 2026-10-20 "한솔케미칼은 왜 안 나오지?")
+        names = ", ".join(_h.escape(s["name"]) + (f"({_h.escape(w)})" if i < QUIET_WHY_N and (w := quiet_why(s)) else "")
+                          for i, s in enumerate(quiet[:60]))
         more = f" 외 {len(quiet) - 60}종목" if len(quiet) > 60 else ""
         quiet_html = (f"<div class='hn-quiet'>새 뉴스 없음 {len(quiet)}종목: {names}{more}</div>")
     u = rec.get("universe") or {}
@@ -3812,7 +3839,7 @@ def _day_body(rec: dict, *, final: bool = False, now: datetime | None = None, la
                  "</div>") if skip else ""
     body = (f"<div class='hn-grid'>{cards}</div>" if cards else
             "<div class='hn-quiet'>이 창에 새 뉴스가 있는 보유 종목이 없습니다.</div>")
-    return f"{body}{quiet_html}{skip_html}"
+    return f"{quiet_html}{body}{skip_html}"
 
 
 def _day_html(rec: dict, *, open_: bool, final: bool = False, now: datetime | None = None,
@@ -4073,6 +4100,9 @@ def render_page(records: list[dict], state: dict | None = None,
 합입니다(등락을 모르는 종목은 금액에도 분모에도 넣지 않습니다 — 칸 아래 'n/N종목' 이 그 수를 말합니다) · 티커를 못 찾아 뺀 상품은 요약 아래 줄이 이름과 금액을 적습니다). 지난 날 카드의 괄호와 지금 자산 기록에
 없는 종목(판 종목)의 괄호는 그날 기준 전날 하루 등락 그대로이고 현지통화 등락만입니다(마우스를 올리면 무엇의 값인지와
 기준 시각).<br>
+<b>새 뉴스 없음</b> — 카드는 그 창에 새 뉴스가 붙은 종목만 그립니다. 뉴스가 없는 종목은 카드 위 '새 뉴스 없음' 줄에
+보유 큰 순으로 이름이 실리고, 앞 {QUIET_WHY_N}종목은 왜 없는지(원천 실패 · 검색 결과 0건 · 받은 기사가 창 밖 / 앞선
+기록에 이미 실림 / 제목·요약에 이름 없음)를 괄호에 적습니다.<br>
 <b>낮에 산 종목</b> — 종목 목록은 매일 아침 수집 때 정해지지만, 그 뒤 자산 기록이 바뀌어 새로 생긴 보유는
 {TICK_MIN}분 주기마다 그 종목만 같은 창·같은 규칙으로 모아 오늘 칸에 붙입니다(카드에 '자산 기록 변경 뒤 HH:MM 추가'
 · 한 주기 {MAX_ADD_PER_TICK}종목까지). 판 종목의 오늘 카드는 그대로 남습니다(그날 아침 들고 있던 종목의 소식이라).<br>
