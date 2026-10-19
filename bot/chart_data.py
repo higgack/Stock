@@ -734,6 +734,8 @@ def _merge_today_bar(ticker, close, vol, op, hi, lo):
         import pandas as pd
         qdate = _quote_date(o.get("ts"), mkt)
         last_date = close.index[-1].date()
+        if qdate is None and str(o.get("ts") or "").strip():
+            return close, vol, op, hi, lo  # 체결시각은 있는데 세션 날짜를 못 가렸다 — 엉뚱한 봉을 덮지 않는다(리뷰 2026-10-19)
         if qdate is None:                  # ts 없으면 마지막 봉을 당일로 간주(교체만)
             qdate = last_date
         # 글리치 가드 — 당일 종가가 직전 종가 대비 비현실이면 원본 유지.

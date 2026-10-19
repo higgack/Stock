@@ -310,3 +310,29 @@ def test_chart_data_passes_the_market_to_session_date():
     import bot.chart_data as cd
     from datetime import date
     assert cd._quote_date("2026-10-17T05:00:00+09:00", "US") == date(2026, 10, 16)
+
+
+@pytest.mark.parametrize("ts,want", [
+    ("2026-10-16T09:45:00+09:00", "2026-10-16"),   # ET 개장 직후 숫자에 KST 표기 — 넓은 창이면 두 해석이 겹쳐 None 이었다
+    ("2026-12-16T10:30:00+09:00", "2026-12-16"),   # 겨울(14시간 차)
+    ("2026-10-17T09:00:00+09:00", "2026-10-16"),   # 실제 시각(ET 금 20:00 시간외)
+])
+def test_us_open_and_after_hours_are_not_left_ambiguous(ts, want):
+    assert lp.session_date(ts, "US") == want
+
+
+def test_chart_does_not_overwrite_a_bar_when_the_session_date_is_unknown(monkeypatch):
+    import pandas as pd
+
+    import bot.chart_data as cd
+    import bot.world_quote as wq
+    idx = pd.to_datetime(["2026-10-15", "2026-10-16"])
+    close = pd.Series([100.0, 101.0], index=idx)
+    monkeypatch.setattr(wq, "fetch_world_quote", lambda t: {"price": 150.0, "close": 150.0,
+                                                            "ts": "2026-10-18T03:00:00+09:00"})
+    out = cd._merge_today_bar("AAPL", close, close * 0 + 1, close, close, close)
+    assert list(out[0]) == [100.0, 101.0]                                  # 못 가린 날짜로 마지막 봉을 덮지 않는다
+    monkeypatch.setattr(wq, "fetch_world_quote", lambda t: {"price": 102.0, "close": 102.0,
+                                                            "ts": "2026-10-17T05:00:00+09:00"})
+    out = cd._merge_today_bar("AAPL", close, close * 0 + 1, close, close, close)
+    assert float(out[0].iloc[-1]) == 102.0 and len(out[0]) == 2            # 10-16 봉을 교체(반대 증거)

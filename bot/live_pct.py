@@ -91,24 +91,29 @@ def fetch_one(t: str) -> dict | None:
     return out
 
 
-# 시장별 거래소 시간대와 '이 시각이면 거래소가 열려 있거나 막 닫힌 때' 창(현지 시, 열기 1시간 전 ~ 닫고 5시간 후 —
-# 미국 시간외까지 덮는다). 오프셋을 믿을 수 없을 때 두 해석 중 어느 쪽이 거래 시간대에 드는지 가르는 데만 쓴다.
-_EXCH = {"US": ("America/New_York", 8.5, 21.0), "JP": ("Asia/Tokyo", 8.0, 20.5), "HK": ("Asia/Hong_Kong", 8.5, 21.0),
-         "CN_A": ("Asia/Shanghai", 8.5, 20.0), "TW": ("Asia/Taipei", 8.0, 18.5), "KR": ("Asia/Seoul", 7.0, 21.0)}
+# 시장별 거래소 시간대와 정규장(현지 시, 점심 휴장은 무시). 오프셋을 믿을 수 없을 때 두 해석 중 어느 쪽의 현지 시각이
+# 정규장에 더 가까운지로 가르는 데만 쓴다 — '창 안이냐' 로 가르면 창이 넓을수록 두 해석이 함께 들어가 갈리지 않는다
+# (미국은 KST 와 13~14시간 차라 넓은 창이 매일 겹쳤다, 리뷰 2026-10-19).
+_EXCH = {"US": ("America/New_York", 9.5, 16.0), "JP": ("Asia/Tokyo", 9.0, 15.5), "HK": ("Asia/Hong_Kong", 9.5, 16.0),
+         "CN_A": ("Asia/Shanghai", 9.5, 15.0), "TW": ("Asia/Taipei", 9.0, 13.5), "KR": ("Asia/Seoul", 9.0, 15.5)}
 _SEEN_FMT: set = set()           # 시장별로 원문 표본을 한 번만 로그에 남긴다(오프셋이 현지인지 운영에서 재기 위해, #165)
+_TIE_H = 1.0                     # 두 해석의 거리 차가 이보다 작으면 못 가른다
 
 
-def _in_window(dt, market: str) -> bool:
+def _session_gap(dt, market: str) -> float:
+    """현지 벽시계 `dt`(naive) 에서 그날 정규장까지의 시간 거리(장 중 0). 주말이면 큰 값."""
+    if dt.weekday() >= 5:
+        return 24.0
     _, lo, hi = _EXCH[market]
     h = dt.hour + dt.minute / 60
-    return lo <= h <= hi and dt.weekday() < 5
+    return max(lo - h, 0.0, h - hi)
 
 
 def session_date(ts, market: str | None = None) -> str | None:
     """원천 체결시각 → 그 거래소 현지 세션 날짜 'YYYY-MM-DD'(못 읽으면 None — 추측하지 않는다). 형식: ISO 또는 TWSE
     'YYYYMMDD'. `market` 을 주면(해외 포함) 오프셋이 **거래소 현지인지 재지 못한 것**(#165)을 두 해석으로 가른다 —
     (a) 오프셋을 현지 시각으로 본 날짜 (b) 실제 시각을 거래소 시간대로 옮긴 날짜. 둘이 같으면 그 날짜, 다르면
-    **현지 시각이 거래 시간대에 드는 쪽**, 둘 다/둘 다 아니면 None(틀린 날짜를 이어 붙이지 않는 안전한 쪽).
+    **현지 시각이 정규장에 더 가까운 쪽**, 못 가르면(거리 차 1시간 미만) None(틀린 날짜를 이어 붙이지 않는 안전한 쪽).
     시간대 없는 값은 거래소 현지로 본다. `market` 이 없으면 오프셋이 곧 현지(종전 동작 — 국내·대만)."""
     s = str(ts or "").strip()
     if not s:
@@ -132,8 +137,10 @@ def session_date(ts, market: str | None = None) -> str | None:
     a, b = dt.date().isoformat(), conv.date().isoformat()
     if a == b:
         return a
-    ia, ib = _in_window(dt.replace(tzinfo=None), market), _in_window(conv.replace(tzinfo=None), market)
-    return (a if ia else b) if ia != ib else None
+    ga, gb = _session_gap(dt.replace(tzinfo=None), market), _session_gap(conv.replace(tzinfo=None), market)
+    if abs(ga - gb) < _TIE_H:
+        return None
+    return a if ga < gb else b
 
 
 # ── 원화 환율 전일대비(보유종목 News 해외 원화 손익, 사용자 2026-10-14 "환율 반영 원화손익으로") ──────────
