@@ -2141,6 +2141,7 @@ _HN_CSS = """
 .hn-nm{font-size:14.5px;font-weight:700;color:var(--accent);text-decoration:none}
 .hn-chg{font-size:12.5px;font-weight:600;color:var(--muted);margin-left:2px}
 .hn-chg.hn-up{color:var(--hn-up)}.hn-chg.hn-dn{color:var(--hn-dn)}  /* 한국 관례: 상승 빨강 · 하락 파랑(심리지도와 같다) */
+.hn-chg span{color:var(--muted)}.hn-chg .hn-up{color:var(--hn-up)}.hn-chg .hn-dn{color:var(--hn-dn)}  /* 괄호 안 마지막 세션 하루 등락은 제 색 */
 .hn-nm:hover{text-decoration:underline}
 .hn-tk{font-size:12px;color:var(--muted)}
 .hn-ind{font-weight:600}
@@ -2267,7 +2268,15 @@ _PNL_JS = r"""
       // 가격 — 실시간을 붙였으면 그 현재가, 아니면 서버가 통화 표기까지 만든 종가
       var px=(L&&L.price)?fmtPx(L.price,e.getAttribute('data-cu')||'KRW',e.getAttribute('data-sym')||''):
         (e.getAttribute('data-px')||'');
-      e.textContent='('+(px?px+' · ':'')+(pp>0?'+':'')+pp.toFixed(2)+'% · '+(c&&k.fx!==null?'원화 ':'')+amt(v*k.pct/100)+')';
+      // 등락 — 파이썬 `_chg_html` 과 같은 규칙: 누적에 '<기준 세션> 종가 대비', 누적이 두 세션 이상이면 마지막 세션 하루
+      // 등락을 날짜와 함께 앞에(실시간을 붙였으면 그 세션의 실시간 등락 · 세션 하나 더)
+      var bse=e.getAttribute('data-bse')||'', ns=(+e.getAttribute('data-ns')||0)+(L?1:0),
+          d1=L?L.pct:parseFloat(e.getAttribute('data-d1')), d1d=L?L.ld:(e.getAttribute('data-d1d')||'');
+      function pc(x){return (x>0?'+':'')+x.toFixed(2)+'%';}
+      e.textContent='('+(px?px+' · ':'');
+      if(ns>=2&&isFinite(d1)&&d1d){var s1=document.createElement('span'); s1.className=d1>0?'hn-up':d1<0?'hn-dn':'';
+        s1.textContent=d1d.slice(5)+' '+pc(d1); e.appendChild(s1); e.appendChild(document.createTextNode(' · '));}
+      e.appendChild(document.createTextNode((bse?bse.slice(5)+' 종가 대비 ':'')+pc(pp)+' · '+(c&&k.fx!==null?'원화 ':'')+amt(v*k.pct/100)+')'));
       e.classList.toggle('hn-up',pp>0); e.classList.toggle('hn-dn',pp<0);
       var lt=L?(px+' = '+L.ld+' 실시간(정규장 · '+L.src+' · '+kst(L.at)+' KST 받음 · '+Math.round(pollSec/60)
         +'분마다) — 종가 누적 '+(p>0?'+':'')+p.toFixed(2)+'% × 그 세션 '+(L.pct>0?'+':'')+L.pct.toFixed(2)+'% · '):'';
@@ -3234,6 +3243,10 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
                "live_x": live_x,
                "hol": [d for d, tbl in days if tbl is None], "src": "tv", "need": None, "lag": lag,
                "nosnap": not snap, "why": "",
+               # 기준 무렵 종가 세션(거래소 현지 날짜) — 카드 괄호가 '그 종가 대비' 라고 기준을 박는다(사용자 2026-10-21
+               # "주가가 올랐는데 왜 마이너스지?" — 기준 없는 누적이 오늘 등락으로 읽혔다, #34). 기록 날짜(KST)로 적으면
+               # 해외·장중 기록에서 그 날 세션이 통째로 들어간 사실을 감춘다(독립 리뷰 — 10-20 02:46 KST 는 미국 10-19 장중)
+               "bse": bsess,
                # 실제로 등락을 반영한 세션 수 — 휴장 추정(등락 0)은 빼고 놓친 세션(Yahoo 종가 비가 덮는다)은 넣는다.
                # 요약 칸 이름이 '전일대비' 인지 'N세션' 인지를 이 값이 정한다(`pnl_span_head`, 사용자 2026-10-15)
                "sess": sum(1 for _, tbl in days if tbl is not None) + len(broken)}
@@ -3259,6 +3272,12 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
                 c = (pxs.get(pd_) or {}).get(key) if pd_ else None
                 if c is not None:
                     out["px"], out["px_d"] = c, pd_
+                # 마지막 실제 세션 하루의 등락(직전 종가 대비) — 누적과 나란히 싣는다(카드 '10-21 +2.14% · 10-20 기록 이후')
+                if pd_:
+                    t1 = dict(days).get(pd_)
+                    v1 = t1.get(key) if t1 else None
+                    if v1 is not None:
+                        out["d1"], out["d1_d"] = float(v1), pd_
                 return out
         # 하루치에 없는 종목(ETF·우선주 등) · 하루치를 놓친 세션이 있는 시장 · 하루치를 받지 않는 시장(홍콩) —
         # Yahoo 일봉 종가로 같은 asof 까지. 휴장 추정 세션엔 Yahoo 봉이 없으므로 그 앞 실제 세션까지(독립 리뷰 2026-10-14)
@@ -3275,6 +3294,14 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
         r, why = yahoo_ratio(ent, need)
         if r is not None:                # 종가 비를 셀 수 있었으면 그 끝 종가가 카드의 종가다
             out["px"], out["px_d"] = float(ent["bars"][to]), to
+            # 마지막 세션 하루의 등락 — 직전 봉이 바로 앞 **세션**이거나 그 뒤(휴장 추정이었지만 실제로 거래한 날)일 때만.
+            # 그보다 이르면 Yahoo 가 하루를 빠뜨린 것이라 두 세션 등락이 된다(#29 · 휴장 추정을 건너뛰면 같은 병, 독립 리뷰)
+            ss = sorted({d for d, tbl in days if tbl is not None} | {d for d, _ in broken})
+            i = ss.index(to)
+            pb = max((x for x in ent["bars"] if x < to), default=None)
+            b0 = ent["bars"].get(pb) if i > 0 and pb and pb >= ss[i - 1] else None
+            if isinstance(b0, (int, float)) and b0 > 0:
+                out["d1"], out["d1_d"] = (float(ent["bars"][to]) / b0 - 1) * 100, to
         if not snap:
             head = f"{_mk_name(market)} 시장은 TradingView 하루치를 받지 않음"
         elif broken:
@@ -3568,6 +3595,10 @@ def _prev_html(prev, value: float | None = None, *, ccy: str | None = None, fx: 
                   + (f"' data-c='{_h.escape(ccy)}" if ccy else "")
                   + (f"' data-fb='{fb}" if fb and ccy else "") + (f"' data-px='{_h.escape(pt)}" if pt else "")
                   + (f"' data-k='{_h.escape(key)}" if key else "")
+                  + (f"' data-bse='{_h.escape(str(d['bse']))}" if d.get("bse") else "")
+                  + f"' data-ns='{int(d.get('sess') or 0)}"
+                  + (f"' data-d1='{round(float(d['d1']), 6)}' data-d1d='{_h.escape(str(d['d1_d']))}"
+                     if d.get("d1") is not None and d.get("d1_d") else "")
                   + f"' data-cu='{_h.escape(cu)}' data-sym='{_h.escape(sym)}"
                   + f"' data-tip='{_h.escape(ptip + ' · ' + tip if pt else tip)}")
             if ccy:
@@ -3577,7 +3608,29 @@ def _prev_html(prev, value: float | None = None, *, ccy: str | None = None, fx: 
     if pt:
         tip = f"{ptip} · {tip}"
     return (f"<span class='hn-chg {cls}{js}' title='{_h.escape(tip)}'>"
-            f"({_h.escape(pt + ' · ') if pt else ''}{sign}{v:.2f}%{amt})</span>")
+            f"({_h.escape(pt + ' · ') if pt else ''}{_chg_html(v, d if latest else None)}{amt})</span>")
+
+
+def _chg_html(v: float, d: dict | None) -> str:
+    """카드 괄호의 등락 — 최신일 카드는 **기준을 박는다**(사용자 2026-10-21: 이오테크닉스가 오늘 +2.14% 인데 괄호가
+    -1.71% 라 "왜 마이너스지?" — 그 값은 10-20 새벽 기록(= 10-19 종가) 이후 두 세션 누적이었다, #34·#33).
+    누적에 '<기준 세션> 종가 대비'(거래소 현지 날짜 — 기록이 장중·해외 장중이면 그 세션도 들어간다는 사실까지 맞다)를
+    붙이고, 누적이 두 세션 이상이면 마지막 세션 하루의 등락(직전 종가 대비)을 날짜와
+    함께 앞에 둔다 — 한 세션이면 두 값이 같으므로 하나만. 지난 날 카드(`d` None)는 그날 하루 등락 그대로.
+    화면 JS(`_PNL_JS` cards)가 실시간을 이어 붙이면 같은 규칙으로 다시 쓴다(#38)."""
+    import html as _h
+
+    def pct(x: float) -> str:
+        return f"{'+' if x > 0 else ''}{x:.2f}%"
+    if not d:
+        return pct(v)
+    lead = ""
+    d1, d1d = d.get("d1"), d.get("d1_d")
+    if int(d.get("sess") or 0) >= 2 and d1 is not None and d1d:
+        c1 = "hn-up" if d1 > 0 else "hn-dn" if d1 < 0 else ""
+        lead = f"<span class='{c1}'>{_h.escape(str(d1d)[5:])} {pct(d1)}</span> · "
+    bse = d.get("bse")
+    return f"{lead}{_h.escape(f'{str(bse)[5:]} 종가 대비 ') if bse else ''}{pct(v)}"
 
 
 def _hm_after(minutes: int) -> str:
@@ -4069,7 +4122,10 @@ def render_page(records: list[dict], state: dict | None = None,
 업로드 · 오늘 몇 번을 올려도 기준은 그대로). 카드 괄호는 <b>(종가 · 등락률 · 내 보유의 금액 변동)</b>입니다 — 종가는
 그 등락이 끝나는 세션의 실제 종가(현지통화 · 마우스를 올리면 어느 날 종가인지)이고, 등락을 못 셌으면 종가도 싣지 않고
 '(—)' 입니다. 맨 위(최신) 날짜 카드의 괄호와 맨 위 요약 칸은 둘 다 그 기준 대비
-<b>장종료가 누적 등락</b>입니다 — 기준 업로드 뒤에 마감한 세션마다의 종가 등락(「국가별 심리지도」가 받아 둔 TradingView
+<b>장종료가 누적 등락</b>이고, 카드 괄호는 그 기준을 <b>'10-19 종가 대비 -1.71%'</b> 처럼 적습니다(기준 무렵 마지막
+종가의 거래소 날짜) — 오늘 하루 등락이 아닙니다. 누적이 두 세션 이상이면 마지막 세션 하루 등락(직전 종가 대비)을
+<b>'10-21 +2.14%'</b> 처럼 날짜와 함께 앞에 둡니다(예: 10-20 장 전 새벽 기록이면 기준은 10-19 종가라 10-20 하락과 10-21
+상승이 함께 곱해져, 오늘 올랐어도 누적은 마이너스일 수 있습니다 · 금액 변동은 누적 쪽). 기준 업로드 뒤에 마감한 세션마다의 종가 등락(「국가별 심리지도」가 받아 둔 TradingView
 하루치)을 곱해 '기준 무렵 마지막 종가 → 받아 둔 마지막 종가' 를 셉니다. 하루치는 장 마감 {_ws_ready_h()}시간 뒤에 받으므로,
 <b>장 중인 세션</b>과 <b>마감했지만 종가를 아직 안 받은 세션</b>은 화면이 {LIVE_POLL_SEC // 60}분마다 그 종목의 <b>실시간 등락</b>(정규장 ·
 직전 종가 대비 — 국내·미·일·홍·중은 네이버, 대만은 TWSE)을 받아 종가 누적에 곱해 이어 붙입니다. 그 세션만 남았을 때만

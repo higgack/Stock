@@ -3088,7 +3088,12 @@ function mk(id,txt){var e={id:id,textContent:txt||'',className:'',children:[],at
 var data=mk('hn-pnl-data',DATA); data.attrs['data-basis']=BASIS;
 if(typeof FX!=='undefined'){mk('hn-fx-data',FX);}
 ['all','KR','XX'].forEach(function(g){mk('hn-pnl-'+g,'SERVER'); mk('hn-pnl-'+g+'-sub','SERVER');});
-var cell=null; if(typeof CELL!=='undefined'){cell={textContent:'SERVER',attrs:CELL,
+// 카드 괄호 — textContent 를 쓰면 자식이 비워지고, 읽으면 자기 글자 + 자식 글자(브라우저와 같은 규칙). 날짜를 단 마지막 세션
+// 등락은 제 색 span 으로 붙는다(`kids` 가 그 class 를 회귀에 보여 준다)
+var cell=null; if(typeof CELL!=='undefined'){cell={_t:'SERVER',kids:[],attrs:CELL,
+  get textContent(){return this._t+this.kids.map(function(k){return k.textContent;}).join('');},
+  set textContent(v){this._t=v; this.kids=[];},
+  appendChild:function(c){this.kids.push(c);},
   className:(typeof CLS!=='undefined')?CLS:'hn-chg js-hn-amt',
   classList:{toggle:function(c,on){var a=cell.className.split(' ').filter(function(x){return x&&x!==c;});
     if(on) a.push(c); cell.className=a.join(' ');}},
@@ -3096,6 +3101,7 @@ var cell=null; if(typeof CELL!=='undefined'){cell={textContent:'SERVER',attrs:CE
   setAttribute:function(k,v){this.attrs[k]=v;}};}
 global.window=global; global.document={readyState:'complete',getElementById:function(i){return els[i]||null;},
   createElement:function(){return {textContent:'',className:''};},
+  createTextNode:function(t){return {textContent:t,className:null};},
   // 렌더된 카드의 클래스가 JS 선택자와 맞을 때만 고른다 — 이름이 갈리면 화면이 그 카드를 영영 안 칠한다(#20)
   querySelectorAll:function(sel){return (sel==='.js-hn-amt'&&cell&&(' '+cell.className+' ').indexOf(' js-hn-amt ')>=0)?[cell]:[];},
   addEventListener:function(){}};
@@ -3128,7 +3134,7 @@ def _run_pnl_js(hn, data, resp, fx=None, cell=None, cls=None, basis=None, run=No
            + "\nprocess.on('exit',function(){console.log(JSON.stringify("
              "{all:els['hn-pnl-all'].textContent,allsub:els['hn-pnl-all-sub'].textContent,"
              "kr:els['hn-pnl-KR'].textContent,xx:els['hn-pnl-XX'].textContent,xxsub:els['hn-pnl-XX-sub'].textContent,"
-             "cell:cell?cell.textContent:'',title:cell?(cell.attrs.title||''):'',urls:fetched,delays:delays}));});")
+             "cell:cell?cell.textContent:'',kids:cell?cell.kids.map(function(k){return [k.className,k.textContent];}):[],title:cell?(cell.attrs.title||''):'',urls:fetched,delays:delays}));});")
     r = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -3216,7 +3222,7 @@ def test_latest_card_shows_close_based_amount_from_current_portfolio(hn, ws_snap
     html = hn.render_page([rec], {}, _t("2026-10-12T08:00"), gen="GEN", portfolio=_pf("2026-10-08T08:00"))
     card = html.split("data-hncard='1'")[1]
     head = card.split("class='hn-chg")[1].split("</span>")[0]
-    assert "(-2.00% · -300만원)" in head and "보유 1.5억원" in card
+    assert "(10-07 종가 대비 -2.00% · -300만원)" in head and "보유 1.5억원" in card   # 기준을 박는다(2026-10-21)
     assert "장종료가 누적 등락" in head and "2026-10-08 종가까지" in head and "10-08 08:00(KST)" in head
     assert "js-live-pct" not in card and "js-hn-amt" in head and "data-c=" not in head    # 국내 = 환율 없음
     assert "data-k='KR:005930'" in head and "data-cu='KRW'" in head and "data-sym='₩'" in head
@@ -3271,7 +3277,7 @@ def test_page_summary_and_card_use_fx(hn, ws_snaps):
     head = card.split("class='hn-chg")[1].split("</span>")[0]
     assert head.startswith(" hn-up js-hn-amt' ")                             # 토큰 그대로 — 'js-hn-amtX' 면 JS 가 못 고른다(#75)
     assert "data-c='USD'" in head and "data-p='1.0'" in head and "data-v='40000000'" in head
-    assert "(+1.00% · 원화 +121만원)" in head and "원화 기준(주가 +1.00% · 원/USD +2.00%)" in head
+    assert "(10-08 종가 대비 +1.00% · 원화 +121만원)" in head and "원화 기준(주가 +1.00% · 원/USD +2.00%)" in head
 
 
 def test_page_counts_missing_fx_instead_of_inventing_it(hn, ws_snaps):
@@ -3299,7 +3305,7 @@ def test_page_render_never_fetches_fx_and_says_it_waits(hn, ws_snaps, monkeypatc
     assert "환율 대기 1" in a.split("id='hn-pnl-XX-sub'>")[1].split("</div>")[0] and "환율 미확인" not in a.split(
         "id='hn-pnl-XX-sub'>")[1].split("</div>")[0]
     card = a.split("data-hncard='1'")[1]
-    assert "USD 환율은 화면이 곧 받습니다" in card and "(+1.00% · +40만원)" in card   # 원화 표식 없음(환율 미반영)
+    assert "USD 환율은 화면이 곧 받습니다" in card and "(10-08 종가 대비 +1.00% · +40만원)" in card   # 원화 표식 없음(환율 미반영)
 
 
 def test_unknown_currency_market_is_not_counted_as_missing_fx_like_the_js(hn):
@@ -3646,14 +3652,16 @@ def test_cum_lookup_compounds_sessions_after_the_base(hn, ws_snaps):
     st = {"market": "KR", "ticker": "000001"}
     base = _t("2026-10-05T18:00").timestamp()
     want = {"ka": pytest.approx(1.01 * 1.02 * 0.99), "n": 3, "asof": "2026-10-08", "wait": [], "hol": [],
-            "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 3}
+            "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 3,
+            "bse": "2026-10-02", "d1": -1.0, "d1_d": "2026-10-08"}   # 기준 종가 세션 · 마지막 세션 하루 등락(카드, 2026-10-21)
     # 장중(아직 안 닫힘) — 화면은 그 세션 마감 15:30 + 종가 수집 180분 + 페이지 재생성 15분 뒤 묻기를 멈춘다
     assert hn.cum_lookup(base, _t("2026-10-12T10:00"))(st) == {
         **want, "live_d": "2026-10-12", "live_x": int(_t("2026-10-12T18:45").timestamp())}
     assert hn.cum_lookup(base, _t("2026-10-12T08:00"))(st) == {**want, "live_d": None, "live_x": None}   # 장 전
     c = hn.cum_lookup(_t("2026-10-08T20:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c == {"ka": 1, "n": 0, "asof": "2026-10-08", "wait": [], "hol": [], "src": "tv", "need": None,
-                 "lag": 180, "nosnap": False, "why": "", "sess": 0, "live_d": None, "live_x": None}                                           # 기준 뒤 마감 없음 → 0
+                 "lag": 180, "nosnap": False, "why": "", "sess": 0, "live_d": None, "live_x": None,
+                 "bse": "2026-10-08"}                                           # 기준 뒤 마감 없음 → 0
     # 기준 무렵 종가 세션은 며칠 앞일 수 있다 — 일요일 업로드면 목요일(10-09 한글날 · 주말) 종가
     c = hn.cum_lookup(_t("2026-10-11T12:00").timestamp(), _t("2026-10-12T08:00"))(st)
     assert c["n"] == 0 and c["asof"] == "2026-10-08"
@@ -3698,6 +3706,7 @@ def test_cum_lookup_stops_at_the_last_collected_close_and_names_the_pending_one(
     c = hn.cum_lookup(_t("2026-10-05T18:00").timestamp(), _t("2026-10-08T17:00"))({"market": "KR", "ticker": "000001"})
     assert c == {"ka": pytest.approx(1.01 * 1.02), "n": 2, "asof": "2026-10-07", "wait": ["2026-10-08"], "hol": [],
                  "src": "tv", "need": None, "lag": 180, "nosnap": False, "why": "", "sess": 2,
+                 "bse": "2026-10-02", "d1": 2.0, "d1_d": "2026-10-07",
                  "live_d": "2026-10-08",                    # 마감했지만 종가 전 — 화면이 실시간으로 이어 붙일 세션
                  "live_x": int(_t("2026-10-08T18:45").timestamp())}
     ca = hn.close_asof([{"market": "KR", "key": "k"}], {"k": c})
@@ -4318,14 +4327,16 @@ def test_render_to_js_e2e_card_uses_base_amount_and_cumulative(hn, ws_snaps):
     html = hn.render_page([rec], {}, _t("2026-10-09T08:00"), gen="GEN", portfolio=m)
     card = html.split("data-hncard='1'")[1]
     span = card.split("class='hn-chg")[1].split(">")[0]
-    attrs = {k: _html.unescape(v) for k, v in re.findall(r"(data-[a-z]+)='([^']*)'", span)}
+    attrs = {k: _html.unescape(v) for k, v in re.findall(r"(data-[a-z0-9]+)='([^']*)'", span)}
     cls = "hn-chg" + span.split("'")[0]                                          # 렌더된 class 그대로
     assert attrs["data-v"] == "1000000" and float(attrs["data-p"]) == pytest.approx(2.01)   # 기준 날 금액 · 두 세션 곱
     assert "보유 500만원" in card                                                # 보유 칸은 지금 기록
     data = json.loads(html.split("id='hn-pnl-data'")[1].split(">", 1)[1].split("</script>")[0])
     o = _run_pnl_js(hn, data, {"q": {}, "pending": 0, "fx": {"USD": {"pct": 1.0, "age": 1}}}, cell=attrs, cls=cls)
     k = (1.01 * 1.01 * 1.01 - 1) * 100
-    assert o["cell"] == f"(+2.01% · 원화 {hn._signed_krw(1_000_000 * k / 100)})"
+    # 두 세션 누적 — 마지막 세션(10-08) 하루 등락을 날짜와 함께 제 색으로 앞에, 누적엔 기준을 박는다(2026-10-21)
+    assert o["cell"] == f"(10-08 +1.00% · 10-06 종가 대비 +2.01% · 원화 {hn._signed_krw(1_000_000 * k / 100)})"
+    assert o["kids"][0] == ["hn-up", "10-08 +1.00%"]
     assert o["xx"] == f"{hn._signed_krw(1_000_000 * k / 100)} ({k:+.2f}%)"     # 요약과 카드가 같은 값
     assert o["title"].startswith(attrs["data-tip"]) and "2026-10-08 종가까지" in o["title"]
 
@@ -4563,14 +4574,16 @@ def test_render_to_js_e2e_card_keeps_the_close_when_redrawn_with_fx(hn, ws_snaps
     html = hn.render_page([rec], {}, _t("2026-10-09T08:00"), gen="GEN", portfolio=m)
     card = html.split("data-hncard='1'")[1]
     span = card.split("class='hn-chg")[1].split("</span>")[0]
-    assert span.split(">", 1)[1].startswith("($250.50 · +2.01% · ")                  # 서버가 그린 괄호
-    attrs = {k: _html.unescape(v) for k, v in re.findall(r"(data-[a-z]+)='([^']*)'", span.split(">")[0])}
+    # 서버가 그린 괄호 — 마지막 세션 하루 등락(제 색) · 기준을 박은 누적(2026-10-21)
+    assert card.split("class='hn-chg")[1].split(">", 1)[1].startswith(
+        "($250.50 · <span class='hn-up'>10-08 +1.00%</span> · 10-06 종가 대비 +2.01% · ")
+    attrs = {k: _html.unescape(v) for k, v in re.findall(r"(data-[a-z0-9]+)='([^']*)'", span.split(">")[0])}
     assert attrs["data-px"] == "$250.50" and attrs["data-tip"].startswith("$250.50 = 2026-10-08 종가 · ")
     data = json.loads(html.split("id='hn-pnl-data'")[1].split(">", 1)[1].split("</script>")[0])
     o = _run_pnl_js(hn, data, {"q": {}, "pending": 0, "fx": {"USD": {"pct": 1.0, "age": 1}}}, cell=attrs,
                     cls="hn-chg" + span.split("'")[0])
     k = (1.01 * 1.01 * 1.01 - 1) * 100
-    assert o["cell"] == f"($250.50 · +2.01% · 원화 {hn._signed_krw(1_000_000 * k / 100)})"
+    assert o["cell"] == f"($250.50 · 10-08 +1.00% · 10-06 종가 대비 +2.01% · 원화 {hn._signed_krw(1_000_000 * k / 100)})"
     assert o["title"].startswith("$250.50 = 2026-10-08 종가 · ")
 
 
