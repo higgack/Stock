@@ -231,3 +231,31 @@ def test_audit_reference_uses_market_currency_and_anchor_filters():
     c = canonical_from_record(_rec("", trailingPE=20000.0, priceToBook=0.0))
     assert c["currency"] == "KRW"
     assert "trailing_pe" not in c and "price_to_book" not in c
+
+
+def test_audit_noisy_guard_is_a_sweep_finding():
+    # 경고가 리포트 셋 중 하나 넘게 붙으면 고칠 수 있는 결함 — 주간 결산에 실린다.
+    from bot.audit_sweep import _findings
+    from bot.scripts.report_guard_audit import audit, report_lines
+    res = audit([_rec("## 💰 펀더멘털\nPER 50배"), _rec("## 💰 펀더멘털\nPER 28.9배")])
+    found = _findings("\n".join(report_lines(res)))
+    assert len(found) == 1 and "1/2건(50%)" in found[0]
+    quiet = audit([_rec("## 💰 펀더멘털\nPER 28.9배")] * 4)
+    assert _findings("\n".join(report_lines(quiet))) == []
+
+
+def test_audit_main_runs_with_sweep_argv(tmp_path, monkeypatch, capsys):
+    # 주간 감사는 main([]) 로 부른다 — 봇 프로세스의 sys.argv 를 읽으면 안 된다.
+    import json
+    import bot.archive as arc
+    from bot.scripts import report_guard_audit as rga
+    from datetime import datetime, timedelta, timezone
+    day = (datetime.now(timezone(timedelta(hours=9)))).strftime("%Y-%m-%d")
+    (tmp_path / day).mkdir()
+    (tmp_path / day / "005930.KS.json").write_text(
+        json.dumps(_rec("## 💰 펀더멘털\nPER 50배")), encoding="utf-8")
+    monkeypatch.setattr(arc, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setattr("sys.argv", ["bot", "--unknown-flag"])
+    assert rga.main([]) == 0
+    out = capsys.readouterr().out
+    assert "report_guard_audit v1" in out and "1/1" in out
