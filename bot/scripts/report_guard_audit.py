@@ -1,0 +1,217 @@
+"""리포트 수치 대조 가드 감사 — 아카이브의 실제 리포트로 발화율을 잰다.
+
+읽기 전용 · 네트워크 0 · LLM 0 · ₩0. **전 시장**.
+
+⚠️ 왜 필요한가: `bot.report_numeric_guard` 의 허용 차이·건너뛰기 낱말은
+샌드박스에서 만든 출발점이지 실측이 아니다(#12). 너무 느슨하면 틀린 값을
+놓치고, 너무 빡빡하면 리포트마다 경고가 붙어 아무도 안 읽는다(#25·#260).
+그래서 지금까지 쌓인 리포트 전부에 **제품과 같은 함수**(`scan`)를 태워
+지표별·섹션별로 몇 번 판정했고 몇 번 어긋났는지, 어긋난 원문은 무엇인지를
+찍는다. 그 표가 다음 조정의 근거다.
+
+⚠️ 기준값이 제품과 다르다 — 못 보는 축(#274):
+  · 제품은 분석 **시작** 때 FACTUAL ANCHOR 에 실린 `.info` 값으로 잰다.
+  · 이 감사는 아카이브에 함께 저장된 `stock_info`(분석 **끝**, 저장 시점
+    스냅샷 · 글리치 보정 반영)로 잰다. 두 시점 사이 가격이 움직였거나 보정이
+    끼면 현재가·시총 축에서 제품보다 더 많이(또는 적게) 어긋날 수 있다.
+  그래서 여기서 나온 수는 '제품이 붙였을 경고 수'의 근사다.
+
+사용:
+    cd ~/stock && .venv/bin/python -m bot.scripts.report_guard_audit
+    .venv/bin/python -m bot.scripts.report_guard_audit --days 90 --samples 30
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+_AUDIT_VER = 1
+_KST = timezone(timedelta(hours=9))
+
+# stock_info 키 → 가드의 기준값 키
+_SI_TO_CANON = (
+    ("current_price", "current_price"),
+    ("market_cap", "market_cap"),
+    ("trailingPE", "trailing_pe"),
+    ("forwardPE", "forward_pe"),
+    ("priceToBook", "price_to_book"),
+    ("trailingEps", "trailing_eps"),
+    ("fiftyTwoWeekHigh", "high_52w"),
+    ("fiftyTwoWeekLow", "low_52w"),
+)
+
+
+def canonical_from_record(rec: dict) -> dict:
+    """아카이브 레코드 → 가드 기준값. 기준이 하나도 없으면 빈 dict. 순수.
+
+    통화는 제품처럼 시장 설정에서 읽는다(`_extract_canonical` 과 같은 출처).
+    앵커가 숨기는 이상치(PER≥10000·PBR≥1000·0 이하)는 제품과 같이 뺀다."""
+    si = rec.get("stock_info") or {}
+    if not isinstance(si, dict):
+        return {}
+    out: dict = {}
+    for src, dst in _SI_TO_CANON:
+        v = si.get(src)
+        if not isinstance(v, (int, float)) or v != v:
+            continue
+        if dst in ("trailing_pe", "forward_pe") and not (0 < v < 10000):
+            continue
+        if dst == "price_to_book" and not (0 < v < 1000):
+            continue
+        if dst in ("current_price", "market_cap", "high_52w", "low_52w") and v <= 0:
+            continue
+        out[dst] = float(v)
+    if not out:
+        return {}
+    try:
+        from bot.market import get_market_config
+        out["currency"] = get_market_config(str(rec.get("ticker") or "")).get(
+            "currency", "")
+    except Exception:
+        out["currency"] = str(si.get("currency") or "")
+    return out
+
+
+def split_sections(full_report: str) -> list[tuple[str, str]]:
+    """`## 제목` 단위로 나눈다 — 제품이 섹션마다 가드를 거는 단위와 같다."""
+    out: list[tuple[str, str]] = []
+    title, buf = "(머리)", []
+    for line in (full_report or "").split("\n"):
+        if line.startswith("## "):
+            if buf:
+                out.append((title, "\n".join(buf)))
+            title, buf = line[3:].strip(), []
+        else:
+            buf.append(line)
+    if buf:
+        out.append((title, "\n".join(buf)))
+    return out
+
+
+def audit(records: list[dict]) -> dict:
+    """레코드 목록 → 집계. 순수(가드도 순수)."""
+    from bot.report_numeric_guard import scan
+    judged: Counter = Counter()
+    missed: Counter = Counter()
+    sec_judged: Counter = Counter()
+    sec_missed: Counter = Counter()
+    samples: list[tuple] = []
+    n_rec = n_ref = n_flagged_rec = 0
+    for rec in records:
+        n_rec += 1
+        can = canonical_from_record(rec)
+        if not can:
+            continue
+        n_ref += 1
+        rec_flag = False
+        for title, body in split_sections(rec.get("full_report") or ""):
+            for f, ok in scan(body, can):
+                judged[f.metric] += 1
+                sec_judged[title] += 1
+                if not ok:
+                    missed[f.metric] += 1
+                    sec_missed[title] += 1
+                    rec_flag = True
+                    samples.append((rec.get("trade_date"), rec.get("ticker"),
+                                    title, f))
+        n_flagged_rec += int(rec_flag)
+    return {"records": n_rec, "with_ref": n_ref, "flagged_records": n_flagged_rec,
+            "judged": judged, "missed": missed,
+            "sec_judged": sec_judged, "sec_missed": sec_missed,
+            "samples": samples}
+
+
+def _load(root: Path, days: int) -> list[dict]:
+    cutoff = (datetime.now(_KST) - timedelta(days=days)).strftime("%Y-%m-%d")
+    out: list[dict] = []
+    if not root.exists():
+        return out
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or d.name < cutoff:
+            continue
+        for p in sorted(d.glob("*.json")):
+            try:
+                rec = json.loads(p.read_text(encoding="utf-8"))
+            except Exception as exc:                        # noqa: BLE001
+                print(f"  ⚠️ 읽기 실패 {p.name}: {type(exc).__name__}")
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+    return out
+
+
+def _pct(a: int, b: int) -> str:
+    return f"{a / b * 100:.1f}%" if b else "—"
+
+
+def report_lines(res: dict, samples: int = 15) -> list[str]:
+    from bot.report_numeric_guard import LABEL_KO
+    lines: list[str] = []
+    n_rec, n_ref = res["records"], res["with_ref"]
+    lines.append(f"리포트 {n_rec}건 · 기준값(stock_info) 있는 리포트 {n_ref}건"
+                 f" · 기준 없음 {n_rec - n_ref}건(판정 안 함)")
+    total_j = sum(res["judged"].values())
+    total_m = sum(res["missed"].values())
+    if not n_ref or not total_j:
+        lines.append("❓ 판정 불가 — 대조한 인용이 0건입니다"
+                     " (기준값 없는 옛 레코드뿐이거나 라벨 붙은 값이 없음).")
+        return lines
+    lines.append("")
+    lines.append("지표별 — 판정 · 어긋남 · 비율")
+    for k in LABEL_KO:
+        j, m = res["judged"].get(k, 0), res["missed"].get(k, 0)
+        if j:
+            lines.append(f"  {LABEL_KO[k]:<10} {j:>5}건 · {m:>4}건 · {_pct(m, j)}")
+    lines.append(f"  {'합계':<10} {total_j:>5}건 · {total_m:>4}건 · {_pct(total_m, total_j)}")
+    lines.append("")
+    lines.append("섹션별 — 판정 · 어긋남")
+    for t, j in res["sec_judged"].most_common():
+        lines.append(f"  {t[:24]:<24} {j:>5}건 · {res['sec_missed'].get(t, 0):>4}건")
+    rate = res["flagged_records"] / n_ref
+    lines.append("")
+    lines.append(f"경고가 붙었을 리포트: {res['flagged_records']}/{n_ref}"
+                 f" ({rate * 100:.1f}%)")
+    if rate > 0.3:
+        lines.append("⚠️ 리포트 셋 중 하나 넘게 경고가 붙습니다 — 아래 표본에서"
+                     " 오탐(동종사·과거값을 현재값으로 읽음)인지 진짜 어긋남인지"
+                     " 가려 허용 차이·건너뛰기 낱말을 조정할 것.")
+    else:
+        lines.append(f"✅ 경고 비율 {rate * 100:.1f}% (기준 30% 이하) —"
+                     " 표본으로 진짜 어긋남인지 확인할 것.")
+    if res["samples"]:
+        lines.append("")
+        lines.append(f"어긋난 표본 (최신 {min(samples, len(res['samples']))}"
+                     f"/{len(res['samples'])}건)")
+        for d, t, sec, f in sorted(res["samples"], key=lambda x: str(x[0]),
+                                   reverse=True)[:samples]:
+            lines.append(f"  {d} {t} [{sec[:14]}] {LABEL_KO[f.metric]}"
+                         f" {f.quoted:,.4g} ↔ 기준 {f.reference:,.4g}"
+                         f" ({f.gap_pct:+.0f}%) 「{f.quote_text}」")
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--days", type=int, default=30, help="최근 N일 (기본 30)")
+    ap.add_argument("--samples", type=int, default=15, help="어긋난 표본 수")
+    args = ap.parse_args(argv)
+    from bot.archive import ARCHIVE_ROOT
+    from bot.report_numeric_guard import TOLERANCE
+    print(f"report_guard_audit v{_AUDIT_VER} · 인터프리터 {sys.executable}")
+    print(f"아카이브 {ARCHIVE_ROOT} · 최근 {args.days}일 · 허용 차이 "
+          + ", ".join(f"{k} {v:.0%}" for k, v in TOLERANCE.items()))
+    print("기준값 = 아카이브 stock_info(저장 시점) — 제품은 분석 시작 시점"
+          " FACTUAL ANCHOR 를 쓴다. 근사치로 읽을 것.")
+    recs = _load(ARCHIVE_ROOT, args.days)
+    for line in report_lines(audit(recs), args.samples):
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

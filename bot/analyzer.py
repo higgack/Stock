@@ -1433,9 +1433,46 @@ def _extract_canonical(ticker: str) -> dict:
             result["market_cap"] = mc
         if isinstance(px, (int, float)) and px > 0:
             result["current_price"] = px
+        # 리포트 수치 대조 가드(bot.report_numeric_guard)의 기준값 — FACTUAL
+        # ANCHOR 가 분석가에게 보여 준 바로 그 `.info` 값(같은 프로세스 캐시)
+        # 이라, 가드가 재는 것은 "받은 값을 그대로 옮겼나"다(#35). 이상치
+        # 필터는 앵커와 같게(PER 0~10000, PBR -100~1000) — 앵커가 'N/A' 로
+        # 숨긴 값을 기준으로 쓰면 안 된다.
+        for src, dst, lo, hi in (
+            ("trailingPE", "trailing_pe", 0, 10000),
+            ("forwardPE", "forward_pe", 0, 10000),
+            ("priceToBook", "price_to_book", 0, 1000),
+            ("trailingEps", "trailing_eps", None, None),
+            ("fiftyTwoWeekHigh", "high_52w", 0, None),
+            ("fiftyTwoWeekLow", "low_52w", 0, None),
+        ):
+            v = info.get(src)
+            if not isinstance(v, (int, float)) or v != v:
+                continue
+            if lo is not None and v <= lo:
+                continue
+            if hi is not None and v >= hi:
+                continue
+            result[dst] = v
         return result
     except Exception:
         return {}
+
+
+def _guard_numbers(body, canonical: dict, currency_symbol: str):
+    """리포트 섹션에 수치 대조 결과를 붙인다(`bot.report_numeric_guard`).
+
+    옛 시총 교차검사(`_canonical_crosscheck`, KRW·JPY 의 시총만)를 대체한다 —
+    같은 일을 두 곳에서 하면 같은 줄에 경고가 두 번 붙는다(#38). 가드가
+    던지면 리포트를 그대로 둔다(곁들이가 본체를 지우지 않게, #315)."""
+    if not body or not isinstance(body, str) or not canonical:
+        return body
+    try:
+        from bot.report_numeric_guard import annotate
+        return annotate(body, canonical, currency_symbol)
+    except Exception as exc:
+        log.warning("analyze: numeric guard failed: %s", exc)
+        return body
 
 
 def _format_full(
@@ -1497,6 +1534,8 @@ def _format_full(
             _section_cleaned = _flag_trader_price_hallucination(
                 _section_cleaned, canonical=_canonical,
             )
+        _section_cleaned = _guard_numbers(
+            _section_cleaned, _canonical, _section_currency_symbol)
         parts.append(f"\n## {label}\n{_section_cleaned}")
     # 강제 HOLD(override_note 존재 = _check_pm_override_required 가 HOLD
     # 강제한 경우만 채워짐) 시 PM 원문의 비-Hold 등급 표기를 마스킹 —
@@ -1506,6 +1545,7 @@ def _format_full(
         f"{override_note}\n\n---\n{_mask_overridden_pm_rating(decision)}"
         if override_note else decision
     )
+    _pm_section = _guard_numbers(_pm_section, _canonical, _section_currency_symbol)
     parts.append(f"\n## ✅ 최종 결정\n{_pm_section}")
     return "\n".join(parts)
 
@@ -1831,56 +1871,12 @@ def _magnitude_check(body: str, canonical: dict) -> str:
                     # 보고: "내부 디버깅 노트가 사용자 UI 에 그대로 노출".
                     # body 본문은 LLM 이 이미 올바른 단위 (조 원 / 億 円) 로
                     # 출력하는 경우가 대부분 — 중복 normalization 행은
-                    # noise. 단위 mismatch 가 실제 발생한 경우는 별도
-                    # _canonical_crosscheck 가 잡고, in-line 으로 정정
-                    # banner 를 출력. 본 polish 단계는 silent — 더 이상
+                    # noise. 시총 단위 mismatch 는 _format_full 의 수치
+                    # 대조 가드(bot.report_numeric_guard)가 섹션 끝에
+                    # 적는다. 본 polish 단계는 silent — 더 이상
                     # companion 행을 emit 하지 않는다. Universal — US +
                     # KR + JP + TW + CN/HK 모든 시장 동일.
                     break
-    return "\n".join(result)
-
-
-def _canonical_crosscheck(body: str, canonical: dict) -> str:
-    """Check 시가총액 mentions in the output against the canonical value.
-
-    If canonical 시총 is ₩5.83조 but the text mentions ₩58조 or ₩0.58조
-    (> ±30% off), inserts a correction banner so the reader can spot the
-    discrepancy. Only applied for KRW / JPY markets where 조/억 confusion
-    is the primary failure mode.
-    """
-    mc = canonical.get("market_cap") if canonical else None
-    currency = canonical.get("currency", "USD") if canonical else "USD"
-    if not mc or currency not in ("KRW", "JPY"):
-        return body
-
-    _mc_kw_re  = re.compile(r'시가총액|시총')
-    _val_re    = re.compile(r'약\s*(\d[\d,\.]*)\s*(조|억)')
-    unit_word  = "원" if currency == "KRW" else "엔"
-    mc_disp    = (f"약 {mc / 1e12:,.2f}조 {unit_word}"
-                  if mc >= 1e12 else f"약 {mc / 1e8:,.0f}억 {unit_word}")
-
-    def _norm(num_str: str, unit: str) -> float:
-        try:
-            return float(num_str.replace(",", "")) * (1e12 if unit == "조" else 1e8)
-        except ValueError:
-            return 0.0
-
-    result: list[str] = []
-    for line in body.split("\n"):
-        result.append(line)
-        if not _mc_kw_re.search(line):
-            continue
-        for m in _val_re.finditer(line):
-            found = _norm(m.group(1), m.group(2))
-            if found <= 0:
-                continue
-            ratio = max(found, mc) / min(found, mc)
-            if ratio > 1.3:
-                result.append(
-                    f"  ⚠️ [시가총액 불일치: 위 값이 시스템 canonical ({mc_disp}) 대비"
-                    f" {ratio:.1f}배 차이 — canonical 값 우선 사용]"
-                )
-                break
     return "\n".join(result)
 
 
@@ -2351,8 +2347,6 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
     if canonical:
         _step("magnitude-check",
               lambda b: _magnitude_check(b, canonical))
-        _step("canonical-crosscheck",
-              lambda b: _canonical_crosscheck(b, canonical))
     return body.strip()
 
 
@@ -2429,8 +2423,11 @@ def _flag_trader_price_hallucination(
             f" 권장 Stop ≈ {cur * 0.92:,.0f}–{cur * 0.95:,.0f}(롱, 현재가 -5~8%)"
             f" 또는 {cur * 1.05:,.0f}–{cur * 1.08:,.0f}(숏, +5~8%)."
         )
+    # ⚠️ `**굵게**` — 이 문자열은 마크다운 리포트에 실려 대시보드·텔레그램
+    # 둘 다 이스케이프한 뒤 `**` 만 굵게 바꾼다. `<b>` 로 쓰면 글자 그대로
+    # '<b>' 가 보였다(2026-10-22 수치 대조 가드 작업 중 발견).
     note = (
-        f"⚠️ <b>가격 환각 의심</b> (학습 cutoff 이후 가격 변동 큰 종목 — Trader"
+        f"⚠️ **가격 환각 의심** (학습 cutoff 이후 가격 변동 큰 종목 — Trader"
         f" 가 과거 가격 인용 가능): {' · '.join(flags)}. 현재가 {cur:,.0f}"
         f" 기준 5거래일 horizon entry 권장 범위 ≈ {suggest}.{stop_note} Trader"
         f" 출력 그대로 실행 금지, 수동 검증 필요.\n\n"
