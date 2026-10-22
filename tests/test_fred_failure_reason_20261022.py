@@ -57,6 +57,10 @@ def test_each_failure_branch_names_its_own_remedy():
     assert "서버 오류" in fc.failure_reason(_http_err(503, "Service Unavailable"))
     other = fc.failure_reason(_http_err(400, "Bad Request. Variable series_id is not set."))
     assert "거절" in other and "API 키" not in other        # 키 문제로 오보하지 않는다
+    for st in (401, 403):
+        assert "API 키를 거부" in fc.failure_reason(_http_err(st, "Invalid api_key")), st
+    assert "연결하지 못했" in fc.failure_reason(requests.exceptions.ProxyError("p"))
+    assert "연결하지 못했" in fc.failure_reason(requests.exceptions.SSLError("s"))
     assert "시간 초과" in fc.failure_reason(requests.exceptions.ReadTimeout("t"))
     assert "연결하지 못했" in fc.failure_reason(requests.exceptions.ConnectionError("c"))
     assert "FRED_API_KEY" in fc.failure_reason(no_key=True)
@@ -96,15 +100,16 @@ def test_headline_and_yoy_record_the_branch_then_clear_on_success(tmp_path, monk
     fn = getattr(mo, fn_name)
     monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _R(400, {
         "error_code": 400, "error_message": _BAD_KEY}))
+    key = sid if fn_name == "_fred_fetch_series" else mo._yoy_key(sid)
     assert (fn(sid, 400) if fn_name == "_fred_fetch_series" else fn(sid)) is None
-    assert "API 키를 거부" in mo._fred_why[sid]
+    assert "API 키를 거부" in mo._fred_why[key]
     # 성공하면 지운다 — 옛 사유가 다음 실패 전까지 남아 화면을 속이지 않는다
     mo._fred_fail.clear()
     obs = [{"date": f"{y}-{m:02d}-01", "value": str(100 + i)}
            for i, (y, m) in enumerate((y, m) for y in (2026, 2025, 2024) for m in range(12, 0, -1))]
     monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _R(200, obs=obs))
     assert (fn(sid, 400) if fn_name == "_fred_fetch_series" else fn(sid)) is not None
-    assert sid not in mo._fred_why
+    assert key not in mo._fred_why
 
 
 def test_missing_key_is_a_named_branch(tmp_path, monkeypatch):
@@ -112,6 +117,29 @@ def test_missing_key_is_a_named_branch(tmp_path, monkeypatch):
     monkeypatch.setattr("bot.env_keys.env_key", lambda name: "")
     assert mo._fred_fetch_series("DGS10", 400) is None
     assert "FRED_API_KEY" in mo._fred_why["DGS10"]
+    assert mo._fetch_fred_yoy("CPIAUCSL") is None
+    assert "FRED_API_KEY" in mo._fred_why[mo._yoy_key("CPIAUCSL")]
+
+
+def test_yoy_empty_answer_is_a_named_branch(tmp_path, monkeypatch):
+    mo = _mo(tmp_path, monkeypatch)
+    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _R(200, obs=[]))
+    assert mo._fetch_fred_yoy("CPIAUCSL") is None
+    assert "관측이 없" in mo._fred_why[mo._yoy_key("CPIAUCSL")]
+
+
+def test_level_success_does_not_erase_the_yoy_reason(tmp_path, monkeypatch):
+    """CPIAUCSL 은 YoY 행(글로벌)과 수준 경로(매크로 카드)가 같이 묻는다 — 수준 경로의 성공이
+    YoY 행의 실패 사유를 지우면 그 행이 사유 없는 '—' 가 된다(독립 리뷰 L2)."""
+    mo = _mo(tmp_path, monkeypatch)
+    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _R(503, {
+        "error_message": "Service Unavailable"}))
+    assert mo._fetch_fred_yoy("CPIAUCSL") is None
+    monkeypatch.setattr(mo.requests, "get", lambda url, timeout=None: _R(200, obs=[
+        {"date": "2026-09-01", "value": "320"}, {"date": "2026-08-01", "value": "319"}]))
+    assert mo._fred_fetch_series("CPIAUCSL", 400) is not None
+    rows = {r["series_id"]: r for r in mo._fetch_all_fred()}   # YoY 는 10분 기억 → 사본 없음
+    assert "서버 오류" in rows["CPIAUCSL"]["why"], rows["CPIAUCSL"]
 
 
 # ── 화면 둘이 같은 사유를 말한다(#38) ─────────────────────────────────────────

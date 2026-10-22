@@ -70,10 +70,10 @@ def failure_reason(exc: Optional[BaseException] = None, *, no_key: bool = False,
             msg = str((resp.json() or {}).get("error_message") or "")
         except Exception:                                         # noqa: BLE001
             try:
-                msg = (resp.text or "")[:160]
+                msg = resp.text or ""
             except Exception:                                     # noqa: BLE001
                 msg = ""
-    msg = _mask_key(" ".join(msg.split()))[:160]
+    msg = _mask_key(" ".join(msg.split()))[:160]      # 가린 **뒤에** 자른다(#350)
     tail = f" — 원문: {msg}" if msg else ""
     if status is not None:
         if status in (400, 401, 403) and "api_key" in msg.lower():
