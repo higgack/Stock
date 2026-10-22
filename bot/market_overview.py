@@ -675,6 +675,14 @@ _FRED_CACHE_VER = 3
 # 않는다(#30).
 _FRED_FAIL_TTL_S = 600
 _fred_fail: dict[str, float] = {}
+# 계열별 마지막 실패 **갈래**(`fred_client.failure_reason`) — 카드가 빠질 때 화면이 '못 받았다'
+# 대신 왜 못 받았는지를 말한다(#82). 성공하면 지운다. 같은 프로세스의 렌더만 읽는다.
+_fred_why: dict[str, str] = {}
+
+
+def _fred_note_fail(series_id: str, fail_key: str, why: str) -> None:
+    _fred_fail[fail_key] = time.monotonic()
+    _fred_why[series_id] = why
 
 
 def _fred_recently_failed(key: str) -> bool:
@@ -685,8 +693,10 @@ def _fred_recently_failed(key: str) -> bool:
 def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     """Minimal FRED series fetch (reuses fred_client pattern)."""
     from bot.env_keys import env_key as _env_key
+    from bot.fred_client import failure_reason
     api_key = _env_key("FRED_API_KEY")
     if not api_key:
+        _fred_why[series_id] = failure_reason(no_key=True)
         return None
     cache_dir = _CACHE_DIR / "fred"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -722,9 +732,9 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
     except Exception as exc:
-        _fred_fail[_fail_key] = time.monotonic()
+        _fred_note_fail(series_id, _fail_key, failure_reason(exc))
         # 예외 문구엔 `api_key=` 가 든 URL 이 실린다 — `bot.env_keys` 레코드 팩토리가 가린다(#416)
-        log.warning("fred: fetch %s failed: %s%s", series_id, exc,
+        log.warning("fred: fetch %s failed: %s — %s%s", series_id, exc, _fred_why[series_id],
                     " — 같은 날 옛 사본을 준다" if _stale else "")
         return _stale
 
@@ -738,9 +748,11 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         except ValueError:
             continue
     if not clean:
-        _fred_fail[_fail_key] = time.monotonic()     # 빈 답도 30초마다 다시 묻지 않는다
+        # 빈 답도 30초마다 다시 묻지 않는다
+        _fred_note_fail(series_id, _fail_key, failure_reason(empty=True))
         return _stale
     _fred_fail.pop(_fail_key, None)
+    _fred_why.pop(series_id, None)
 
     latest_date, latest_val = clean[0]
     prev_val = clean[1][1] if len(clean) >= 2 else None
@@ -777,8 +789,10 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
 def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
     """Fetch index-level FRED series and compute YoY %."""
     from bot.env_keys import env_key as _env_key
+    from bot.fred_client import failure_reason
     api_key = _env_key("FRED_API_KEY")
     if not api_key:
+        _fred_why[series_id] = failure_reason(no_key=True)
         return None
     cache_dir = _CACHE_DIR / "fred"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -814,11 +828,11 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
     except Exception as exc:
-        _fred_fail[_fail_key] = time.monotonic()
+        _fred_note_fail(series_id, _fail_key, failure_reason(exc))
         # 옛 판은 여기서 한 줄도 안 남기고 None 을 줬다(#12) — 예외 문구의 `api_key=` 는
         # `bot.env_keys` 레코드 팩토리가 가린다(#416)
-        log.warning("fred: YoY fetch %s failed: %s%s", series_id, exc,
-                    " — 같은 날 옛 사본을 준다" if _stale else "")
+        log.warning("fred: YoY fetch %s failed: %s — %s%s", series_id, exc,
+                    _fred_why[series_id], " — 같은 날 옛 사본을 준다" if _stale else "")
         return _stale
 
     clean = []
@@ -831,9 +845,10 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         except ValueError:
             continue
     if len(clean) < 2:
-        _fred_fail[_fail_key] = time.monotonic()
+        _fred_note_fail(series_id, _fail_key, failure_reason(empty=True))
         return _stale
     _fred_fail.pop(_fail_key, None)
+    _fred_why.pop(series_id, None)
 
     latest_date, latest_val = clean[0]
     # Find value ~12 months ago
@@ -925,7 +940,10 @@ def _fetch_all_fred() -> list[dict]:
         if data:
             data["label"] = label
             data["unit"] = unit
-        results.append({"label": label, "unit": unit, "series_id": series_id, "data": data})
+        row = {"label": label, "unit": unit, "series_id": series_id, "data": data}
+        if not data:
+            row["why"] = _fred_why.get(series_id, "")      # 빈 행이 사유를 말한다(#82)
+        results.append(row)
     return results
 
 

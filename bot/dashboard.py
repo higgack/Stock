@@ -17841,6 +17841,7 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         val_str = f'{dollar_idx["close"]:.2f}'
         rows.append(f'<tr><td>달러 인덱스</td><td>{val_str}</td>'
                     f'{_chg_cell(dollar_idx.get("change"), dollar_idx.get("pct"))}</tr>')
+    _missing: list[str] = []              # 빈 행의 사유(`fred_client.failure_reason`, #82)
     for item in fred_data:
         d = item.get("data")
         label = item.get("label", "")
@@ -17848,6 +17849,7 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         if not d or d.get("value") is None:
             rows.append(f'<tr><td>{_html.escape(label)}</td>'
                         f'<td>—</td><td class="neu">—</td></tr>')
+            _missing.append(str(item.get("why") or ""))
             continue
         v = d["value"]
         chg = d.get("change")
@@ -17899,9 +17901,17 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
                       f'({_html.escape(_asof)})</span>' if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
                     f'<td>{val_str}{_asof_html}</td>{chg_cell}</tr>')
+    _note = ""
+    if _missing:
+        # '—' 만 남기면 키 문제인지 원천 장애인지 못 가른다 — 빈 행 수와 갈래를 말한다(#43·#82).
+        _ws = list(dict.fromkeys(w for w in _missing if w))
+        _wtxt = (" — " + " / ".join(_ws[:2]) + (f" 외 {len(_ws) - 2}갈래" if len(_ws) > 2 else "")
+                 if _ws else "")
+        _note = (f'<div style="font-size:11px;margin-top:6px;color:var(--muted)">'
+                 f'⚠️ FRED {len(_missing)}행을 못 받았습니다{_html.escape(_wtxt)}</div>')
     return ('<div class="mcard"><div class="mcard-title">'
             '핵심 지표 (금리/경제)</div><table>'
-            + "".join(rows) + '</table></div>')
+            + "".join(rows) + '</table>' + _note + '</div>')
 
 
 def _render_earnings_table(earnings: list) -> str:
