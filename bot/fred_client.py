@@ -39,6 +39,58 @@ _CACHE_TTL_HOURS = 12
 _BASE_URL = "https://api.stlouisfed.org/fred"
 _TIMEOUT = 10
 
+
+def _mask_key(text: str) -> str:
+    """사유 문자열의 키 — 등록된 비밀값(`redact`) + URL 의 `api_key=` 자리(등록 전 값도)."""
+    import re
+    from bot.env_keys import redact
+    return re.sub(r"(api_key=)[^&\s'\"]+", r"\1***", redact(text or ""))
+
+
+def failure_reason(exc: Optional[BaseException] = None, *, no_key: bool = False,
+                   empty: bool = False) -> str:
+    """FRED 조회가 값을 못 낸 **갈래**를 사람 말로(순수 — 네트워크 0).
+
+    2026-10-22 매크로 카드 9장·핵심 지표 10행이 한꺼번에 빠졌는데 화면은 'FRED 관측을 못
+    받았습니다' 한 마디뿐이라, 키가 없는지·키가 거부됐는지·한도에 걸렸는지·원천이 죽었는지를
+    가를 수 없었다(#82 — 처방이 갈래마다 다르다). FRED 는 4xx 본문에 `error_message` 를
+    적어 보낸다 — 그 원문을 버리지 않는다(#349·#350). 비밀값은 `env_keys.redact` 로 가린다.
+    """
+    if no_key:
+        return "FRED_API_KEY 가 비어 있습니다(.env 확인)"
+    if empty:
+        return "FRED 응답에 쓸 수 있는 관측이 없습니다(시리즈·창 확인)"
+    if exc is None:
+        return ""
+    resp = getattr(exc, "response", None)
+    status = getattr(resp, "status_code", None)
+    msg = ""
+    if resp is not None:
+        try:
+            msg = str((resp.json() or {}).get("error_message") or "")
+        except Exception:                                         # noqa: BLE001
+            try:
+                msg = resp.text or ""
+            except Exception:                                     # noqa: BLE001
+                msg = ""
+    msg = _mask_key(" ".join(msg.split()))[:160]      # 가린 **뒤에** 자른다(#350)
+    tail = f" — 원문: {msg}" if msg else ""
+    if status is not None:
+        if status in (400, 401, 403) and "api_key" in msg.lower():
+            return f"FRED 가 API 키를 거부했습니다(HTTP {status}) — 키 확인·재발급{tail}"
+        if status == 429:
+            return f"FRED 요청 한도 초과(HTTP 429) — 10분 뒤 자동 재시도{tail}"
+        if status >= 500:
+            return f"FRED 서버 오류(HTTP {status}) — 원천 장애, 10분 뒤 자동 재시도{tail}"
+        return f"FRED 가 요청을 거절했습니다(HTTP {status}){tail}"
+    name = type(exc).__name__
+    if "Timeout" in name:
+        return f"FRED 응답 시간 초과({name}) — 10분 뒤 자동 재시도"
+    if "Connection" in name or "SSL" in name or "Proxy" in name:
+        return f"FRED 에 연결하지 못했습니다({name}) — 네트워크·DNS 확인"
+    return f"FRED 응답을 읽지 못했습니다({name}: {_mask_key(str(exc))[:120]})"
+
+
 # Per-market series catalog. Each entry is one indicator we surface in
 # the macro block; the FRED series_id maps to OECD / IMF / BoJ-sourced
 # data via FRED's mirror. label / unit drive the prompt rendering.
@@ -445,3 +497,45 @@ def format_macro_for_prompt(macro: dict, market: str) -> str:
         date_part = f" — {time_s}" if time_s else ""
         lines.append(f"  • {label}: {value:.2f}{unit}{change_part}{date_part}")
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def check(series_id: str = "DGS10") -> int:
+    """`python -m bot.fred_client --check` — FRED 가 **지금** 답하는지 한 번 묻고 갈래를 찍는다.
+
+    캐시·실패 기억을 거치지 않는 raw 조회다(#345c '원천이 지금 답하나'). 아무것도 쓰지 않는다.
+    이상 없을 때의 출력: `✅ FRED 응답 정상 — DGS10 <날짜> = <값>` (rc 0). 실패면 ❌ + 갈래 (rc 1).
+    """
+    import sys
+    from bot.env_keys import env_key as _ek, env_source, redact
+    print(f"fred_client --check · 인터프리터 {sys.executable}")
+    key = _ek("FRED_API_KEY")
+    print(f"  FRED_API_KEY 출처: {env_source('FRED_API_KEY')}"
+          + (f" · 길이 {len(key)}" if key else ""))
+    if not key:
+        print(f"❌ {failure_reason(no_key=True)}")
+        return 1
+    try:
+        resp = requests.get(f"{_BASE_URL}/series/observations",
+                            params={"series_id": series_id, "api_key": key,
+                                    "file_type": "json", "sort_order": "desc", "limit": 5},
+                            timeout=_TIMEOUT)
+        print(f"  HTTP {resp.status_code} · {len(resp.content)}바이트")
+        resp.raise_for_status()
+        obs = [o for o in (resp.json().get("observations") or [])
+               if o.get("value") not in (None, "", ".")]
+    except Exception as exc:                                       # noqa: BLE001
+        print(f"❌ {failure_reason(exc)}")
+        return 1
+    if not obs:
+        print(f"❌ {failure_reason(empty=True)}")
+        return 1
+    print(redact(f"✅ FRED 응답 정상 — {series_id} {obs[0].get('date')} = {obs[0].get('value')}"))
+    return 0
+
+
+if __name__ == "__main__":   # cd ~/stock && .venv/bin/python -m bot.fred_client --check
+    import sys as _sys
+    if "--check" in _sys.argv[1:]:
+        _args = [a for a in _sys.argv[1:] if not a.startswith("--")]
+        raise SystemExit(check(*_args[:1]))
+    print("usage: python -m bot.fred_client --check [SERIES_ID]")

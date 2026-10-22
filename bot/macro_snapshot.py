@@ -454,7 +454,7 @@ def _fred_start_label(start: str, quarterly: bool = False) -> str:
 
 
 # ── yfinance monthly batch ──────────────────────────────────────────
-def drop_reason(src: str, sid: str, *, naver_mapped: bool) -> str:
+def drop_reason(src: str, sid: str, *, naver_mapped: bool, fred_why: str = "") -> str:
     """값이 없어 카드가 빠질 때의 **갈래**(순수).
 
     '없음' 만 말하는 진단은 추측을 부른다(#82) — 처방이 갈래마다 다르다.
@@ -463,7 +463,8 @@ def drop_reason(src: str, sid: str, *, naver_mapped: bool) -> str:
     빠졌으면 그 심볼의 응답이 없는 것이다.
     """
     if src == "fred":
-        return "FRED 관측을 못 받았습니다"
+        # 갈래(키 없음·키 거부·한도·서버 오류·연결 실패)를 같이 — 처방이 다르다(#82, 2026-10-22)
+        return "FRED 관측을 못 받았습니다" + (f": {fred_why}" if fred_why else "")
     if src == "ecos":
         return "ECOS 관측을 못 받았습니다"
     if src == "customs":
@@ -495,6 +496,13 @@ def dropped_note(dropped: list) -> str:
     whys = [str(d.get("why") or "") for d in dropped if d.get("why")]
     if whys and len(set(whys)) == 1:
         why = f" — {whys[0]}"
+    elif whys:
+        # 갈래가 여럿이면 가장 많은 갈래를 장 수와 함께 — 옛 판은 아무 사유도 안 적었다
+        # (2026-10-22: FRED 키·장애 사유가 다른 원천의 빈 카드 하나에 묻혔다, #82·#45).
+        from collections import Counter
+        (top, n), = Counter(whys).most_common(1)
+        rest = len(set(whys)) - 1
+        why = f" — {n}장: {top} (그 밖 사유 {rest}갈래)"
     return f"값을 못 받아 {len(dropped)}장을 뺐습니다: {names}{why}"
 
 
@@ -1276,7 +1284,15 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             if value is None:
                 # 카드는 그리지 않되(옛 동작) **왜 빠졌는지 남긴다** — 그냥
                 # `continue` 하면 사용자 눈에 '기능이 삭제된 것' 으로 보인다.
-                _why = drop_reason(src, sid, naver_mapped=(sid in _MACRO_NAVER))
+                _fwhy = ""
+                if src == "fred":
+                    try:
+                        from bot.market_overview import _fred_why
+                        _fwhy = _fred_why.get(sid, "")
+                    except Exception:                             # noqa: BLE001
+                        _fwhy = ""
+                _why = drop_reason(src, sid, naver_mapped=(sid in _MACRO_NAVER),
+                                   fred_why=_fwhy)
                 dropped.append({"key": key, "label": label, "why": _why})
                 log.warning("macro: card dropped — %s(%s): %s", label, sid, _why)
                 continue
