@@ -1431,6 +1431,13 @@ def _extract_canonical(ticker: str) -> dict:
         # 숨기거나 쓰지 말라고 한 값은 빼고, 앵커가 보여 준 값만 남긴다.
         from bot.report_numeric_guard import canonical_from_info
         result.update(canonical_from_info(info))
+        # 통화는 **응답(`.info`)의 통화**를 먼저 — 시장 설정은 .L/.NS/.DE 등에
+        # USD 를 돌려줘(실측) 인도 종목의 '현재가 $15.6' 같은 달러 환산을 같은
+        # 통화로 읽는다(델타 리뷰). 다르면 기호 대신 통화 코드를 찍는다.
+        _info_ccy = str(info.get("currency") or "").strip()
+        if _info_ccy and _info_ccy != result["currency"]:
+            result["currency"] = _info_ccy
+            result["currency_symbol"] = f"{_info_ccy} "
         return result
     except Exception:
         return {}
@@ -1446,7 +1453,8 @@ def _guard_numbers(body, canonical: dict, currency_symbol: str):
         return body
     try:
         from bot.report_numeric_guard import annotate
-        return annotate(body, canonical, currency_symbol)
+        return annotate(body, canonical,
+                        canonical.get("currency_symbol") or currency_symbol)
     except Exception as exc:
         log.warning("analyze: numeric guard failed: %s", exc)
         return body

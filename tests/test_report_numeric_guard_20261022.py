@@ -43,7 +43,7 @@ def test_faithful_copies_pass_with_rounding():
 
 
 def test_unit_error_and_stale_values_are_flagged():
-    body = "시가총액 약 19조 원으로 대형주입니다.\n현재가 ₩120,000 에서 출발."
+    body = "시가총액 약 19조 원으로 대형주입니다.\n현재가 ₩120,000 입니다."
     bad = {f.metric: f for f in g.find_mismatches(body, KR)}
     assert set(bad) == {"market_cap", "price"}
     assert bad["market_cap"].quoted == pytest.approx(19e12)
@@ -136,6 +136,55 @@ def test_value_after_a_missing_value_belongs_to_the_next_label():
     assert _metrics("PER: — / PBR: 1.2", KR) == [("pbr", True)]
 
 
+@pytest.mark.parametrize("line", [
+    # 델타 리뷰 2026-10-22 — 가정·과거·변화·임계 표현(허용 목록 밖)
+    "PER 20배를 부여해", "PER 20배 기준 적정가", "PER 20배로 환산 시", "PER 60배라면",
+    "PER 60배라도", "PER 15배만 받아도", "PER 12.5배였던 시점", "PER는 60배였다",
+    "PER 60배에 달했던", "PER 20배에서 거래되던", "PER 15배로 하락", "PER 15배로 낮아지면",
+    "PER 15배로 수렴", "PER 15배 하향", "PER 15배 정상화", "PER 15배 내외", "PER 10배 밑으로",
+    "PBR 0.5배 아래", "PER 60배 버블 구간", "PER 15배에서 28.9배로 확대", "PER 10 → 28.9배",
+    "시가총액 100조 클럽", "시가총액 2조원 증발", "시가총액이 하루 만에 1조원 늘었다",
+    "시총 3천억원 규모의 자사주 매입", "현재가 9만원대 초반",
+    "P/E above 40x historically", "P/E under 20x", "market cap of $1 trillion milestone",
+    "market cap gain of $200B",
+    # 퍼센트·날짜·월·여러 열 표·Trader 경고 줄
+    "시가총액의 30%에 달하는 현금", "market cap 30% below peak",
+    "현재가(10/21 종가) 98,500원", "현재가 2026.10.21 기준 98,500원", "52주 최고가는 3월의 150,000원",
+    "| PER | 12.0배 | 18.5배 | 28.9배 |", "| EPS (TTM) | 1,800원 | 3,400원 | 4,500원 |",
+    "| 시가총액 | 150조원 | 5.83조원 |",
+    "⚠️ **가격 환각 의심** (학습 cutoff): Entry Price 20,000. 현재가 3 기준",
+])
+def test_delta_review_false_positives(line):
+    assert g.scan(line, KR) == [] and g.scan(line, US) == []
+
+
+def test_current_value_phrasings_still_judged():
+    # 허용 목록이 정상 서술은 받는다 — 수준·규모·으로+서술·표의 단일 값 칸.
+    assert _metrics("시가총액 58.3조원 수준", KR) == [("market_cap", False)]
+    assert _metrics("시가총액은 약 58.3조원 수준이다", KR) == [("market_cap", False)]
+    assert _metrics("PER 28.9배로 업종 평균 대비 할인", KR) == [("per", True)]
+    assert _metrics("| PER | 28.9배 |", KR) == [("per", True)]
+    assert _metrics("| 현재가 | ₩98,500 | 52주 최고 ₩120,000 |", KR) == [
+        ("high_52w", True), ("price", True)]
+    assert _metrics("현재가 98천원.", KR) == [("price", True)]
+    assert _metrics("현재가 9만8천원.", KR) == [("price", True)]
+    assert _metrics("시가총액 1조 9천억원.", KR) == [("market_cap", True)]
+
+
+def test_value_guards_that_only_they_catch():
+    # 원화 표기가 조사와 붙어도(‘원이며’) 그 통화다 — 달러 종목에서 판정하지 않는다.
+    assert g.scan("현재가는 약 25만원이며", US) == []
+    # 시총에 퍼센트가 붙으면 금액이 아니다.
+    assert g.scan("시가총액 30%.", KR) == []
+    # 표현할 수 없는 큰 수(inf)는 판정하지 않는다.
+    assert g.scan("현재가 " + "1" * 400 + ".", KR) == []
+
+
+def test_annotate_is_idempotent():
+    once = g.annotate("PER 50배.", KR, "₩")
+    assert g.annotate(once, KR, "₩") == once
+
+
 def test_trailing_per_judged_even_with_forward_note_after():
     # 뒤에 붙은 선행 표기는 다음 항목이다 — 후행 28.9 는 후행 기준과 잰다(첫 판은
     # 꼬리의 '선행' 을 보고 이 값을 선행 PER 로 잘못 분류했다).
@@ -169,7 +218,7 @@ def test_post_window_stops_at_next_item():
 
 def test_eps_needs_explicit_trailing_qualifier():
     assert _metrics("TTM EPS ₩6,479", KR) == [("eps", True)]
-    f = g.find_mismatches("후행 EPS -1,234원 적자 전환", KR)
+    f = g.find_mismatches("후행 EPS -1,234원(적자)", KR)
     assert [x.metric for x in f] == ["eps"]
 
 
@@ -202,7 +251,7 @@ def test_note_lists_items_with_quote_and_caps_length():
 
 
 def test_excerpt_marks_trims_and_drops_bold():
-    line = "가" * 80 + " **PER** 50배 " + "나" * 80
+    line = "가" * 80 + " **PER** 50배. " + "나" * 80
     f = g.find_mismatches(line, KR)[0]
     assert f.quote_text.startswith("…") and f.quote_text.endswith("…")
     assert "**" not in f.quote_text
@@ -349,7 +398,8 @@ def test_audit_with_nothing_to_compare_says_undeterminable():
 def test_audit_reference_uses_market_currency_and_shared_rule():
     from bot.scripts.report_guard_audit import canonical_from_record
     c = canonical_from_record(_rec("", trailingPE=20000.0, priceToBook=0.0))
-    assert c["currency"] == "KRW"
+    assert c["currency"] == "KRW"                       # 응답 통화가 없으면 시장 설정
+    assert canonical_from_record(_rec("", currency="INR"))["currency"] == "INR"
     assert "trailing_pe" not in c and "price_to_book" not in c
 
 
@@ -379,3 +429,25 @@ def test_audit_main_runs_with_sweep_argv(tmp_path, monkeypatch, capsys):
     assert rga.main([]) == 0
     out = capsys.readouterr().out
     assert "report_guard_audit v1" in out and "1/1" in out
+
+
+def test_audit_skips_report_head_and_scrubs_cross_marks():
+    from bot.audit_sweep import _findings
+    from bot.scripts.report_guard_audit import audit, report_lines
+    # 머리(제목·지난 추천)는 제품이 가드를 안 건다 — 감사도 안 센다.
+    res = audit([_rec("📋 리포트\nPER 50배\n## 💰 펀더멘털\nPER 28.9배")])
+    assert res["judged"]["per"] == 1 and res["missed"]["per"] == 0
+    # 원문 발췌의 ❌ 는 sweep 결함으로 세지 않는다 — 50% 경고 한 줄만.
+    res2 = audit([_rec("## 💰 펀더멘털\n❌ PER 50배."), _rec("## 💰 펀더멘털\nPER 28.9배")])
+    found = _findings("\n".join(report_lines(res2)))
+    assert len(found) == 1 and "수치 대조 경고가 붙습니다" in found[0]
+
+
+def test_extract_canonical_prefers_response_currency(monkeypatch):
+    import bot.analyzer as a
+    import tradingagents.agents.utils.agent_utils as au
+    monkeypatch.setattr(au, "_instrument_info", lambda t: {
+        "currentPrice": 1300.0, "currency": "INR", "marketCap": 1e12})
+    c = a._extract_canonical("RELIANCE.NS")
+    assert c["currency"] == "INR" and c["currency_symbol"] == "INR "
+    assert g.scan("현재가 $15.6", c) == []          # 달러 환산값은 다른 통화

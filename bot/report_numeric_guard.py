@@ -40,6 +40,7 @@ from dataclasses import dataclass
 # 이 가드가 쓰는 줄의 머리. 추출기는 이 머리로 시작하는 줄을 건너뛴다.
 MARKER = "🔎 **수치 대조**"
 _ITEM_PREFIX = "  · "
+_NUM_CELL = re.compile(r"\s*[^A-Za-z가-힣|]{0,4}\d")
 
 # 지표별 허용 차이(기준 대비 비율). 값을 옮기다 생기는 반올림('약 29배')은
 # 통과하고, 단위 실수·옛 값·다른 기준은 걸리게 잡았다. ⚠️ 실측이 아니라
@@ -101,7 +102,8 @@ _SKIP_WORDS = re.compile(
     r"상단|하단|범위|레인지|희석|조정|선행|추정|예상|컨센|전망|가이던스|"
     r"peer|target|histor|avg|average|median|sector|industry|band|growth|"
     r"bull|bear|base|scenario|implied|discount|premium|range|forward|fwd|"
-    r"estimate|consensus|guidance|beat|miss|came|reported|surprise|"
+    r"estimate|consensus|guidance|beat|miss|came|reported|surprise|한때|"
+    r"under|over|above|below|gain|loss|increase|decrease|drop|rise|fell|rose|jump|"
     r"(?<!\d)(?:19|20)\d{2}(?!\d)|FY|[1-4]\s*Q|Q\s*[1-4]|[12]\s*H\b|분기|반기|"
     r"상반기|하반기|연간|NTM|12\s*M",
     re.I,
@@ -110,16 +112,32 @@ _SKIP_WORDS = re.compile(
 # ('52주' · '200일' · '10년 평균' · '1Q26' · '5일 연속' · '2026E').
 _NUM_SUFFIX_NOT_VALUE = re.compile(
     r"\s*(?:주(?!당)|일|년|개월|거래일|분기|반기|위|명|회|선|차|번|종|곳|개|"
-    r"대|세|%|[EFQH](?![A-Za-z])|[-−~～–]\s*\d)", re.I)
+    r"대|세|월|%|[EFQH](?![A-Za-z])|[-−~～–/.]\s*\d)", re.I)
 # 숫자(와 단위) 뒤 짧은 창에 이게 있으면 조건·임계·분기 실적·가이던스다
 # ('PER 12배 적용 시' · 'PBR 0.9배까지 하락' · 'EPS $1.62 in Q3' ·
 # 'PER 15.2배(2026E)'). ⚠️ `_SKIP_WORDS` 전부를 걸지는 않는다 — 'PER 28.9배로
 # 업종 평균 대비 할인' 의 업종·대비는 우리 값 **뒤**의 비교 대상이다.
 _POST_SKIP = re.compile(
-    r"까지|이하|이상|미만|초과|수준|적용|하락\s*시|상승\s*시|도달|돌파|가정|"
+    r"까지|이하|이상|미만|초과|수준\s*(?:까지|으로|에서)|적용|하락\s*시|상승\s*시|도달|돌파|가정|"
     r"분기|반기|(?<!\d)(?:19|20)\d{2}(?!\d)|\d{2}\s*E\b|[1-4]\s*Q|Q\s*[1-4]|"
     r"quarter|beat|miss|guidance|가이던스|surprise|서프라이즈|estimate|컨센|"
     r"예상|추정|전망|목표|선행|forward|fwd|last\s+year|year\s+ago",
+    re.I,
+)
+# 현재 값 뒤에 올 수 있는 끝맺음(허용 목록). 통화 낱말(원·달러·엔·위안)은 건너뛰고 본다.
+_VALUE_END = re.compile(
+    r"(?:\s*(?:원|달러|엔|위안|元|円|USD|KRW|JPY|HKD|TWD|CNY))?"
+    r"(?:\s*$|\s*[)\]|,.;·/]|\s*\(|\s*(?:이며|이고|이다|입니다|임\b|이었던\s*현재)"
+    r"|\s*에\s*거래|\s*수준(?:이다|입니다|이며|\s*$|\s*[,.)])|\s*규모(?:이다|입니다|이며|\s*$|\s*[,.)])"
+    # '으로/로' 뒤가 변화·가정 동사가 아니면 현재 값의 서술이다('19조 원으로 대형주'
+    # · '28.9배로 업종 평균 대비 할인'). '15배로 하락' · '20배로 환산 시' 는 아니다.
+    r"|\s*으?로(?:\s*$|\s*[,.]|\s+(?!(?:하락|상승|확대|축소|낮아|높아|수렴|떨어|"
+    r"오르|올라|내려|증가|감소|하향|상향|조정|정상화|리레이팅|환산|부여|적용|"
+    r"재평가|회귀|복귀|되돌|돌아)))"
+    # 바로 다음이 다른 라벨이면 나열('PER 28.9배 PBR 1.2배')이다.
+    r"|\s+(?=" + "|".join(f"(?:{p.pattern})" for _, p in _LABELS) + r")"
+    r"|\s+(?:and|vs\.?|versus|compared|which|while|with|as\s+of)\b"
+    r")",
     re.I,
 )
 _POST_WINDOW = 16
@@ -141,20 +159,20 @@ _MAX_GAP = 12
 
 # 단위. 긴 것을 먼저(백만 → 만). 영문 단어 단위는 대소문자를 가리지 않는다.
 _UNIT_RE = re.compile(
-    r"\s*(백만|십억|천억|조|억|만|兆|億|萬|trillion|billion|million|tn|bn|mn|"
+    r"\s*(백만|십억|천억|천만|조|억|만|천|兆|億|萬|trillion|billion|million|tn|bn|mn|"
     r"[TBMK](?![A-Za-z])|배|times|[xX×](?![A-Za-z])|%)?",
     re.I,
 )
 _SCALE = {
     "조": 1e12, "兆": 1e12, "천억": 1e11, "십억": 1e9, "억": 1e8, "億": 1e8,
-    "백만": 1e6, "만": 1e4, "萬": 1e4,
+    "백만": 1e6, "천만": 1e7, "만": 1e4, "萬": 1e4, "천": 1e3,
     "trillion": 1e12, "tn": 1e12, "t": 1e12,
     "billion": 1e9, "bn": 1e9, "b": 1e9,
     "million": 1e6, "mn": 1e6, "m": 1e6, "k": 1e3,
 }
 _MULTIPLE_UNITS = {"배", "times", "x", "×"}
 # 한국식 복합 금액('1조 9,000억' · '9만 8,500원')의 뒤 조각 — 앞 단위보다 작아야 한다.
-_TAIL_PIECE = re.compile(r"\s*(" + _NUM + r")\s*(억|億|만|萬)?")
+_TAIL_PIECE = re.compile(r"\s*(" + _NUM + r")\s*(천억|천만|억|億|만|萬|천)?")
 
 # (정규식, 통화) — 앞에서부터 처음 맞는 것. 복합 기호($ 앞 접두)를 먼저.
 _CCY_MARKS: list[tuple[re.Pattern, str]] = [
@@ -244,7 +262,7 @@ def _quote_value(metric: str, num: float, unit: str, quoted_ccy: str | None,
             return None
         return num if num > 0 else None
     # 금액 지표
-    if is_mult_unit or ref_ccy in _MINOR_UNIT_CCY:
+    if is_mult_unit or u == "%" or ref_ccy in _MINOR_UNIT_CCY:
         return None
     if quoted_ccy and quoted_ccy != _normalize_ccy(ref_ccy):
         return None
@@ -253,7 +271,7 @@ def _quote_value(metric: str, num: float, unit: str, quoted_ccy: str | None,
             return None            # 단위를 빠뜨린 작은 수('시총 36.9') — 못 잰다
         return num * _scale_of(u) if num > 0 else None
     # 가격·EPS — 큰 단위(억·조·B…)가 붙으면 다른 값을 가리킨 것이다.
-    if u and u not in ("만", "萬"):
+    if u and u not in ("만", "萬", "천"):
         return None
     if metric in ("price", "high_52w", "low_52w") and num <= 0:
         return None
@@ -299,6 +317,15 @@ def scan(body: str, canonical: dict | None) -> list[tuple[Finding, bool]]:
             continue
         if _COMPARE_LINE.search(line):
             continue
+        # 여러 열 표의 행('| PER | 12.0배 | 18.5배 | 28.9배 |')은 열마다 연도·회사가
+        # 달라 어느 칸이 현재 값인지 그 줄만으로는 모른다 — 라벨 셀 뒤 숫자 셀이
+        # 둘 이상이고 그 셀들에 라벨이 없으면 건너뛴다(델타 리뷰 2026-10-22).
+        if stripped.startswith("|"):
+            cells = stripped.strip("|").split("|")
+            rest_cells = cells[1:]
+            if (sum(1 for c in rest_cells if _NUM_CELL.match(c)) >= 2
+                    and not _ANY_LABEL.search("|".join(rest_cells))):
+                continue
         for metric, lab in _LABELS:
             for m in lab.finditer(line):
                 f = _judge_one(line, metric, m, canonical, ref_ccy)
@@ -330,9 +357,6 @@ def _judge_one(line: str, metric: str, m: re.Match, canonical: dict,
     nm = _NUM_RE.match(line, j)
     if not nm:
         return None
-    # 숫자 자리에서 다른 라벨이 시작하면('현재가·52주 최고…') 그 숫자는 라벨의 일부다.
-    if _ANY_LABEL.match(line, nm.start()):
-        return None
     num = _to_float(nm.group(0))
     if num is None:
         return None
@@ -342,18 +366,14 @@ def _judge_one(line: str, metric: str, m: re.Match, canonical: dict,
     # 숫자 바로 뒤가 기간·순위·횟수 단위면 값이 아니다('52주' · '10년' · '1Q26').
     if not unit and _NUM_SUFFIX_NOT_VALUE.match(line, nm.end()):
         return None
-    if re.match(r"\s*[-−~～–]\s*\d", line[pos:pos + 4]):
-        return None                     # 범위('28~32배' · '1.0-1.2x')
     # 한국식 복합 금액 — 뒤 조각을 더한다('1조 9,000억' · '9만 8,500원').
-    if unit in ("조", "兆", "억", "億", "만", "萬"):
+    if unit in ("조", "兆", "천억", "억", "億", "천만", "만", "萬"):
         tp = _TAIL_PIECE.match(line, pos)
         if tp:
             t_unit = tp.group(2) or ""
             t_num = _to_float(tp.group(1))
             if t_num is not None and t_num >= 0 and (
-                    (unit in ("조", "兆") and t_unit in ("억", "億", "만", "萬"))
-                    or (unit in ("억", "億") and t_unit in ("만", "萬"))
-                    or (unit in ("만", "萬") and not t_unit)):
+                    _scale_of(t_unit) < _scale_of(unit)):
                 num = num * _scale_of(unit) + t_num * _scale_of(t_unit)
                 unit = ""
                 pos = tp.end()
@@ -367,6 +387,12 @@ def _judge_one(line: str, metric: str, m: re.Match, canonical: dict,
     if nxt:
         post = post[:nxt.start()]
     if _POST_SKIP.search(post):
+        return None
+    # 숫자 뒤가 **현재 값을 말하는 끝맺음**일 때만 잰다(허용 목록). 금지 낱말을
+    # 늘려 가는 방식은 수렴하지 않았다 — '20배를 부여해' · '60배였던' · '15배로
+    # 하락' · '1조원 증발' · '$1 trillion milestone' 처럼 가정·과거·변화 표현은
+    # 끝이 없다(델타 리뷰 2026-10-22). 놓침이 오탐보다 낫다.
+    if not _VALUE_END.match(line, pos):
         return None
     if metric == "eps" and not _EPS_TRAILING.search(pre + line[s:e] + gap + post):
         return None
@@ -385,7 +411,7 @@ def _judge_one(line: str, metric: str, m: re.Match, canonical: dict,
     if metric in _MULTIPLE_METRICS and ref <= 0:
         return None
     q = _quote_value(metric, num, unit, quoted_ccy, ref_ccy)
-    if q is None:
+    if q is None or q != q or q in (float("inf"), float("-inf")):
         return None
     ok = _within(metric, q, float(ref))
     return (Finding(metric, q, float(ref), _excerpt(line, s, pos)), ok)
@@ -490,7 +516,7 @@ def render_note(findings: list[Finding], currency_symbol: str = "",
 
 def annotate(body: str, canonical: dict | None, currency_symbol: str = "") -> str:
     """원문은 그대로 두고, 어긋난 값이 있으면 섹션 끝에 대조 결과를 붙인다."""
-    if not body or not isinstance(body, str):
-        return body
+    if not body or not isinstance(body, str) or MARKER in body:
+        return body          # 이미 붙였으면 다시 붙이지 않는다
     note = render_note(find_mismatches(body, canonical), currency_symbol)
     return f"{body.rstrip()}\n\n{note}" if note else body

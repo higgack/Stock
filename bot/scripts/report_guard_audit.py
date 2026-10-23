@@ -59,12 +59,15 @@ def canonical_from_record(rec: dict) -> dict:
     out = canonical_from_info({dst: si.get(src) for src, dst in _SI_TO_INFO})
     if not out:
         return {}
-    try:
-        from bot.market import get_market_config
-        out["currency"] = get_market_config(str(rec.get("ticker") or "")).get(
-            "currency", "")
-    except Exception:
-        out["currency"] = str(si.get("currency") or "")
+    # 통화는 제품처럼 응답의 통화를 먼저, 없으면 시장 설정(analyzer 와 같은 순서).
+    ccy = str(si.get("currency") or "").strip()
+    if not ccy:
+        try:
+            from bot.market import get_market_config
+            ccy = get_market_config(str(rec.get("ticker") or "")).get("currency", "")
+        except Exception:                                   # noqa: BLE001
+            ccy = ""
+    out["currency"] = ccy
     return out
 
 
@@ -116,6 +119,8 @@ def audit(records: list[dict]) -> dict:
         n_ref += 1
         rec_flag = False
         for title, body in split_sections(rec.get("full_report") or ""):
+            if title == "(머리)":
+                continue          # 제품은 리포트 머리(제목·지난 추천)에 가드를 안 건다(#35)
             for f, ok in scan(body, can):
                 judged[f.metric] += 1
                 sec_judged[title] += 1
@@ -199,9 +204,10 @@ def report_lines(res: dict, samples: int = 15) -> list[str]:
                      f"/{len(res['samples'])}건)")
         for d, t, sec, f in sorted(res["samples"], key=lambda x: str(x[0]),
                                    reverse=True)[:samples]:
-            lines.append(f"  {d} {t} [{sec[:14]}] {LABEL_KO[f.metric]}"
-                         f" {f.quoted:,.4g} ↔ 기준 {f.reference:,.4g}"
-                         f" ({f.gap_pct:+.0f}%) 「{f.quote_text}」")
+            # 원문 발췌에 '❌' 가 있으면 sweep 이 그 줄을 결함으로 센다(#250) — 바꿔 찍는다.
+            lines.append((f"  {d} {t} [{sec[:14]}] {LABEL_KO[f.metric]}"
+                          f" {f.quoted:,.4g} ↔ 기준 {f.reference:,.4g}"
+                          f" ({f.gap_pct:+.0f}%) 「{f.quote_text}」").replace("❌", "✗"))
     return lines
 
 
