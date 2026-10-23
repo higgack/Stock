@@ -1316,6 +1316,8 @@ var UM={{'M USD':[1e6,'$'],'B USD':[1e9,'$'],'M EUR':[1e6,'€'],'100M JPY':[1e8
  'JPY':[1,'¥'],'EUR':[1,'€'],'KRW':[1,'₩'],'USD':[1,'$']}};
 function fv(r){{var v=r.latest,u=r.unit||'';
  if(u==='%')return v.toFixed(2)+'%';
+ // OECD 경기선행지수(CLI)는 월 변화가 0.0x 라 소수 1자리면 안 움직여 보인다 — CLI 행만 2자리.
+ if(u==='Index'&&/^OECD:CLI:/.test(r.id||''))return v.toFixed(2);
  if(u==='Index'||u==='pt')return v.toFixed(1);
  // ⚠️ 단위가 %가 아니면 %를 붙이지 않는다. `is_rate` 는 지수·비율 계열에도
  // 켜져 있어(카탈로그 실측: Index 4종·Ratio 2종) 그대로 쓰면 통화유통속도가

@@ -144,6 +144,9 @@ _ISSUE_PATTERNS: list[tuple[re.Pattern, str]] = [
      "API 호출 실패 사과 (모델)"),
 ]
 
+# schemas.PM_LIMITS_HEAD("**데이터 한계**") + 그 아래 '- ' 불릿들.
+_PM_LIMITS_SECTION_RE = re.compile(r"\*\*데이터 한계\*\*:[ \t]*\n(?:[ \t]*- .*(?:\n|$))+")
+
 
 # Per-report section markers — should appear EXACTLY once in a finished
 # report. When the fundamentals analyst goes into a repetition loop (the
@@ -187,9 +190,13 @@ def _detect_issues(record: dict) -> list[str]:
         issues.append("요약 미완성")
 
     # Tool-related issues across the body
+    # PM 결정문 끝의 '**데이터 한계**' 불릿은 모델이 데이터 부족을 정직하게 밝힌
+    # 섹션이다("API 호출 실패" 등) — 사과 패턴이 걸리면 정상 리포트가 '모델 사과'로
+    # 오분류되므로 패턴 검사에서만 뺀다(본문·표시는 그대로).
+    scan = _PM_LIMITS_SECTION_RE.sub("", full)
     seen_msgs: set[str] = set()
     for pat, msg in _ISSUE_PATTERNS:
-        if pat.search(full) and msg not in seen_msgs:
+        if pat.search(scan) and msg not in seen_msgs:
             seen_msgs.add(msg)
             issues.append(msg)
 
