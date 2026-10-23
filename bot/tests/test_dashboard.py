@@ -123,34 +123,42 @@ class TestRenderOutcomeHtml:
         assert "5거래일 후" in html
         assert "+5.0%" in html
 
+    # 2026-10-22 채점 규약 변경(`bot.outcome_verdict`, ±2%p 중립 구간 · 보유도
+    # 채점) — 옛 계약(알파 부호만 · 보유 무판정)을 새 계약으로 다시 썼다(#222).
+    # 옛 입력(-1.5%·+2.0%)은 이제 ±2%p 안이라 '판정 보류'다 — 그 사실도 같이 잰다.
     def test_valid_sell_renders(self):
         resolved = {
-            "raw": "-2.1%", "alpha": "-1.5%",
+            "raw": "-3.1%", "alpha": "-2.5%",
             "rating": "sell", "ticker": "NVDA",
         }
         html = _render_outcome_html(resolved)
         assert html != ""
         assert "매도 추천 맞음" in html
+        inside = _render_outcome_html({**resolved, "alpha": "-1.5%"})
+        assert "판정 보류" in inside and "맞음" not in inside
 
     def test_valid_sell_miss_renders(self):
-        # Sell call but alpha > 0 → miss
+        # Sell call but alpha > +2%p → miss (경계 +2.0%p 는 판정 보류)
         resolved = {
-            "raw": "+3.0%", "alpha": "+2.0%",
+            "raw": "+3.0%", "alpha": "+2.5%",
             "rating": "sell", "ticker": "NVDA",
         }
         html = _render_outcome_html(resolved)
         assert "매도 추천 틀림" in html
+        edge = _render_outcome_html({**resolved, "alpha": "+2.0%"})
+        assert "판정 보류" in edge and "틀림" not in edge
 
     def test_valid_hold_renders_no_hit_miss(self):
+        # 이름은 옛 계약 그대로 둔다(히스토리 추적) — 보유는 이제 ±2%p 안이면
+        # 맞음, 밖이면 틀림으로 채점한다.
         resolved = {
             "raw": "+1.0%", "alpha": "+0.5%",
             "rating": "hold", "ticker": "NVDA",
         }
         html = _render_outcome_html(resolved)
-        assert "보유 추천" in html
-        # Hold: no 맞음/틀림 verdict
-        assert "맞음" not in html
-        assert "틀림" not in html
+        assert "보유 추천 맞음" in html
+        out = _render_outcome_html({**resolved, "alpha": "+4.0%"})
+        assert "보유 추천 틀림" in out
 
     def test_alpha_zero_is_equal(self):
         resolved = {

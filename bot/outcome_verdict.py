@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import math
+
 NEUTRAL_BAND_PP = 2.0
 
 _BUY = ("buy", "overweight")
@@ -30,7 +32,7 @@ _SELL = ("sell", "underweight")
 
 def verdict(rating: str | None, alpha_pp: float | None) -> str | None:
     """→ 'hit' | 'miss' | 'neutral' | None(채점 불가). 순수."""
-    if alpha_pp is None or alpha_pp != alpha_pp:
+    if not isinstance(alpha_pp, (int, float)) or not math.isfinite(alpha_pp):
         return None
     r = (rating or "").strip().lower()
     b = NEUTRAL_BAND_PP

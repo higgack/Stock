@@ -361,6 +361,10 @@ def _enforce_pm_override_discipline(
     new_fields = {
         "rating": target,
         "investment_thesis": decision.investment_thesis + "\n\n" + note,
+        # 원래 등급 기준의 할 일·조건은 등급과 함께 무효(2026-10-22 리뷰 H1).
+        "holder_action": None,
+        "new_entry_action": None,
+        "watch_conditions": None,
     }
     try:
         adjusted = decision.model_copy(update=new_fields)

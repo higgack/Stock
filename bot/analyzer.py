@@ -376,6 +376,10 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                 ticker, _trade_date or str(target_date or ""),
                 state, decision, _override_note,
             )
+            # 등급이 HOLD 로 바뀌었으니 원래 등급 기준의 할 일·조건은 무효 —
+            # 요약·전체 리포트 둘 다 이 decision 을 쓴다(독립 리뷰 H1).
+            from tradingagents.agents.schemas import strip_pm_actions
+            decision = strip_pm_actions(decision)
     except Exception as exc:
         log.warning("analyze: PM override check failed for %s: %s", ticker, exc)
 
@@ -980,8 +984,12 @@ def _check_pm_override_required(
         return None, ""
 
     # Build combined text for trigger check (PM rationale + investment plan)
+    # ⚠️ PM 보조 섹션(할 일·판정을 바꿀 조건·데이터 한계)은 근거가 아니다 —
+    # '실적 발표'·'데이터 없음' 같은 낱말이 트리거로 읽혀 규율을 끈다
+    # (2026-10-22 독립 리뷰 B1). 근거만 본다.
+    from tradingagents.agents.schemas import pm_core_text
     combined = " ".join([
-        decision,
+        pm_core_text(decision),
         (state.get("investment_plan") or "") if isinstance(state, dict) else "",
     ])
 

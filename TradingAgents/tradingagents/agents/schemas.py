@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +277,22 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional target price in the instrument's quote currency.",
     )
+
+    # 선택 필드가 결정 전체를 깨지 않게 — 툴콜 경로에서 모델이 배열을 문자열로
+    # 보내면 ValidationError 로 구조화 결정 전체를 잃는다(독립 리뷰 M4).
+    @field_validator("watch_conditions", "data_limitations", mode="before")
+    @classmethod
+    def _coerce_str_list(cls, v):
+        if v is None or isinstance(v, list):
+            return [x for x in v if isinstance(x, str)] if isinstance(v, list) else v
+        if isinstance(v, str):
+            return [v] if v.strip() else None
+        return None
+
+    @field_validator("holder_action", "new_entry_action", mode="before")
+    @classmethod
+    def _coerce_str(cls, v):
+        return v if v is None or isinstance(v, str) else None
     time_horizon: Optional[str] = Field(
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
@@ -298,21 +314,57 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         "",
         f"**Investment Thesis**: {decision.investment_thesis}",
     ]
-    if decision.holder_action:
-        parts.extend(["", f"**보유 중이라면**: {decision.holder_action}"])
-    if decision.new_entry_action:
-        parts.extend(["", f"**미보유라면**: {decision.new_entry_action}"])
-    _wc = [c.strip() for c in (decision.watch_conditions or []) if c and c.strip()][:3]
-    if _wc:
-        parts.extend(["", "**판정을 바꿀 조건**:"] + [f"- {c}" for c in _wc])
-    _dl = [c.strip() for c in (decision.data_limitations or []) if c and c.strip()]
-    if _dl:
-        parts.extend(["", "**데이터 한계**:"] + [f"- {c}" for c in _dl])
     if decision.price_target is not None:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    # 새 섹션은 **맨 뒤**에 둔다 — 요약은 앞 4줄만 싣고, 차트의 목표가·손절선
+    # 파서(`chart_data.parse_trade_levels`)는 첫 매치를 쓰므로 앞에 두면
+    # Price Target 을 가로챈다(2026-10-22 독립 리뷰 M2). 그리고 PM override
+    # 트리거 검사는 이 섹션들을 잘라내고 본다(`pm_core_text`).
+    if decision.holder_action:
+        parts.extend(["", f"{PM_HOLDER_HEAD}: {decision.holder_action}"])
+    if decision.new_entry_action:
+        parts.extend(["", f"{PM_ENTRY_HEAD}: {decision.new_entry_action}"])
+    _wc = [c.strip() for c in (decision.watch_conditions or []) if c and c.strip()][:3]
+    if _wc:
+        parts.extend(["", f"{PM_WATCH_HEAD}:"] + [f"- {c}" for c in _wc])
+    _dl = [c.strip() for c in (decision.data_limitations or []) if c and c.strip()]
+    if _dl:
+        parts.extend(["", f"{PM_LIMITS_HEAD}:"] + [f"- {c}" for c in _dl])
     return "\n".join(parts)
+
+
+PM_HOLDER_HEAD = "**보유 중이라면**"
+PM_ENTRY_HEAD = "**미보유라면**"
+PM_WATCH_HEAD = "**판정을 바꿀 조건**"
+PM_LIMITS_HEAD = "**데이터 한계**"
+# 등급에 딸린 할 일 — 등급이 바뀌면(강제 HOLD) 같이 무효가 된다.
+PM_ACTION_HEADS = (PM_HOLDER_HEAD, PM_ENTRY_HEAD, PM_WATCH_HEAD)
+PM_EXTRA_HEADS = PM_ACTION_HEADS + (PM_LIMITS_HEAD,)
+
+
+def _is_head(para: str, heads) -> bool:
+    return para.lstrip().startswith(heads)
+
+
+def pm_core_text(md: str) -> str:
+    """결정문에서 보조 섹션(할 일·조건·데이터 한계)을 걷어낸 본문.
+
+    PM override 트리거 검사는 **근거(thesis)** 에 트리거가 있는지를 묻는다 —
+    '판정을 바꿀 조건' 의 '실적 발표'·'D-5', '데이터 한계' 의 '데이터 없음' 은
+    근거가 아니라 부속 문구라, 그대로 두면 분석가 전원 반대 방향의 PM 등급이
+    트리거 없이 통과한다(2026-10-22 독립 리뷰 B1 실측)."""
+    paras = (md or "").split("\n\n")
+    return "\n\n".join(p for p in paras if not _is_head(p, PM_EXTRA_HEADS))
+
+
+def strip_pm_actions(md: str) -> str:
+    """등급에 딸린 할 일·조건 섹션만 걷어낸다(데이터 한계는 남긴다) —
+    시스템이 등급을 HOLD 로 강제하면 원래 등급 기준의 '추가 매수' 같은 할 일이
+    HOLD 배너 아래에 남아 모순된다(독립 리뷰 H1)."""
+    paras = (md or "").split("\n\n")
+    return "\n\n".join(p for p in paras if not _is_head(p, PM_ACTION_HEADS))
 
 
 # ---------------------------------------------------------------------------

@@ -402,7 +402,8 @@ def _parse_pct(s: str) -> float | None:
     if not s or s == "n/a":
         return None
     try:
-        v = float(s.rstrip("%").replace("+", ""))
+        # 15·30일 옛 로그는 '%p' 꼬리가 붙어 올 수 있다(독립 리뷰 LOW).
+        v = float(s.strip().removesuffix("%p").rstrip("%").replace("+", ""))
         return None if (math.isnan(v) or math.isinf(v)) else v
     except ValueError:
         return None
@@ -814,6 +815,9 @@ def _render_stats_panel(stats: dict) -> str:
     elif hold_total:
         # Hold 는 정확도(방향성) 분모에 안 들어간다 — 평균 수익·알파에는 들어간다.
         sub_parts.append(f"Hold {hold_total}건 (정확도 분모만 제외)")
+    if stats.get("hold_evaluated") and pending_hold:
+        # 채점된 Hold 줄이 대기 Hold 건수를 가리지 않게(독립 리뷰 LOW).
+        sub_parts.append(f"Hold 미해소 {pending_hold}건")
     if stats["avg_return"] is not None:
         sub_parts.append(f"평균 수익 {stats['avg_return']:+.2f}%")
     if stats["avg_alpha"] is not None:
@@ -1961,7 +1965,8 @@ def _render_outcome_html(resolved: dict | None) -> str:
         📒 Nd 후 -1.6% (알파 +3.0%p vs 반도체 (SOXX)) — 매도 추천 맞음 · 섹터대비 high
 
     User-controllable knobs that influence this:
-    - Direction verdict ('매수/매도 추천 맞음/틀림') from rating + alpha sign.
+    - Verdict from `bot.outcome_verdict` (rating + alpha, ±2%p neutral band;
+      Hold is scored too) — the same rule the accuracy card uses.
     - Magnitude ('섹터대비 high/low/동등') from alpha sign alone.
     - Benchmark label from _benchmark_label_for (sector ETF or broad
       market fallback per the ticker's industry / market).
