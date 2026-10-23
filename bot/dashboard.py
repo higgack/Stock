@@ -6014,6 +6014,38 @@ _QUARTERLY_JS = r"""
 
 # 기술 분석 탭 — 탭 활성화 시 /api/technical 로 지표 lazy fetch(무과금·즉시 표),
 # '실행' 버튼 클릭 시에만 &run=1 단일 LLM 호출 → 강세/약세·축별판정·시나리오 렌더.
+# 가치평가 랩 탭 — 탭 활성화 시 /api/vlab 로 lazy fetch(무과금·LLM 0). 서버가
+# 렌더한 HTML 조각을 그대로 넣는다(계산·문구는 bot.valuation_lab 한 곳, #38).
+_VLAB_JS = r"""
+(function(){
+  if(window.__noahVlabWired) return; window.__noahVlabWired=1;
+  function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
+  function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
+  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+  function load(){
+    var st=document.getElementById('si-vlab-status'), box=document.getElementById('si-vlab-body');
+    if(!box) return;
+    if(window.__noahVlabHTML){ box.innerHTML=window.__noahVlabHTML; if(st)st.style.display='none'; return; }
+    if(!tkr()){ if(st)st.textContent='종목 주소가 아직 없습니다 — 잠시 뒤 탭을 다시 눌러 주십시오.'; return; }
+    if(window.__noahVlabBusy) return; window.__noahVlabBusy=true;
+    if(st)st.textContent='계산 중… (재무 스냅샷을 처음 받으면 10~30초)';
+    fetch(base()+'api/vlab?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(j){ window.__noahVlabBusy=false;
+        if(!j||!j.ok){ if(st)st.textContent=(j&&j.error)?('불러오지 못했습니다: '+esc(j.error)):'불러오지 못했습니다.'; return; }
+        window.__noahVlabHTML=j.html; box.innerHTML=j.html; if(st)st.style.display='none'; })
+      .catch(function(){ window.__noahVlabBusy=false; if(st)st.textContent='불러오지 못했습니다(네트워크).'; });
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-vlab"]');
+    if(b) setTimeout(load,30);
+  });
+  var p0=document.getElementById('si-vlab');
+  if(p0&&p0.classList.contains('active')) setTimeout(load,60);
+})();
+"""
+
+
 _TECHNICAL_JS = r"""
 (function(){
   // ⚠️ lookup 지연로딩은 이 스크립트가 든 other_panes 를 core/full 2회 주입(inject
@@ -6972,7 +7004,8 @@ def _render_stock_info_html(rec: dict) -> str:
   <button type="button" class="si-tab" data-pane="si-company">기업</button>
   <button type="button" class="si-tab" data-pane="si-consensus">컨센서스</button>
   <button type="button" class="si-tab" data-pane="si-valuation">밸류에이션</button>
-{band_tab}{quarterly_tab}{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
+{band_tab}  <button type="button" class="si-tab" data-pane="si-vlab">가치평가 랩</button>
+{quarterly_tab}{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
   <button type="button" class="si-tab" data-pane="si-research">리서치</button>
   <button type="button" class="si-tab" data-pane="si-holders">주주</button>
 {flow_tab}{disclosure_tab}{risk_tab}  <button type="button" class="si-tab" data-pane="si-news">뉴스</button>
@@ -9218,6 +9251,18 @@ def _render_stock_info_html(rec: dict) -> str:
   {_src_foot}출처: {_val_src}</div>
 </div>"""
 
+    # ── 가치평가 랩 pane (결정적 DCF·역DCF·몬테카를로·풋볼필드, lazy /api/vlab) ──
+    # 전 시장. 계산·문구는 bot.valuation_lab 이 만들고 여기는 자리만 둔다(#38).
+    vlab_pane = f"""<div class="si-pane" id="si-vlab">
+  <div class="si-section">
+    <div class="si-section-title">가치평가 랩
+      <span style="font-size:11px;color:var(--fg-soft);font-weight:400">· 자체계산 · 무료</span></div>
+    <div id="si-vlab-status" style="font-size:12px;color:var(--fg-soft)">탭을 열면 계산합니다…</div>
+    <div id="si-vlab-body"></div>
+  </div>
+  <script>{_VLAB_JS}</script>
+</div>"""
+
     # ── 밴드차트 pane (PER/PBR — FnGuide BandChart 충실 재현, lazy /api/band) ──
     band_pane = ""
     if band_tab:
@@ -10067,7 +10112,7 @@ def _render_stock_info_html(rec: dict) -> str:
         "overview_card": overview_card,
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
-                       valuation_pane + "\n" + band_pane + "\n" +
+                       valuation_pane + "\n" + band_pane + "\n" + vlab_pane + "\n" +
                        quarterly_pane + "\n" + financials_pane + "\n" +
                        peers_pane + "\n" + earnings_pane + "\n" +
                        research_pane + "\n" + holders_pane + "\n" +
