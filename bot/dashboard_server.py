@@ -1104,6 +1104,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 강세/약세 토론(Gemini 1콜, cost-gated, 캐시). 탭 클릭/실행버튼 lazy fetch.
         if self.path.split("?", 1)[0] == "/api/technical":
             return self._handle_technical_api()
+        # /api/vlab?ticker=.. — 가치평가 랩 탭(결정적 DCF·역DCF·몬테카를로·
+        # 풋볼필드). 무료·LLM 0. 탭 클릭 lazy fetch.
+        if self.path.split("?", 1)[0] == "/api/vlab":
+            return self._handle_vlab_api()
         # /api/quarterly?ticker=..[&run=1] — 분기실적 탭(KR). DART 분기 숫자·
         # 인포그래픽(무료) + run=1 시 성장동력/리스크 요약(Gemini 1콜, 분기당
         # 1회 캐시). technical 과 동일 비용 게이트.
@@ -1774,6 +1778,50 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("quarterly_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_vlab_api(self) -> None:
+        """가치평가 랩 탭. ?ticker= → {"ok", "html"}. 읽기 전용 GET.
+
+        재료는 상세 페이지와 같은 스냅샷(`collect_stock_snapshot`, 120초 캐시 —
+        상세를 방금 열었으면 warm)이고, 국내 EPS 는 밸류에이션 탭과 같은
+        파생(`_derive_missing_multiples`)을 태운다(#239 같은 값은 같은 파생으로)."""
+        import urllib.parse as _uparse
+        try:
+            qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
+            ticker = (qs.get("ticker", [""])[0] or "").strip().upper()
+            if not _TICKER_RE.match(ticker):
+                self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+            from bot.singleflight import once as _once
+            from bot import valuation_lab as _vl
+
+            def _build():
+                import bot.stock_snapshot as _ss
+                snap = _ss.collect_stock_snapshot(ticker)
+                if not snap:
+                    return {"ok": False, "error": "종목 스냅샷을 받지 못했습니다"}
+                try:
+                    from bot.dashboard import _derive_missing_multiples as _dmm
+                    snap = _dmm(snap)
+                except Exception as exc:                       # noqa: BLE001
+                    log.debug("vlab_api: 파생 지표 건너뜀 %s: %s", ticker, exc)
+                from datetime import datetime, timedelta, timezone
+                now = datetime.now(timezone(timedelta(hours=9))).strftime(
+                    "%Y-%m-%d %H:%M KST")
+                try:
+                    payload = _vl.build(snap, ticker)
+                    html = _vl.render_html(payload, computed_at=now)
+                except Exception as exc:                       # noqa: BLE001
+                    # 재료 모양이 예상과 다르면 사람 말로 갈래를 준다(#82).
+                    log.warning("vlab_api: %s 계산 실패 — %s: %s", ticker,
+                                type(exc).__name__, exc)
+                    return {"ok": False, "error": "재무 스냅샷의 형식이 예상과 달라"
+                            f" 계산하지 못했습니다({type(exc).__name__})"}
+                return {"ok": True, "html": html}
+            self._reply_json(200, _once(f"vlab:{ticker}", _build))
+        except Exception as exc:
+            log.warning("vlab_api: failed — %s", exc)
+            self._reply_json(500, {"ok": False, "error": "서버 오류 — 로그 확인"})
 
     def _handle_technical_api(self) -> None:
         """기술 분석 탭. ?ticker= → 검증 지표 세트(무료). &run=1 → 강세/약세 토론
