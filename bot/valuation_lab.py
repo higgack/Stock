@@ -109,7 +109,9 @@ def _is_kr_preferred(ticker: str) -> bool:
 
 _DEBT_HINTS = ("Total Debt", "Long Term Debt", "Current Debt",
                "Long Term Debt And Capital Lease Obligation",
-               "Current Debt And Capital Lease Obligation")
+               "Current Debt And Capital Lease Obligation",
+               "Capital Lease Obligations", "Long Term Capital Lease Obligation",
+               "Current Capital Lease Obligation")
 _LIAB = ("Total Liabilities Net Minority Interest", "Total Liabilities")
 _MINORITY = ("Minority Interest",)
 
@@ -119,10 +121,13 @@ def _net_claims(snap: dict) -> dict:
 
     분기를 최신부터 내려가며 차입금·현금이 **둘 다** 있는 첫 행을 쓰고, 없으면
     연간으로 내려간다(최신 한 행만 보면 그 열이 비는 날 DCF 를 통째로 버린다).
-    차입금 항목이 **하나도 없고** 부채총계는 있는 행만 무차입으로 본다 — 빈칸을
-    0 으로 읽지 않는다(#235)."""
+    무차입은 재무상태표 **계열 전체**(분기·연간 모든 행)에 차입·리스 항목이 하나도
+    없고 그 행에 부채총계는 있을 때만 본다 — yfinance 는 빈 칸을 키에서 빼므로
+    한 행에 차입 키가 없다는 건 '그 열이 비었다'일 수도 있다(델타 리뷰: 최신
+    분기만 비면 무차입으로 읽어 과대평가했다). 빈칸을 0 으로 읽지 않는다(#235)."""
     rows = list(reversed(_rows(snap, "balance_sheet", "quarterly"))) + \
         list(reversed(_rows(snap, "balance_sheet", "annual")))
+    debt_anywhere = any(k in r for r in rows for k in _DEBT_HINTS)
     for r in rows:
         cash = _pick(r, _CASH)
         if cash is None:
@@ -130,7 +135,7 @@ def _net_claims(snap: dict) -> dict:
         debt = _pick(r, _DEBT)
         note = ""
         if debt is None:
-            if any(k in r for k in _DEBT_HINTS) or _pick(r, _LIAB) is None:
+            if debt_anywhere or _pick(r, _LIAB) is None:
                 continue
             debt, note = 0.0, "차입금 항목이 없어 무차입으로 봄"
         mi = _pick(r, _MINORITY) or 0.0
@@ -158,23 +163,63 @@ def gather(snap: dict, ticker: str = "") -> dict:
     # ⚠️ 복수 클래스(GOOGL 은 A 주만)·우선주 합산 시총에서 한 클래스 주식수로
     # 회사 전체 가치를 나누면 주당가치가 클래스 비율만큼 부푼다. 시총(전 클래스,
     # #256)과 현재가로 되짚은 주식수와 5% 넘게 갈리면 그 주식수를 쓰고 밝힌다.
+    # 교체는 '한 클래스만 센' 방향(시총÷현재가가 더 큼)이고 4배 안일 때만 한다 —
+    # 반대 방향이나 큰 배율은 시총이 다른 시점·단위라는 뜻일 수 있어 기준을 정하지
+    # 않는다(델타 리뷰: 낡은 시총의 오차가 그대로 주식수로 옮겨 갔다, #254).
     px, mc = out["price"], out["market_cap"]
-    if shares and shares > 0 and px and mc and mc > 0:
+    out["shares_conflict"] = ""
+    if shares and shares > 0 and px and px > 0 and mc and mc > 0:
         implied = mc / px
-        if abs(shares / implied - 1.0) > 0.05:
+        ratio = implied / shares
+        if 1.05 < ratio <= 4.0:
             out["shares_note"] = (f"발행주식수 {shares:,.0f}주가 시가총액÷현재가"
-                                  f" {implied:,.0f}주와 달라(복수 클래스·우선주 가능)"
-                                  " 시가총액÷현재가를 썼습니다")
+                                  f" {implied:,.0f}주보다 적어(복수 클래스·우선주일 수"
+                                  " 있음 — 시총 기준 시각이 다르면 오차) 시가총액÷현재가를"
+                                  " 썼습니다")
             shares = implied
+        elif ratio > 4.0 or ratio < 1 / 1.05:
+            out["shares_conflict"] = (
+                f"발행주식수 {shares:,.0f}주와 시가총액÷현재가 {implied:,.0f}주가"
+                f" {max(ratio, 1 / ratio):.2f}배 어긋나(시총 기준 시각·단위가 다를 수"
+                " 있음) 주식수 기준을 정할 수 없습니다")
     out["shares"] = shares
+    # 이중상장(A·H)은 스냅샷이 시총을 거래 클래스로 다시 계산해(#224) 위 대조가
+    # 안 걸린다 — 다른 상장 클래스 주식수를 재지 않았으므로 만들지 않는다.
+    out["dual_listing"] = ""
+    try:
+        from bot.market import detect_market
+        mkt = detect_market(ticker) if ticker else ""
+    except Exception:                                   # noqa: BLE001
+        mkt = ""
+    if mkt in ("HK", "CN_A") and snap.get("market_cap_note"):
+        out["dual_listing"] = ("다른 시장에도 상장된 종목이라(시총이 이 거래 클래스"
+                               " 기준) 다른 클래스 주식수를 재지 않아 주당가치를"
+                               " 만들지 않습니다")
+    # 한국 보통주에 상장 우선주가 있으면 주식수·시총이 보통주 것이라 주당가치가
+    # 우선주 몫만큼 높게 나온다 — 만들되 그렇다고 밝힌다(#43).
+    if mkt == "KR" and ticker and not _is_kr_preferred(ticker):
+        try:
+            from bot.market import has_kr_preferred_shares
+            if has_kr_preferred_shares(ticker):
+                out["shares_note"] = ((out["shares_note"] + " · ") if out["shares_note"] else "") + (
+                    "상장 우선주가 있어 우선주 주식수가 빠졌습니다 — 주당가치가 우선주"
+                    " 비중만큼 높게 나옵니다")
+        except Exception:                               # noqa: BLE001
+            pass
 
     cf = _rows(snap, "cash_flow", "annual")
     fcf_hist = []
+    dropped = []
     for r in cf:
         v = fcf_from_row(r)
-        if v is not None and math.isfinite(v):
-            fcf_hist.append((str(r["period"])[:10], v))
+        if v is None:
+            continue
+        if not math.isfinite(v):
+            dropped.append(str(r["period"])[:10])
+            continue
+        fcf_hist.append((str(r["period"])[:10], v))
     out["fcf_hist"] = fcf_hist
+    out["fcf_dropped"] = dropped
 
     inc = _rows(snap, "income_statement", "annual")
     rev_hist = [(str(r["period"])[:10], _pick(r, _REV)) for r in inc]
@@ -197,6 +242,10 @@ def gather(snap: dict, ticker: str = "") -> dict:
     if sector in _FIN_SECTORS or any(w in industry for w in _FIN_INDUSTRY_WORDS):
         why.append("금융업은 영업현금흐름에 예금·대출·보험료 흐름이 섞여 FCF 기반"
                    " DCF 가 성립하지 않습니다")
+    if out["dual_listing"]:
+        why.append(out["dual_listing"])
+    if out["shares_conflict"]:
+        why.append(out["shares_conflict"])
     if _is_kr_preferred(ticker):
         why.append("우선주는 회사 전체 FCF 를 이 클래스 주식수로 나눌 수 없어 보통주"
                    " 화면에서 보십시오")
@@ -418,7 +467,7 @@ def render_html(p: dict, computed_at: str = "") -> str:
         " 매수·매도 신호가 아닙니다.</div>")
     asof = []
     if computed_at:
-        asof.append(f"계산 {_e(computed_at)} (현재가는 상세 화면 스냅샷 기준)")
+        asof.append(f"계산 {_e(computed_at)} (현재가는 이 탭이 받은 스냅샷 기준)")
     if d.get("financials_asof"):
         asof.append(f"재무 수집 {_e(d['financials_asof'])}")
     if asof:
@@ -444,6 +493,9 @@ def render_html(p: dict, computed_at: str = "") -> str:
         foot.append(_e(d["shares_note"]))
     if cl.get("note"):
         foot.append(_e(cl["note"]))
+    if d.get("fcf_dropped"):
+        foot.append("FCF 값을 읽을 수 없는 해(" + ", ".join(_e(x) for x in d["fcf_dropped"])
+                    + ")는 뺐습니다")
     foot.append("총차입금은 yfinance 'Total Debt'(리스부채가 포함될 수 있음)이고 장기"
                 " 투자자산은 현금에 넣지 않았습니다")
     h.append(_NOTE + " · ".join(foot) + "</div>")
@@ -541,7 +593,8 @@ def _football_html(bars: list, price, ccy: str) -> str:
     rows = []
     clipped = False
     for label, lo, hi, src in bars:
-        left, width = pos(lo), max(pos(hi) - pos(lo), 0.6)
+        width = max(pos(hi) - pos(lo), 0.6)
+        left = min(pos(lo), 100.0 - width)          # 막대가 트랙 밖으로 나가지 않게
         tail = ""
         if hi > hi_all:
             tail, clipped = f" ▶ {_px(hi, ccy)}", True

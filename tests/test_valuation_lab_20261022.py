@@ -390,3 +390,65 @@ def test_football_axis_starts_at_zero_when_a_bar_is_negative():
     # 음수 주당가치는 0 에서 자른다 — 축이 음수로 늘어나 현재가 선이 밀리지 않는다.
     h = vl._football_html([("DCF", -50.0, 80.0, "x")], 100.0, "USD")
     assert "left:95.24%;top:-3px" in h          # 축 0~105 에서 현재가 100 의 자리
+
+
+# ── 델타 검증 2026-10-22 재현 ───────────────────────────────────────────────
+
+def test_partially_empty_latest_quarter_is_not_read_as_debt_free():
+    s = _snap()
+    s["financials"]["balance_sheet"] = {"quarterly": [
+        {"period": "2026-06-30", "Cash And Cash Equivalents": 2e9,
+         "Total Liabilities Net Minority Interest": 2e10},           # 차입금 칸 빔
+        {"period": "2026-03-31", "Total Debt": 5e9, "Cash And Cash Equivalents": 2e9},
+    ]}
+    d = vl.gather(s)
+    assert d["net_debt"] == 3e9 and d["bs_period"] == "2026-03-31"
+    assert "무차입" not in (d["claims"].get("note") or "")
+
+
+def test_dual_listed_hk_cn_is_refused():
+    p = vl.build(_snap(currency="CNY", financial_currency="CNY",
+                       market_cap_note="거래 클래스 기준"), "002594.SZ")
+    assert any("다른 시장에도 상장" in w for w in p["why"]) and "grid" not in p
+    # 각주가 없으면(이중상장 아님) 그대로 만든다.
+    assert "grid" in vl.build(_snap(currency="CNY", financial_currency="CNY"), "600519.SS")
+
+
+def test_kr_common_with_listed_preferred_is_footnoted(monkeypatch):
+    import bot.market as m
+    monkeypatch.setattr(m, "has_kr_preferred_shares", lambda t: True)
+    s = _snap(currency="KRW", financial_currency="KRW")
+    p = vl.build(s, "005930.KS")
+    assert "grid" in p and "우선주 주식수가 빠졌습니다" in vl.render_html(p)
+
+
+@pytest.mark.parametrize("shares,ok,replaced", [
+    (5e8, True, True),          # 시총÷현재가가 2배 — 한 클래스만 센 방향, 교체
+    (1.08e9, False, False),     # 시총÷현재가가 8% 작음 — 낡은 시총일 수 있다, 거부
+    (1e8, False, False),        # 10배 — 단위·시점 문제, 거부
+    (1.02e9, True, False),      # 5% 안 — 그대로
+])
+def test_share_replacement_direction_and_bounds(shares, ok, replaced):
+    p = vl.build(_snap(shares_outstanding=shares))
+    assert ("grid" in p) == ok
+    d = p["inputs"]
+    assert (d["shares"] == pytest.approx(1e9)) == replaced or not replaced
+    if not ok:
+        assert any("어긋나" in w for w in p["why"])
+
+
+def test_bar_entirely_above_axis_stays_in_track():
+    h = vl._football_html([("목표가", 500.0, 600.0, "x")], 100.0, "USD")
+    assert "left:99.40%;width:0.60%" in h
+
+
+def test_dropped_infinite_fcf_year_is_said():
+    s = _snap()
+    s["financials"]["cash_flow"]["annual"][0]["Operating Cash Flow"] = float("inf")
+    h = vl.render_html(vl.build(s))
+    assert "FCF 값을 읽을 수 없는 해(2025-12-31)" in h
+
+
+def test_52w_bar_requires_ordered_range():
+    p = vl.build(_snap(fiftyTwoWeekLow=130.0, fiftyTwoWeekHigh=70.0))
+    assert "52주 범위" not in [b[0] for b in p["football"]]
