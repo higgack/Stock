@@ -108,20 +108,24 @@ CADENCE: dict[str, tuple[str, int, str]] = {
     "ECOS:KR10Y": ("D", 1, "국고채 10년 일별"),
     "ECOS:FXRESERVE": ("M", 5, "외환보유액 익월 초"),
     "AK:LPR1Y": ("M", 3, "중국 LPR 매월 20일 고시"),
-    # OECD SDMX 직접 · IMF PortWatch(2026-10-23). ⚠️ 지연 일수는 **재지 않은
-    # 추정**이다(#165) — 첫 `liquidity_audit` 실측으로 맞춘다. CLI 는 대개 관측월
-    # 다음다음 달 초, KEI 장기금리는 익월. PortWatch 는 관측은 일별이지만 **공표는
-    # 주 1회**라 주 단위로 잰다 — 일 단위면 주중 나이 출렁임이 매일 ❌ 가 된다
-    # (#269 관측 주기 ≠ 공표 주기, 독립 리뷰 H2).
-    "OECD:CLI:G20": ("M", 45, "OECD CLI 월간(추정 지연 — 실측 전)"),
-    "OECD:CLI:KOR": ("M", 45, "OECD CLI 월간(추정 지연 — 실측 전)"),
-    "OECD:CLI:USA": ("M", 45, "OECD CLI 월간(추정 지연 — 실측 전)"),
-    "OECD:LTR:JPN": ("M", 35, "OECD KEI 장기금리 월평균(추정 지연 — 실측 전)"),
-    "OECD:LTR:DEU": ("M", 35, "OECD KEI 장기금리 월평균(추정 지연 — 실측 전)"),
-    "PW:HORMUZ": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
-    "PW:MALACCA": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
-    "PW:KOREA": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
-    "PW:BABELMANDEB": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
+    # OECD SDMX 직접 · IMF PortWatch. 지연 일수 실측(2026-10-23, 원천이 말한 시각):
+    #  · OECD — SDMX `updatedAfter` 이분 탐색으로 최신 공표 시각을 재다. 2026-09분이
+    #    **2026-10-07**(CLI ~10:00 UTC · KEI ~08:00 UTC)에 올라왔다 = 기간 말 +7일.
+    #    공표마다 시리즈 전체가 다시 쓰여(전 기간 `R`) **공표 1회분만** 잴 수 있다 —
+    #    n=1 이므로 실측의 2배(14일)로 잡는다. 몇 달 쌓여 변동이 작으면 더 좁힐 것(#165).
+    #    옛 45·35일은 공표가 안 와도 +49·+39일에야 지연으로 잡았다.
+    #  · PortWatch — 레이어 메타 `dataLastEditDate` 가 **화요일 10:51 UTC**(관측 마지막
+    #    일요일 +2일). 관측은 일별이지만 **공표는 주 1회**라 주 단위로 잰다 — 일 단위면
+    #    주중 나이 출렁임이 매일 ❌ 가 된다(#269). 7일 규약은 4주 시뮬레이션에서 오탐 0일.
+    "OECD:CLI:G20": ("M", 14, "OECD CLI 월간, 공표 기간 말 +7일 실측(n=1)"),
+    "OECD:CLI:KOR": ("M", 14, "OECD CLI 월간, 공표 기간 말 +7일 실측(n=1)"),
+    "OECD:CLI:USA": ("M", 14, "OECD CLI 월간, 공표 기간 말 +7일 실측(n=1)"),
+    "OECD:LTR:JPN": ("M", 14, "OECD KEI 장기금리 월평균, 공표 기간 말 +7일 실측(n=1)"),
+    "OECD:LTR:DEU": ("M", 14, "OECD KEI 장기금리 월평균, 공표 기간 말 +7일 실측(n=1)"),
+    "PW:HORMUZ": ("W", 7, "PortWatch 주 1회(화요일) 갱신 실측"),
+    "PW:MALACCA": ("W", 7, "PortWatch 주 1회(화요일) 갱신 실측"),
+    "PW:KOREA": ("W", 7, "PortWatch 주 1회(화요일) 갱신 실측"),
+    "PW:BABELMANDEB": ("W", 7, "PortWatch 주 1회(화요일) 갱신 실측"),
     "IRSTCI01JPM156N": ("M", 40, "일본 콜금리 월간(OECD 경유 지연)"),
 }
 
