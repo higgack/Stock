@@ -587,6 +587,9 @@ def _compute_stats(records: list[dict]) -> dict:
     resolved = mem["resolved"]
     correct = 0
     evaluated = 0
+    neutral = 0
+    hold_correct = 0
+    hold_evaluated = 0
     returns: list[float] = []
     alphas: list[float] = []
     for e in resolved:
@@ -602,17 +605,20 @@ def _compute_stats(records: list[dict]) -> dict:
         # same handling we already use for raw when raw is None.
         if alpha is None:
             continue
-        if rating in ("buy", "overweight"):
-            evaluated += 1
-            if alpha > 0:
-                correct += 1
-        elif rating in ("sell", "underweight"):
-            evaluated += 1
-            if alpha < 0:
-                correct += 1
-        # 'hold' is excluded from the accuracy denominator (no clean
-        # directional bet) but still rolls into the avg_return / avg_alpha
-        # totals — the headline numbers cover Hold + directional picks alike.
+        # 채점 규약은 `bot.outcome_verdict` 한 곳(카드 줄과 같은 함수, #38) —
+        # ±2%p 안의 매수·매도는 '판정 보류'로 분모에서 빼고 따로 센다. 보유는
+        # 방향성 정확도와 정의가 달라 별도로 센다(#34 한 숫자에 섞지 않는다).
+        from bot.outcome_verdict import verdict as _ov
+        v = _ov(rating, alpha)
+        if rating in ("buy", "overweight", "sell", "underweight"):
+            if v == "neutral":
+                neutral += 1
+            elif v in ("hit", "miss"):
+                evaluated += 1
+                correct += int(v == "hit")
+        elif rating == "hold" and v in ("hit", "miss"):
+            hold_evaluated += 1
+            hold_correct += int(v == "hit")
     accuracy = correct / evaluated if evaluated else None
     avg_return = sum(returns) / len(returns) if returns else None
     avg_alpha = sum(alphas) / len(alphas) if alphas else None
@@ -643,6 +649,9 @@ def _compute_stats(records: list[dict]) -> dict:
         "evaluated": evaluated,
         "correct": correct,
         "accuracy": accuracy,
+        "neutral": neutral,
+        "hold_correct": hold_correct,
+        "hold_evaluated": hold_evaluated,
         "avg_return": avg_return,
         "avg_alpha": avg_alpha,
         "resolved_count": len(resolved),
@@ -791,14 +800,19 @@ def _render_stats_panel(stats: dict) -> str:
     else:
         acc_value = "—"
 
+    from bot.outcome_verdict import NEUTRAL_BAND_PP as _band
     sub_parts = []
     sub_parts.append(f"평가 {stats['evaluated']}건")
+    if stats.get("neutral"):
+        # 판정 보류는 분모에서 빠진다 — 빠진 건수를 숨기지 않는다(#45).
+        sub_parts.append(f"판정 보류 {stats['neutral']}건(±{_band:g}%p 안)")
     if pending_dir:
         sub_parts.append(f"미해소 {pending_dir}건")
-    if hold_total:
-        # Clarify that Hold's exclusion is *accuracy-denominator-only* — Hold
-        # picks DO contribute to 평균 수익 / 알파. Previous label '(분모
-        # 제외)' alone misled readers into 'Hold is excluded from every stat'.
+    if stats.get("hold_evaluated"):
+        sub_parts.append(f"Hold 맞음 {stats['hold_correct']}/{stats['hold_evaluated']}"
+                         f"(±{_band:g}%p 안 · 정확도와 별도)")
+    elif hold_total:
+        # Hold 는 정확도(방향성) 분모에 안 들어간다 — 평균 수익·알파에는 들어간다.
         sub_parts.append(f"Hold {hold_total}건 (정확도 분모만 제외)")
     if stats["avg_return"] is not None:
         sub_parts.append(f"평균 수익 {stats['avg_return']:+.2f}%")
@@ -809,8 +823,9 @@ def _render_stats_panel(stats: dict) -> str:
         sub_parts.append(f"알파 {stats['avg_alpha']:+.2f}%p (vs 섹터 ETF)")
 
     note = (
-        "※ 정확도는 알파(raw 수익 − 섹터 ETF) 기준 · 분석 후 5거래일 경과 시"
-        " 자동 평가 (백그라운드 12시간마다)"
+        "※ 정확도는 알파(raw 수익 − 섹터 ETF) 기준 · 매수·매도는 알파가"
+        f" ±{_band:g}%p 를 넘어야 맞음/틀림(그 안은 판정 보류) · 보유는 ±{_band:g}%p"
+        " 안이면 맞음 · 분석 후 5거래일 경과 시 자동 평가 (백그라운드 12시간마다)"
     )
     acc_sub = " · ".join(sub_parts) + "\n" + note
     card_acc = _stat_card("🎯 추천 정확도", acc_value, acc_sub)
@@ -1991,18 +2006,13 @@ def _render_outcome_html(resolved: dict | None) -> str:
             magnitude = "섹터대비 high" if alpha_num > 0 else (
                 "섹터대비 low" if alpha_num < 0 else "섹터대비 동등"
             )
-            if rating in ("buy", "overweight"):
-                hit = alpha_num > 0
-                cls += " hit" if hit else " miss"
-                direction = "매수 추천 맞음" if hit else "매수 추천 틀림"
-                verdict_text = f"{direction} · {magnitude}"
-            elif rating in ("sell", "underweight"):
-                hit = alpha_num < 0
-                cls += " hit" if hit else " miss"
-                direction = "매도 추천 맞음" if hit else "매도 추천 틀림"
-                verdict_text = f"{direction} · {magnitude}"
-            elif rating == "hold":
-                verdict_text = f"보유 추천 · {magnitude}"
+            # 채점은 `bot.outcome_verdict` 한 곳(정확도 카드와 같은 함수, #38).
+            from bot.outcome_verdict import verdict as _ov, verdict_text as _ovt
+            v = _ov(rating, alpha_num)
+            if v in ("hit", "miss"):
+                cls += f" {v}"
+            if v is not None:
+                verdict_text = f"{_ovt(rating, alpha_num)} · {magnitude}"
         alpha_part = (
             f" (알파 {_html.escape(alpha)}p vs {bench_safe})"
             if alpha and alpha != "n/a"

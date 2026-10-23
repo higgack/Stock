@@ -238,6 +238,41 @@ class PortfolioDecision(BaseModel):
             "key risk levels, and time horizon. Two to four sentences."
         ),
     )
+    # 외부 레포 검토(ZhuLinsen/daily_stock_analysis `position_advice`·
+    # `watch_conditions`·`data_limitations`, 2026-10-22) — 판정 하나만으로는
+    # 이미 가진 사람과 아직 없는 사람이 할 일이 갈린다. 결론(rating) 뒤에
+    # 생성되도록 rating 다음에 둔다(필드 순서 = 생성 순서). 전부 선택 필드라
+    # 옛 출력·자유문 폴백은 그대로 렌더된다.
+    holder_action: Optional[str] = Field(
+        default=None,
+        description=(
+            "One sentence: what an investor who ALREADY HOLDS the stock should do "
+            "over the 5-trading-day horizon, consistent with the rating (e.g. keep, "
+            "trim, add on a pullback to a level quoted in the reports)."
+        ),
+    )
+    new_entry_action: Optional[str] = Field(
+        default=None,
+        description=(
+            "One sentence: what an investor who does NOT hold the stock should do, "
+            "consistent with the rating (e.g. wait, enter in tranches, avoid)."
+        ),
+    )
+    watch_conditions: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Up to 3 concrete, checkable conditions that would change this rating "
+            "within 5 trading days. Each must name a price level, indicator value, "
+            "or dated event taken from the analysts' reports. Never invent levels."
+        ),
+    )
+    data_limitations: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Data that was missing, stale, or contradictory in the analyst reports "
+            "and limited this decision. Empty list if none. Never invent limitations."
+        ),
+    )
     price_target: Optional[float] = Field(
         default=None,
         description="Optional target price in the instrument's quote currency.",
@@ -263,6 +298,16 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         "",
         f"**Investment Thesis**: {decision.investment_thesis}",
     ]
+    if decision.holder_action:
+        parts.extend(["", f"**보유 중이라면**: {decision.holder_action}"])
+    if decision.new_entry_action:
+        parts.extend(["", f"**미보유라면**: {decision.new_entry_action}"])
+    _wc = [c.strip() for c in (decision.watch_conditions or []) if c and c.strip()][:3]
+    if _wc:
+        parts.extend(["", "**판정을 바꿀 조건**:"] + [f"- {c}" for c in _wc])
+    _dl = [c.strip() for c in (decision.data_limitations or []) if c and c.strip()]
+    if _dl:
+        parts.extend(["", "**데이터 한계**:"] + [f"- {c}" for c in _dl])
     if decision.price_target is not None:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
