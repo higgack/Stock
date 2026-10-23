@@ -459,7 +459,9 @@ class DiscontinuedSweepTests(unittest.TestCase):
         # 2026-08-20: FDHBFIN 제거(원천 공표 ~170일 지연 → 화면에 늘
         # 반년+ 옛값). 54 → 53.
         # 2026-08-20 +CBETHUSD(이더리움 — 사용자 'BTC 밑에 같은 형식으로')
-        self.assertEqual(len(LIQ_SERIES), 54)
+        # 2026-10-23 +9(OECD CLI 3 · OECD 장기금리 2 · PortWatch 해협 4 —
+        # 외부 레포 OpenBB 검토 ④, `bot/global_sources.py`). 54 → 63.
+        self.assertEqual(len(LIQ_SERIES), 63)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
@@ -471,7 +473,17 @@ class DiscontinuedSweepTests(unittest.TestCase):
                                 # 2026-07-24 재검토에서도 재발 리스크 미해소로
                                 # 재등재 보류(LiqExpansion20260724Tests 참조)
                                 "ECOS:KR10Y": "ecos:kr10y",
-                                "ECOS:FXRESERVE": "ecos:fx_reserve"})
+                                "ECOS:FXRESERVE": "ecos:fx_reserve",
+                                # 2026-10-23 OECD 직접·IMF PortWatch(④)
+                                "OECD:CLI:G20": "oecd:cli:G20",
+                                "OECD:CLI:KOR": "oecd:cli:KOR",
+                                "OECD:CLI:USA": "oecd:cli:USA",
+                                "OECD:LTR:JPN": "oecd:lt_rate:JPN",
+                                "OECD:LTR:DEU": "oecd:lt_rate:DEU",
+                                "PW:HORMUZ": "pw:chokepoint6",
+                                "PW:MALACCA": "pw:chokepoint5",
+                                "PW:KOREA": "pw:chokepoint12",
+                                "PW:BABELMANDEB": "pw:chokepoint4"})
         # 대체 소스 함수 실재(배선 E2E)
         from bot import bok_ecos_client, akshare_client
         self.assertIn("m2", bok_ecos_client._SERIES)

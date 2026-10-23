@@ -108,6 +108,20 @@ CADENCE: dict[str, tuple[str, int, str]] = {
     "ECOS:KR10Y": ("D", 1, "국고채 10년 일별"),
     "ECOS:FXRESERVE": ("M", 5, "외환보유액 익월 초"),
     "AK:LPR1Y": ("M", 3, "중국 LPR 매월 20일 고시"),
+    # OECD SDMX 직접 · IMF PortWatch(2026-10-23). ⚠️ 지연 일수는 **재지 않은
+    # 추정**이다(#165) — 첫 `liquidity_audit` 실측으로 맞춘다. CLI 는 대개 관측월
+    # 다음다음 달 초, KEI 장기금리는 익월. PortWatch 는 관측은 일별이지만 **공표는
+    # 주 1회**라 주 단위로 잰다 — 일 단위면 주중 나이 출렁임이 매일 ❌ 가 된다
+    # (#269 관측 주기 ≠ 공표 주기, 독립 리뷰 H2).
+    "OECD:CLI:G20": ("M", 45, "OECD CLI 월간(추정 지연 — 실측 전)"),
+    "OECD:CLI:KOR": ("M", 45, "OECD CLI 월간(추정 지연 — 실측 전)"),
+    "OECD:CLI:USA": ("M", 45, "OECD CLI 월간(추정 지연 — 실측 전)"),
+    "OECD:LTR:JPN": ("M", 35, "OECD KEI 장기금리 월평균(추정 지연 — 실측 전)"),
+    "OECD:LTR:DEU": ("M", 35, "OECD KEI 장기금리 월평균(추정 지연 — 실측 전)"),
+    "PW:HORMUZ": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
+    "PW:MALACCA": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
+    "PW:KOREA": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
+    "PW:BABELMANDEB": ("W", 7, "PortWatch 주 1회 갱신(추정 지연 — 실측 전)"),
     "IRSTCI01JPM156N": ("M", 40, "일본 콜금리 월간(OECD 경유 지연)"),
 }
 

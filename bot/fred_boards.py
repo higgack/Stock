@@ -267,6 +267,19 @@ def _ecos_iso(t: str) -> str:
 # 휴리스틱으로 떨어진다(#35 감사는 화면이 쓰는 그 경로를).
 _ALT_LOOKBACK = {"ecos:base_rate": 950, "ecos:kr10y": 950}
 
+# OECD 월간 계열 조회 시작월 — 5년 점수창·YoY 를 덮고 남는다.
+_OECD_START = "2018-01"
+# 대체 소스가 빈 결과를 낸 **사유**(src → 문구). 로더가 '데이터 없음' 옆에
+# 붙인다 — 갈래를 계산해 놓고 버리지 않는다(#43·#82). 성공하면 지운다.
+_ALT_WHY: dict[str, str] = {}
+
+
+def _note_alt(src: str, r: dict) -> None:
+    if r.get("ok"):
+        _ALT_WHY.pop(src, None)
+    else:
+        _ALT_WHY[src] = str(r.get("why") or "원천 응답 없음")
+
 
 def _alt_history(src: str) -> list[tuple[str, float]]:
     """FRED 중단 시리즈의 대체 소스 히스토리(ISO 날짜) — 사용자 2026-07-04
@@ -299,7 +312,25 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
             from bot import bok_ecos_client
             return [(_ecos_iso(t), v)
                     for t, v in bok_ecos_client.fetch_series_points("fx_reserve")]
+        if src.startswith("oecd:"):
+            # oecd:<preset>:<area> — OECD SDMX 직접(2026-10-23, OpenBB 검토 ④).
+            # 기간 'YYYY-MM' → 그 달 01일(ECOS 월간과 같은 규약, `_ecos_iso`).
+            # 월이 아닌 기간(분기 'YYYY-Q3' 등)은 버린다 — 월간 표에 섞이면 안 된다.
+            from bot import global_sources
+            _, preset, area = src.split(":")
+            r = global_sources.oecd_series(preset, area, start=_OECD_START)
+            _note_alt(src, r)
+            return [(f"{p}-01", v) for p, v in r["rows"] if len(p) == 7 and p[5:].isdigit()]
+        if src.startswith("pw:"):
+            # pw:<chokepoint id> — IMF PortWatch 일별 통항의 **7일 평균**.
+            # 표는 월말 하루를 그 달 값으로 쓰므로(`_monthly`) 하루 값이면
+            # 요일·기상 잡음이 월간 변화로 둔갑한다.
+            from bot import global_sources
+            r = global_sources.chokepoint_daily(src.split(":", 1)[1])
+            _note_alt(src, r)
+            return global_sources.rolling_mean(r["rows"])
     except Exception as exc:
+        _ALT_WHY[src] = f"{type(exc).__name__}: {exc}"[:160]
         log.warning("fred_boards: alt source %s failed: %s", src, exc)
     return []
 
@@ -746,7 +777,9 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
             # 소스가 아예 안 주는 경우(FRED 400/ECOS·AKShare 실패)도 표기
             # (리뷰 #5 — stale 경로 밖 silent 소멸 금지). 키 부재 등 일시
             # 사유 포함이라 '데이터 없음'으로 구분.
-            dropped.append(f"{s['name']} ({s['id']}) — 데이터 없음")
+            _why = _ALT_WHY.get(s.get("src") or "")
+            dropped.append(f"{s['name']} ({s['id']}) — 데이터 없음"
+                           + (f"({_why})" if _why else ""))
             continue
         mh = _monthly(hist)
         m = series_metrics(mh)
@@ -1212,7 +1245,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 {_NAV}
 <h1>💧 <em>글로벌 유동성</em> 보드</h1>
 <p class="sub">Fed 순유동성(WALCL−TGA−RRP)·M2·중앙은행 자산·크레딧 스프레드·스트레스 지표 {len(rows)}종 ·
-데이터 적용시각 {ts} · 소스 FRED + 한국은행 ECOS + 인민은행 LPR(3시간 주기 자동 갱신)</p>
+데이터 적용시각 {ts} · 소스 FRED + 한국은행 ECOS + 인민은행 LPR + OECD + IMF PortWatch(3시간 주기 자동 갱신)</p>
 {_dropped_note(derived.get("dropped"))}
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 종합점수(0~100)</b> — 구성요소 8개 각각의 <b>최근값이 최근 5년 분포에서 어디쯤인지</b>(백분위)를
@@ -1234,6 +1267,7 @@ TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 근거가 뜹니다 — 원천 공표가 늦은 것이지 우리가 못 받은 것과는 다릅니다.<br>
 <b>행 클릭</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
+<b>경기 선행</b>(OECD 종합선행지수 G20·한국·미국)·일본/독일 장기금리는 <b>OECD 원천(SDMX)</b>을 직접, <b>글로벌 교역(해협 통항)</b>은 <b>IMF PortWatch</b> 일별 통항 선박 수의 7일 평균입니다(2026-10-23 추가). 이 행들은 위 종합점수에 들어가지 않는 참고 행입니다. 원천이 응답하지 않으면 그 행은 표에서 빠지고, 사유는 서버 로그와 점검 명령(<code>python -m bot.global_sources --check</code>)이 말합니다.
 금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 각 시리즈의 <b>실제 공표일정</b>(주기+통상 지연일)을 기준으로 늦은 것만 <b>⚠️지연</b> 배지 — 배지에 마우스를 올리면 기대 관측기간과 근거가 뜹니다. 분기·반년 지연 계열(예 외국인 보유 미 연방부채)은 정상 지연이라 배지가 뜨지 않습니다. 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
 <b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API). 단 <b>환율 6종·VIX·비트코인·이더리움·미 국채 10Y/30Y</b>는
 페이지가 열려 있는 동안 <b>5분마다 실시간 값</b>으로 최신값·기준일을 덮습니다(환율·VIX=네이버,
