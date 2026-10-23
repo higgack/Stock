@@ -1427,33 +1427,10 @@ def _extract_canonical(ticker: str) -> dict:
             "currency":        cfg.get("currency", "USD"),
             "currency_symbol": cfg.get("currency_symbol", "$"),
         }
-        mc = info.get("marketCap")
-        px = info.get("currentPrice") or info.get("regularMarketPrice")
-        if isinstance(mc, (int, float)) and mc > 0:
-            result["market_cap"] = mc
-        if isinstance(px, (int, float)) and px > 0:
-            result["current_price"] = px
-        # 리포트 수치 대조 가드(bot.report_numeric_guard)의 기준값 — FACTUAL
-        # ANCHOR 가 분석가에게 보여 준 바로 그 `.info` 값(같은 프로세스 캐시)
-        # 이라, 가드가 재는 것은 "받은 값을 그대로 옮겼나"다(#35). 이상치
-        # 필터는 앵커와 같게(PER 0~10000, PBR -100~1000) — 앵커가 'N/A' 로
-        # 숨긴 값을 기준으로 쓰면 안 된다.
-        for src, dst, lo, hi in (
-            ("trailingPE", "trailing_pe", 0, 10000),
-            ("forwardPE", "forward_pe", 0, 10000),
-            ("priceToBook", "price_to_book", 0, 1000),
-            ("trailingEps", "trailing_eps", None, None),
-            ("fiftyTwoWeekHigh", "high_52w", 0, None),
-            ("fiftyTwoWeekLow", "low_52w", 0, None),
-        ):
-            v = info.get(src)
-            if not isinstance(v, (int, float)) or v != v:
-                continue
-            if lo is not None and v <= lo:
-                continue
-            if hi is not None and v >= hi:
-                continue
-            result[dst] = v
+        # 기준값 규칙은 감사 CLI 와 **같은 함수**를 쓴다(#35·#38) — 앵커가
+        # 숨기거나 쓰지 말라고 한 값은 빼고, 앵커가 보여 준 값만 남긴다.
+        from bot.report_numeric_guard import canonical_from_info
+        result.update(canonical_from_info(info))
         return result
     except Exception:
         return {}

@@ -33,39 +33,30 @@ from pathlib import Path
 _AUDIT_VER = 1
 _KST = timezone(timedelta(hours=9))
 
-# stock_info 키 → 가드의 기준값 키
-_SI_TO_CANON = (
-    ("current_price", "current_price"),
-    ("market_cap", "market_cap"),
-    ("trailingPE", "trailing_pe"),
-    ("forwardPE", "forward_pe"),
-    ("priceToBook", "price_to_book"),
-    ("trailingEps", "trailing_eps"),
-    ("fiftyTwoWeekHigh", "high_52w"),
-    ("fiftyTwoWeekLow", "low_52w"),
+# stock_info 키 → yfinance `.info` 키(가드의 `canonical_from_info` 가 읽는 꼴).
+_SI_TO_INFO = (
+    ("current_price", "currentPrice"),
+    ("market_cap", "marketCap"),
+    ("trailingPE", "trailingPE"),
+    ("priceToBook", "priceToBook"),
+    ("trailingEps", "trailingEps"),
+    ("fiftyTwoWeekHigh", "fiftyTwoWeekHigh"),
+    ("fiftyTwoWeekLow", "fiftyTwoWeekLow"),
+    ("fiftyDayAverage", "fiftyDayAverage"),
+    ("twoHundredDayAverage", "twoHundredDayAverage"),
 )
 
 
 def canonical_from_record(rec: dict) -> dict:
     """아카이브 레코드 → 가드 기준값. 기준이 하나도 없으면 빈 dict. 순수.
 
-    통화는 제품처럼 시장 설정에서 읽는다(`_extract_canonical` 과 같은 출처).
-    앵커가 숨기는 이상치(PER≥10000·PBR≥1000·0 이하)는 제품과 같이 뺀다."""
+    규칙은 제품과 **같은 함수**(`canonical_from_info`)다 — 감사가 기준을 따로
+    만들면 제품과 다른 걸 잰다(#35). 통화는 제품처럼 시장 설정에서 읽는다."""
     si = rec.get("stock_info") or {}
     if not isinstance(si, dict):
         return {}
-    out: dict = {}
-    for src, dst in _SI_TO_CANON:
-        v = si.get(src)
-        if not isinstance(v, (int, float)) or v != v:
-            continue
-        if dst in ("trailing_pe", "forward_pe") and not (0 < v < 10000):
-            continue
-        if dst == "price_to_book" and not (0 < v < 1000):
-            continue
-        if dst in ("current_price", "market_cap", "high_52w", "low_52w") and v <= 0:
-            continue
-        out[dst] = float(v)
+    from bot.report_numeric_guard import canonical_from_info
+    out = canonical_from_info({dst: si.get(src) for src, dst in _SI_TO_INFO})
     if not out:
         return {}
     try:
@@ -77,12 +68,27 @@ def canonical_from_record(rec: dict) -> dict:
     return out
 
 
-def split_sections(full_report: str) -> list[tuple[str, str]]:
-    """`## 제목` 단위로 나눈다 — 제품이 섹션마다 가드를 거는 단위와 같다."""
+def _product_section_titles() -> tuple[str, ...]:
+    """제품이 가드를 거는 섹션 제목 — `_format_full` 이 쓰는 그 목록(#35)."""
+    try:
+        from bot.analyzer import _REPORT_SECTIONS
+        return tuple(label for _k, label, _a in _REPORT_SECTIONS) + ("✅ 최종 결정",)
+    except Exception:                                       # noqa: BLE001
+        return ("✅ 최종 결정",)
+
+
+def split_sections(full_report: str, titles: tuple[str, ...] | None = None
+                   ) -> list[tuple[str, str]]:
+    """제품 섹션 제목(`## 📈 시장 분석` …)에서만 나눈다. 순수(titles 를 주면).
+
+    ⚠️ LLM 이 본문 안에 쓴 `## 동종업계 비교` 같은 소제목에서 자르면 그 줄이
+    청크 제목이 되어 `scan` 이 못 본다 — 그러면 제품은 건너뛰는 비교 문단을
+    감사만 세어, 재려던 오탐을 감사가 부풀린다(독립 리뷰 2026-10-22)."""
+    titles = titles if titles is not None else _product_section_titles()
     out: list[tuple[str, str]] = []
     title, buf = "(머리)", []
     for line in (full_report or "").split("\n"):
-        if line.startswith("## "):
+        if line.startswith("## ") and line[3:].strip() in titles:
             if buf:
                 out.append((title, "\n".join(buf)))
             title, buf = line[3:].strip(), []
