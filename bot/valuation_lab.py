@@ -70,19 +70,76 @@ def _pick(row: dict | None, names: tuple[str, ...]):
 
 
 def _rows(snap: dict, stmt: str, kind: str) -> list[dict]:
-    """스냅샷 재무 행(최신 먼저) → 기간 오름차순."""
-    rows = (((snap.get("financials") or {}).get(stmt) or {}).get(kind)) or []
+    """스냅샷 재무 행(최신 먼저) → 기간 오름차순. 모양이 다르면 빈 목록(던지지 않는다)."""
+    fins = snap.get("financials")
+    st = fins.get(stmt) if isinstance(fins, dict) else None
+    rows = st.get(kind) if isinstance(st, dict) else None
+    if not isinstance(rows, list):
+        return []
     rows = [r for r in rows if isinstance(r, dict) and r.get("period")]
     return sorted(rows, key=lambda r: str(r["period"]))
 
 
-def _cagr(first: float, last: float, years: float):
-    if first is None or last is None or first <= 0 or last <= 0 or years <= 0:
+def _years_between(p0: str, p1: str):
+    """'YYYY-MM-DD' 두 기간 끝 사이 연수 — 행 개수가 아니라 날짜로 센다(중간 해가
+    비면 행 개수는 연수를 줄여 CAGR 을 부풀린다, 독립 리뷰 2026-10-22)."""
+    from datetime import date
+    try:
+        a = date.fromisoformat(str(p0)[:10])
+        b = date.fromisoformat(str(p1)[:10])
+    except ValueError:
+        return None
+    y = (b - a).days / 365.25
+    return y if y > 0.5 else None
+
+
+def _cagr(first: float, last: float, years):
+    if first is None or last is None or first <= 0 or last <= 0 or not years:
         return None
     return (last / first) ** (1.0 / years) - 1.0
 
 
-def gather(snap: dict) -> dict:
+# 한국 우선주 코드(6자리 끝이 0 이 아님 — 005935·00680K) — 회사 전체 FCF 를 한
+# 클래스 주식수로 나누면 주당가치가 틀린다.
+def _is_kr_preferred(ticker: str) -> bool:
+    t = (ticker or "").upper()
+    code, _, sfx = t.partition(".")
+    return sfx in ("KS", "KQ") and len(code) == 6 and code[:5].isdigit() and code[-1] != "0"
+
+
+_DEBT_HINTS = ("Total Debt", "Long Term Debt", "Current Debt",
+               "Long Term Debt And Capital Lease Obligation",
+               "Current Debt And Capital Lease Obligation")
+_LIAB = ("Total Liabilities Net Minority Interest", "Total Liabilities")
+_MINORITY = ("Minority Interest",)
+
+
+def _net_claims(snap: dict) -> dict:
+    """가장 최근 재무상태표에서 총차입금·현금·비지배지분 → 주주 몫 바깥 청구액.
+
+    분기를 최신부터 내려가며 차입금·현금이 **둘 다** 있는 첫 행을 쓰고, 없으면
+    연간으로 내려간다(최신 한 행만 보면 그 열이 비는 날 DCF 를 통째로 버린다).
+    차입금 항목이 **하나도 없고** 부채총계는 있는 행만 무차입으로 본다 — 빈칸을
+    0 으로 읽지 않는다(#235)."""
+    rows = list(reversed(_rows(snap, "balance_sheet", "quarterly"))) + \
+        list(reversed(_rows(snap, "balance_sheet", "annual")))
+    for r in rows:
+        cash = _pick(r, _CASH)
+        if cash is None:
+            continue
+        debt = _pick(r, _DEBT)
+        note = ""
+        if debt is None:
+            if any(k in r for k in _DEBT_HINTS) or _pick(r, _LIAB) is None:
+                continue
+            debt, note = 0.0, "차입금 항목이 없어 무차입으로 봄"
+        mi = _pick(r, _MINORITY) or 0.0
+        return {"period": str(r["period"])[:10], "debt": debt, "cash": cash,
+                "minority": mi, "net": debt - cash + mi, "note": note}
+    return {}
+
+
+def gather(snap: dict, ticker: str = "") -> dict:
     """스냅샷 → 계산 재료 + 출처. 못 만드는 칸은 None + 사유(`why`). 순수."""
     from bot.fcf import fcf_from_row
     why: list[str] = []
@@ -90,15 +147,32 @@ def gather(snap: dict) -> dict:
     ccy = str(snap.get("currency") or "")
     fccy = str(snap.get("financial_currency") or "")
     out["currency"] = ccy
+    # 재무 금액은 재무제표 통화로 적는다(거래 통화와 다를 수 있다, #139).
+    out["fin_currency"] = fccy or ccy
+    out["fx_mismatch"] = bool(ccy and fccy and ccy != fccy)
     out["price"] = _num(snap.get("current_price"))
-    out["shares"] = _num(snap.get("shares_outstanding"))
     out["market_cap"] = _num(snap.get("market_cap"))
+    out["financials_asof"] = str(snap.get("financials_asof") or "")
+    shares = _num(snap.get("shares_outstanding"))
+    out["shares_note"] = ""
+    # ⚠️ 복수 클래스(GOOGL 은 A 주만)·우선주 합산 시총에서 한 클래스 주식수로
+    # 회사 전체 가치를 나누면 주당가치가 클래스 비율만큼 부푼다. 시총(전 클래스,
+    # #256)과 현재가로 되짚은 주식수와 5% 넘게 갈리면 그 주식수를 쓰고 밝힌다.
+    px, mc = out["price"], out["market_cap"]
+    if shares and shares > 0 and px and mc and mc > 0:
+        implied = mc / px
+        if abs(shares / implied - 1.0) > 0.05:
+            out["shares_note"] = (f"발행주식수 {shares:,.0f}주가 시가총액÷현재가"
+                                  f" {implied:,.0f}주와 달라(복수 클래스·우선주 가능)"
+                                  " 시가총액÷현재가를 썼습니다")
+            shares = implied
+    out["shares"] = shares
 
     cf = _rows(snap, "cash_flow", "annual")
     fcf_hist = []
     for r in cf:
         v = fcf_from_row(r)
-        if v is not None:
+        if v is not None and math.isfinite(v):
             fcf_hist.append((str(r["period"])[:10], v))
     out["fcf_hist"] = fcf_hist
 
@@ -108,20 +182,14 @@ def gather(snap: dict) -> dict:
     out["rev_hist"] = rev_hist
     g_rev = None
     if len(rev_hist) >= 3:
-        g_rev = _cagr(rev_hist[0][1], rev_hist[-1][1], len(rev_hist) - 1)
+        g_rev = _cagr(rev_hist[0][1], rev_hist[-1][1],
+                      _years_between(rev_hist[0][0], rev_hist[-1][0]))
     out["rev_cagr"] = g_rev
 
-    # 순차입금 — 가장 최근 재무상태표(분기가 있으면 분기, 더 새로우므로).
-    bs = _rows(snap, "balance_sheet", "quarterly") or _rows(snap, "balance_sheet", "annual")
-    debt = cash = None
-    bs_period = None
-    if bs:
-        last = bs[-1]
-        bs_period = str(last["period"])[:10]
-        debt = _pick(last, _DEBT)
-        cash = _pick(last, _CASH)
-    out["debt"], out["cash"], out["bs_period"] = debt, cash, bs_period
-    out["net_debt"] = (debt - cash) if (debt is not None and cash is not None) else None
+    claims = _net_claims(snap)
+    out["claims"] = claims
+    out["net_debt"] = claims.get("net")
+    out["bs_period"] = claims.get("period")
 
     # ── DCF 를 만들 수 있나 ────────────────────────────────────────
     sector = str(snap.get("sector") or "")
@@ -129,7 +197,10 @@ def gather(snap: dict) -> dict:
     if sector in _FIN_SECTORS or any(w in industry for w in _FIN_INDUSTRY_WORDS):
         why.append("금융업은 영업현금흐름에 예금·대출·보험료 흐름이 섞여 FCF 기반"
                    " DCF 가 성립하지 않습니다")
-    if ccy and fccy and ccy != fccy:
+    if _is_kr_preferred(ticker):
+        why.append("우선주는 회사 전체 FCF 를 이 클래스 주식수로 나눌 수 없어 보통주"
+                   " 화면에서 보십시오")
+    if out["fx_mismatch"]:
         why.append(f"재무제표 통화({fccy})와 거래 통화({ccy})가 달라, 환산 기준"
                    " 없이 주당가치를 만들지 않습니다")
     if len(fcf_hist) < 2:
@@ -138,13 +209,12 @@ def gather(snap: dict) -> dict:
     elif fcf_hist[-1][1] <= 0:
         why.append(f"최근 연간 FCF({fcf_hist[-1][0]})가 0 이하라 성장 할인 모형이"
                    " 성립하지 않습니다")
-    if not out["shares"]:
-        why.append("발행주식수가 없어 주당가치로 나눌 수 없습니다")
-    if not out["price"]:
+    if not shares or shares <= 0:
+        why.append("발행주식수가 없어(또는 0 이하) 주당가치로 나눌 수 없습니다")
+    if not out["price"] or out["price"] <= 0:
         why.append("현재가가 없어 비교할 수 없습니다")
     if out["net_debt"] is None:
-        miss = [n for n, v in (("총차입금", debt), ("현금", cash)) if v is None]
-        why.append(f"최근 재무상태표에 {'·'.join(miss) or '항목'}이 없어 순차입금을"
+        why.append("재무상태표에 현금·총차입금이 함께 있는 기간이 없어 순차입금을"
                    " 정할 수 없습니다")
     out["fcf0"] = fcf_hist[-1][1] if fcf_hist else None
     out["fcf0_period"] = fcf_hist[-1][0] if fcf_hist else None
@@ -234,7 +304,8 @@ def peer_per_range(snap: dict, eps):
     if eps is None or eps <= 0:
         return None
     pers = []
-    for p in snap.get("peer_comps") or []:
+    pcs = snap.get("peer_comps")
+    for p in (pcs if isinstance(pcs, list) else []):
         if not isinstance(p, dict) or p.get("is_subject"):
             continue
         v = _num(p.get("trailingPE"))
@@ -254,10 +325,10 @@ def peer_per_range(snap: dict, eps):
             "n": len(pers)}
 
 
-def build(snap: dict | None) -> dict:
+def build(snap: dict | None, ticker: str = "") -> dict:
     """스냅샷 → 랩 payload. 순수."""
-    snap = snap or {}
-    d = gather(snap)
+    snap = snap if isinstance(snap, dict) else {}
+    d = gather(snap, ticker)
     out: dict = {"inputs": d, "why": list(d["why"])}
     price = d["price"]
     if d["dcf_ok"]:
@@ -276,11 +347,10 @@ def build(snap: dict | None) -> dict:
         bars.append(("52주 범위", lo, hi, "yfinance"))
     tl, th = _num(snap.get("target_low")), _num(snap.get("target_high"))
     if tl and th and th >= tl:
-        n = snap.get("num_analysts")
+        n = _num(snap.get("num_analysts"))
         bars.append(("애널리스트 목표가", tl, th,
-                     f"yfinance 컨센서스{f' {int(n)}명' if n else ''}"))
-    fx_mismatch = any("통화" in w for w in d["why"])
-    pr = None if fx_mismatch else peer_per_range(snap, _num(snap.get("trailingEps")))
+                     f"yfinance 컨센서스{f' {int(n)}명' if n and n > 0 else ''}"))
+    pr = None if d["fx_mismatch"] else peer_per_range(snap, _num(snap.get("trailingEps")))
     if pr:
         bars.append((f"동종사 PER {pr['per_lo']:.1f}~{pr['per_hi']:.1f}배 × 후행 EPS",
                      pr["lo"], pr["hi"],
@@ -308,11 +378,12 @@ def _money(v, ccy: str) -> str:
         if a >= 1e8:
             return f"{v / 1e8:,.0f}억{unit}"
         return f"{v:,.0f}{unit}"
+    c = _e(ccy)
     if a >= 1e9:
-        return f"{v / 1e9:,.2f}B {ccy}"
+        return f"{v / 1e9:,.2f}B {c}"
     if a >= 1e6:
-        return f"{v / 1e6:,.1f}M {ccy}"
-    return f"{v:,.2f} {ccy}"
+        return f"{v / 1e6:,.1f}M {c}"
+    return f"{v:,.2f} {c}"
 
 
 def _px(v, ccy: str) -> str:
@@ -327,32 +398,55 @@ def _pct(v) -> str:
     return "—" if v is None else f"{v * 100:+.1f}%"
 
 
-def render_html(p: dict) -> str:
+_NOTE = ('<div style="font-size:12px;color:var(--fg-soft);line-height:1.6;'
+         'margin-bottom:10px">')
+
+
+def render_html(p: dict, computed_at: str = "") -> str:
+    """랩 payload → HTML 조각. `computed_at` = 계산 시각(KST, 호출부가 준다)."""
     d = p["inputs"]
     ccy = d.get("currency") or ""
+    fccy = d.get("fin_currency") or ccy
     price = d.get("price")
     h: list[str] = []
-    shares_s = "—" if not d.get("shares") else f"{d['shares']:,.0f}주"
-    note = ('<div style="font-size:12px;color:var(--fg-soft);line-height:1.6;'
-            'margin-bottom:10px">')
+    shares = d.get("shares")
+    shares_s = "—" if not shares else f"{shares:,.0f}주"
     h.append(
-        note + "할인율·성장률은 정답이 없는 <b>가정</b>입니다. 그래서 적정주가 하나를"
+        _NOTE + "할인율·성장률은 정답이 없는 <b>가정</b>입니다. 그래서 적정주가 하나를"
         " 정하지 않고, 가정에 따라 값이 어떻게 바뀌는지를 보여 줍니다. 모든 값은"
-        " <b>자체계산</b>이며 원천은 재무제표 탭과 같은 yfinance 연간 재무입니다.</div>")
-    # 재료
-    fh = d.get("fcf_hist") or []
+        " <b>자체계산</b>이며 원천은 재무제표 탭과 같은 yfinance 연간 재무입니다."
+        " 매수·매도 신호가 아닙니다.</div>")
+    asof = []
+    if computed_at:
+        asof.append(f"계산 {_e(computed_at)} (현재가는 상세 화면 스냅샷 기준)")
+    if d.get("financials_asof"):
+        asof.append(f"재무 수집 {_e(d['financials_asof'])}")
+    if asof:
+        h.append(_NOTE + " · ".join(asof) + "</div>")
+    cl = d.get("claims") or {}
+    claim_label = "순차입금 (총차입금 − 현금"
+    if cl.get("minority"):
+        claim_label += " + 비지배지분"
+    claim_label += f", {_e(d.get('bs_period') or '—')})"
     rows = "".join(
-        f"<tr><td>{_e(pp)}</td><td class=\"num\">{_money(v, ccy)}</td></tr>"
-        for pp, v in fh[-5:])
+        f"<tr><td>{_e(pp)}</td><td class=\"num\">{_money(v, fccy)}</td></tr>"
+        for pp, v in (d.get("fcf_hist") or [])[-5:])
     h.append('<div class="si-section-title" style="font-size:13px">재료</div>'
              '<table class="si-table"><tbody>'
-             f'<tr><td>현재가</td><td class="num">{_px(price, ccy)} {ccy}</td></tr>'
+             f'<tr><td>현재가</td><td class="num">{_px(price, ccy)} {_e(ccy)}</td></tr>'
              f'<tr><td>발행주식수</td><td class="num">{shares_s}</td></tr>'
-             f'<tr><td>순차입금 (총차입금 − 현금, {_e(d.get("bs_period") or "—")})</td>'
-             f'<td class="num">{_money(d.get("net_debt"), ccy)}</td></tr>'
+             f'<tr><td>{claim_label}</td><td class="num">{_money(d.get("net_debt"), fccy)}</td></tr>'
              f'<tr><td>기준 FCF ({_e(d.get("fcf0_period") or "—")} 연간)</td>'
-             f'<td class="num">{_money(d.get("fcf0"), ccy)}</td></tr>'
+             f'<td class="num">{_money(d.get("fcf0"), fccy)}</td></tr>'
              '</tbody></table>')
+    foot = []
+    if d.get("shares_note"):
+        foot.append(_e(d["shares_note"]))
+    if cl.get("note"):
+        foot.append(_e(cl["note"]))
+    foot.append("총차입금은 yfinance 'Total Debt'(리스부채가 포함될 수 있음)이고 장기"
+                " 투자자산은 현금에 넣지 않았습니다")
+    h.append(_NOTE + " · ".join(foot) + "</div>")
     if rows:
         h.append('<table class="si-table" style="margin-top:6px"><thead><tr>'
                  '<th>회계연도 말</th><th class="num">FCF (영업현금흐름 − CAPEX)</th>'
@@ -361,35 +455,41 @@ def render_html(p: dict) -> str:
         h.append('<div class="si-note" style="margin-top:8px">DCF 를 만들지 않았습니다 — '
                  + " · ".join(_e(w) for w in p["why"]) + "</div>")
     else:
-        # 역DCF
+        neg_note = ""
         rv = "".join(
             f"<tr><td>{r * 100:.0f}%</td><td class=\"num\">"
             + (_pct(g) if g is not None else
-               ("−50% 미만" if how == "below" else "+100% 초과" if how == "above" else "—"))
+               ("−50% 미만에서도 현재가보다 높음" if how == "below"
+                else "+100% 초과" if how == "above" else "—"))
             + "</td></tr>" for r, g, how in p["reverse"])
         h.append('<div class="si-section-title" style="font-size:13px;margin-top:12px">'
                  '역DCF — 지금 주가가 전제하는 성장률</div>'
-                 + note + f"현재가 {_px(price, ccy)} 를 정당화하려면 앞으로 {YEARS}년간"
+                 + _NOTE + f"현재가 {_px(price, ccy)} 를 정당화하려면 앞으로 {YEARS}년간"
                  f" FCF 가 해마다 몇 % 늘어야 하는지입니다(그 뒤 영구성장 "
                  f"{TERMINAL_G * 100:.0f}% 가정).</div>"
                  '<table class="si-table"><thead><tr><th>할인율</th>'
                  f'<th class="num">필요 FCF 성장률(연)</th></tr></thead><tbody>{rv}</tbody></table>')
-        # 민감도
         head = "".join(f'<th class="num">{g * 100:+.0f}%</th>' for g in GROWTH_GRID)
         body = ""
+        any_neg = False
         for r, row in zip(DISCOUNT_GRID, p["grid"]):
             cells = ""
             for v in row:
                 if v is None:
                     cells += '<td class="num">—</td>'
                     continue
-                col = ("#26a69a" if price and v >= price else "#e2574c")
-                cells += f'<td class="num" style="color:{col}">{_px(v, ccy)}</td>'
+                any_neg = any_neg or v < 0
+                # 중립 표기 — 현재가 이상은 굵게, 미만은 흐리게(매수·매도 색이 아니다).
+                style = ("font-weight:700" if price and v >= price
+                         else "color:var(--fg-soft)")
+                cells += f'<td class="num" style="{style}">{_px(v, ccy)}</td>'
             body += f"<tr><td>{r * 100:.0f}%</td>{cells}</tr>"
+        if any_neg:
+            neg_note = " 음수 = 순차입금이 계산된 기업가치보다 큼."
         h.append('<div class="si-section-title" style="font-size:13px;margin-top:12px">'
                  '민감도 — 주당가치</div>'
-                 + note + f"행 = 할인율, 열 = 앞으로 {YEARS}년 FCF 성장률(연). 초록 = 현재가"
-                 " 이상, 빨강 = 미만.</div>"
+                 + _NOTE + f"행 = 할인율, 열 = 앞으로 {YEARS}년 FCF 성장률(연). 굵게 ="
+                 f" 현재가 이상, 흐리게 = 미만.{neg_note}</div>"
                  f'<table class="si-table"><thead><tr><th>할인율 \\ 성장</th>{head}</tr>'
                  f"</thead><tbody>{body}</tbody></table>")
         mc = p.get("mc")
@@ -397,7 +497,7 @@ def render_html(p: dict) -> str:
             pa = mc.get("p_above")
             h.append('<div class="si-section-title" style="font-size:13px;margin-top:12px">'
                      '몬테카를로 — 가정을 섞었을 때</div>'
-                     + note + f"성장률 ~ 정규분포(중심 {_e(p['g_note'])} · 표준편차"
+                     + _NOTE + f"성장률 ~ 정규분포(중심 {_e(p['g_note'])} · 표준편차"
                      f" {MC_G_SD * 100:.0f}%p · {MC_G_CLIP[0] * 100:.0f}~{MC_G_CLIP[1] * 100:.0f}%"
                      f" 로 자름), 할인율 {MC_R[0] * 100:.0f}~{MC_R[1] * 100:.0f}% ·"
                      f" 영구성장 {MC_TG[0] * 100:.0f}~{MC_TG[1] * 100:.0f}% 균등분포,"
@@ -405,14 +505,18 @@ def render_html(p: dict) -> str:
                      '<table class="si-table"><tbody>'
                      f'<tr><td>P10 / P50 / P90</td><td class="num">{_px(mc["p10"], ccy)} /'
                      f' {_px(mc["p50"], ccy)} / {_px(mc["p90"], ccy)}</td></tr>'
-                     f'<tr><td>주당가치 &gt; 현재가 비율</td><td class="num">'
+                     f'<tr><td>가정 조합 {mc["n"]:,}개 중 주당가치가 현재가보다 큰 비율'
+                     f' (확률 아님)</td><td class="num">'
                      f'{"—" if pa is None else f"{pa * 100:.0f}%"}</td></tr>'
                      "</tbody></table>")
     h.append(_football_html(p.get("football") or [], price, ccy))
-    h.append(note + "한국 종목의 밸류에이션 탭 FCF 는 DART 현금흐름표 기준이라 이 탭(yfinance)과"
+    h.append(_NOTE + "한국 종목의 밸류에이션 탭 FCF 는 DART 현금흐름표 기준이라 이 탭(yfinance)과"
              " 값이 조금 다를 수 있습니다. 이 탭의 값은 투자 판단의 근거가 아니라 가정의"
              " 무게를 가늠하는 도구입니다.</div>")
     return "".join(h)
+
+
+_AXIS_MAX_X = 4.0   # 풋볼필드 축 상한 = 현재가 × 4 (극단 막대가 나머지를 누르지 않게)
 
 
 def _football_html(bars: list, price, ccy: str) -> str:
@@ -421,30 +525,42 @@ def _football_html(bars: list, price, ccy: str) -> str:
     vals = [v for _, lo, hi, _ in bars for v in (lo, hi)]
     if price:
         vals.append(price)
-    lo_all, hi_all = min(vals), max(vals)
+    # 축: 0 아래(음수 주당가치)는 자르고, 현재가의 4배 위는 꼬리 표기로 둔다.
+    lo_all = max(0.0, min(vals))
+    hi_all = max(vals)
+    if price and price > 0:
+        hi_all = min(hi_all, price * _AXIS_MAX_X)
     if hi_all <= lo_all:
         return ""
     pad = (hi_all - lo_all) * 0.05
-    lo_all, hi_all = lo_all - pad, hi_all + pad
+    lo_all, hi_all = max(0.0, lo_all - pad), hi_all + pad
     span = hi_all - lo_all
 
     def pos(v):
-        return (v - lo_all) / span * 100.0
+        return min(max((v - lo_all) / span * 100.0, 0.0), 100.0)
     rows = []
+    clipped = False
     for label, lo, hi, src in bars:
         left, width = pos(lo), max(pos(hi) - pos(lo), 0.6)
+        tail = ""
+        if hi > hi_all:
+            tail, clipped = f" ▶ {_px(hi, ccy)}", True
+        if lo < 0:
+            clipped = True
         rows.append(
             '<div style="display:grid;grid-template-columns:minmax(120px,32%) 1fr;'
             'gap:8px;align-items:center;margin:6px 0;font-size:12px">'
             f'<div>{_e(label)}<div style="color:var(--fg-soft);font-size:11px">{_e(src)}'
-            f' · {_px(lo, ccy)}~{_px(hi, ccy)}</div></div>'
+            f' · {_px(lo, ccy)}~{_px(hi, ccy)}{tail}</div></div>'
             '<div style="position:relative;height:14px;background:var(--surface-2);border-radius:4px">'
             f'<div style="position:absolute;left:{left:.2f}%;width:{width:.2f}%;top:0;bottom:0;'
             'background:var(--accent);opacity:.75;border-radius:4px"></div>'
             + (f'<div style="position:absolute;left:{pos(price):.2f}%;top:-3px;bottom:-3px;'
                'width:2px;background:var(--fg)"></div>' if price else "")
             + "</div></div>")
+    cap = (f" · 축은 0 ~ 현재가 {_AXIS_MAX_X:g}배까지 — 넘는 막대는 ▶ 로 끝값 표기,"
+           " 음수는 0 에서 자름" if clipped else "")
     return ('<div class="si-section-title" style="font-size:13px;margin-top:12px">'
             '풋볼필드 — 여러 잣대의 가격 범위</div>'
             '<div style="font-size:12px;color:var(--fg-soft);margin-bottom:4px">세로선 = 현재가'
-            f' {_px(price, ccy)}</div>' + "".join(rows))
+            f' {_px(price, ccy)}{cap}</div>' + "".join(rows))

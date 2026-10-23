@@ -1805,11 +1805,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     snap = _dmm(snap)
                 except Exception as exc:                       # noqa: BLE001
                     log.debug("vlab_api: 파생 지표 건너뜀 %s: %s", ticker, exc)
-                return {"ok": True, "html": _vl.render_html(_vl.build(snap))}
+                from datetime import datetime, timedelta, timezone
+                now = datetime.now(timezone(timedelta(hours=9))).strftime(
+                    "%Y-%m-%d %H:%M KST")
+                try:
+                    payload = _vl.build(snap, ticker)
+                    html = _vl.render_html(payload, computed_at=now)
+                except Exception as exc:                       # noqa: BLE001
+                    # 재료 모양이 예상과 다르면 사람 말로 갈래를 준다(#82).
+                    log.warning("vlab_api: %s 계산 실패 — %s: %s", ticker,
+                                type(exc).__name__, exc)
+                    return {"ok": False, "error": "재무 스냅샷의 형식이 예상과 달라"
+                            f" 계산하지 못했습니다({type(exc).__name__})"}
+                return {"ok": True, "html": html}
             self._reply_json(200, _once(f"vlab:{ticker}", _build))
         except Exception as exc:
             log.warning("vlab_api: failed — %s", exc)
-            self._reply_json(500, {"ok": False, "error": "internal"})
+            self._reply_json(500, {"ok": False, "error": "서버 오류 — 로그 확인"})
 
     def _handle_technical_api(self) -> None:
         """기술 분석 탭. ?ticker= → 검증 지표 세트(무료). &run=1 → 강세/약세 토론

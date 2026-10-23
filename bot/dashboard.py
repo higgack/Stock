@@ -6021,7 +6021,6 @@ _VLAB_JS = r"""
   if(window.__noahVlabWired) return; window.__noahVlabWired=1;
   function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
   function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
-  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
   function load(){
     var st=document.getElementById('si-vlab-status'), box=document.getElementById('si-vlab-body');
     if(!box) return;
@@ -6030,11 +6029,15 @@ _VLAB_JS = r"""
     if(window.__noahVlabBusy) return; window.__noahVlabBusy=true;
     if(st)st.textContent='계산 중… (재무 스냅샷을 처음 받으면 10~30초)';
     fetch(base()+'api/vlab?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
-      .then(function(r){return r.json();})
+      .then(function(r){ return r.json().catch(function(){ return {ok:false,
+        error:'응답을 읽지 못했습니다(로그인 만료 가능 — 새로고침)'}; }); })
       .then(function(j){ window.__noahVlabBusy=false;
-        if(!j||!j.ok){ if(st)st.textContent=(j&&j.error)?('불러오지 못했습니다: '+esc(j.error)):'불러오지 못했습니다.'; return; }
-        window.__noahVlabHTML=j.html; box.innerHTML=j.html; if(st)st.style.display='none'; })
-      .catch(function(){ window.__noahVlabBusy=false; if(st)st.textContent='불러오지 못했습니다(네트워크).'; });
+        // lookup 은 pane 을 다시 주입한다(core→full) — 받은 뒤에 자리를 다시 찾는다.
+        var st2=document.getElementById('si-vlab-status'), box2=document.getElementById('si-vlab-body');
+        if(!j||!j.ok){ if(st2)st2.textContent=(j&&j.error)?('불러오지 못했습니다: '+j.error):'불러오지 못했습니다.'; return; }
+        window.__noahVlabHTML=j.html; if(box2)box2.innerHTML=j.html; if(st2)st2.style.display='none'; })
+      .catch(function(){ window.__noahVlabBusy=false; var st3=document.getElementById('si-vlab-status');
+        if(st3)st3.textContent='불러오지 못했습니다(네트워크).'; });
   }
   document.addEventListener('click',function(e){
     var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-vlab"]');
