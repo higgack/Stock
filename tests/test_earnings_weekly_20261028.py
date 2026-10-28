@@ -301,12 +301,16 @@ def closes(monkeypatch, tmp_path):
 
 def test_closes_skip_weekend_for_friday_report(closes):
     """금요일 발표 → 다음날 종가는 토요일이 아니라 다음 월요일 봉."""
-    closes["bars"]["AAA"] = {"2026-10-30": 10.0, "2026-11-02": 11.5}
+    closes["bars"]["AAA"] = {"2026-10-29": 8.0, "2026-10-30": 10.0, "2026-11-02": 11.5}
     r = _row("AAA", "2026-10-30")
     ew._attach_closes(_wk([r]), now=_et(2026, 11, 2), download=closes["dl"])
-    assert r["px"]["d0"] == {"d": "2026-10-30", "px": 10.0}
-    assert r["px"]["d1"] == {"d": "2026-11-02", "px": 11.5}
-    assert ew._px_bit(r) == "발표일 10-30 $10.00 · 다음날 11-02 $11.50"
+    assert r["px"]["d0"]["d"] == "2026-10-30" and r["px"]["d0"]["px"] == 10.0
+    assert r["px"]["d1"]["d"] == "2026-11-02" and r["px"]["d1"]["px"] == 11.5
+    # 등락률: 발표일 = 직전 거래일 대비(8→10 = +25%) · 다음날 = 발표일 대비(10→11.5 = +15%)
+    assert r["px"]["d0"]["chg"] == pytest.approx(25.0)
+    assert r["px"]["d1"]["chg"] == pytest.approx(15.0)
+    assert ew._px_bit(r) == ('발표일 10-30 $10.00 <span class="ew-up">(+25.00%)</span> · '
+                             '다음날 11-02 $11.50 <span class="ew-up">(+15.00%)</span>')
 
 
 def test_closes_today_bar_is_not_a_close_before_market_end(closes):
@@ -320,10 +324,10 @@ def test_closes_today_bar_is_not_a_close_before_market_end(closes):
 
 
 def test_closes_d0_confirmed_d1_waits(closes):
-    closes["bars"]["AAA"] = {"2026-10-28": 20.0}
+    closes["bars"]["AAA"] = {"2026-10-27": 25.0, "2026-10-28": 20.0}
     r = _row("AAA", "2026-10-28")
     ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 17, 0), download=closes["dl"])
-    assert r["px"]["d0"] == {"d": "2026-10-28", "px": 20.0}
+    assert r["px"]["d0"] == {"d": "2026-10-28", "px": 20.0, "chg": pytest.approx(-20.0)}
     assert r["px"]["d1"] == {"wait": True}
 
 
@@ -337,7 +341,7 @@ def test_closes_unreported_and_non_favorites_are_not_asked(closes):
 
 
 def test_closes_cached_after_first_fetch_and_missing_is_said(closes):
-    closes["bars"]["AAA"] = {"2026-10-27": 5.0, "2026-10-28": 6.0}
+    closes["bars"]["AAA"] = {"2026-10-26": 5.0, "2026-10-27": 5.0, "2026-10-28": 6.0}
     r = _row("AAA", "2026-10-27")
     ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18), download=closes["dl"])
     assert len(closes["calls"]) == 1 and closes["calls"][0][0] == ["AAA"]
@@ -367,7 +371,7 @@ def test_closes_failure_backs_off_and_does_not_raise(closes):
 
 def test_closes_d1_far_bar_is_not_used(closes):
     """Yahoo 가 사이 봉을 빠뜨려 한참 뒤 봉이 첫 봉이면 다음날 종가로 쓰지 않는다."""
-    closes["bars"]["AAA"] = {"2026-10-20": 1.0, "2026-10-28": 9.0}
+    closes["bars"]["AAA"] = {"2026-10-19": 1.0, "2026-10-20": 1.0, "2026-10-28": 9.0}
     r = _row("AAA", "2026-10-20")
     ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18), download=closes["dl"])
     assert r["px"]["d1"] == {"miss": True}
@@ -377,8 +381,33 @@ def test_render_page_shows_post_report_closes(stub, closes, monkeypatch):
     stub["us"][(2026, 10)] = [dict(_us("AAA", "2026-10-27", "amc", rev=1e9, eps=1.0),
                                    eps_actual=1.2, revenue_actual=1.1e9)]
     stub["favs"] = ({"AAA"}, set())
-    closes["bars"]["AAA"] = {"2026-10-27": 50.0, "2026-10-28": 53.25}
+    closes["bars"]["AAA"] = {"2026-10-26": 50.0, "2026-10-27": 50.0, "2026-10-28": 53.25}
     monkeypatch.setattr(ew, "_et_now", lambda: _et(2026, 10, 28, 18))
     monkeypatch.setattr("bot.holdings_news._yf_daily", closes["dl"])
     html = ew.render_page(date(2026, 10, 26), today=date(2026, 10, 28))
-    assert "발표일 10-27 $50.00 · 다음날 10-28 $53.25" in html
+    assert "발표일 10-27 $50.00 (+0.00%) · 다음날 10-28 $53.25" in html
+    assert '<span class="ew-up">(+6.50%)</span>' in html
+
+
+def test_closes_change_needs_adjacent_prior_bar_and_falls_back_to_price_only(closes):
+    """직전 봉이 멀거나(Yahoo 가 사이를 빠뜨림) 없으면 등락률만 비우고 종가는 남긴다 — 두 세션 등락을 하루로 적지 않게."""
+    closes["bars"]["AAA"] = {"2026-10-14": 1.0, "2026-10-27": 10.0, "2026-10-28": 9.0}
+    r = _row("AAA", "2026-10-27")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18), download=closes["dl"])
+    assert r["px"]["dp"] == {"miss": True}
+    assert "chg" not in r["px"]["d0"] and r["px"]["d1"]["chg"] == pytest.approx(-10.0)
+    assert ew._px_bit(r) == '발표일 10-27 $10.00 · 다음날 10-28 $9.00 <span class="ew-dn">(-10.00%)</span>'
+    # 직전 봉이 없으면 다시 묻는다(창 시작을 7일 앞으로 — 월요일 휴장이면 지난 금요일까지)
+    assert closes["calls"] and closes["calls"][0][1] == "2026-10-20"
+
+
+def test_closes_refetch_when_only_prior_close_is_missing(closes):
+    """발표일·다음날 종가는 이미 디스크에 있고 **직전 거래일 종가만** 없으면(옛 판이 3일 창으로 받은 캐시) 다시 묻는다."""
+    closes["bars"]["AAA"] = {"2026-10-27": 10.0, "2026-10-28": 11.0}
+    ew._attach_closes(_wk([_row("AAA", "2026-10-27")]), now=_et(2026, 10, 28, 18), download=closes["dl"])
+    assert len(closes["calls"]) == 1
+    closes["bars"]["AAA"]["2026-10-26"] = 8.0
+    r = _row("AAA", "2026-10-27")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18, 11), download=closes["dl"])
+    assert len(closes["calls"]) == 2
+    assert r["px"]["d0"]["chg"] == pytest.approx(25.0)
