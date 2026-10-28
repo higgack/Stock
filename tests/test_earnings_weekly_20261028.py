@@ -265,3 +265,120 @@ def test_actual_without_estimate_is_labelled(stub):
     line = re.findall(r'<div class="ew-ckl">(.*?)</div>', html, re.S)[0]
     assert "EPS 발표 1.2" in line and "매출 발표 $0" in line
     assert "ew-up" not in line and "ew-dn" not in line
+
+
+# ── 발표 후 종가(발표일·다음 거래일) — 사용자 2026-10-28 ─────────────────────
+from datetime import datetime  # noqa: E402
+
+
+def _et(y, m, d, hh=18, mm=0):
+    return datetime(y, m, d, hh, mm)
+
+
+def _wk(favs_rows):
+    """build_week 모양의 최소 재료 — 관심종목 줄만."""
+    return {"days": [{"date": "x", "favs": favs_rows}]}
+
+
+def _row(sym, d, eps_act=1.0, rev_act=None, fav=True):
+    return {"sym": sym, "date": d, "eps": 0.9, "eps_act": eps_act, "rev": None, "rev_act": rev_act,
+            "slot": "post", "star": False, "fav": fav}
+
+
+@pytest.fixture
+def closes(monkeypatch, tmp_path):
+    monkeypatch.setattr(ew, "_closes_path", lambda: tmp_path / "closes.json")
+    monkeypatch.setattr("bot.finviz_client.yf_paused", lambda: False)
+    calls = []
+    bars = {}
+
+    def dl(syms, start, end):
+        calls.append((list(syms), start, end))
+        return {s: dict(bars[s]) for s in syms if s in bars}, ""
+
+    return {"calls": calls, "bars": bars, "dl": dl}
+
+
+def test_closes_skip_weekend_for_friday_report(closes):
+    """금요일 발표 → 다음날 종가는 토요일이 아니라 다음 월요일 봉."""
+    closes["bars"]["AAA"] = {"2026-10-30": 10.0, "2026-11-02": 11.5}
+    r = _row("AAA", "2026-10-30")
+    ew._attach_closes(_wk([r]), now=_et(2026, 11, 2), download=closes["dl"])
+    assert r["px"]["d0"] == {"d": "2026-10-30", "px": 10.0}
+    assert r["px"]["d1"] == {"d": "2026-11-02", "px": 11.5}
+    assert ew._px_bit(r) == "발표일 10-30 $10.00 · 다음날 11-02 $11.50"
+
+
+def test_closes_today_bar_is_not_a_close_before_market_end(closes):
+    """발표일이 오늘이고 마감 전이면 장중 값이라 '대기' — 디스크에도 굳히지 않는다."""
+    closes["bars"]["AAA"] = {"2026-10-28": 99.0}
+    r = _row("AAA", "2026-10-28")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 10, 0), download=closes["dl"])
+    assert r["px"]["d0"] == {"wait": True} and r["px"]["d1"] == {"wait": True}
+    assert "종가 대기" in ew._px_bit(r)
+    assert "AAA" not in (ew._load_closes().get("bars") or {})
+
+
+def test_closes_d0_confirmed_d1_waits(closes):
+    closes["bars"]["AAA"] = {"2026-10-28": 20.0}
+    r = _row("AAA", "2026-10-28")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 17, 0), download=closes["dl"])
+    assert r["px"]["d0"] == {"d": "2026-10-28", "px": 20.0}
+    assert r["px"]["d1"] == {"wait": True}
+
+
+def test_closes_unreported_and_non_favorites_are_not_asked(closes):
+    closes["bars"]["AAA"] = {"2026-10-27": 5.0}
+    pending = _row("AAA", "2026-10-27", eps_act=None)          # 아직 발표치 없음
+    future = _row("FUT", "2026-10-30")                          # 아직 안 온 날
+    ew._attach_closes(_wk([pending, future]), now=_et(2026, 10, 28), download=closes["dl"])
+    assert closes["calls"] == []
+    assert "px" not in pending and "px" not in future
+
+
+def test_closes_cached_after_first_fetch_and_missing_is_said(closes):
+    closes["bars"]["AAA"] = {"2026-10-27": 5.0, "2026-10-28": 6.0}
+    r = _row("AAA", "2026-10-27")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18), download=closes["dl"])
+    assert len(closes["calls"]) == 1 and closes["calls"][0][0] == ["AAA"]
+    ew._attach_closes(_wk([_row("AAA", "2026-10-27")]), now=_et(2026, 10, 28, 18, 30), download=closes["dl"])
+    assert len(closes["calls"]) == 1                            # 이미 굳은 종가는 다시 묻지 않는다
+    # 원천에 없는 종목은 마감이 지났는데 비었으므로 '미수신' — 대기와 구별
+    m = _row("NOPE", "2026-10-27")
+    ew._attach_closes(_wk([m]), now=_et(2026, 10, 28, 19), download=closes["dl"])
+    assert m["px"]["d0"] == {"miss": True} and "종가 미수신" in ew._px_bit(m)
+
+
+def test_closes_failure_backs_off_and_does_not_raise(closes):
+    n = []
+
+    def boom(syms, start, end):
+        n.append(1)
+        raise RuntimeError("down")
+
+    r = _row("AAA", "2026-10-27")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18, 0), download=boom)
+    ew._attach_closes(_wk([_row("AAA", "2026-10-27")]), now=_et(2026, 10, 28, 18, 5), download=boom)
+    assert len(n) == 1                                          # 10분 안엔 다시 안 묻는다
+    ew._attach_closes(_wk([_row("AAA", "2026-10-27")]), now=_et(2026, 10, 28, 18, 11), download=boom)
+    assert len(n) == 2
+    assert r["px"]["d0"] == {"miss": True}
+
+
+def test_closes_d1_far_bar_is_not_used(closes):
+    """Yahoo 가 사이 봉을 빠뜨려 한참 뒤 봉이 첫 봉이면 다음날 종가로 쓰지 않는다."""
+    closes["bars"]["AAA"] = {"2026-10-20": 1.0, "2026-10-28": 9.0}
+    r = _row("AAA", "2026-10-20")
+    ew._attach_closes(_wk([r]), now=_et(2026, 10, 28, 18), download=closes["dl"])
+    assert r["px"]["d1"] == {"miss": True}
+
+
+def test_render_page_shows_post_report_closes(stub, closes, monkeypatch):
+    stub["us"][(2026, 10)] = [dict(_us("AAA", "2026-10-27", "amc", rev=1e9, eps=1.0),
+                                   eps_actual=1.2, revenue_actual=1.1e9)]
+    stub["favs"] = ({"AAA"}, set())
+    closes["bars"]["AAA"] = {"2026-10-27": 50.0, "2026-10-28": 53.25}
+    monkeypatch.setattr(ew, "_et_now", lambda: _et(2026, 10, 28, 18))
+    monkeypatch.setattr("bot.holdings_news._yf_daily", closes["dl"])
+    html = ew.render_page(date(2026, 10, 26), today=date(2026, 10, 28))
+    assert "발표일 10-27 $50.00 · 다음날 10-28 $53.25" in html
