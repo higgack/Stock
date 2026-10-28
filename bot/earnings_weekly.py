@@ -187,6 +187,160 @@ def _slot_html(slot: str, rows: list[dict]) -> str:
             f'<div class="ew-grid">{tiles}</div>{more}</div>')
 
 
+# ── 발표 후 종가(발표일·다음 거래일) ─────────────────────────────────────────
+# 네트워크는 여기서만 — 발표치가 채워진 관심종목만, 확정된 종가만 디스크에 굳힌다(확정 종가는 안 바뀐다).
+_CLOSE_MARGIN_MIN = 20         # 정규장 마감(16:00 ET) 뒤 이 시간이 지나야 그날 봉을 종가로 본다
+_CLOSE_RETRY_MIN = 10          # 못 받았으면 이 시간 동안은 다시 묻지 않는다(렌더마다 20초 대기 방지, #303)
+_CLOSE_KEEP_DAYS = 120
+_D1_GAP_DAYS = 5               # 발표일 뒤 첫 봉이 이보다 멀면 Yahoo 가 하루를 빠뜨린 것 — 다음날 종가로 안 쓴다(#29)
+
+
+def _et_now() -> datetime:
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:                                          # noqa: BLE001 — tzdata 없음
+        return datetime.now(timezone.utc) - timedelta(hours=5)
+
+
+def _closes_path() -> Path:
+    return Path.home() / ".tradingagents" / "cache" / "earnings_cal" / "closes.json"
+
+
+def _load_closes() -> dict:
+    try:
+        import json
+        d = json.loads(_closes_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:                                          # noqa: BLE001 — 없음·파손은 빈 캐시(다시 받는다, #331)
+        return {}
+
+
+def _save_closes(cache: dict) -> None:
+    import json
+    import os
+    try:
+        p = _closes_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as exc:
+        log.warning("earnings_weekly: 종가 캐시 저장 실패 — %s", exc)
+
+
+def _confirmed(d: str, now: datetime) -> bool:
+    """그 날(ET)의 봉이 마감 뒤 확정된 종가인가 — 오늘 봉은 마감 전이면 장중 값이다."""
+    dd = date.fromisoformat(d)
+    today = now.date()
+    if dd < today:
+        return True
+    return dd == today and now.hour * 60 + now.minute >= 16 * 60 + _CLOSE_MARGIN_MIN
+
+
+def _next_weekday(d: date) -> date:
+    n = d + timedelta(days=1)
+    while n.weekday() >= 5:
+        n += timedelta(days=1)
+    return n
+
+
+def _ysym(sym: str) -> str:
+    return sym.replace(".", "-")
+
+
+def _reported(x: dict) -> bool:
+    return _num(x.get("eps_act")) is not None or _num(x.get("rev_act")) is not None
+
+
+def _px_view(sym: str, d: str, cache: dict, now: datetime) -> dict:
+    """한 종목의 발표일·다음 거래일 종가 — 값 = (날짜, 종가) · 못 정했으면 사유 `wait`(마감 전) / `miss`(마감 뒤인데 없음)."""
+    bars = (cache.get("bars") or {}).get(_ysym(sym)) or {}
+    out: dict = {}
+    if not _confirmed(d, now):
+        out["d0"] = {"wait": True}
+    elif isinstance(bars.get(d), (int, float)):
+        out["d0"] = {"d": d, "px": float(bars[d])}
+    else:
+        out["d0"] = {"miss": True}
+    nxt = _next_weekday(date.fromisoformat(d)).isoformat()
+    if not _confirmed(nxt, now):
+        out["d1"] = {"wait": True}
+    else:
+        later = sorted(k for k in bars if k > d)
+        k = later[0] if later else None
+        if k and (date.fromisoformat(k) - date.fromisoformat(d)).days <= _D1_GAP_DAYS \
+                and isinstance(bars[k], (int, float)):
+            out["d1"] = {"d": k, "px": float(bars[k])}
+        else:
+            out["d1"] = {"miss": True}
+    return out
+
+
+def _attach_closes(data: dict, now: datetime | None = None, download=None) -> None:
+    """발표치가 채워진 관심종목 줄에 `px`(발표일·다음 거래일 종가)를 단다 — 곁들이라 어떤 실패도 화면을 멈추지 않는다(#315)."""
+    now = now or _et_now()
+    rows = [x for d in data["days"] for x in d["favs"]
+            if _reported(x) and x.get("date") and date.fromisoformat(x["date"]) <= now.date()]
+    if not rows:
+        return
+    cache = _load_closes()
+    bars = cache.setdefault("bars", {})
+
+    def _lacking(x) -> bool:
+        v = _px_view(x["sym"], x["date"], cache, now)
+        return bool(v["d0"].get("miss") or v["d1"].get("miss"))
+
+    need = sorted({_ysym(x["sym"]) for x in rows if _lacking(x)})
+    t = now.timestamp()
+    if need and t - float(cache.get("tried") or 0) >= _CLOSE_RETRY_MIN * 60:
+        why = ""
+        try:
+            from bot.finviz_client import yf_paused
+            paused = yf_paused()
+        except Exception:                                      # noqa: BLE001
+            paused = False
+        if paused:
+            why = "yfinance 일시정지(YF_PAUSE) — 종가를 묻지 않음"
+        else:
+            if download is None:
+                from bot.holdings_news import _yf_daily as download
+            start = (date.fromisoformat(min(x["date"] for x in rows)) - timedelta(days=3)).isoformat()
+            end = (now.date() + timedelta(days=1)).isoformat()
+            try:
+                got, why = download(need, start, end)
+            except Exception as exc:                           # noqa: BLE001
+                got, why = {}, f"종가 조회 실패({type(exc).__name__})"
+            for y, b in (got or {}).items():
+                # 확정된 종가만 굳힌다 — 장중 봉은 다음 응답이 마감값으로 갈아 끼운다
+                keep = {d: v for d, v in b.items() if _confirmed(d, now)}
+                if keep:
+                    bars.setdefault(y, {}).update(keep)
+        cache["tried"], cache["why"] = t, why
+        old = (now.date() - timedelta(days=_CLOSE_KEEP_DAYS)).isoformat()
+        for y in list(bars):
+            bars[y] = {d: v for d, v in bars[y].items() if d >= old}
+            if not bars[y]:
+                bars.pop(y)
+        _save_closes(cache)
+    for x in rows:
+        x["px"] = _px_view(x["sym"], x["date"], cache, now)
+
+
+def _px_bit(x: dict) -> str:
+    """체크포인트 줄 끝의 종가 조각 — 기준 날짜를 같이 적는다(발표일과 다음 거래일은 요일이 건너뛸 수 있다)."""
+    p = x.get("px")
+    if not p:
+        return ""
+
+    def one(lbl: str, v: dict) -> str:
+        if "px" in v:
+            return f"{lbl} {v['d'][5:]} ${v['px']:,.2f}"
+        return f"{lbl} 종가 대기" if v.get("wait") else f"{lbl} 종가 미수신"
+
+    return " · ".join((one("발표일", p["d0"]), one("다음날", p["d1"])))
+
+
 def _num(v):
     try:
         f = float(v)
@@ -220,6 +374,9 @@ def _check_bits(x: dict) -> list[str]:
         bits.append(_html.escape(f"{'' if has_rev else '매출 '}발표 {_money(x['rev_act'])}")
                     + _vs(x["rev_act"], x["rev"]))
     bits.append({"pre": "장전", "post": "장후"}.get(x["slot"], "시간 미정"))
+    px = _px_bit(x)
+    if px:
+        bits.append(_html.escape(px))
     return bits
 
 
@@ -252,9 +409,9 @@ def _asof(mon: date) -> str:
 
 _CSS = """<style>
 :root{--bg:#f3f8f2;--card:#fff;--hd:#1e5b2e;--hd-text:#fff;--soft:#e7f2e4;--border:#cfe1cb;
---text:#16261a;--muted:#5d6f61;--accent:#1e7a3a;--fav:#1e7a3a;--star:#b7791f;--ck:#fff8e8}
+--text:#16261a;--muted:#5d6f61;--accent:#1e7a3a;--fav:#1e7a3a;--star:#b7791f;--ck:#fff8e8;--title:#1e5b2e}
 [data-theme="dark"]{--bg:#0e1511;--card:#141d17;--hd:#1d4a2a;--hd-text:#eaf5ec;--soft:#18241b;
---border:#2b3d30;--text:#e3ede5;--muted:#93a597;--accent:#6fcf8c;--fav:#6fcf8c;--star:#e6b450;--ck:#1c1a12}
+--border:#2b3d30;--text:#e3ede5;--muted:#93a597;--accent:#6fcf8c;--fav:#6fcf8c;--star:#e6b450;--ck:#1c1a12;--title:#6fcf8c}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
 background:var(--bg);color:var(--text);padding:20px;max-width:1400px;margin:0 auto}
@@ -262,7 +419,7 @@ a{color:inherit;text-decoration:none}
 .back{color:var(--accent);font-size:13px;display:inline-block;margin-bottom:10px}
 .ew-top{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px}
 .ew-title{flex:1;min-width:260px}
-.ew-title .en{font-size:40px;font-weight:800;color:var(--hd);line-height:1;letter-spacing:1px}
+.ew-title .en{font-size:40px;font-weight:800;color:var(--title);line-height:1;letter-spacing:1px}
 .ew-title .en2{font-size:22px;font-weight:800;color:var(--accent);letter-spacing:1px}
 .ew-title .ko{font-size:15px;font-weight:700;margin-top:6px}
 .ew-box{background:var(--soft);border:1px solid var(--border);border-radius:12px;padding:12px 18px;min-width:240px}
@@ -314,6 +471,10 @@ def render_page(start: date | None = None,
         start = None
     mon = week_start(start or today)
     data = build_week(mon)
+    try:
+        _attach_closes(data)
+    except Exception as exc:                                   # noqa: BLE001 — 곁들이가 본체를 지우지 않게(#315)
+        log.warning("earnings_weekly: 발표 후 종가 붙이기 실패 — %s", exc)
     fri = mon + timedelta(days=4)
     tz = "미국 동부시간(ET) 발표일 기준"
     src = "Finnhub 실적 일정"
@@ -373,7 +534,7 @@ def render_page(start: date | None = None,
 <div class="ew-nav">{nav}</div>
 {note_html}
 <div class="ew-cols">{"".join(cols)}</div>
-<div class="ew-ckh">📌 관심종목 체크포인트<span>관심종목에 담긴 종목만 · ★=중요 표시 · 발표 = Finnhub 발표치(▲ 추정 상회 · ▼ 하회)</span></div>
+<div class="ew-ckh">📌 관심종목 체크포인트<span>관심종목에 담긴 종목만 · ★=중요 표시 · 발표 = Finnhub 발표치(▲ 추정 상회 · ▼ 하회) · 발표일·다음날 = 정규장 종가(Yahoo, 마감 확정 뒤)</span></div>
 <div class="ew-cols">{"".join(cks)}</div>
 <div class="ew-foot">
   <div>출처: {_html.escape(src)}{(" · " + asof + " 수신") if asof else ""}</div>

@@ -45768,7 +45768,7 @@ def test_every_full_page_module_is_in_the_css_guard_or_listed():
     # dashboard 는 여러 페이지가 개별 이름으로 등재돼 있다. 나머지는
     # `_fetching_pages()` 가 원천을 스텁해 덮는다 — 이름이 아니라 **모듈**로
     # 대조해야 한다(페이지 이름과 모듈명이 1:1 이 아니다).
-    covered |= {"dashboard", "earnings_calendar", "econ_calendar",
+    covered |= {"dashboard", "earnings_calendar", "earnings_weekly", "econ_calendar",
                 "fred_boards", "intl_pages", "naver_pages", "tw_pages",
                 "us_pages", "dashboard_server"}
     gap = mods - covered - _PAGE_MODULES_NOT_COVERED
