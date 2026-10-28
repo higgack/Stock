@@ -254,9 +254,19 @@ def _reported(x: dict) -> bool:
 
 
 def _px_view(sym: str, d: str, cache: dict, now: datetime) -> dict:
-    """한 종목의 발표일·다음 거래일 종가 — 값 = (날짜, 종가) · 못 정했으면 사유 `wait`(마감 전) / `miss`(마감 뒤인데 없음)."""
+    """한 종목의 발표일·다음 거래일 종가 — 값 = (날짜, 종가, 등락률) · 못 정했으면 사유 `wait`(마감 전) / `miss`(마감 뒤인데 없음).
+
+    등락률(사용자 2026-10-28): 발표일 = 직전 거래일 종가 대비 · 다음날 = 발표일 종가 대비. 비교 대상 종가가
+    없으면 등락률만 비운다(종가는 그대로 보인다). 직전 봉이 `_D1_GAP_DAYS` 보다 멀면 Yahoo 가 사이 봉을 빠뜨린
+    것이라 쓰지 않는다(#29) — 두 세션 이상의 등락을 하루 등락으로 적지 않게."""
     bars = (cache.get("bars") or {}).get(_ysym(sym)) or {}
     out: dict = {}
+    prev = max((k for k in bars if k < d), default=None)
+    if prev and (date.fromisoformat(d) - date.fromisoformat(prev)).days <= _D1_GAP_DAYS \
+            and isinstance(bars[prev], (int, float)) and bars[prev] > 0:
+        out["dp"] = {"d": prev, "px": float(bars[prev])}
+    else:
+        out["dp"] = {"miss": True}
     if not _confirmed(d, now):
         out["d0"] = {"wait": True}
     elif isinstance(bars.get(d), (int, float)):
@@ -274,6 +284,10 @@ def _px_view(sym: str, d: str, cache: dict, now: datetime) -> dict:
             out["d1"] = {"d": k, "px": float(bars[k])}
         else:
             out["d1"] = {"miss": True}
+    for k, base in (("d0", "dp"), ("d1", "d0")):
+        b = out[base].get("px")
+        if "px" in out[k] and b:
+            out[k]["chg"] = (out[k]["px"] / b - 1) * 100
     return out
 
 
@@ -289,7 +303,7 @@ def _attach_closes(data: dict, now: datetime | None = None, download=None) -> No
 
     def _lacking(x) -> bool:
         v = _px_view(x["sym"], x["date"], cache, now)
-        return bool(v["d0"].get("miss") or v["d1"].get("miss"))
+        return bool(v["dp"].get("miss") or v["d0"].get("miss") or v["d1"].get("miss"))
 
     need = sorted({_ysym(x["sym"]) for x in rows if _lacking(x)})
     t = now.timestamp()
@@ -305,7 +319,7 @@ def _attach_closes(data: dict, now: datetime | None = None, download=None) -> No
         else:
             if download is None:
                 from bot.holdings_news import _yf_daily as download
-            start = (date.fromisoformat(min(x["date"] for x in rows)) - timedelta(days=3)).isoformat()
+            start = (date.fromisoformat(min(x["date"] for x in rows)) - timedelta(days=7)).isoformat()   # 직전 거래일(월요일 휴장이면 지난 금요일)까지
             end = (now.date() + timedelta(days=1)).isoformat()
             try:
                 got, why = download(need, start, end)
@@ -328,15 +342,21 @@ def _attach_closes(data: dict, now: datetime | None = None, download=None) -> No
 
 
 def _px_bit(x: dict) -> str:
-    """체크포인트 줄 끝의 종가 조각 — 기준 날짜를 같이 적는다(발표일과 다음 거래일은 요일이 건너뛸 수 있다)."""
+    """체크포인트 줄 끝의 종가 조각(HTML) — 기준 날짜를 같이 적는다(발표일과 다음 거래일은 요일이 건너뛸 수 있다).
+    등락률은 발표일 = 직전 거래일 대비, 다음날 = 발표일 대비."""
     p = x.get("px")
     if not p:
         return ""
 
     def one(lbl: str, v: dict) -> str:
         if "px" in v:
-            return f"{lbl} {v['d'][5:]} ${v['px']:,.2f}"
-        return f"{lbl} 종가 대기" if v.get("wait") else f"{lbl} 종가 미수신"
+            txt = _html.escape(f"{lbl} {v['d'][5:]} ${v['px']:,.2f}")
+            c = v.get("chg")
+            if c is not None:
+                cls = "ew-up" if c > 0 else "ew-dn" if c < 0 else ""
+                txt += f' <span class="{cls}">({c:+.2f}%)</span>' if cls else f" ({c:+.2f}%)"
+            return txt
+        return _html.escape(f"{lbl} 종가 대기" if v.get("wait") else f"{lbl} 종가 미수신")
 
     return " · ".join((one("발표일", p["d0"]), one("다음날", p["d1"])))
 
@@ -376,7 +396,7 @@ def _check_bits(x: dict) -> list[str]:
     bits.append({"pre": "장전", "post": "장후"}.get(x["slot"], "시간 미정"))
     px = _px_bit(x)
     if px:
-        bits.append(_html.escape(px))
+        bits.append(px)
     return bits
 
 
@@ -534,7 +554,7 @@ def render_page(start: date | None = None,
 <div class="ew-nav">{nav}</div>
 {note_html}
 <div class="ew-cols">{"".join(cols)}</div>
-<div class="ew-ckh">📌 관심종목 체크포인트<span>관심종목에 담긴 종목만 · ★=중요 표시 · 발표 = Finnhub 발표치(▲ 추정 상회 · ▼ 하회) · 발표일·다음날 = 정규장 종가(Yahoo, 마감 확정 뒤)</span></div>
+<div class="ew-ckh">📌 관심종목 체크포인트<span>관심종목에 담긴 종목만 · ★=중요 표시 · 발표 = Finnhub 발표치(▲ 추정 상회 · ▼ 하회) · 발표일·다음날 = 정규장 종가(Yahoo, 마감 확정 뒤) · (%) = 발표일은 직전 거래일 대비, 다음날은 발표일 대비</span></div>
 <div class="ew-cols">{"".join(cks)}</div>
 <div class="ew-foot">
   <div>출처: {_html.escape(src)}{(" · " + asof + " 수신") if asof else ""}</div>
