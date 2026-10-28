@@ -45688,6 +45688,11 @@ def _fetching_pages() -> list:
             "quarter": 3, "year": 2026}], ""))
         P("bot.earnings_calendar._us_name_map", return_value={"AAPL": "Apple"})
         out.append(("earnings_us", _ec.render_page(2026, 9, "us")))
+        from bot import earnings_weekly as _ew
+        from datetime import date as _ewd
+        P("bot.earnings_weekly._favorites", return_value=({"AAPL"}, set()))
+        out.append(("earnings_week", _ew.render_page(_ewd(2026, 9, 28),
+                                                     today=_ewd(2026, 9, 30))))
 
     hist = ([(f"2024-{m:02d}-01", 240.0 + m) for m in range(1, 13)]
             + [(f"2025-{m:02d}-01", 252.0 + m) for m in range(1, 13)])
@@ -45854,6 +45859,7 @@ _FETCHED_PAGE_OWNERS = {
     "tw_pages": {"tw_movers", "tw_highlow52"},
     "us_pages": {"us_industry", "us_highlow", "us_movers", "us_prepost"},
     "earnings_calendar": {"earnings_us"},
+    "earnings_weekly": {"earnings_week"},
     "fred_boards": {"fred_ppi", "fred_cpi", "fred_liquidity"},
     "econ_calendar": {"econ_calendar"},
     "dashboard_server": {"search_error"},

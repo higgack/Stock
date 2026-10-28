@@ -1029,7 +1029,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # .json 도 no-cache — analysis_csv.json 등 regen 산출물이 브라우저
         # 휴리스틱 캐시로 stale 되는 것 방지(성능 2026-07-03 CSV 외부화 동반).
         if (path_lower.endswith((".html", "/", ".json")) or path_lower == ""
-                or path_lower in ("/earnings", "/theme", "/highlow",
+                or path_lower in ("/earnings", "/earnings_week", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
                                   "/usprepost",
                                   "/twhighlow", "/tw52",
@@ -1142,6 +1142,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path.split("?", 1)[0]
         if raw == "/earnings":
             return self._handle_earnings()
+        # /earnings_week — 주간 어닝 캘린더(미국, 사용자 2026-10-28).
+        if raw == "/earnings_week":
+            return self._handle_earnings_week()
         # /theme · /highlow — 테마별 시세 · 상한가/하한가 (Naver, on-demand)
         if raw in ("/theme", "/highlow"):
             return self._handle_naver_page(raw)
@@ -2063,6 +2066,33 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("earnings: failed — %s", exc)
+            self.send_error(500, "internal error")
+
+    def _handle_earnings_week(self) -> None:
+        """GET /earnings_week[?week=YYYY-MM-DD] — 주간 어닝 캘린더(미국)."""
+        # 연도 범위는 `render_page` 가 막는다(형제 `/earnings` 와 같은 2000~2099) —
+        # 밖이면 오늘(ET) 주로 떨어진다.
+        import urllib.parse as _ulp
+        from datetime import date as _date
+        try:
+            qs = _ulp.parse_qs(_ulp.urlparse(self.path).query)
+            wk = (qs.get("week", [""])[0] or "").strip()
+            start = None
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", wk):
+                try:
+                    start = _date.fromisoformat(wk)
+                except ValueError:
+                    start = None
+            from bot.earnings_weekly import render_page as _rw
+            encoded = _rw(start).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("earnings_week: failed — %s", exc)
             self.send_error(500, "internal error")
 
     def _handle_trade_proxy(self) -> None:
