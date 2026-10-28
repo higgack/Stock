@@ -134,6 +134,28 @@ _US_REASON = {
 # 되돌린다. 다만 6시간을 통째로 믿지는 않는다 — 원천이 이제 막 채우는
 # 당월·익월은 한 시간이면 다시 물어볼 값어치가 있다(그 이상은 안 바뀐다).
 _EMPTY_TTL_SEC = 3600
+# 발표치(epsActual·revenueActual)는 발표 뒤 원천이 채운다 — 최근 7일이 걸친 달
+# (오늘 · 7일 전이 속한 달)은 1시간만 믿어 발표치가 반나절 늦지 않게 한다
+# (사용자 2026-10-29 "발표치도 같이"). 나머지 달은 종전 6시간.
+_LIVE_TTL_SEC = 3600
+# 행 스키마 판 — 옛 판 캐시엔 발표치 칸이 없어 6시간 동안 '발표치 없음' 으로
+# 보인다(#18·#21b 캐시가 fix 를 가림). 판이 다르면 캐시를 안 믿는다.
+_ROW_VER = 2
+
+
+def _utc_today() -> date:
+    """서버 로컬타임에 기대지 않는다(규칙 10a) — 달 경계 하루 차이는 7일 창이 흡수한다."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date()
+
+
+def _cache_ttl(year: int, month: int, cached: list) -> int:
+    if not cached:
+        return _EMPTY_TTL_SEC
+    t = _utc_today()
+    w = t - timedelta(days=7)
+    live = {(t.year, t.month), (w.year, w.month)}
+    return _LIVE_TTL_SEC if (year, month) in live else _CACHE_TTL_SEC
 
 
 def us_month(year: int, month: int) -> tuple[list[dict], str]:
@@ -157,12 +179,17 @@ def us_month(year: int, month: int) -> tuple[list[dict], str]:
     tag = f"{year:04d}-{month:02d}"
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = _CACHE_DIR / f"{tag}.json"
+    stale_ok: list = []        # 옛 판이지만 기한 안 — 원천 장애 때만 쓴다(빈칸보다 낫다)
     if cache_file.exists():
         try:
             cached = json.loads(cache_file.read_text())
-            ttl = _CACHE_TTL_SEC if cached else _EMPTY_TTL_SEC
+            fresh_shape = all(isinstance(r, dict) and r.get("_v") == _ROW_VER
+                              for r in cached)
+            ttl = _cache_ttl(year, month, cached)
             if time.time() - cache_file.stat().st_mtime < ttl:
-                return cached, ("" if cached else "empty")
+                if fresh_shape:
+                    return cached, ("" if cached else "empty")
+                stale_ok = cached
         except Exception:
             pass
 
@@ -187,6 +214,9 @@ def us_month(year: int, month: int) -> tuple[list[dict], str]:
         log.warning("earnings_cal: fetch failed for %s: %s%s", tag,
                     type(exc).__name__,
                     f" (HTTP {_st})" if _st else f": {exc}")
+        if stale_ok:
+            # 판 교체 직후 원천이 죽어도 화면이 비지 않게 — 발표치만 없다(사유 'http' 는 남긴다, #43).
+            return stale_ok, "http"
         return [], "http"
 
     result = []
@@ -202,8 +232,12 @@ def us_month(year: int, month: int) -> tuple[list[dict], str]:
             "hour": e.get("hour", ""),
             "eps_estimate": e.get("epsEstimate"),
             "revenue_estimate": e.get("revenueEstimate"),
+            # 발표치 — 발표 전엔 원천이 null 로 준다(0 으로 읽지 말 것, #235).
+            "eps_actual": e.get("epsActual"),
+            "revenue_actual": e.get("revenueActual"),
             "quarter": e.get("quarter"),
             "year": e.get("year"),
+            "_v": _ROW_VER,
         })
 
     try:

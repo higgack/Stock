@@ -1,7 +1,7 @@
 """주간 어닝 캘린더(미국) — 월~금 5열 · 장전/장후 칸 · 관심종목 체크포인트 (사용자 2026-10-28).
 
 월간 달력(`bot.earnings_calendar`)과 **같은 원천·같은 캐시**를 읽는다(#38) —
-Finnhub 실적(`us_month`, 6h 캐시). 이 페이지는 재료를 새로 받지 않고 주 단위로
+Finnhub 실적(`us_month` — 최근 7일이 걸친 달 1h · 나머지 6h 캐시). 이 페이지는 재료를 새로 받지 않고 주 단위로
 다시 묶을 뿐이다.
 
 한국은 싣지 않는다(사용자 2026-10-28 "실적발표일 공개를 안하면 그냥 빼줘") —
@@ -135,6 +135,7 @@ def build_week(mon: date) -> dict:
             "fav": _norm(sym) in favs, "star": _norm(sym) in stars,
             "link": "lookup/" + quote(sym, safe=".-"),
             "eps": e.get("eps_estimate"), "rev": e.get("revenue_estimate"),
+            "eps_act": e.get("eps_actual"), "rev_act": e.get("revenue_actual"),
             "_rank": -_rev(e.get("revenue_estimate")),
         })
     items.sort(key=lambda x: (not x["star"], not x["fav"], x["_rank"], x["sym"]))
@@ -186,6 +187,42 @@ def _slot_html(slot: str, rows: list[dict]) -> str:
             f'<div class="ew-grid">{tiles}</div>{more}</div>')
 
 
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None           # NaN 은 값이 아니다
+
+
+def _vs(act, est) -> str:
+    """발표치가 추정치보다 크면 ▲, 작으면 ▼ — 둘 중 하나라도 없으면 표시하지 않는다."""
+    a, e = _num(act), _num(est)
+    if a is None or e is None or a == e:
+        return ""
+    return ' <span class="ew-up">▲</span>' if a > e else ' <span class="ew-dn">▼</span>'
+
+
+def _check_bits(x: dict) -> list[str]:
+    """체크포인트 한 줄의 조각(HTML) — 추정치 옆에 발표치(있을 때만)."""
+    bits = []
+    has_eps = x["eps"] is not None
+    if has_eps:
+        bits.append(_html.escape(f"EPS 추정 {x['eps']}"))
+    if _num(x.get("eps_act")) is not None:
+        # 추정치가 없으면 무엇의 발표치인지 이름을 붙인다
+        bits.append(_html.escape(f"{'' if has_eps else 'EPS '}발표 {x['eps_act']}")
+                    + _vs(x["eps_act"], x["eps"]))
+    has_rev = bool(x["rev"])
+    if has_rev:
+        bits.append(_html.escape(f"매출 추정 {_money(x['rev'])}"))
+    if _num(x.get("rev_act")) is not None:
+        bits.append(_html.escape(f"{'' if has_rev else '매출 '}발표 {_money(x['rev_act'])}")
+                    + _vs(x["rev_act"], x["rev"]))
+    bits.append({"pre": "장전", "post": "장후"}.get(x["slot"], "시간 미정"))
+    return bits
+
+
 def _check_html(day: dict) -> str:
     # 좁은 화면에선 체크포인트 칸이 요일 열 아래로 따로 쌓이므로 칸이 스스로 날짜를 말한다.
     head = f'<div class="ew-ckd">{day["label"]} {day["date"][5:]}</div>'
@@ -194,15 +231,9 @@ def _check_html(day: dict) -> str:
         return f'<div class="ew-ck">{head}<div class="ew-none">관심종목 일정 없음</div></div>'
     lines = []
     for x in rows:
-        bits = []
-        if x["eps"] is not None:
-            bits.append(f"EPS 추정 {x['eps']}")
-        if x["rev"]:
-            bits.append(f"매출 추정 {_money(x['rev'])}")
-        bits.append({"pre": "장전", "post": "장후"}.get(x["slot"], "시간 미정"))
         lines.append(f'<div class="ew-ckl"><b>{"★" if x["star"] else ""}'
                      f'{_html.escape(str(x["sym"]))}</b> '
-                     f'{_html.escape(" · ".join(bits))}</div>')
+                     f'{" · ".join(_check_bits(x))}</div>')
     return '<div class="ew-ck">' + head + "".join(lines) + "</div>"
 
 
@@ -268,6 +299,7 @@ a{color:inherit;text-decoration:none}
 .ew-ckh span{font-size:11px;font-weight:400;color:var(--muted);margin-left:6px}
 .ew-ck{background:var(--ck);border:1px solid var(--border);border-radius:10px;padding:9px;font-size:12px;line-height:1.55;min-height:60px}
 .ew-ckl b{color:var(--accent)}
+.ew-up{color:#2f9e55;font-weight:700}.ew-dn{color:#d9534f;font-weight:700}
 .ew-ckd{font-weight:700;font-size:11px;color:var(--muted);margin-bottom:4px}
 .ew-foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);
 margin-top:18px;padding-top:10px;font-size:11px;color:var(--muted)}
@@ -341,11 +373,11 @@ def render_page(start: date | None = None,
 <div class="ew-nav">{nav}</div>
 {note_html}
 <div class="ew-cols">{"".join(cols)}</div>
-<div class="ew-ckh">📌 관심종목 체크포인트<span>관심종목에 담긴 종목만 · ★=중요 표시</span></div>
+<div class="ew-ckh">📌 관심종목 체크포인트<span>관심종목에 담긴 종목만 · ★=중요 표시 · 발표 = Finnhub 발표치(▲ 추정 상회 · ▼ 하회)</span></div>
 <div class="ew-cols">{"".join(cks)}</div>
 <div class="ew-foot">
   <div>출처: {_html.escape(src)}{(" · " + asof + " 수신") if asof else ""}</div>
-  <div>표시 순서: ★중요 → 관심종목(테두리) → 매출 추정치(Finnhub) 큰 순 · 칸마다 상위 {_SHOW}개, 나머지는 '더보기' · 발표 일정은 변경될 수 있습니다</div>
+  <div>표시 순서: ★중요 → 관심종목(테두리) → 매출 추정치(Finnhub) 큰 순 · 칸마다 상위 {_SHOW}개, 나머지는 '더보기' · 최근 7일 일정은 페이지를 열 때 받은 지 1시간이 지났으면 다시 받음(발표치는 Finnhub 가 채운 뒤 보임) · 발표 일정은 변경될 수 있습니다</div>
 </div>
 <script>
 (function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();

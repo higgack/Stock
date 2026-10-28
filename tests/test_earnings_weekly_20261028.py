@@ -186,3 +186,82 @@ def test_checkpoint_cells_name_their_day(stub):
     assert all(f'class="ew-ckd">{d}' in c for c, d in zip(
         cks, ["월요일 10-26", "화요일 10-27", "수요일 10-28", "목요일 10-29", "금요일 10-30"]))
     assert "EPS 추정 1.1" in cks[2]
+
+
+# ── 발표치(사용자 2026-10-29 "어닝발표한것들은 발표치도 같이") ─────────────────
+
+def test_checkpoint_shows_actuals_next_to_estimates(stub):
+    stub["us"][(2026, 10)] = [
+        dict(_us("BEAT", "2026-10-27", "bmo", rev=4.4e9, eps=3.3079),
+             eps_actual=3.42, revenue_actual=4.5e9),
+        dict(_us("MISS", "2026-10-27", "amc", rev=4.2e9, eps=7.49),
+             eps_actual=7.1, revenue_actual=4.0e9),
+        _us("WAIT", "2026-10-27", "amc", rev=3.8e9, eps=4.17)]   # 발표 전 — null
+    stub["favs"] = ({"BEAT", "MISS", "WAIT"}, set())
+    html = ew.render_page(date(2026, 10, 26), today=date(2026, 10, 28))
+    lines = {re.search(r"<b>(\w+)</b>", l).group(1): l
+             for l in re.findall(r'<div class="ew-ckl">(.*?)</div>', html, re.S)}
+    assert "EPS 추정 3.3079 · 발표 3.42" in lines["BEAT"]
+    assert "매출 추정 $4.4B · 발표 $4.5B" in lines["BEAT"]
+    assert lines["BEAT"].count('class="ew-up"') == 2 and "ew-dn" not in lines["BEAT"]
+    assert lines["MISS"].count('class="ew-dn"') == 2 and "ew-up" not in lines["MISS"]
+    assert "발표" not in lines["WAIT"] and "EPS 추정 4.17" in lines["WAIT"]
+
+
+def test_us_month_keeps_actuals_and_refetches_old_cache(tmp_path, monkeypatch):
+    """옛 판 캐시(발표치 칸 없음)를 6시간 믿으면 fix 가 화면에 안 닿는다(#18·#21b)."""
+    import json
+    monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(ec, "_api_key", lambda: "k")
+    monkeypatch.setattr(ec, "_us_name_map", lambda: {})
+    (tmp_path / "2026-10.json").write_text(json.dumps(
+        [{"symbol": "IQV", "date": "2026-10-27", "eps_estimate": 3.3}]))   # 옛 판 · 방금 씀
+    calls = []
+
+    class _Ok:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            calls.append(1)
+            return {"earningsCalendar": [{"symbol": "IQV", "date": "2026-10-27",
+                                          "epsEstimate": 3.3, "epsActual": 3.42,
+                                          "revenueEstimate": 4.4e9, "revenueActual": None}]}
+    monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _Ok())
+    rows, why = ec.us_month(2026, 10)
+    assert calls, "옛 판 캐시를 그대로 믿었다"
+    assert rows[0]["eps_actual"] == 3.42 and rows[0]["revenue_actual"] is None
+    calls.clear()
+    ec.us_month(2026, 10)
+    assert not calls, "새 판 캐시를 다시 부른다"
+
+
+def test_live_month_ttl_is_one_hour(monkeypatch):
+    monkeypatch.setattr(ec, "_utc_today", lambda: date(2026, 11, 3))
+    assert ec._cache_ttl(2026, 11, [1]) == ec._LIVE_TTL_SEC == 3600
+    assert ec._cache_ttl(2026, 10, [1]) == 3600          # 7일 전이 속한 달(지난주 발표치)
+    assert ec._cache_ttl(2026, 12, [1]) == ec._CACHE_TTL_SEC
+    assert ec._cache_ttl(2026, 12, []) == ec._EMPTY_TTL_SEC
+
+
+def test_outage_after_schema_bump_serves_old_rows(tmp_path, monkeypatch):
+    """판 교체 직후 원천 장애 — 옛 판 캐시(기한 안)를 빈칸 대신 쓰고 사유는 http 로 남긴다."""
+    import json
+    monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(ec, "_api_key", lambda: "k")
+    (tmp_path / "2026-10.json").write_text(json.dumps([{"symbol": "IQV", "date": "2026-10-27"}]))
+
+    def boom(*a, **k):
+        raise RuntimeError("down")
+    monkeypatch.setattr(ec.requests, "get", boom)
+    rows, why = ec.us_month(2026, 10)
+    assert [r["symbol"] for r in rows] == ["IQV"] and why == "http"
+
+
+def test_actual_without_estimate_is_labelled(stub):
+    stub["us"][(2026, 10)] = [dict(_us("X", "2026-10-27"), eps_actual=1.2, revenue_actual=0)]
+    stub["favs"] = ({"X"}, set())
+    html = ew.render_page(date(2026, 10, 26), today=date(2026, 10, 28))
+    line = re.findall(r'<div class="ew-ckl">(.*?)</div>', html, re.S)[0]
+    assert "EPS 발표 1.2" in line and "매출 발표 $0" in line
+    assert "ew-up" not in line and "ew-dn" not in line
