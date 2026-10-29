@@ -248,10 +248,68 @@ def test_api_rejects_bad_ticker_and_says_why_without_snapshot(monkeypatch):
     h.path = "/api/vlab?ticker=YYYY"
     h._handle_vlab_api()
     assert replies[-1][0] == 200 and "형식이 예상과 달라" in replies[-1][1]["error"]
+    # 2026-10-29 계약 갱신(#222): 옛 판은 "받지 못했습니다" 만 말해 갈래가 안
+    # 보였다 — 이제 사유와 '저장분도 없음' 을 같이 말한다(아래 회귀).
     monkeypatch.setattr(ss, "collect_stock_snapshot", lambda t, **k: None)
+    import bot.dashboard as dash
+    monkeypatch.setattr(dash, "_load_stored_stock_info_dated", lambda t: (None, ""))
     h.path = "/api/vlab?ticker=ZZZZ"
     h._handle_vlab_api()
-    assert replies[-1] == (200, {"ok": False, "error": "종목 스냅샷을 받지 못했습니다"})
+    assert replies[-1][0] == 200 and not replies[-1][1]["ok"]
+    assert "종목 스냅샷을 받지 못했습니다" in replies[-1][1]["error"]
+
+
+# ── 2026-10-29 "한국도 미국도 안 돼" — 스냅샷 실패 시 갈래 + 저장분 폴백 ─────
+
+def _vlab_reply(monkeypatch, ticker, snap_fn, stored):
+    import bot.dashboard_server as ds
+    import bot.stock_snapshot as ss
+    import bot.dashboard as dash
+    monkeypatch.setattr(ss, "collect_stock_snapshot", snap_fn)
+    monkeypatch.setattr(dash, "_load_stored_stock_info_dated", lambda t: stored)
+    replies = []
+    h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+    h.path = f"/api/vlab?ticker={ticker}"
+    h._reply_json = lambda status, body: replies.append((status, body))
+    h._handle_vlab_api()
+    return replies[-1]
+
+
+def test_vlab_falls_back_to_stored_snapshot_and_says_so(monkeypatch):
+    import bot.stock_snapshot as ss
+    monkeypatch.setitem(ss._LAST_FAIL, "009150.KS", "야후 종목 정보(.info)가 비어 왔습니다")
+    st, body = _vlab_reply(monkeypatch, "009150.KS", lambda t, **k: None,
+                           (_snap(), "2026-10-20"))
+    assert st == 200 and body["ok"], body
+    head = body["html"].split("</div>", 1)[0]
+    assert "2026-10-20" in head and ".info" in head and "저장된 분석 스냅샷" in head
+    assert "역DCF" in body["html"]
+
+
+def test_vlab_failure_names_the_branch(monkeypatch):
+    import bot.stock_snapshot as ss
+    monkeypatch.setitem(ss._LAST_FAIL, "AAPL", "수집 중 예외(ConnectionError: x)")
+    st, body = _vlab_reply(monkeypatch, "AAPL", lambda t, **k: None, (None, ""))
+    assert st == 200 and not body["ok"]
+    assert "ConnectionError" in body["error"] and "저장 분석" in body["error"]
+
+
+def test_snapshot_records_and_clears_failure_reason(monkeypatch):
+    import sys, types
+    import bot.stock_snapshot as ss
+    fake = types.ModuleType("yfinance")
+    fake.Ticker = lambda t: types.SimpleNamespace(info={})
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+    monkeypatch.delitem(ss._LAST_FAIL, "QQQQ", raising=False)
+    assert ss._collect_stock_snapshot_uncached("QQQQ") is None
+    assert ".info" in ss.last_failure("QQQQ")
+
+    def _boom(t):
+        raise RuntimeError("blocked")
+    fake.Ticker = _boom
+    assert ss._collect_stock_snapshot_uncached("QQQQ") is None
+    assert "RuntimeError" in ss.last_failure("QQQQ")
+    ss._LAST_FAIL.pop("QQQQ", None)
 
 
 

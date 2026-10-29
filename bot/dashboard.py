@@ -4594,6 +4594,13 @@ def _load_stored_stock_info(ticker: str) -> dict | None:
     fresh ``collect_stock_snapshot`` fails (e.g. yfinance .info rate-limit in
     the long-running dashboard process) — we'd rather render the last good
     snapshot than blank the heavy tabs."""
+    return _load_stored_stock_info_dated(ticker)[0]
+
+
+def _load_stored_stock_info_dated(ticker: str) -> tuple[dict | None, str]:
+    """`_load_stored_stock_info` + 그 분석일(YYYY-MM-DD, 없으면 "").
+
+    저장분으로 폴백한 화면은 **언제 값인지** 말해야 한다(#43·#163)."""
     try:
         tkr = (ticker or "").upper()
         best_date = ""
@@ -4616,10 +4623,12 @@ def _load_stored_stock_info(ticker: str) -> dict | None:
                 best_si = si
         # Return a deep copy so the in-place enrichment below never mutates
         # the file-backed record the rest of the page renders from.
-        return json.loads(json.dumps(best_si)) if best_si else None
+        if not best_si:
+            return None, ""
+        return json.loads(json.dumps(best_si)), best_date
     except Exception as exc:
         log.debug("_load_stored_stock_info failed for %s: %s", ticker, exc)
-        return None
+        return None, ""
 
 
 def _safe_dy_pct(dy_raw, div_rate=None, price=None):

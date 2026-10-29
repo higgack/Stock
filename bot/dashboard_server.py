@@ -1801,8 +1801,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             def _build():
                 import bot.stock_snapshot as _ss
                 snap = _ss.collect_stock_snapshot(ticker)
+                stored_note = ""
                 if not snap:
-                    return {"ok": False, "error": "종목 스냅샷을 받지 못했습니다"}
+                    # 상세 페이지의 다른 탭과 같은 사다리 — 야후가 실패하면 직전
+                    # 분석 스냅샷으로 폴백한다(build_live_quote 와 같은 순서, #38).
+                    why = _ss.last_failure(ticker) or "사유 미기록"
+                    from bot.dashboard import _load_stored_stock_info_dated as _lsd
+                    from html import escape as _esc
+                    snap, sdate = _lsd(ticker)
+                    if not snap:
+                        return {"ok": False, "error": (
+                            f"종목 스냅샷을 받지 못했습니다 — {why}. 폴백할 저장 분석"
+                            " 스냅샷도 없습니다(이 종목을 분석한 기록이 없음)")}
+                    stored_note = (
+                        f"⚠️ 실시간 스냅샷을 받지 못해({why}) 저장된 분석 스냅샷"
+                        f"({sdate or '날짜 미상'}) 기준으로 계산했습니다 — 현재가·"
+                        "재무가 그 시점 값입니다.")
                 try:
                     from bot.dashboard import _derive_missing_multiples as _dmm
                     snap = _dmm(snap)
@@ -1814,6 +1828,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 try:
                     payload = _vl.build(snap, ticker)
                     html = _vl.render_html(payload, computed_at=now)
+                    if stored_note:
+                        html = (f'<div class="si-note">'
+                                f"{_esc(stored_note)}</div>" + html)
                 except Exception as exc:                       # noqa: BLE001
                     # 재료 모양이 예상과 다르면 사람 말로 갈래를 준다(#82).
                     log.warning("vlab_api: %s 계산 실패 — %s: %s", ticker,
