@@ -35,6 +35,16 @@ _SNAP_CACHE_TTL = 120.0
 _SNAP_CACHE: dict[str, tuple[float, dict]] = {}
 _SNAP_CACHE_LOCK = threading.Lock()
 
+# 마지막 수집 실패 사유(티커별). `None` 하나로는 '야후가 빈 답' 과 '수집 중
+# 예외' 가 갈리지 않아 화면이 "받지 못했습니다" 만 말했다(2026-10-29 가치평가
+# 랩, #82). 성공하면 지운다.
+_LAST_FAIL: dict[str, str] = {}
+
+
+def last_failure(ticker: str) -> str:
+    """그 티커의 마지막 수집 실패 사유(사람 말). 없으면 ""."""
+    return _LAST_FAIL.get(ticker, "")
+
 
 def _kr_arbiter(ticker: str) -> dict | None:
     """KR 종목의 네이버 실시간 시세 {price, mcap} — 실패하면 None(graceful).
@@ -143,6 +153,9 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         if not info or info.get("quoteType") is None:
             # 야후 .info 차단/실패 → None. 호출부(render_lookup_detail)가 직전 분석
             # 스냅샷으로 폴백(_load_stored_stock_info) — 야후 차단 중 상세 표시 유지.
+            _LAST_FAIL[ticker] = ("야후 종목 정보(.info)가 비어 왔습니다"
+                                  " — 야후 차단·요청 제한이거나 야후에 없는 심볼")
+            log.warning("stock_snapshot: %s — yfinance .info 빈 응답", ticker)
             return None
 
         def _g(k, default=None):
@@ -511,11 +524,13 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         _apply_share_count(ticker, snap)
 
         _TIMING.set(ticker, "total", time.time() - _t_all)
+        _LAST_FAIL.pop(ticker, None)
         return snap
 
     except Exception as exc:
         _TIMING.set(ticker, "total", time.time() - _t_all)
         log.warning("stock_snapshot: failed for %s: %s", ticker, exc)
+        _LAST_FAIL[ticker] = f"수집 중 예외({type(exc).__name__}: {str(exc)[:120]})"
         return None
 
 
