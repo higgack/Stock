@@ -510,3 +510,12 @@ def test_dropped_infinite_fcf_year_is_said():
 def test_52w_bar_requires_ordered_range():
     p = vl.build(_snap(fiftyTwoWeekLow=130.0, fiftyTwoWeekHigh=70.0))
     assert "52주 범위" not in [b[0] for b in p["football"]]
+
+
+def test_stored_loader_returns_a_pair_even_without_archive(monkeypatch, tmp_path):
+    # 아카이브 폴더가 없으면 튜플이 아니라 None 을 돌려줘 상세 페이지가
+    # TypeError 로 깨졌다(2026-10-29 회귀가 잡음).
+    import bot.dashboard as dash
+    monkeypatch.setattr(dash, "ARCHIVE_ROOT", tmp_path / "nope")
+    assert dash._load_stored_stock_info_dated("AAPL") == (None, "")
+    assert dash._load_stored_stock_info("AAPL") is None

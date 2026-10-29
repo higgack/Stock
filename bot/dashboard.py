@@ -4606,7 +4606,7 @@ def _load_stored_stock_info_dated(ticker: str) -> tuple[dict | None, str]:
         best_date = ""
         best_si = None
         if not ARCHIVE_ROOT.exists():
-            return None
+            return None, ""
         for day_dir in ARCHIVE_ROOT.iterdir():
             if not day_dir.is_dir() or not _DATE_RE.match(day_dir.name):
                 continue
