@@ -68,7 +68,8 @@ def test_reverse_dcf_round_trips():
 
 def test_gather_uses_latest_fcf_and_quarterly_balance_sheet():
     d = vl.gather(_snap())
-    assert d["fcf0"] == 5e9 and d["fcf0_period"] == "2025-12-31"   # 6e9 − |−1e9|
+    # 분기 현금흐름이 없으면 직전 연간(라벨에 '연간' 을 박는다 — 2026-10-29 TTM 도입)
+    assert d["fcf0"] == 5e9 and d["fcf0_period"] == "2025-12-31 연간"   # 6e9 − |−1e9|
     assert [p for p, _ in d["fcf_hist"]] == ["2023-12-31", "2024-12-31", "2025-12-31"]
     assert d["net_debt"] == 3e9 and d["bs_period"] == "2026-06-30"  # 분기가 더 새롭다
     yrs = (1096) / 365.25                     # 2022-12-31 → 2025-12-31 (날짜로 센다)
@@ -396,7 +397,7 @@ def test_odd_snapshot_shapes_do_not_raise():
     assert any("0 이하" in w for w in vl.build(s)["why"])
     s2 = _snap()
     s2["financials"]["cash_flow"]["annual"][0]["Operating Cash Flow"] = float("inf")
-    assert vl.gather(s2)["fcf0_period"] == "2024-12-31"           # inf 행은 버린다
+    assert vl.gather(s2)["fcf0_period"] == "2024-12-31 연간"      # inf 행은 버린다
 
 
 def test_currency_text_is_escaped():
@@ -519,3 +520,62 @@ def test_stored_loader_returns_a_pair_even_without_archive(monkeypatch, tmp_path
     monkeypatch.setattr(dash, "ARCHIVE_ROOT", tmp_path / "nope")
     assert dash._load_stored_stock_info_dated("AAPL") == (None, "")
     assert dash._load_stored_stock_info("AAPL") is None
+
+
+
+# ── 2026-10-29 기준 FCF = 최근 4분기 합(TTM) — 현재가·순차입금과 같은 시점 ──────
+
+def _q(period, ocf, capex=-1e8):
+    return {"period": period, "Operating Cash Flow": ocf, "Capital Expenditure": capex}
+
+
+def _snap_q(quarters):
+    s = _snap()
+    s["financials"]["cash_flow"]["quarterly"] = quarters
+    return s
+
+
+_Q4 = [_q("2026-06-30", 2.1e9), _q("2026-03-31", 1.6e9),
+       _q("2025-12-31", 1.5e9), _q("2025-09-30", 1.4e9)]      # FCF 2.0+1.5+1.4+1.3
+
+
+def test_base_fcf_is_trailing_four_quarters():
+    d = vl.gather(_snap_q(list(_Q4)))
+    assert d["fcf0"] == pytest.approx(6.2e9)
+    assert d["fcf0_period"] == "TTM 2025-09-30~2026-06-30"
+    # 성장 추이는 연간 그대로
+    assert [p for p, _ in d["fcf_hist"]] == ["2023-12-31", "2024-12-31", "2025-12-31"]
+    out = vl.build(_snap_q(list(_Q4)), "AAPL")
+    # 격자가 실제로 TTM 값으로 계산된다(배선, #20)
+    html = vl.render_html(out, computed_at="x")
+    assert "기준 FCF (TTM 2025-09-30~2026-06-30)" in html
+    assert "최근 4개 분기의 합(TTM)" in html
+
+
+def test_ttm_changes_the_dcf_numbers():
+    a = vl.build(_snap(), "AAPL")["grid"]
+    b = vl.build(_snap_q(list(_Q4)), "AAPL")["grid"]
+    assert a != b
+
+
+def test_ttm_falls_back_to_annual_with_reason():
+    gap = [_Q4[0], _Q4[1], _Q4[3], _q("2025-06-30", 1.2e9)]   # 2025-12 빠짐
+    d = vl.gather(_snap_q(gap))
+    assert d["fcf0_period"] == "2025-12-31 연간" and "연속하지 않아" in d["fcf_ttm"]["why"]
+    html = vl.render_html(vl.build(_snap_q(gap), "AAPL"))
+    assert "연속하지 않아 기준 FCF 는 직전 연간을 썼습니다" in html
+    short = vl.gather(_snap_q(_Q4[:3]))
+    assert short["fcf0_period"] == "2025-12-31 연간" and "3개뿐" in short["fcf_ttm"]["why"]
+    stale = [_q("2025-12-31", 1.5e9), _q("2025-09-30", 1.4e9),
+             _q("2025-06-30", 1.3e9), _q("2025-03-31", 1.2e9)]
+    assert vl.gather(_snap_q(stale))["fcf0_period"] == "2025-12-31 연간"
+
+
+def test_ttm_rejects_cumulative_looking_quarters():
+    # |값| 단조 증가 + 마지막 분기 ≈ 연간(5e9) → 누적 냄새
+    cum = [_q("2026-06-30", 5.1e9), _q("2026-03-31", 3.6e9),
+           _q("2025-12-31", 2.6e9), _q("2025-09-30", 1.1e9)]
+    s = _snap_q(cum)
+    s["financials"]["cash_flow"]["annual"][0] = _q("2025-12-31", 5.1e9, -1e8)
+    d = vl.gather(s)
+    assert d["fcf0_period"].endswith("연간") and "누적" in d["fcf_ttm"]["why"]

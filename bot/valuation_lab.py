@@ -144,6 +144,34 @@ def _net_claims(snap: dict) -> dict:
     return {}
 
 
+def _ttm_fcf(snap: dict, fcf_hist: list) -> dict:
+    """최근 4분기 FCF 합 → {"value","start","end"} 또는 {"why"}. 순수.
+
+    ⚠️ **연속한 4분기일 때만** 더한다 — 구멍이 있으면 '최근 4개 분기' 는 12개월이
+    아니다(#29·per_band.ttm_eps_series 와 같은 규칙, MSFT 실측). 누적처럼 보이는
+    분기 계열은 쓰지 않는다(#96·fcf.cumulative_smell). 직전 연간보다 새 분기가
+    없으면 연간과 같은 기간이라 연간을 쓴다."""
+    from bot.fcf import fcf_from_row, cumulative_smell
+    from bot.per_band import _months_between
+    q = []
+    for r in _rows(snap, "cash_flow", "quarterly"):
+        v = fcf_from_row(r)
+        if v is not None and math.isfinite(v):
+            q.append((str(r["period"])[:10], v))
+    if len(q) < 4:
+        return {"why": f"분기 FCF 가 {len(q)}개뿐이라(4개 필요) 최근 4분기 합을 못 만들어"}
+    win = q[-4:]
+    span = _months_between(win[0][0], win[-1][0])
+    if span is None or not (8 <= span <= 10):
+        return {"why": f"최근 4개 분기({win[0][0]}~{win[-1][0]})가 연속하지 않아"}
+    if fcf_hist and win[-1][0] <= fcf_hist[-1][0]:
+        return {"why": "직전 연간 이후 새 분기가 없어"}
+    ann = fcf_hist[-1][1] if fcf_hist else None
+    if cumulative_smell([v for _p, v in win], ann):
+        return {"why": "분기 FCF 가 누적값처럼 보여"}
+    return {"value": sum(v for _p, v in win), "start": win[0][0], "end": win[-1][0]}
+
+
 def gather(snap: dict, ticker: str = "") -> dict:
     """스냅샷 → 계산 재료 + 출처. 못 만드는 칸은 None + 사유(`why`). 순수."""
     from bot.fcf import fcf_from_row
@@ -220,6 +248,8 @@ def gather(snap: dict, ticker: str = "") -> dict:
         fcf_hist.append((str(r["period"])[:10], v))
     out["fcf_hist"] = fcf_hist
     out["fcf_dropped"] = dropped
+    ttm = _ttm_fcf(snap, fcf_hist)
+    out["fcf_ttm"] = ttm
 
     inc = _rows(snap, "income_statement", "annual")
     rev_hist = [(str(r["period"])[:10], _pick(r, _REV)) for r in inc]
@@ -252,11 +282,20 @@ def gather(snap: dict, ticker: str = "") -> dict:
     if out["fx_mismatch"]:
         why.append(f"재무제표 통화({fccy})와 거래 통화({ccy})가 달라, 환산 기준"
                    " 없이 주당가치를 만들지 않습니다")
+    # 기준 FCF = 최근 4분기 합(TTM) — 현재가·순차입금(최신 분기)과 같은 시점에
+    # 맞춘다(사용자 2026-10-29 "가격은 현재인데 계산은 연도로"). 못 만들면 직전
+    # 연간으로 내려가고 그 사유를 적는다(#43).
+    if ttm.get("value") is not None:
+        fcf0, fcf0_label = ttm["value"], f"TTM {ttm['start']}~{ttm['end']}"
+    elif fcf_hist:
+        fcf0, fcf0_label = fcf_hist[-1][1], f"{fcf_hist[-1][0]} 연간"
+    else:
+        fcf0, fcf0_label = None, None
     if len(fcf_hist) < 2:
         why.append(f"연간 FCF 가 {len(fcf_hist)}개 기간뿐이라(2개 이상 필요)"
                    " 기준값을 정할 수 없습니다")
-    elif fcf_hist[-1][1] <= 0:
-        why.append(f"최근 연간 FCF({fcf_hist[-1][0]})가 0 이하라 성장 할인 모형이"
+    elif fcf0 is not None and fcf0 <= 0:
+        why.append(f"기준 FCF({fcf0_label})가 0 이하라 성장 할인 모형이"
                    " 성립하지 않습니다")
     if not shares or shares <= 0:
         why.append("발행주식수가 없어(또는 0 이하) 주당가치로 나눌 수 없습니다")
@@ -265,8 +304,8 @@ def gather(snap: dict, ticker: str = "") -> dict:
     if out["net_debt"] is None:
         why.append("재무상태표에 현금·총차입금이 함께 있는 기간이 없어 순차입금을"
                    " 정할 수 없습니다")
-    out["fcf0"] = fcf_hist[-1][1] if fcf_hist else None
-    out["fcf0_period"] = fcf_hist[-1][0] if fcf_hist else None
+    out["fcf0"] = fcf0
+    out["fcf0_period"] = fcf0_label
     out["dcf_ok"] = not why
     return out
 
@@ -463,7 +502,7 @@ def render_html(p: dict, computed_at: str = "") -> str:
     h.append(
         _NOTE + "할인율·성장률은 정답이 없는 <b>가정</b>입니다. 그래서 적정주가 하나를"
         " 정하지 않고, 가정에 따라 값이 어떻게 바뀌는지를 보여 줍니다. 모든 값은"
-        " <b>자체계산</b>이며 원천은 재무제표 탭과 같은 yfinance 연간 재무입니다."
+        " <b>자체계산</b>이며 원천은 재무제표 탭과 같은 yfinance 재무(기준 FCF 는 최근 4분기 합, 성장 추이는 연간)입니다."
         " 매수·매도 신호가 아닙니다.</div>")
     asof = []
     if computed_at:
@@ -485,7 +524,7 @@ def render_html(p: dict, computed_at: str = "") -> str:
              f'<tr><td>현재가</td><td class="num">{_px(price, ccy)} {_e(ccy)}</td></tr>'
              f'<tr><td>발행주식수</td><td class="num">{shares_s}</td></tr>'
              f'<tr><td>{claim_label}</td><td class="num">{_money(d.get("net_debt"), fccy)}</td></tr>'
-             f'<tr><td>기준 FCF ({_e(d.get("fcf0_period") or "—")} 연간)</td>'
+             f'<tr><td>기준 FCF ({_e(d.get("fcf0_period") or "—")})</td>'
              f'<td class="num">{_money(d.get("fcf0"), fccy)}</td></tr>'
              '</tbody></table>')
     foot = []
@@ -493,6 +532,11 @@ def render_html(p: dict, computed_at: str = "") -> str:
         foot.append(_e(d["shares_note"]))
     if cl.get("note"):
         foot.append(_e(cl["note"]))
+    tw = (d.get("fcf_ttm") or {}).get("why")
+    if tw and d.get("fcf0") is not None:
+        foot.append(f"{_e(tw)} 기준 FCF 는 직전 연간을 썼습니다")
+    elif d.get("fcf_ttm", {}).get("value") is not None:
+        foot.append("기준 FCF 는 최근 4개 분기의 합(TTM)이고 아래 표는 연간 추이입니다")
     if d.get("fcf_dropped"):
         foot.append("FCF 값을 읽을 수 없는 해(" + ", ".join(_e(x) for x in d["fcf_dropped"])
                     + ")는 뺐습니다")
