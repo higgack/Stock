@@ -489,6 +489,26 @@ def _pct(v) -> str:
 _NOTE = ('<div style="font-size:12px;color:var(--fg-soft);line-height:1.6;'
          'margin-bottom:10px">')
 
+# 섹션마다 '어떻게 읽나' 한 줄(사용자 2026-10-29 "읽는법에 대한 설명을 좀만
+# 대시보드에 추가해줘"). 산식 설명(_NOTE)과 갈라 📖 로 시작한다.
+_READ = {
+    "inputs": "기준 FCF 가 아래 연간 표처럼 해마다 크게 출렁이면 결과 전체가 출발값"
+              " 선택에 좌우됩니다 — DCF 는 FCF 가 안정적인 회사에서 믿을 만합니다.",
+    "reverse": "시장이 무엇을 믿는지 보는 표입니다. 할인율은 '이 주식에서 최소 이만큼은"
+               " 벌어야 한다'는 요구수익률이고, 그 줄의 성장률을 과거 성장(몬테카를로의"
+               " 중심값)과 비교해 회사가 정말 그만큼 FCF 를 키울 수 있는지를 따져 보십시오.",
+    "grid": "내가 믿는 할인율·성장률 칸을 찾아 현재가와 비교하십시오. 굵은 칸이 시작되는"
+            " 경계가 위 역DCF 의 성장률입니다.",
+    "mc": "성장률의 중심이 과거 성장이라 '과거만큼 큰다면'의 그림입니다. 현재가보다 큰"
+          " 비율은 주가가 오를 확률이 아니라, 섞은 가정 중 현재가를 넘는 조합의 비율입니다.",
+    "football": "잣대끼리 방향이 갈리면(예: 목표가는 위, DCF 는 아래) 그 차이는 성장 전제의"
+                " 차이입니다 — 역DCF 의 성장률이 실현 가능한지가 결론을 가릅니다.",
+}
+
+
+def _read(key: str) -> str:
+    return _NOTE + "📖 " + _READ[key] + "</div>"
+
 
 def render_html(p: dict, computed_at: str = "") -> str:
     """랩 payload → HTML 조각. `computed_at` = 계산 시각(KST, 호출부가 준다)."""
@@ -543,6 +563,7 @@ def render_html(p: dict, computed_at: str = "") -> str:
     foot.append("총차입금은 yfinance 'Total Debt'(리스부채가 포함될 수 있음)이고 장기"
                 " 투자자산은 현금에 넣지 않았습니다")
     h.append(_NOTE + " · ".join(foot) + "</div>")
+    h.append(_read("inputs"))
     if rows:
         h.append('<table class="si-table" style="margin-top:6px"><thead><tr>'
                  '<th>회계연도 말</th><th class="num">FCF (영업현금흐름 − CAPEX)</th>'
@@ -564,7 +585,8 @@ def render_html(p: dict, computed_at: str = "") -> str:
                  f" FCF 가 해마다 몇 % 늘어야 하는지입니다(그 뒤 영구성장 "
                  f"{TERMINAL_G * 100:.0f}% 가정).</div>"
                  '<table class="si-table"><thead><tr><th>할인율</th>'
-                 f'<th class="num">필요 FCF 성장률(연)</th></tr></thead><tbody>{rv}</tbody></table>')
+                 f'<th class="num">필요 FCF 성장률(연)</th></tr></thead><tbody>{rv}</tbody></table>'
+                 + _read("reverse"))
         head = "".join(f'<th class="num">{g * 100:+.0f}%</th>' for g in GROWTH_GRID)
         body = ""
         any_neg = False
@@ -587,7 +609,7 @@ def render_html(p: dict, computed_at: str = "") -> str:
                  + _NOTE + f"행 = 할인율, 열 = 앞으로 {YEARS}년 FCF 성장률(연). 굵게 ="
                  f" 현재가 이상, 흐리게 = 미만.{neg_note}</div>"
                  f'<table class="si-table"><thead><tr><th>할인율 \\ 성장</th>{head}</tr>'
-                 f"</thead><tbody>{body}</tbody></table>")
+                 f"</thead><tbody>{body}</tbody></table>" + _read("grid"))
         mc = p.get("mc")
         if mc:
             pa = mc.get("p_above")
@@ -604,8 +626,10 @@ def render_html(p: dict, computed_at: str = "") -> str:
                      f'<tr><td>가정 조합 {mc["n"]:,}개 중 주당가치가 현재가보다 큰 비율'
                      f' (확률 아님)</td><td class="num">'
                      f'{"—" if pa is None else f"{pa * 100:.0f}%"}</td></tr>'
-                     "</tbody></table>")
-    h.append(_football_html(p.get("football") or [], price, ccy))
+                     "</tbody></table>" + _read("mc"))
+    fbh = _football_html(p.get("football") or [], price, ccy)
+    if fbh:
+        h.append(fbh + _read("football"))
     h.append(_NOTE + "한국 종목의 밸류에이션 탭 FCF 는 DART 현금흐름표 기준이라 이 탭(yfinance)과"
              " 값이 조금 다를 수 있습니다. 이 탭의 값은 투자 판단의 근거가 아니라 가정의"
              " 무게를 가늠하는 도구입니다.</div>")

@@ -579,3 +579,25 @@ def test_ttm_rejects_cumulative_looking_quarters():
     s["financials"]["cash_flow"]["annual"][0] = _q("2025-12-31", 5.1e9, -1e8)
     d = vl.gather(s)
     assert d["fcf0_period"].endswith("연간") and "누적" in d["fcf_ttm"]["why"]
+
+
+
+# ── 2026-10-29 섹션마다 📖 읽는 법 한 줄 ─────────────────────────────────────
+
+def test_each_section_has_a_reading_line():
+    html = vl.render_html(vl.build(_snap(), "AAPL"), computed_at="x")
+    for key, title in (("inputs", "재료"), ("reverse", "역DCF"), ("grid", "민감도"),
+                       ("mc", "몬테카를로"), ("football", "풋볼필드")):
+        line = "📖 " + vl._READ[key]
+        assert html.count(line) == 1, key
+        # 그 섹션 제목 뒤, 다음 섹션 제목 앞에 놓인다(배선, #20)
+        assert html.index(title) < html.index(line), key
+    assert html.index("📖 " + vl._READ["reverse"]) < html.index("민감도 — 주당가치")
+    assert html.index("📖 " + vl._READ["grid"]) < html.index("몬테카를로 — 가정을")
+
+
+def test_reading_lines_follow_their_sections_when_dcf_is_absent():
+    s = _snap(sector="Financial Services")              # DCF 불성립
+    html = vl.render_html(vl.build(s, "AAPL"))
+    assert "📖 " + vl._READ["inputs"] in html
+    assert "📖 " + vl._READ["reverse"] not in html and "📖 " + vl._READ["mc"] not in html
