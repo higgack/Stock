@@ -535,7 +535,7 @@ def render_html(p: dict, computed_at: str = "") -> str:
     tw = (d.get("fcf_ttm") or {}).get("why")
     if tw and d.get("fcf0") is not None:
         foot.append(f"{_e(tw)} 기준 FCF 는 직전 연간을 썼습니다")
-    elif d.get("fcf_ttm", {}).get("value") is not None:
+    elif (d.get("fcf_ttm") or {}).get("value") is not None:
         foot.append("기준 FCF 는 최근 4개 분기의 합(TTM)이고 아래 표는 연간 추이입니다")
     if d.get("fcf_dropped"):
         foot.append("FCF 값을 읽을 수 없는 해(" + ", ".join(_e(x) for x in d["fcf_dropped"])
