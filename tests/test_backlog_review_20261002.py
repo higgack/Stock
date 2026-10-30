@@ -1384,3 +1384,44 @@ class TestSiblingSweepUsesTheSameList:
                                "명시적미공시": 3, "미검사": 4,
                                "형식미지원 · 헤더 통과 · 합계행 3값(검산실패)": 5})
         assert got == {"형식미지원 · 헤더 통과 · 합계행 3값(검산실패)": 5}, got
+
+
+class TestExcerptShowsTheGateWindow20261030:
+    """2026-10-30 격주 보고서 — '헤더에 기초·수주총액 열 없음' 인데 발췌(라벨 앞 120자 · 보고서 앞 200자)에 **잡은 라벨도
+    머리 창도** 없었다(000660 은 외환위험 주석 한 토막). 판정은 라벨 앞 `_GATE_HEAD` 자에 무엇이 없었나이므로 그 창을
+    싣고, 라벨에 표식을 달아 보고서가 그 자리를 중심으로 보여 준다."""
+
+    def test_excerpt_keeps_the_whole_gate_window_and_marks_the_label(self):
+        from bot.dart_backlog import EX_MARK, _GATE_HEAD, backlog_excerpt, diagnose_detail
+        head = "수주총액 품목 " + "가" * (_GATE_HEAD - 20)             # 머리 창 맨 앞쪽의 시작 열 — 옛 120자 창 밖
+        t = "(단위 : 백만원) " + head + "수주잔고 합 계 999 222"
+        assert diagnose_detail(t) == "헤더에 기납품·매출 열 없음"       # 관문은 그 열을 봤다
+        ex = backlog_excerpt(t)
+        assert "수주총액" in ex and "수주잔고" + EX_MARK + " 합 계" in ex, ex
+
+    def test_report_width_holds_the_whole_gate_window(self):
+        from bot.dart_backlog import _DM_EX_AFTER, _DM_EX_WIDTH, _GATE_HEAD
+        assert _DM_EX_WIDTH - _DM_EX_AFTER >= _GATE_HEAD
+
+    def test_view_centres_on_the_label_and_old_rows_read_from_the_front(self):
+        from bot.dart_backlog import EX_MARK, _DM_EX_AFTER, excerpt_view
+        ex = "A" * 500 + "기말" + EX_MARK + "B" * 500
+        v = excerpt_view(ex, 200)
+        assert v.startswith("…") and v.endswith("…") and "기말" + EX_MARK + "B" * _DM_EX_AFTER + "…" in v
+        assert len(v) == 202 and "B" * (_DM_EX_AFTER + 1) not in v
+        assert excerpt_view("X" * 300, 200) == "X" * 200                # 표식 없는 옛 기록 — 종전대로 앞에서부터
+        short = "기말" + EX_MARK + "끝"
+        assert excerpt_view(short, 200) == short                       # 짧으면 자르지 않는다(… 없음)
+
+    def test_the_ledger_cap_holds_the_gate_window_plus_the_tail(self):
+        from bot.dart_backlog import _EXCERPT_CAP, _GATE_HEAD, backlog_excerpt
+        t = "(단위 : 백만원) 수주총액 기납품액 " + "가" * (_GATE_HEAD + 50) + " 수주잔고 " + "나" * 600
+        ex = backlog_excerpt(t)
+        assert len(ex) <= _EXCERPT_CAP and ex.endswith("나" * 100), len(ex)
+
+    def test_a_mark_in_the_source_text_does_not_move_the_view(self):
+        """원문에 같은 글자가 있으면 보고서가 엉뚱한 자리를 중심으로 보여 준다 — 원문의 것은 바꾼다(독립 리뷰)."""
+        from bot.dart_backlog import EX_MARK, backlog_excerpt
+        t = "(단위 : 백만원) 수주총액 기납품액 " + EX_MARK + " 참고 수주잔고 합 계 1,000 400 600"
+        ex = backlog_excerpt(t)
+        assert ex.count(EX_MARK) == 1 and "수주잔고" + EX_MARK in ex, ex

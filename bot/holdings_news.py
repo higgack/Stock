@@ -2004,7 +2004,9 @@ def tick_and_render(now: datetime | None = None) -> dict:
         _save_state(st)
         res = {"status": "error"}
     try:                                 # 국내 종가를 KRX 로 먼저 — Yahoo 보충이 무엇을 물을지 정하기 **전에**(#35)
-        kr = refresh_kr_close(now)
+        # 국내 보유가 없으면 묻지 않는다 — 전종목 1콜이라도 쓸 데가 없으면 KRX 한도만 쓴다(독립 리뷰)
+        kr = refresh_kr_close(now) if any(p["market"] == "KR" for p in pnl_positions()[0]) \
+            else {"asked": 0, "got": 0, "why": ""}
         if kr["asked"]:                  # 자격증명이 없으면 묻지 않는다 — 그 경고는 `krx_login_ready` 가 한 번 남긴다
             log.info("holdings_news: KRX 종가 %d/%d세션%s", kr["got"], kr["asked"],
                      f" — {kr['why']}" if kr["why"] else "")
@@ -3105,12 +3107,19 @@ def _close_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[tuple | None, str
     return None, ""
 
 
-def kr_early_lag(d: str | None) -> int | None:
+def kr_early_lag(d: str | None, now: datetime | None = None, *, state: dict | None = None) -> int | None:
     """국내 세션 `d` 의 종가를 마감 뒤 몇 분에 받나 — KRX 로 먼저 받을 수 있으면 `KR_EARLY_MIN`, 아니면 None(하루치 시각).
     '받을 수 있다' 는 **봇 주기가 남긴 기록**으로만 판정한다: 마지막 시도에 자격증명이 있었고 그 세션이 실패한 적이 없을
-    때. 기록이 없거나(배포 직후) 실패했으면 하루치 3시간이 사실이므로 그 시각을 적는다(지킬 수 없는 약속 금지, #380)."""
-    st = _kr_close_state()
+    때. 기록이 없거나(배포 직후) 실패했으면 하루치 3시간이 사실이므로 그 시각을 적는다(지킬 수 없는 약속 금지, #380).
+    봇이 되짚는 범위(`KR_EARLY_BACK` 세션) 밖의 세션도 묻지 않으므로 약속하지 않는다 — 그 범위는 달력일로 보수적으로
+    잰다(5 달력일 안의 세션은 많아야 5개다). `state` = 렌더가 한 번 읽어 둔 기록(종목마다 다시 읽지 않게)."""
+    st = _kr_close_state() if state is None else state
     if not d or not st.get("creds"):
+        return None
+    try:
+        if (_now(now).date() - datetime.fromisoformat(d).date()).days >= KR_EARLY_BACK:
+            return None
+    except ValueError:
         return None
     ent = (st.get("days") or {}).get(d) or {}
     return None if int(ent.get("fails") or 0) else KR_EARLY_MIN
@@ -3369,6 +3378,11 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             cache["v"] = load_closes()
         return cache["v"]
 
+    def _kr_state() -> dict:             # KRX 먼저 받기 기록 — 렌더 한 번에 한 번만 읽는다(종목마다 읽지 않게, 독립 리뷰)
+        if "kr" not in cache:
+            cache["kr"] = _kr_close_state()
+        return cache["kr"]
+
     def _plan(cal: str, snap: bool):
         """(기준 무렵 세션, [(세션, 표 | None=휴장 0 | '' = Yahoo 로 셀 세션)], 대기, 깨진 사유, {세션: 마감 epoch},
         {세션: {티커: 종가}} — 하루치가 있는 세션과 기준 무렵 세션만)."""
@@ -3442,7 +3456,7 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
         bsess, days, wait, broken, ctime, pxs, opn, kx = plan
         lag = _ws_ready_min() if snap else YCLOSE_MARGIN_MIN         # 마감 뒤 몇 분에 그 세션 종가를 받나
         if snap == "KR" and wait:        # 국내는 KRX 로 먼저 받을 수 있으면 그 시각(봇 기록으로만 판정, `kr_early_lag`)
-            lag = kr_early_lag(wait[0]) or lag
+            lag = kr_early_lag(wait[0], now, state=_kr_state()) or lag
         # 실시간 등락(10분 간격 · 사용자 2026-10-19)을 이어 붙일 세션 — 아직 안 센 세션이 **딱 하나**(지금 열린 세션이거나
         # 마감했지만 종가를 아직 안 받은 세션)일 때만. 실시간 등락은 '직전 종가 대비' 하루치라, 안 센 세션이 둘이면
         # 하나를 빼먹은 값이 된다(그때는 종가 누적 그대로 · 화면이 세션 날짜를 맞춰 보고 붙인다)
@@ -3527,8 +3541,15 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             head = ("TradingView 하루치를 놓친 세션이 있음(" + " · ".join(ws_[:2])
                     + (f" 외 {len(ws_) - 2}세션" if len(ws_) > 2 else "") + ")")
         else:
-            head = (f"이 종목이 {', '.join(miss_tk)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
-                    "거래정지·신규상장도)")
+            tv_miss, kx_miss = [d for d in miss_tk if d not in kx], [d for d in miss_tk if d in kx]
+            parts = []
+            if tv_miss:
+                parts.append(f"이 종목이 {', '.join(tv_miss)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
+                             "거래정지·신규상장도)")
+            if kx_miss:                  # 하루치 수집 전이라 KRX 주식 표로 센 세션 — 원천을 바로 적는다(독립 리뷰, #82)
+                parts.append(f"이 종목이 {', '.join(kx_miss)} KRX 종가 표에 없음(KRX 주식 표 — ETF·ETN 은 없음 · "
+                             "거래정지·신규상장도)")
+            head = " · ".join(parts)
         out.update(src="yahoo", need=need, ka=r, asof=to, hol=[], broken=[d for d, _ in broken],  # 휴장 0 은 하루치 곱의 일
                    why="" if r is not None else f"{head} — Yahoo 일봉 종가로 채우는데 {why}")
         return out

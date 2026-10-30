@@ -73148,13 +73148,22 @@ class TestBacklogMissExcerpt20260918:
         out2 = bl.review_text()
         assert "<code></code>" not in out2, out2
         assert "[발췌없는갈래]" not in out2, out2
-        # 보고서는 앞 200자만 싣고 **그 사실을 말한다**(#156·#350).
+        # 보고서는 {_DM_EX_WIDTH}자만 싣고 **그 사실을 말한다**(#156·#350). 2026-10-30 부터 발췌는 잡은 라벨 뒤에
+        # 표식(`EX_MARK`)을 달고 보고서는 그 **라벨 앞뒤** 창을 싣는다(앞 창 = 관문이 머리 열을 찾은 자리 —
+        # 앞에서부터 자르면 000660 처럼 라벨도 머리 창도 안 보였다). 표식 없는 옛 기록은 종전대로 앞에서부터(#222).
+        w = bl._DM_EX_WIDTH
         bl._log_miss("005930.KS", 2026, "11011", "형식미지원", "긴발췌",
-                     "가" * 150 + "나" * 150)
+                     "가" * (w - 50) + "나" * (w - 50))
         out3 = bl.review_text()
-        assert f"앞 {bl._DM_EX_WIDTH}자" in out3, out3
-        assert "가" * 150 + "나" * 50 in out3, out3
-        assert "나" * 60 not in out3, out3
+        assert f"잡은 라벨 {bl.EX_MARK} 앞뒤 {w}자" in out3, out3
+        assert "가" * (w - 50) + "나" * 50 in out3, out3
+        assert "나" * 51 not in out3, out3
+        bl._log_miss("000660.KS", 2026, "11013", "형식미지원", "표식발췌",
+                     "머" * 300 + "수주잔고" + bl.EX_MARK + "뒤" * 300)
+        out4 = bl.review_text()
+        view = "머" * (bl._DM_EX_WIDTH - 4 - 1 - bl._DM_EX_AFTER) + "수주잔고" + bl.EX_MARK + "뒤" * bl._DM_EX_AFTER
+        assert "…" + view + "…" in out4, out4                      # 라벨 앞 머리 창 + 라벨 + 뒤 조금
+        assert "뒤" * (bl._DM_EX_AFTER + 1) not in out4, out4
 
     def test_report_says_how_many_rows_have_no_excerpt(self, tmp_path,
                                                        monkeypatch):

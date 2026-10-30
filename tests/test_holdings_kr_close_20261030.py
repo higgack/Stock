@@ -140,6 +140,7 @@ def test_wait_note_promises_the_krx_time_only_when_the_bot_can_keep_it(hn, ws_sn
 
 def test_bot_tick_asks_krx_before_the_yahoo_topup(hn, monkeypatch):
     order = []
+    monkeypatch.setattr(hn, "pnl_positions", lambda model=None: ([{"market": "KR", "key": "KR:000001"}], {}))
     monkeypatch.setattr(hn, "tick", lambda now=None: {})
     monkeypatch.setattr(hn, "refresh_kr_close", lambda now=None: order.append("krx") or {"asked": 0, "got": 0, "why": ""})
     monkeypatch.setattr(hn, "refresh_closes", lambda now=None: order.append("yahoo") or {"asked": 0, "got": 0, "why": ""})
@@ -158,3 +159,33 @@ def test_krx_frame_parser_reads_close_and_change_and_drops_placeholders(monkeypa
                                                          staticmethod(lambda d, market=None: df)})(), ""))
     rows, why = m._krx_closes("20261008")
     assert why == "" and rows == {"000001": [3.0, 51000.0]}
+
+
+def test_bot_tick_skips_krx_without_korean_holdings(hn, monkeypatch):
+    """국내 보유가 없으면 KRX 를 부르지 않는다 — 전종목 1콜이라도 쓸 데가 없다(독립 리뷰)."""
+    called = []
+    monkeypatch.setattr(hn, "pnl_positions", lambda model=None: ([{"market": "US", "key": "US:AAPL"}], {}))
+    monkeypatch.setattr(hn, "tick", lambda now=None: {})
+    monkeypatch.setattr(hn, "refresh_kr_close", lambda now=None: called.append(1) or {"asked": 0, "got": 0, "why": ""})
+    monkeypatch.setattr(hn, "refresh_closes", lambda now=None: {"asked": 0, "got": 0, "why": ""})
+    monkeypatch.setattr(hn, "regenerate", lambda now=None: None)
+    hn.tick_and_render(_t(f"{_D}T16:01"))
+    assert called == []
+
+
+def test_no_promise_for_sessions_outside_the_refresh_range(hn, krx):
+    """봇은 최근 `KR_EARLY_BACK` 세션만 되짚는다 — 그보다 오래된 대기 세션에 '30분 뒤' 를 약속하면 못 지킨다(#380)."""
+    hn.refresh_kr_close(_t(f"{_D}T15:40"), fetch=krx)
+    assert hn.kr_early_lag(_D, _t(f"{_D}T15:45")) == hn.KR_EARLY_MIN
+    assert "2026-09-01" not in hn._kr_close_state()["days"]           # 봇이 시도한 적 없는 세션 — 실패 기록 때문이 아니다
+    assert hn.kr_early_lag("2026-09-01", _t(f"{_D}T15:45")) is None
+
+
+def test_etf_missing_from_krx_table_names_krx_not_tradingview(hn, ws_snaps, krx, monkeypatch):
+    """KRX 주식 표로 센 세션에 없는 종목(ETF)의 사유는 그 원천을 말한다 — 'TradingView 하루치에 없음' 은 그 세션엔 거짓
+    (하루치는 아직 안 받았다, 독립 리뷰 #82)."""
+    ws_snaps("KR", "2026-10-07", [("KRX:000001", 2.0)])
+    hn.refresh_kr_close(_t(f"{_D}T16:01"), fetch=krx)
+    c = hn.cum_lookup(_t("2026-10-06T18:00").timestamp(), _t(f"{_D}T16:05"))({"market": "KR", "ticker": "069500"})
+    assert "2026-10-08 KRX 종가 표에 없음" in c["why"], c["why"]
+    assert "2026-10-08 TradingView" not in c["why"]
