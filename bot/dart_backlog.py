@@ -530,12 +530,18 @@ def _first_run(seg: str) -> list[float]:
     return runs[0] if runs else []
 
 
+# 머리행 관문이 머리 열(시작·납품 라벨)을 찾는 창 — 라벨 **앞** 이만큼. 관문·관문 진단·발췌 자리·발췌 창이 같은
+# 값을 써야 한다: 발췌가 이보다 좁으면 '헤더에 … 열 없음' 의 근거가 보고서에 안 실린다(2026-10-30 격주 보고서 —
+# 000660 발췌가 라벨 앞 120자뿐이라 무엇을 라벨로 잡았는지도, 머리에 무엇이 없었는지도 안 보였다, #38·#356).
+_GATE_HEAD = 260
+
+
 def _header_gated(text: str, at: int) -> bool:
     """형태 A 의 머리행 관문 — 라벨 앞 260자에 시작 잔고 라벨(`_OPEN_LABELS`)과
     납품 라벨(`_DELIV_LABELS`)이 **둘 다** 있다. 파서·관문 진단·음수 판정·사유
     판정이 **같은 관문**을 걷는다(#35·#38 — 진단만 다른 자리를 보면 사유와 상세가
     갈린다, 배포 전 2차 독립 리뷰 L3)."""
-    head = text[max(0, at - 260):at]
+    head = text[max(0, at - _GATE_HEAD):at]
     return (any(k in head for k in _OPEN_LABELS)
             and any(k in head for k in _DELIV_LABELS))
 
@@ -963,13 +969,13 @@ def _parse_single(text: str) -> tuple[float, str] | None:
 # 것이라 개선 대상이 아니다. CLAUDE.md Automation-first.
 _MISS_LOG = _Path.home() / ".tradingagents" / "backlog_misses.jsonl"
 _MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 증가 방지
-# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 120 + 뒤 400)을
+# 기록에 남기는 원문 발췌 길이. `backlog_excerpt` 의 기본 창(앞 `_GATE_HEAD` + 뒤 400)을
 # 담는다 — 여기서 더 자르면 헤더가 잘려 **고칠 근거가 사라진다**(#156·#350
 # '자르는 자리가 다음 결정을 가리지 않는가').
 # ⚠️ 2026-09-18 첫 실물 라운드에서 **결정적인 줄이 창 밖이었다** — 영풍
 # (000670)의 `합 계` 행이 발췌 끝을 넘어가 '합계행 3값(검산실패)' 의 근거를
 # 볼 수 없었다. 자르는 자리가 다음 결정을 가리면 안 된다(#156·#350).
-_EXCERPT_CAP = 600
+_EXCERPT_CAP = 700    # 라벨 앞 관문 창(`_GATE_HEAD` 260) + 표식 + 라벨 뒤 400 — 공백을 접기 전 상한(2026-10-30)
 # 텔레그램 단일 메시지 한도는 4096 UTF-16 이고, 우리는 그보다 낮은 값을
 # **보낼 메시지 전체**에 건다 — 넘기면 메시지가 통째로 안 가고, 그 실패는
 # `_periodic_backlog_review` 의 `log.exception` 에만 남아 **화면에는 아무
@@ -980,7 +986,10 @@ _EXCERPT_CAP = 600
 # "전부 봤다"고 거짓말한다(2026-09-18 독립 리뷰 실측: 10갈래 → 6개 표시 ·
 # 생략 문구 없음 · 1294/4096). 자르는 것은 **예산 하나**다(#45).
 _DM_LIMIT = 4000
-_DM_EX_WIDTH = 200
+_DM_EX_AFTER = 60     # 보고서 발췌 창에서 라벨 뒤로 보일 글자 수 — 나머지는 라벨 앞(머리 열이 있어야 할 자리)
+# 보고서 발췌 폭 = 관문 창 전체 + 라벨 뒤 조금 — 200 이면 라벨 앞이 139자뿐이라 '헤더에 … 열 없음' 의 창을 다 못 싣는다
+# (2026-10-30 셀프리뷰). 판정 창에서 파생한다(#38). 길이 예산은 아래 `_DM_LIMIT` 하나가 지킨다.
+_DM_EX_WIDTH = _GATE_HEAD + _DM_EX_AFTER
 # 보고서에 싣는 합계행 폭 — 값이 6~8개면 100자 안이다.
 _DM_TOTAL_WIDTH = 100
 # 운영자에게 인쇄되는 명령은 **그대로 붙여넣어 도는 형태**여야 한다(#278).
@@ -1299,7 +1308,7 @@ def _gate_stage(text: str, spots: list[int]) -> str:
     best, rank = _GATE_LABELS[0], 0
     for at in spots:
         if not _header_gated(text, at):
-            head = text[max(0, at - 260):at]
+            head = text[max(0, at - _GATE_HEAD):at]
             if any(k in head for k in _OPEN_LABELS) and rank < 1:
                 best, rank = _GATE_LABELS[1], 1      # 시작 열은 있고 납품 열이 없다
             continue
@@ -1317,35 +1326,63 @@ def _gate_stage(text: str, spots: list[int]) -> str:
     return best
 
 
+# 발췌에서 **잡은 잔고 라벨** 바로 뒤에 붙이는 표식 — 보고서가 그 자리를 중심으로 보여 준다(`excerpt_view`).
+# 라벨 **뒤**에 붙인다: 앞에 붙이면 `기납품액 수주잔고` 처럼 머리 열을 이어 읽는 대조가 끊긴다.
+EX_MARK = "◀"
+
+
 def backlog_excerpt(text: str, width: int = 400) -> str:
-    """미수집 종목의 **잔고 표 주변 원문** 한 조각.
+    """미수집 종목의 **잔고 표 주변 원문** 한 조각 — 잡은 라벨 뒤에 `EX_MARK`.
 
     ⚠️ 사유 히스토그램은 '무엇이 많은가'까지만 말한다 — 실제로 어떤 열
     구성인지는 원문을 봐야 정해지고, 추측으로 열을 배정하면 스케일이 아니라
     **의미**가 틀린다(#106). 다음 라운드의 유일한 근거다.
+
+    ⚠️ 앞쪽은 관문 창(`_GATE_HEAD`)만큼 — '헤더에 기초·수주총액 열 없음' 은 그 창에 무엇이 **없었나**의 판정이라
+    그 창이 안 실리면 판정을 검산할 수 없다(2026-10-30: 앞 120자뿐이라 000660 은 외환위험 주석만 보였다).
     """
-    at = _excerpt_spot(text)
-    if at is None:
+    m = _excerpt_match(text)             # 파서와 같은 매처(#105) — 자리와 라벨 끝을 한 번에
+    if m is None:
         return ""
-    seg = text[max(0, at - 120):at + width]
+    at, end = m.start(), m.end()
+
+    def _clean(x: str) -> str:           # 원문의 같은 글자는 바꾼다 — 표식을 엉뚱한 자리로 읽지 않게(독립 리뷰)
+        return x.replace(EX_MARK, "◁")
+    seg = _clean(text[max(0, at - _GATE_HEAD):end]) + EX_MARK + _clean(text[end:at + width])
     return re.sub(r"\s+", " ", seg).strip()
 
 
-def _excerpt_spot(text: str) -> int | None:
-    """발췌가 볼 자리 — 헤더 게이트를 가장 멀리 통과한 라벨(파서가 본 그 자리).
-    머리 발췌와 합계행 발췌가 **같은 자리**를 써야 한 표의 두 조각이 된다."""
-    spots = _balance_spots(text or "")
-    if not spots:
-        return None
-    best, at = -1, spots[0]
-    for p in spots:
-        head = (text[max(0, p - 260):p])
+def excerpt_view(ex: str, width: int) -> str:
+    """보고서가 실을 `width` 자 — 표식이 있으면 **라벨 앞 머리 창 + 라벨 + 뒤 조금**, 없으면(옛 기록) 앞에서부터.
+
+    앞에서부터 자르면 머리 창이 길어진 만큼 라벨이 창 밖으로 밀린다 — 무엇을 잡았는지가 안 보인다."""
+    i = ex.find(EX_MARK)
+    if i < 0:
+        return ex[:width]
+    end = min(len(ex), i + len(EX_MARK) + _DM_EX_AFTER)
+    start = max(0, end - width)
+    return ("…" if start else "") + ex[start:end] + ("…" if end < len(ex) else "")
+
+
+def _excerpt_match(text: str):
+    """발췌가 볼 라벨 매치 — 헤더 게이트를 가장 멀리 통과한 라벨(파서가 본 그 자리). 없으면 None."""
+    best, pick = -1, None
+    for m in _balance_matches(text or ""):
+        p = m.start()
+        head = (text[max(0, p - _GATE_HEAD):p])
         sc = (any(k in head for k in _OPEN_LABELS)
               + any(k in head for k in _DELIV_LABELS)
               + (1 if _unit_mult(text, p) is not None else 0))
         if sc > best:
-            best, at = sc, p
-    return at
+            best, pick = sc, m
+    return pick
+
+
+def _excerpt_spot(text: str) -> int | None:
+    """발췌가 볼 자리(`_excerpt_match` 의 시작).
+    머리 발췌와 합계행 발췌가 **같은 자리**를 써야 한 표의 두 조각이 된다."""
+    m = _excerpt_match(text)
+    return m.start() if m else None
 
 
 # 합계행 발췌 폭. 합계 라벨 + 값 6~8개면 충분하고, 표 끝(`_cut_table`)에서
@@ -1968,11 +2005,11 @@ def review_text(refreshed: dict | None = None) -> str:
              f"원문 확인: <code>{_CLI_CMD} --ticker &lt;코드&gt;</code>"]
     samples = excerpt_samples(rows)
     if samples:
-        head = ["", f"<b>원문 발췌</b> (갈래마다 1건 · 앞 {_DM_EX_WIDTH}자 — "
+        head = ["", f"<b>원문 발췌</b> (갈래마다 1건 · 잡은 라벨 {EX_MARK} 앞뒤 {_DM_EX_WIDTH}자 — "
                     "파서를 고칠 유일한 근거)"]
         body: list[str] = []
         for sm in samples:
-            ex = _html.escape(sm["ex"][:_DM_EX_WIDTH])
+            ex = _html.escape(excerpt_view(sm["ex"], _DM_EX_WIDTH))
             blk = f"{excerpt_line(sm)}\n<code>{ex}</code>"
             if sm.get("exs"):
                 # 검산이 본 **합계행** — 머리 발췌 창 밖일 때가 많다(영풍 000670).

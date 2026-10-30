@@ -2003,6 +2003,15 @@ def tick_and_render(now: datetime | None = None) -> dict:
         st["no_holdings"] = False
         _save_state(st)
         res = {"status": "error"}
+    try:                                 # 국내 종가를 KRX 로 먼저 — Yahoo 보충이 무엇을 물을지 정하기 **전에**(#35)
+        # 국내 보유가 없으면 묻지 않는다 — 전종목 1콜이라도 쓸 데가 없으면 KRX 한도만 쓴다(독립 리뷰)
+        kr = refresh_kr_close(now) if any(p["market"] == "KR" for p in pnl_positions()[0]) \
+            else {"asked": 0, "got": 0, "why": ""}
+        if kr["asked"]:                  # 자격증명이 없으면 묻지 않는다 — 그 경고는 `krx_login_ready` 가 한 번 남긴다
+            log.info("holdings_news: KRX 종가 %d/%d세션%s", kr["got"], kr["asked"],
+                     f" — {kr['why']}" if kr["why"] else "")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("holdings_news: KRX 종가 보충 실패: %s", exc)
     try:                                 # 하루치에 없는 보유의 종가 — 실패는 그 칸만 비운다(#315)
         cr = refresh_closes(now)
         if cr["asked"]:
@@ -2752,6 +2761,8 @@ def close_asof(pos: list[dict], cmap: dict) -> dict:
             continue
         if c.get("asof") and (o["asof"] is None or c["asof"] < o["asof"]):
             o["asof"] = c["asof"]
+        if c.get("krx"):                 # 그 시장의 어느 세션을 KRX 로 먼저 받은 종가로 셌나(`asof_line` 이 밝힌다)
+            o["krx"] = sorted(set(o.get("krx") or []) | set(c["krx"]))
         o["wait"] = sorted(set(o["wait"]) | set(c.get("wait") or []))
         if c.get("wait"):                # 그 시장의 종가를 마감 뒤 몇 분에 받나(하루치 3시간 · Yahoo 만 받는 시장 30분)
             o["lag"] = max(int(o.get("lag") or 0), int(c.get("lag") or 0))
@@ -2778,6 +2789,7 @@ def asof_line(asof: dict) -> str:
     종가가 섞인다 — 자산 기록(업로드)과 따로, 금액을 **어느 날 종가까지** 굴렸는지 시장마다 적는다(사용자 2026-10-15
     "자산 업데이트 여부로도 나눠야" · #34·#43·#228). 한 종목도 못 센 시장은 '—'."""
     return " · ".join(f"{_mk_name(mk)} {asof[mk]['asof'][5:] if asof[mk].get('asof') else '—'}"
+                      + ("(KRX 종가)" if asof[mk].get("asof") and asof[mk]["asof"] in (asof[mk].get("krx") or []) else "")
                       for mk in _asof_order(asof))
 
 
@@ -3024,6 +3036,203 @@ def _snap_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[dict, dict, dict] 
     return tbl, ind, px
 
 
+# ── 국내 종가를 KRX 로 먼저(사용자 2026-10-30 "장은 15:30 에 끝났고 지금은 17:20 인데") ────────────────────────────
+# TradingView 하루치는 「국가별 심리지도」 보드의 규약대로 마감 `READY_MIN`(3시간) 뒤에 받는다 — 그 보드엔 맞는 여유지만
+# 국내 정규장 종가는 15:30 에 확정되므로 보유 화면은 18:30 까지 어제 종가에 머물렀다. 국내만 KRX 전종목 종가·등락률
+# (pykrx `get_market_ohlcv_by_ticker(D, "ALL")` — 1콜)을 마감 `KR_EARLY_MIN` 뒤 봇 주기가 받아 디스크에 두고, 렌더는
+# **그 세션의 TradingView 하루치가 아직 없을 때만** 그 표를 쓴다(하루치가 오면 하루치가 이긴다 — 바뀌는 것은 원천뿐).
+# 시장특정 예외 사유(§UNIVERSAL): KRX 가 전 종목 종가를 한 호출로 주는 공식 원천이고 다른 시장엔 이 레포에 검증된
+# 동급 벌크 원천이 없다(`kr_bulk_rank`·`bollinger_board._SESSION_FILL` 과 같은 사유) — 다른 시장은 그대로 하루치 3시간.
+KR_EARLY_MIN = 30                  # 정규장 마감 뒤 이만큼 지나 KRX 종가를 묻는다(그 전엔 장 마감 동시호가 정리 중일 수 있다)
+KR_EARLY_MIN_ROWS = 1000           # 이보다 적게 오면 부분 응답(코스닥 누락 등) — 굽지 않는다(#280 부분을 완전본으로 굽지 않는다)
+KR_EARLY_RETRY_MIN = (15, 30, 60, 120)    # 같은 세션 연속 실패 시 다음 시도까지(분)
+KR_EARLY_MAX_FAILS = 8             # 이만큼 실패하면 그 세션은 포기 — 하루치(3시간)가 채운다
+KR_EARLY_BACK = 5                  # 몇 세션 전까지 되짚나(하루치를 놓친 세션도 KRX 로 채운다)
+KR_EARLY_KEEP_DAYS = RENDER_DAYS + 15
+
+
+def _kr_close_dir() -> Path:
+    return _DIR / "kr_close"
+
+
+def _kr_close_state() -> dict:
+    try:
+        v = json.loads((_kr_close_dir() / "_state.json").read_text(encoding="utf-8"))
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _kr_close_table(d: str) -> tuple[dict, dict, dict] | None:
+    """KRX 로 먼저 받은 그 세션의 ({코드: 등락%}, {}, {코드: 종가}) — 없거나 깨졌으면 None(`_snap_tables` 와 같은 모양)."""
+    path = _kr_close_dir() / f"{d}.json"
+    try:
+        mt = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    hit = _PREV_CACHE.get(("KRX", d))
+    if hit and hit[0] == mt and isinstance(hit[1], tuple):
+        return hit[1]
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8")).get("rows")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(rows, dict):
+        return None
+    tbl, px = {}, {}
+    for k, v in rows.items():
+        try:
+            pct, close = float(v[0]), float(v[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(pct) and math.isfinite(close) and close > 0:
+            tbl[str(k).upper()], px[str(k).upper()] = pct, close
+    if not tbl:
+        return None
+    while len(_PREV_CACHE) >= _PREV_CACHE_MAX:
+        _PREV_CACHE.pop(next(iter(_PREV_CACHE)))
+    _PREV_CACHE[("KRX", d)] = (mt, (tbl, {}, px))
+    return tbl, {}, px
+
+
+def _close_tables(ws, lookup_ticker, mk: str, d: str) -> tuple[tuple | None, str]:
+    """(표, 원천) — 그 세션의 TradingView 하루치('tv'), 없으면 국내는 KRX 로 먼저 받은 종가('krx'), 둘 다 없으면 (None, '')."""
+    tb = _snap_tables(ws, lookup_ticker, mk, d)
+    if tb is not None:
+        return tb, "tv"
+    if mk == "KR":
+        kb = _kr_close_table(d)
+        if kb is not None:
+            return kb, "krx"
+    return None, ""
+
+
+def kr_early_lag(d: str | None, now: datetime | None = None, *, state: dict | None = None) -> int | None:
+    """국내 세션 `d` 의 종가를 마감 뒤 몇 분에 받나 — KRX 로 먼저 받을 수 있으면 `KR_EARLY_MIN`, 아니면 None(하루치 시각).
+    '받을 수 있다' 는 **봇 주기가 남긴 기록**으로만 판정한다: 마지막 시도에 자격증명이 있었고 그 세션이 실패한 적이 없을
+    때. 기록이 없거나(배포 직후) 실패했으면 하루치 3시간이 사실이므로 그 시각을 적는다(지킬 수 없는 약속 금지, #380).
+    봇이 되짚는 범위(`KR_EARLY_BACK` 세션) 밖의 세션도 묻지 않으므로 약속하지 않는다 — 그 범위는 달력일로 보수적으로
+    잰다(5 달력일 안의 세션은 많아야 5개다). `state` = 렌더가 한 번 읽어 둔 기록(종목마다 다시 읽지 않게)."""
+    st = _kr_close_state() if state is None else state
+    if not d or not st.get("creds"):
+        return None
+    try:
+        if (_now(now).date() - datetime.fromisoformat(d).date()).days >= KR_EARLY_BACK:
+            return None
+    except ValueError:
+        return None
+    ent = (st.get("days") or {}).get(d) or {}
+    return None if int(ent.get("fails") or 0) else KR_EARLY_MIN
+
+
+def _krx_closes(ds: str) -> tuple[dict, str]:
+    """({코드: [등락%, 종가]}, 사유) — KRX 전종목 하루치(정규장 종가). 0 값(장전 placeholder)·결측은 버린다."""
+    from bot.kr_bulk_rank import _col, _frame, _num, _pykrx
+    stock, why = _pykrx()
+    if stock is None:
+        return {}, why
+    df, note = _frame(stock, "get_market_ohlcv_by_ticker", ds, market="ALL")
+    if df is None:
+        return {}, note
+    if note:                         # market 인자 미지원 — 코스닥이 통째로 빠진 반쪽(#190)
+        return {}, note
+    c_close, c_pct = _col(df, "종가"), _col(df, "등락률")
+    if c_close is None or c_pct is None:
+        return {}, "종가·등락률 컬럼 없음(pykrx 판 확인)"
+    out = {}
+    for idx in df.index:
+        try:
+            close, pct = _num(df.loc[idx, c_close]), _num(df.loc[idx, c_pct])
+        except Exception:                                      # noqa: BLE001
+            continue
+        if close and close > 0 and pct is not None:
+            out[str(idx).zfill(6)] = [pct, close]
+    return out, ""
+
+
+def refresh_kr_close(now: datetime | None = None, *, fetch=None) -> dict:
+    """마감 `KR_EARLY_MIN` 이 지났는데 TradingView 하루치가 아직 없는 국내 세션의 KRX 종가를 받아 둔다 — 봇 15분 주기가
+    렌더 **앞에** 부른다(네트워크는 여기만). 반환 = {asked, got, why}. 실패는 그 세션만 `KR_EARLY_RETRY_MIN` 간격으로 다시
+    묻고 `KR_EARLY_MAX_FAILS` 번이면 포기한다(하루치가 채운다). 행이 `KR_EARLY_MIN_ROWS` 보다 적거나 등락이 전부 0 이면
+    (장전 placeholder · 반쪽 응답) 굽지 않고 실패로 센다."""
+    from bot import world_sectors as ws
+    now = _now(now)
+    now_u, t = now.astimezone(timezone.utc), now.timestamp()
+    st = _kr_close_state()
+    days = st.get("days") if isinstance(st.get("days"), dict) else {}
+    try:
+        from bot.pykrx_client import krx_login_ready
+        st["creds"] = bool(krx_login_ready())
+    except Exception:                                          # noqa: BLE001
+        st["creds"] = False
+    targets = []
+    for i in range(15):
+        d = (now.date() - timedelta(days=i)).isoformat()
+        tt = ws.session_times("KR", d)
+        if not tt or tt[1] + timedelta(minutes=KR_EARLY_MIN) > now_u:
+            continue
+        targets.append(d)
+        if len(targets) >= KR_EARLY_BACK:
+            break
+
+    def _due(d):
+        if ws.snap_path("KR", d).exists() or (_kr_close_dir() / f"{d}.json").exists():
+            return False
+        ent = days.get(d) or {}
+        n = int(ent.get("fails") or 0)
+        if n >= KR_EARLY_MAX_FAILS:
+            return False
+        if not n:
+            return True
+        return t - float(ent.get("tried") or 0) >= KR_EARLY_RETRY_MIN[min(n, len(KR_EARLY_RETRY_MIN)) - 1] * 60
+
+    due = [d for d in targets if _due(d)]
+    got, why_all = 0, ""
+    if due and not st["creds"]:
+        why_all = "KRX 자격증명 없음(.env 의 KRX_ID/KRX_PW) — 하루치(3시간 뒤)를 기다림"
+        due = []
+    for d in due:
+        rows, why = (fetch or _krx_closes)(d.replace("-", ""))
+        if rows and len(rows) < KR_EARLY_MIN_ROWS:
+            why, rows = f"KRX 응답이 {len(rows)}종목뿐(부분 응답 — 굽지 않음)", {}
+        elif rows and not any(v[0] for v in rows.values()):
+            why, rows = "KRX 등락률이 전부 0(장전 자료로 보임 — 굽지 않음)", {}
+        ent = days.setdefault(d, {})
+        ent["tried"] = t
+        if rows:
+            try:
+                _kr_close_dir().mkdir(parents=True, exist_ok=True)
+                path = _kr_close_dir() / f"{d}.json"
+                tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp.write_text(json.dumps({"at": t, "rows": rows}, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, path)
+                ent.update(ok=t, why="")
+                got += 1
+                continue
+            except OSError as exc:
+                why = f"저장 실패({exc})"
+        ent["fails"] = int(ent.get("fails") or 0) + 1
+        ent["why"] = why or "KRX 응답 비어 있음"
+        why_all = ent["why"]
+    keep = (now.date() - timedelta(days=KR_EARLY_KEEP_DAYS)).isoformat()
+    st["days"] = {d: e for d, e in days.items() if d >= keep}
+    try:
+        for f in _kr_close_dir().glob("20??-??-??.json"):
+            if f.stem < keep:
+                f.unlink()
+    except OSError:
+        pass
+    try:
+        _kr_close_dir().mkdir(parents=True, exist_ok=True)
+        path = _kr_close_dir() / "_state.json"
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("holdings_news: KRX 종가 기록 저장 실패: %s", exc)
+    return {"asked": len(due), "got": got, "why": why_all}
+
+
 def prev_changes(date: str, now: datetime | None = None):
     """전날 등락률 조회기 — `look(stock) -> (등락%, 세션 날짜, 사유)` · `look.px(stock) -> (그 세션 종가, 날짜) | None`.
 
@@ -3044,7 +3253,7 @@ def prev_changes(date: str, now: datetime | None = None):
             if not ss:
                 out = (None, None, "전날 거래일을 달력에서 못 찾음", {})
             else:
-                t = _snap_tables(ws, lookup_ticker, mk, ss[0])
+                t, _src = _close_tables(ws, lookup_ticker, mk, ss[0])
                 out = (t[0], ss[0], "", t[2]) if t is not None else \
                     (None, ss[0], _prev_missing_why(ws, mk, ss[0], now), {})
         except Exception as exc:                               # noqa: BLE001
@@ -3169,6 +3378,11 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             cache["v"] = load_closes()
         return cache["v"]
 
+    def _kr_state() -> dict:             # KRX 먼저 받기 기록 — 렌더 한 번에 한 번만 읽는다(종목마다 읽지 않게, 독립 리뷰)
+        if "kr" not in cache:
+            cache["kr"] = _kr_close_state()
+        return cache["kr"]
+
     def _plan(cal: str, snap: bool):
         """(기준 무렵 세션, [(세션, 표 | None=휴장 0 | '' = Yahoo 로 셀 세션)], 대기, 깨진 사유, {세션: 마감 epoch},
         {세션: {티커: 종가}} — 하루치가 있는 세션과 기준 무렵 세션만)."""
@@ -3180,7 +3394,7 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             from bot.world_sector_pages import lookup_ticker
             state = ws.load_state() if snap else None
             d0 = base_utc.astimezone(_KST).date() - timedelta(days=14)
-            bsess, days, wait, broken, ctime, pxs, opn = None, [], [], [], {}, {}, None
+            bsess, days, wait, broken, ctime, pxs, opn, kx = None, [], [], [], {}, {}, None, []
             for i in range((now.date() - d0).days + 2):
                 d = (d0 + timedelta(days=i)).isoformat()
                 t = ws.session_times(cal, d)
@@ -3203,10 +3417,12 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
                     else:
                         wait.append(d)
                     continue
-                tb = _snap_tables(ws, lookup_ticker, cal, d)
+                tb, tsrc = _close_tables(ws, lookup_ticker, cal, d)
                 if tb is not None:
                     days.append((d, tb[0]))
                     pxs[d] = tb[2]
+                    if tsrc == "krx":        # TradingView 하루치 전 — KRX 로 먼저 받은 종가(카드·'시세 반영' 이 밝힌다)
+                        kx.append(d)
                     continue
                 st = ws.market_day_status(cal, d, now, state)
                 if st == "pending":
@@ -3216,10 +3432,10 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
                 else:
                     broken.append((d, _prev_missing_why(ws, cal, d, now)))
             if snap and bsess:               # 기준 뒤 센 세션이 없으면 카드의 종가는 기준 무렵 종가다
-                tb = _snap_tables(ws, lookup_ticker, cal, bsess)
+                tb, _src = _close_tables(ws, lookup_ticker, cal, bsess)
                 if tb is not None:
                     pxs[bsess] = tb[2]
-            out = (bsess, days, wait, broken, ctime, pxs, opn)
+            out = (bsess, days, wait, broken, ctime, pxs, opn, kx)
         except Exception as exc:                               # noqa: BLE001
             log.warning("holdings_news: 누적 등락 계획 실패(%s): %s", cal, exc)
         memo[(cal, snap)] = out
@@ -3237,8 +3453,10 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             # 하루치를 받는 시장인데 계산이 깨졌다 — '받지 않는 시장' 이라 적으면 거짓 사유다
             return {"ka": None, "n": 0, "asof": None, "wait": [], "hol": [], "src": "tv", "need": None,
                     "why": "장종료가 등락 계산 실패(봇 로그 참고)"}
-        bsess, days, wait, broken, ctime, pxs, opn = plan
+        bsess, days, wait, broken, ctime, pxs, opn, kx = plan
         lag = _ws_ready_min() if snap else YCLOSE_MARGIN_MIN         # 마감 뒤 몇 분에 그 세션 종가를 받나
+        if snap == "KR" and wait:        # 국내는 KRX 로 먼저 받을 수 있으면 그 시각(봇 기록으로만 판정, `kr_early_lag`)
+            lag = kr_early_lag(wait[0], now, state=_kr_state()) or lag
         # 실시간 등락(10분 간격 · 사용자 2026-10-19)을 이어 붙일 세션 — 아직 안 센 세션이 **딱 하나**(지금 열린 세션이거나
         # 마감했지만 종가를 아직 안 받은 세션)일 때만. 실시간 등락은 '직전 종가 대비' 하루치라, 안 센 세션이 둘이면
         # 하나를 빼먹은 값이 된다(그때는 종가 누적 그대로 · 화면이 세션 날짜를 맞춰 보고 붙인다)
@@ -3262,6 +3480,8 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
                # 실제로 등락을 반영한 세션 수 — 휴장 추정(등락 0)은 빼고 놓친 세션(Yahoo 종가 비가 덮는다)은 넣는다.
                # 요약 칸 이름이 '전일대비' 인지 'N세션' 인지를 이 값이 정한다(`pnl_span_head`, 사용자 2026-10-15)
                "sess": sum(1 for _, tbl in days if tbl is not None) + len(broken)}
+        if kx:                           # KRX 로 먼저 받은 종가로 센 세션 — TradingView 하루치가 오면 빠진다(사용자 2026-10-30)
+            out["krx"] = [d for d, _ in days if d in kx]
         if not days and not broken:      # 기준 뒤 마감해 센 세션이 없다 — 기준 무렵 종가 그대로(0)
             c = (pxs.get(bsess) or {}).get(_snap_key(st, snap)) if snap and bsess else None
             if c is not None:
@@ -3321,8 +3541,15 @@ def cum_lookup(base_ts: float, now: datetime | None = None, *, closes: dict | No
             head = ("TradingView 하루치를 놓친 세션이 있음(" + " · ".join(ws_[:2])
                     + (f" 외 {len(ws_) - 2}세션" if len(ws_) > 2 else "") + ")")
         else:
-            head = (f"이 종목이 {', '.join(miss_tk)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
-                    "거래정지·신규상장도)")
+            tv_miss, kx_miss = [d for d in miss_tk if d not in kx], [d for d in miss_tk if d in kx]
+            parts = []
+            if tv_miss:
+                parts.append(f"이 종목이 {', '.join(tv_miss)} TradingView 하루치에 없음(하루치는 보통주·DR 만 — ETF·우선주 등 · "
+                             "거래정지·신규상장도)")
+            if kx_miss:                  # 하루치 수집 전이라 KRX 주식 표로 센 세션 — 원천을 바로 적는다(독립 리뷰, #82)
+                parts.append(f"이 종목이 {', '.join(kx_miss)} KRX 종가 표에 없음(KRX 주식 표 — ETF·ETN 은 없음 · "
+                             "거래정지·신규상장도)")
+            head = " · ".join(parts)
         out.update(src="yahoo", need=need, ka=r, asof=to, hol=[], broken=[d for d, _ in broken],  # 휴장 0 은 하루치 곱의 일
                    why="" if r is not None else f"{head} — Yahoo 일봉 종가로 채우는데 {why}")
         return out
@@ -3540,6 +3767,8 @@ def _close_tip(d: dict) -> str:
     elif n:
         tip = (f"{at}(KST) 자산 기록 대비 장종료가 누적 등락 — 그 뒤 마감한 세션 {n}개의 종가 등락을 곱함"
                f"({asof} 종가까지 · TradingView 하루치 · 「국가별 심리지도」와 같은 하루치)")
+        if d.get("krx"):
+            tip += f" · {', '.join(d['krx'])} 는 하루치 수집 전이라 KRX 종가로 셈(하루치가 오면 하루치로 바뀜)"
     elif wait:                           # 마감은 했지만 하루치를 아직 안 받았다 — '마감한 세션이 없다' 가 아니다
         tip = f"{at}(KST) 자산 기록 뒤 마감한 세션의 종가를 아직 안 받아 0 — {base}"
     else:
@@ -4138,7 +4367,9 @@ def render_page(records: list[dict], state: dict | None = None,
 종가의 거래소 날짜) — 오늘 하루 등락이 아닙니다. 누적이 두 세션 이상이면 마지막 세션 하루 등락(직전 종가 대비)을
 <b>'10-21 +2.14%'</b> 처럼 날짜와 함께 앞에 둡니다(예: 10-20 장 전 새벽 기록이면 기준은 10-19 종가라 10-20 하락과 10-21
 상승이 함께 곱해져, 오늘 올랐어도 누적은 마이너스일 수 있습니다 · 금액 변동은 누적 쪽). 기준 업로드 뒤에 마감한 세션마다의 종가 등락(「국가별 심리지도」가 받아 둔 TradingView
-하루치)을 곱해 '기준 무렵 마지막 종가 → 받아 둔 마지막 종가' 를 셉니다. 하루치는 장 마감 {_ws_ready_h()}시간 뒤에 받으므로,
+하루치)을 곱해 '기준 무렵 마지막 종가 → 받아 둔 마지막 종가' 를 셉니다. 하루치는 장 마감 {_ws_ready_h()}시간 뒤에 받습니다 —
+국내만은 정규장 마감 {KR_EARLY_MIN}분 뒤 <b>KRX 전종목 종가</b>를 먼저 받아 그 세션을 세고('시세 반영' 칸에 'KRX 종가' 로 표시 ·
+하루치가 오면 하루치로 바뀝니다 · KRX 를 못 받으면 하루치를 기다립니다). 그 전까지,
 <b>장 중인 세션</b>과 <b>마감했지만 종가를 아직 안 받은 세션</b>은 화면이 {LIVE_POLL_SEC // 60}분마다 그 종목의 <b>실시간 등락</b>(정규장 ·
 직전 종가 대비 — 국내·미·일·홍·중은 네이버, 대만은 TWSE)을 받아 종가 누적에 곱해 이어 붙입니다. 그 세션만 남았을 때만
 붙이고(안 센 세션이 둘이면 하나를 빼먹은 값이 되어 종가 누적 그대로), 원천이 준 세션 날짜가 그 세션이 아니면 붙이지

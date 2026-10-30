@@ -152,7 +152,8 @@ def summarize() -> int:
     # 보고서가 '전부 보여준다' 고 가리키는 곳이 바로 여기다.
     samples = _samples(rows)
     if samples:
-        print("\n■ 원문 발췌 (갈래마다 1건 — 파서를 고칠 근거)")
+        from bot.dart_backlog import EX_MARK
+        print(f"\n■ 원문 발췌 (갈래마다 1건 — 파서를 고칠 근거 · {EX_MARK} = 잡은 잔고 라벨)")
         for sm in samples:
             print(f"\n[{sm['kind']}] {sm['n']}건 · {sm['ticker']} "
                   f"{sm['year']}/{sm['reprt']}"
