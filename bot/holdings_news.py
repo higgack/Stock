@@ -973,6 +973,17 @@ def prompt_sig() -> str:
     return hashlib.sha1((build_prompt([]) + build_check_prompt([])).encode("utf-8")).hexdigest()[:10]
 
 
+def fail_sig() -> str:
+    """실패를 되돌릴지 가르는 지문 — 정리 규칙(`prompt_sig`)에 **응답 대조 코드**(`_norm_key`·`match_results`)를
+    더한다. 'AI 응답에 이 종목이 없음' 은 규칙 탓만이 아니라 우리 대조가 엄격한 탓일 수도 있어서, 대조를 고친
+    배포가 그날 실패로 굳은 종목을 한 번 더 돌리게 한다(2026-10-30 감사 ❌ 10종목 — 대조만 고치면 규칙 지문이
+    그대로라 그날 카드가 끝까지 '뉴스만' 이었다). 'ok' 종목은 대조가 바뀌어도 정리가 같으므로 `prompt_sig` 로 본다."""
+    import hashlib
+    import inspect
+    src = "".join(inspect.getsource(f) for f in (_norm_key, match_results))
+    return hashlib.sha1((prompt_sig() + src).encode("utf-8")).hexdigest()[:10]
+
+
 def requeue_note(rec: dict, now: datetime | None = None) -> str:
     """`--why` 한 줄 — 이 기록(가장 최근 기록)에서 지금 기준(지문)으로 정리되지 않은 종목 수와 그게 어떻게 되나.
     '다시 정리' 는 그 기록이 다음 주기에도 가장 최근 기록일 때만 약속한다 — 집계 시각이 지났는데 오늘 기록이
@@ -1089,8 +1100,8 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
     네이버 사본을 다시 읽어 붙인다(이 호출당 `MAX_BODY_PER_RUN`). 못 읽으면 본문 없이 가고 '읽음' 표시는
     지운다 — 화면은 이번에 실제로 보낸 것만 '읽음' 으로 적는다(`body_used`). 반환 = 되돌린 종목 수."""
     body = body or _fetch_body
-    sig = prompt_sig()
-    if sig in (rec.get("requeued_for") or []):
+    sig, fsig = prompt_sig(), fail_sig()
+    if fsig in (rec.get("requeued_for") or []):
         return 0
     n = reads = 0
     for s in rec.get("stocks") or []:
@@ -1098,7 +1109,7 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
         # '빠뜨리지 말 것' 규칙으로 고친 뒤에도 그날 실패 3종목이 그대로 남던 구멍). 지문을 기록이 한 번만 되돌린다.
         # 실패 지문(`fpv`)이 지금 규칙이면 되돌리지 않는다 — 같은 규칙으로 실패한 종목을 매 주기 다시 돌리면 비용만
         # 두 배이고 카드가 '기준이 바뀜' 이라는 거짓 사유를 단다(독립 리뷰 2026-10-16). 지문 없는 옛 실패는 되돌린다.
-        failed = s.get("status") == "failed" and s.get("fpv") != sig
+        failed = s.get("status") == "failed" and s.get("fpv") != fsig
         if not (failed or (s.get("status") == "ok" and s.get("pv") != sig)):
             continue
         if beat:
@@ -1113,7 +1124,7 @@ def requeue_stale(rec: dict, *, body=None, pace: float = 0.25, beat=None) -> int
         s.pop("check_reverts", None)
         n += 1
     if n:
-        rec["requeued_for"] = [*(rec.get("requeued_for") or []), sig]
+        rec["requeued_for"] = [*(rec.get("requeued_for") or []), fsig]
     return n
 
 
@@ -1378,8 +1389,9 @@ def _attach_industry(rec: dict, stocks: list[dict]) -> None:
 
 def _norm_key(k) -> str:
     """AI 가 돌려준 key 를 대조용으로 — 프롬프트 머리(`### key=KR:005930`)의 `key=` 를 같이 베끼거나 대소문자·
-    공백을 바꿔도 같은 종목으로 본다."""
-    t = re.sub(r"\s+", "", str(k or "")).upper()
+    공백을 바꿔도 같은 종목으로 본다. 머리줄을 줄 끝까지 베껴 `KR:005930 · 이름(…) · 업종: …` 으로 와도 — ` · ` 는
+    우리가 그 머리에 넣은 구분자라 그 앞이 key 다(2026-10-30 감사 ❌ 10종목 · key 엔 `·` 가 없다)."""
+    t = re.sub(r"\s+", "", str(k or "").split("·", 1)[0]).upper()
     return t[4:] if t.startswith("KEY=") else t
 
 
@@ -1483,7 +1495,7 @@ def analyze(rec: dict, *, llm=call_llm, max_calls: int = MAX_LLM_CALLS,
             s["reason"] = why or ("AI 응답을 못 읽음" if not data else missing_reason(seen))
             if s["tries"] >= MAX_ANALYZE_TRIES:
                 s["status"] = "failed"
-                s["fpv"] = prompt_sig()           # 어느 규칙으로 실패했나 — `requeue_stale` 이 규칙이 바뀔 때만 되돌린다
+                s["fpv"] = fail_sig()             # 어느 규칙·대조로 실패했나 — `requeue_stale` 이 그게 바뀔 때만 되돌린다
                 done["failed"] += 1
         chk = check_offtopic(grp, rec, llm=llm)
         done["analyzed"] -= chk["reverted"]

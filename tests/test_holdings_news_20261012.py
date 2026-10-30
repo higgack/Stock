@@ -2555,7 +2555,7 @@ def test_requeue_stale_resets_old_analyses_and_rereads_bodies(hn):
                          beat=lambda: beats.append(1))
     # 실패 종목도 되돌린다(2026-10-16 계약 변경 — 실패가 옛 규칙 탓일 수 있다 · 본문 링크가 없어 읽기는 그대로 하나)
     assert n == 2 and reads == ["https://n.news.naver.com/KR:A/1"] and beats == [1, 1]   # 되돌린 종목마다 생존 표시
-    assert rec["requeued_for"] == [cur]
+    assert rec["requeued_for"] == [hn.fail_sig()]           # 규칙 + 응답 대조 지문(2026-10-30, #222)
     assert stale["status"] == "pending" and stale["reason"] == hn.REQUEUE_REASON
     assert stale["pros"] == [] and stale["cons"] == [] and stale["relevant"] is None
     assert stale["tries"] == 0 and stale["retry"] is False and stale["dropped_lines"] == 0
@@ -2583,9 +2583,10 @@ def test_requeue_stale_runs_once_per_rule_per_record(hn, monkeypatch):
     assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1
     rec["stocks"][0].update(status="ok", pv="B판")                     # B판 프로세스가 다시 정리해 덮었다
     assert hn.requeue_stale(rec, body=lambda l: 1 / 0, pace=0) == 0
-    assert rec["stocks"][0]["status"] == "ok" and rec["requeued_for"] == ["A판"]
+    a_sig = hn.fail_sig()                       # 기록엔 규칙 + 응답 대조 지문이 남는다(2026-10-30, #222)
+    assert rec["stocks"][0]["status"] == "ok" and rec["requeued_for"] == [a_sig]
     monkeypatch.setattr(hn, "prompt_sig", lambda: "C판")                 # 새 기준이면 다시 한 번
-    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == ["A판", "C판"]
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == [a_sig, hn.fail_sig()]
 
 
 def test_requeue_reason_promises_only_on_live_days(hn):
@@ -2659,7 +2660,7 @@ def test_requeue_stale_marks_the_record_only_when_it_requeued(hn):
     rec = _rec(_stock("KR:A"), _ok("KR:B", pv=hn.prompt_sig()))
     assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 0 and "requeued_for" not in rec
     rec["stocks"].append(_ok("KR:C"))
-    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == [hn.prompt_sig()]
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1 and rec["requeued_for"] == [hn.fail_sig()]
 
 
 def test_requeue_stale_unread_body_and_budget(hn, monkeypatch):
@@ -4894,7 +4895,7 @@ def test_failure_under_the_current_rule_is_not_requeued(hn):
     for _ in range(hn.MAX_ANALYZE_TRIES + 2):
         hn.requeue_stale(rec, body=lambda l: "", pace=0)
         hn.analyze(rec, llm=lambda p: calls.append(p) or (none, 1, 1, "", ""))
-    assert s["status"] == "failed" and s["fpv"] == hn.prompt_sig()
+    assert s["status"] == "failed" and s["fpv"] == hn.fail_sig()   # 규칙 + 응답 대조(2026-10-30, #222)
     assert len(calls) == hn.MAX_ANALYZE_TRIES and s["reason"] != hn.REQUEUE_REASON
 
 
@@ -5180,3 +5181,40 @@ def test_reset_button_is_rendered_next_to_the_pills(hn):
     row = html.split("<div class=\"pills\">")[1].split("</div>")[0]
     assert "id='hn-reset'" in row and "↺ 초기화" in row and row.count("data-hnf=") == 6
     assert ".hn-reset{" in html                                             # 클래스만 쓰고 CSS 없는 것 금지(#201)
+
+
+# ── 2026-10-30 감사 ❌ Pros/Cons 실패 10종목 — key 에 머리줄 전체를 베낌 ─────────────────────────────────
+def test_analyze_accepts_key_that_copied_the_whole_header_line(hn):
+    """응답 key 가 `US:ASX · ASE 테크놀로지 홀딩 ADR(ASX, 미국) · 업종: …` — 프롬프트 머리 `### key=` 뒤를 줄 끝까지
+    베꼈다. ` · ` 는 우리가 그 머리에 넣은 구분자라 그 앞이 key 다(걷을 수 있는 변형만 걷는다, #453). 머리줄은
+    제품이 만든 것을 그대로 쓴다(리터럴을 지어내면 머리 형식이 바뀌어도 통과한다, #155)."""
+    a = {**_stock("US:ASX"), "market": "US", "ind": "세미컨덕터"}
+    b = _stock("KR:114810")
+    heads = [ln[len("### key="):] for ln in hn.build_prompt([a, b]).splitlines() if ln.startswith("### key=")]
+    assert len(heads) == 2 and all(" · " in h for h in heads)
+    out = {"stocks": [{"key": h, "pros": [{"t": h[:6], "refs": [1]}]} for h in heads]}
+    done = hn.analyze(_rec(a, b), llm=_llm(json.dumps(out)))
+    assert done["analyzed"] == 2 and a["status"] == b["status"] == "ok"
+    assert a["pros"][0]["t"] == "US:ASX" and b["pros"][0]["t"] == "KR:114"
+
+
+def test_header_echo_does_not_cross_markets(hn):
+    """구분자 앞을 key 로 읽어도 시장은 그대로 본다 — `US:SAME · …` 은 `KR:SAME` 이 아니다(#46)."""
+    a = _stock("KR:SAME")
+    hn.analyze(_rec(a), llm=_llm(json.dumps({"stocks": [{"key": "US:SAME · 어떤회사(SAME, 미국)",
+                                                         "pros": [{"t": "x", "refs": [1]}]}]})))
+    assert a["status"] == "pending"
+
+
+def test_matcher_change_requeues_failures_but_not_ok_stocks(hn, monkeypatch):
+    """대조 코드만 바뀐 배포 — 규칙 지문은 그대로라 옛 판에선 그날 실패가 끝까지 굳었다. 실패만 한 번 더 돌리고
+    정리된 종목은 그대로 둔다(정리 결과는 대조와 무관하다). 같은 지문으로 두 번 되돌리지 않는다."""
+    f = _stock("KR:F", status="failed")
+    f.update(tries=3, reason="AI 응답에 이 종목이 없음(응답 key 1개: KR:F · 회사)", fpv="old-matcher")
+    keep = _ok("KR:K", pv=hn.prompt_sig())
+    rec = {**_rec(f, keep), "requeued_for": [hn.prompt_sig()]}   # 규칙 지문으론 이미 되돌린 기록
+    assert hn.fail_sig() != hn.prompt_sig()
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 1
+    assert f["status"] == "pending" and keep["status"] == "ok"
+    f.update(status="failed", fpv=hn.fail_sig())
+    assert hn.requeue_stale(rec, body=lambda l: "", pace=0) == 0
