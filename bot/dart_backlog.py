@@ -231,16 +231,25 @@ _SECTION_HEAD = re.compile(
     r"(?:^|(?<=[\s.]))([" + _SECTION_LETTERS + r"])\s*\.\s*(?=[가-힣(])")
 
 
+# 숫자 머리(`5. 위험관리 및 파생거래`)는 `가.` 보다 **윗 단계**(사업의 내용의 장)다 — 그 머리를 넘어 앞 장의
+# `나. 수주상황` 을 문맥으로 빌리면 다음 장 주석의 `당기말` 이 잔고 라벨이 된다(2026-10-30 000660 실측: 수주잔고
+# 표가 없는 회사인데 외환위험 주석이 '헤더에 기초·수주총액 열 없음' 으로 고칠 목록에 올랐다). 뒤가 한글일 때만
+# 머리다 — 날짜(`2026. 3. 31`)·소수는 뒤가 숫자라 안 걸린다.
+_CHAPTER_HEAD = re.compile(r"(?:^|(?<=[\s.]))\d{1,2}\s*\.\s*(?=[가-힣])")
+
+
 def _section_start(before: str) -> int:
-    """앞쪽 문맥을 자를 위치(없으면 0) — 같은·윗 단계 절 머리에서만."""
+    """앞쪽 문맥을 자를 위치(없으면 0) — 같은·윗 단계 절 머리에서만. 숫자 장 머리는 늘 윗 단계라 마지막 것에서 자른다."""
+    chap = [m.start() for m in _CHAPTER_HEAD.finditer(before)]
+    cut = chap[-1] if chap else 0
     heads = list(_SECTION_HEAD.finditer(before))
     if not heads:
-        return 0
+        return cut
     last = heads[-1]
     rank = _SECTION_LETTERS.index(last.group(1))
     if any(_SECTION_LETTERS.index(h.group(1)) > rank for h in heads[:-1]):
-        return 0
-    return last.start()
+        return cut
+    return max(cut, last.start())
 
 
 def _balance_matches(text: str) -> list:

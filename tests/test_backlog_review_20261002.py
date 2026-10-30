@@ -1425,3 +1425,44 @@ class TestExcerptShowsTheGateWindow20261030:
         t = "(단위 : 백만원) 수주총액 기납품액 " + EX_MARK + " 참고 수주잔고 합 계 1,000 400 600"
         ex = backlog_excerpt(t)
         assert ex.count(EX_MARK) == 1 and "수주잔고" + EX_MARK in ex, ex
+
+
+class TestChapterHeadEndsTheOrderContext20261030:
+    """2026-10-30 000660 VM 원문 — 수주잔고 표가 없는 회사인데 다음 장(`5. 위험관리 및 파생거래`) 외환위험 주석의
+    `당기말` 이 앞 장 `나. 수주상황` 의 `수주` 를 문맥으로 빌려 잔고 라벨이 됐다(보고서 '헤더에 기초·수주총액 열 없음'
+    → 고칠 목록). 숫자 장 머리는 `가.` 보다 윗 단계라 그 머리에서 앞쪽 문맥을 자른다."""
+
+    # VM `backlog_misses --ticker 000660` 25.4Q 발췌 원문(표식만 뺐다)
+    HYNIX = ("고객으로 확보하고 있습니다. 나. 수주상황 당사는 주요 고객사들과 월별/분기별 상호 합의에 따른 공급 물량 및 "
+             "가격을 결정하고 있습니다. 5. 위험관리 및 파생거래 가. 시장위험 (1) 환율변동위험 연결회사는 국제적으로 "
+             "영업활동을 영위하고 있어 외환위험, 특히 주로 달러화, 유로화, 위안화 및 엔화와 관련된 환율변동위험에 노출되어 "
+             "있습니다. 외환위험은 미래예상거래, 인식된 자산과 부채 및 해외사업장에 대한 순투자가 기능통화 외의 통화로 "
+             "표시될 때 발생합니다. 당기말 현재 연결회사의 화폐성 외화자산 및 외화부채의 내역은 다음과 같습니다. "
+             "(원화단위: 백만원, 외화단위: 외화 백만단위) 구 분 자 산 부 채 현지통화 원화환산 현지통화 원화환산 "
+             "USD 23,074 33,108,951 15,528 22,280,863 JPY 904 8,295 116,044 1,064,852")
+
+    def test_next_chapter_note_is_not_a_backlog_label(self):
+        from bot.dart_backlog import _balance_spots, diagnose
+        assert _balance_spots(self.HYNIX) == []
+        assert diagnose(self.HYNIX) == "미공시"           # 원장에 안 남는 갈래 — 고칠 목록에서 빠진다
+
+    def test_chapter_head_without_a_letter_head_after_it_still_cuts(self):
+        """장 머리 뒤에 글자 머리가 없으면 마지막 글자 머리가 앞 장의 `나. 수주상황` 이다 — 거기서 자르면 문맥을 또
+        빌린다. 장 머리가 이긴다(위 원문은 `가. 시장위험` 이 끼어 이 갈래를 못 태웠다 — 뮤테이션 생존)."""
+        from bot.dart_backlog import _balance_spots
+        t = self.HYNIX.replace("가. 시장위험 (1) ", "")
+        assert "가." not in t.split("5. 위험관리")[1]
+        assert _balance_spots(t) == []
+
+    def test_sub_item_under_the_order_section_still_counts(self):
+        """대조군 — 수주 절 안 하위 항목(`가. 국내`) 아래 표의 `기말` 은 그대로 잔고 라벨이다."""
+        from bot.dart_backlog import _balance_spots
+        t = ("4. 매출 및 수주상황 가. 매출 내수 수출 나. 수주상황 (단위 : 백만원) 가. 국내 품목 기초 수주 기납품 기말 "
+             "합 계 100 50 30 120")
+        assert len(_balance_spots(t)) == 1
+
+    def test_dates_are_not_chapter_heads(self):
+        """`2026. 3. 31 현재` 는 장 머리가 아니다 — 자르면 실물 표가 문맥을 잃는다."""
+        from bot.dart_backlog import _section_start
+        before = "나. 수주상황 (기준일 : 2026. 3. 31 현재) (단위 : 백만원) 품목 수주총액 기납품액 "
+        assert _section_start(before) == 0
