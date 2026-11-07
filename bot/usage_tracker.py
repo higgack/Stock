@@ -301,6 +301,17 @@ def _extract_token_usage(response) -> tuple[str, int, int]:
                 model = info.get("model") or info.get("model_name") or ""
                 if model:
                     break
+                # 토큰은 `message.usage_metadata` 까지 찾아가면서 모델은 거기
+                # 옆(`response_metadata`)을 안 봤다 — 토큰은 있는데 모델만
+                # 'unknown' 인 레코드의 원인 후보다(VM `--check` 2026-11-08:
+                # 17콜, 마지막 06:43 — 과거분이 아니었다. 원인은 아직 안
+                # 쟀다 — 다음 `--check` 의 `model_src` 가 가른다, #165).
+                msg = getattr(gen, "message", None)
+                meta = getattr(msg, "response_metadata", None) if msg else None
+                if isinstance(meta, dict):
+                    model = meta.get("model_name") or meta.get("model") or ""
+                if model:
+                    break
             if model:
                 break
 
@@ -312,15 +323,82 @@ def _extract_token_usage(response) -> tuple[str, int, int]:
     )
 
 
+def _requested_model(serialized, kwargs: dict) -> str:
+    """호출 **시작** 때 요청한 모델 이름 — 응답이 모델을 안 실어 올 때의 폴백.
+
+    langchain-google-genai 는 응답의 모델 이름(`model_version`)을 **종료
+    사유(finish_reason)가 있는 마지막 조각에만** 싣는다 — 잘리거나 비정상
+    종료된 응답은 토큰은 있어도 모델이 없을 수 있다(SDK 소스 확인 — 17콜이
+    그 경로였는지는 안 쟀다). 요청한 이름은 시작 콜백이 늘 안다
+    (`metadata.ls_model_name` · `invocation_params.model`)."""
+    meta = kwargs.get("metadata") or {}
+    inv = kwargs.get("invocation_params") or {}
+    ser = ((serialized.get("kwargs") or {}) if isinstance(serialized, dict)
+           else {})
+    for src in (meta.get("ls_model_name"), inv.get("model"),
+                inv.get("model_name"), ser.get("model"), ser.get("model_name")):
+        if isinstance(src, str) and src.strip():
+            # 요청 이름은 `models/gemini-2.5-flash` 꼴로 올 수 있다 — 단가표
+            # 키와 맞추려면 접두를 벗긴다(원천 SDK 의 정규화와 같은 규칙).
+            return src.strip().rsplit("/", 1)[-1]
+    return ""
+
+
+# 시작 콜백이 본 요청 모델 — 종료 콜백이 run_id 로 꺼낸다. 끝·에러에서 지우고,
+# 그래도 남는 것(콜백이 끝을 못 받은 실행)이 쌓이지 않게 상한을 둔다.
+_REQ_MODEL_CAP = 512
+
+
 class UsageCallback(BaseCallbackHandler):
     """LangChain callback that writes one ``llm_call`` record per
     Gemini invocation. Wire it into the LLM client via
     ``llm_kwargs['callbacks'] = [UsageCallback()]``.
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._req_model: dict = {}
+        self._req_lock = Lock()
+
+    def _remember_request(self, serialized, kwargs: dict) -> None:
+        try:
+            rid = kwargs.get("run_id")
+            name = _requested_model(serialized, kwargs)
+            if rid is None or not name:
+                return
+            with self._req_lock:
+                if len(self._req_model) >= _REQ_MODEL_CAP:
+                    self._req_model.pop(next(iter(self._req_model)))
+                self._req_model[rid] = name
+        except Exception as exc:
+            log.warning("usage_tracker: start capture failed: %s", exc)
+
+    def _pop_request(self, run_id) -> str:
+        if run_id is None:
+            return ""
+        with self._req_lock:
+            return self._req_model.pop(run_id, "")
+
+    def on_chat_model_start(self, serialized, messages, **kwargs):  # type: ignore[override]
+        # 정의하지 않으면 langchain 이 NotImplementedError 를 받고
+        # on_llm_start 로 떨어진다 — 그 경로도 아래에서 같이 받는다.
+        self._remember_request(serialized, kwargs)
+
+    def on_llm_start(self, serialized, prompts, **kwargs):  # type: ignore[override]
+        self._remember_request(serialized, kwargs)
+
+    def on_llm_error(self, error, **kwargs):  # type: ignore[override]
+        self._pop_request(kwargs.get("run_id"))
+
     def on_llm_end(self, response, **kwargs) -> None:  # type: ignore[override]
         try:
+            req = self._pop_request(kwargs.get("run_id"))
             model, p_tokens, c_tokens, cached_tokens = _extract_token_usage(response)
+            model_src = ""
+            if model == UNRECORDED_MODEL and req:
+                # 응답이 모델을 안 실었다 — 요청한 이름을 쓰되 **그렇다고
+                # 밝힌다**(#43): 응답 모델과 요청 모델은 다른 사실이다.
+                model, model_src = req, "request"
             cost = estimate_cost_usd(model, p_tokens, c_tokens, cached_tokens)
             record = {
                 "ts": time.time(),
@@ -330,6 +408,8 @@ class UsageCallback(BaseCallbackHandler):
                 "completion_tokens": c_tokens,
                 "cost_usd": cost,
             }
+            if model_src:
+                record["model_src"] = model_src
             if not is_priced(model):
                 # ₩0 을 사실인 척 남기지 않는다 — 원장이 스스로 밝힌다(#43).
                 record["unpriced"] = True
@@ -561,7 +641,7 @@ def _add_rollup_cost_usd(delta: float, by_sub: dict | None = None) -> None:
 
 # ── 진단 CLI ──────────────────────────────────────────────────────────────
 # `cd ~/stock && .venv/bin/python -m bot.usage_tracker --check`
-_CHECK_VER = 3
+_CHECK_VER = 4
 
 # ④ 자기검증 표본. ⚠️ **실제 모델 id 를 쓰면 안 된다** — ⑥ 이 시키는 대로
 # 그 모델을 `_PRICING` 에 넣는 순간 이 검증이 빨간불이 되어 §Pre-commit 6 이
@@ -579,10 +659,22 @@ _RATE_PIN = ("tests/test_regression.py::TestPricingSingleSource"
 # 없다)을 말하고, 그 뒤에 우리 코드가 그걸 어떻게 읽는지 덧붙인다(#165).
 _NO_SUBSYSTEM = "태그 없음"
 
-# 이웃 호출을 볼 창 = [모델 미기록 첫 호출, 마지막] ±이만큼. 한 번의 실행은
-# 몇 분이 걸리므로 구간을 조금 넓혀야 앞뒤 호출이 잡힌다. **넓힌 사실을
+# 이웃 호출을 볼 창 = 미기록 **묶음마다** [첫 호출, 마지막] ±이만큼. 한 번의
+# 실행은 몇 분이 걸리므로 구간을 조금 넓혀야 앞뒤 호출이 잡힌다. **넓힌 사실을
 # 화면이 말한다** — 안 밝히면 창이 거짓말한다(#34).
+# ⚠️ v3 은 창을 [전체 첫 미기록, 전체 마지막] 한 덩어리로 잡아, 6월과 11월에
+#    미기록이 있으면 그 사이 150일 전 호출(10,123건)을 '이웃' 으로 셌다 —
+#    어느 파이프라인인지 아무것도 가르지 못했다(VM 2026-11-08 실측, #91b).
 _NEIGHBOR_PAD_SEC = 600
+# 미기록 호출 사이가 이보다 벌어지면 다른 실행(묶음)으로 본다 — 창(±pad)이
+# 서로 겹치지 않는 간격이라 한 이웃이 두 묶음에 이중으로 세어지지 않는다.
+_CLUSTER_GAP_SEC = 2 * _NEIGHBOR_PAD_SEC
+# 묶음을 몇 개까지 적나 — 넘으면 자른 사실을 말한다(#45).
+_CLUSTER_SHOW = 5
+# 마지막 미기록이 이 안이면 '과거분' 이 아니라 **지금도 나는** 결함이다.
+# v3 은 마지막 시각을 찍어 놓고 판정에 안 썼다 — 그날 아침 06:43 건을
+# '과거분' 이라 불렀다(#123 계산해 둔 사실을 판정에 안 씀 · #165).
+_RECENT_DAYS = 7
 
 
 def _num(v) -> float:
@@ -608,6 +700,9 @@ def _scan_ledger_readonly() -> dict:
            "flagged": {}, "unknown": 0, "unrecorded": 0,
            "no_model_tokens": 0, "no_model_first": 0.0, "no_model_last": 0.0,
            "no_model_subs": {}, "first_ts": 0.0, "last_ts": 0.0,
+           # 미기록 호출 (ts, 토큰) — 묶음·최근성 판정의 재료. ts 없는 것은
+           # 묶을 수 없으므로 따로 센다(#54).
+           "no_model_events": [], "no_model_untimed": 0,
            "err": ""}
     if not out["exists"]:
         return out
@@ -640,10 +735,15 @@ def _scan_ledger_readonly() -> dict:
                     # 언제 그랬는지를 알아야 어느 배포·어느 경로인지 좁힌다 —
                     # 안 실으면 다음 라운드에 또 손으로 명령을 조립하게 된다
                     # (#319 가 바로 그 사고다).
+                    _tok = int(_num(rec.get("prompt_tokens"))
+                               + _num(rec.get("completion_tokens")))
                     if ts:
                         out["no_model_first"] = min(
                             out["no_model_first"] or ts, ts)
                         out["no_model_last"] = max(out["no_model_last"], ts)
+                        out["no_model_events"].append((ts, _tok))
+                    else:
+                        out["no_model_untimed"] += 1
                     # '왜 그랬나' 는 재서 답한다(#12) — 레코드가 이미 태그를
                     # 들고 있다. 분석 경로는 **무태그**로 적히므로(UsageCallback)
                     # 그것도 사실대로 부른다(#82·#165).
@@ -662,8 +762,25 @@ def _scan_ledger_readonly() -> dict:
     return out
 
 
-def _scan_neighbors(lo: float, hi: float) -> tuple[dict, int, str]:
-    """모델 미기록 구간의 **이웃 호출**을 모델별로 센다 — 읽기 전용 2회차.
+def _clusters(events: list) -> list[dict]:
+    """미기록 (ts, 토큰) 을 실행 단위 묶음으로 — 간격이 `_CLUSTER_GAP_SEC`
+    를 넘으면 다른 묶음이다. 시간순."""
+    out: list[dict] = []
+    for ts, tok in sorted(events):
+        if out and ts - out[-1]["last"] <= _CLUSTER_GAP_SEC:
+            c = out[-1]
+            c["last"] = ts
+            c["n"] += 1
+            c["tokens"] += tok
+        else:
+            out.append({"first": ts, "last": ts, "n": 1, "tokens": tok})
+    return out
+
+
+def _scan_neighbors(windows: list) -> tuple[list, int, str]:
+    """미기록 묶음마다 **그 창 안의 이웃 호출**을 모델별로 센다 — 읽기 전용
+    2회차. `windows` = [(lo, hi), …] 시간순·서로 겹치지 않음. 돌려주는 것은
+    창마다 ({모델: 콜}, 합) 목록 · 전체 합 · 실패 사유.
 
     "12콜/3분/182,714토큰이면 종목분석 한 번처럼 보인다" 는 **추론**이지
     측정이 아니다(#12). 같은 구간에 어떤 모델이 돌았는지는 원장이 이미
@@ -673,9 +790,13 @@ def _scan_neighbors(lo: float, hi: float) -> tuple[dict, int, str]:
     ⚠️ 실패를 0건으로 돌려주면 호출부가 '이웃이 없다'는 **거짓**을 찍는다 —
     갈래를 같이 돌려준다(#54 대조 0건은 통과가 아니다 · #82).
     """
-    got: dict[str, int] = {}
+    import bisect
+    per = [({}, 0) for _ in windows]
+    los = [w[0] for w in windows]
     total = 0
     err = ""
+    if not windows:
+        return per, 0, ""
     try:
         with open(USAGE_LOG, encoding="utf-8") as f:
             for raw in f:
@@ -692,17 +813,22 @@ def _scan_neighbors(lo: float, hi: float) -> tuple[dict, int, str]:
                 if not m or m == UNRECORDED_MODEL:
                     continue
                 ts = _num(rec.get("ts"))
-                if not ts or ts < lo or ts > hi:
+                if not ts:
                     continue
+                i = bisect.bisect_right(los, ts) - 1
+                if i < 0 or ts > windows[i][1]:
+                    continue
+                got, n = per[i]
                 got[m] = got.get(m, 0) + 1
+                per[i] = (got, n + 1)
                 total += 1
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
         log.warning("usage_tracker --check: 이웃 스캔 실패(%s)", err)
-    return got, total, err
+    return per, total, err
 
 
-def _check() -> int:
+def _check(now: float | None = None) -> int:
     """단가표·환율·미등재 판정을 사실대로 찍는다. 읽기 전용·무과금.
 
     ⚠️ **이상이 없을 때도 말한다** — 빈 출력이 정답인 진단은 없다(#274).
@@ -792,33 +918,42 @@ def _check() -> int:
               + (f"  ('{_NO_SUBSYSTEM}' = 대시보드가 '분석' 으로 집계하는 그것)"
                  if _NO_SUBSYSTEM in sc["no_model_subs"] else ""))
         # 그리고 같은 구간의 이웃 — 어느 파이프라인이었는지는 옆에서 같이
-        # 돈 모델이 말해 준다. 창을 넓혔으면 **넓혔다고 밝힌다**(#34).
-        if sc["no_model_first"] and sc["no_model_last"]:
-            _pad_min = _NEIGHBOR_PAD_SEC // 60
-            nb, nb_total, nb_err = _scan_neighbors(
-                sc["no_model_first"] - _NEIGHBOR_PAD_SEC,
-                sc["no_model_last"] + _NEIGHBOR_PAD_SEC)
-            if nb_err:
-                # 못 읽은 것을 '없다' 로 적으면 거짓이다(#54·#82).
-                print(f"      · 같은 구간(±{_pad_min}분) 이웃 판정 불가"
-                      f"({nb_err})")
-            elif nb_total:
-                _rank = sorted(nb.items(), key=lambda kv: -kv[1])
-                _top = ", ".join(f"{k} {v:,}콜" for k, v in _rank[:5])
-                # 잘랐으면 말한다 — 안 그러면 나열된 콜 수 합이 총계와 안 맞아
-                # 사용자가 그 차이를 결함으로 읽는다(#45).
-                _more = f" 외 {len(_rank) - 5}종" if len(_rank) > 5 else ""
-                print(f"      · 같은 구간(±{_pad_min}분) 이웃 호출 "
-                      f"{nb_total:,}건: {_top}{_more}")
-            else:
-                # 대조 0건은 침묵이 아니다 — '없다' 도 사실이다(#54·#274).
-                # ⚠️ 다만 잰 것은 **이 창 안**뿐이다 — 창 밖 호출을 두고
-                #    '원장에 안 남았다' 고 적으면 재지 않은 원인을 단정하는
-                #    것이다(#165, 독립 리뷰가 창 밖 형제로 재현).
-                print(f"      · 같은 구간(±{_pad_min}분) 안에는 다른 llm_call "
-                      "이 없다(창 밖은 안 봤다)")
-        else:
-            print("      · 시각이 없어 이웃을 못 본다(판정 불가, #54)")
+        # 돈 모델이 말해 준다. 창은 **미기록 묶음마다** 따로 잡고, 넓혔으면
+        # **넓혔다고 밝힌다**(#34).
+        _pad_min = _NEIGHBOR_PAD_SEC // 60
+        cl = _clusters(sc["no_model_events"])
+        if cl:
+            shown = cl[-_CLUSTER_SHOW:]
+            per, _nb_total, nb_err = _scan_neighbors(
+                [(c["first"] - _NEIGHBOR_PAD_SEC, c["last"] + _NEIGHBOR_PAD_SEC)
+                 for c in shown])
+            _skip = (f" — 오래된 {len(cl) - len(shown)}묶음은 생략"
+                     if len(cl) > len(shown) else "")
+            print(f"      · 실행 묶음 {len(cl)}개(호출 간격 "
+                  f"{_CLUSTER_GAP_SEC // 60}분 초과면 다른 묶음){_skip}, 최근순:")
+            for c, (nb, nb_n) in reversed(list(zip(shown, per))):
+                head = (f"        - {kst_span(c['first'], c['last'])} · "
+                        f"{c['n']:,}콜 · 토큰 {c['tokens']:,}")
+                if nb_err:
+                    # 못 읽은 것을 '없다' 로 적으면 거짓이다(#54·#82).
+                    print(f"{head} · 같은 구간(±{_pad_min}분) 이웃 판정 불가"
+                          f"({nb_err})")
+                elif nb_n:
+                    _rank = sorted(nb.items(), key=lambda kv: -kv[1])
+                    _top = ", ".join(f"{k} {v:,}콜" for k, v in _rank[:5])
+                    # 잘랐으면 말한다 — 안 그러면 나열된 콜 수 합이 총계와 안
+                    # 맞아 사용자가 그 차이를 결함으로 읽는다(#45).
+                    _more = f" 외 {len(_rank) - 5}종" if len(_rank) > 5 else ""
+                    print(f"{head} · 같은 구간(±{_pad_min}분) 이웃 호출 "
+                          f"{nb_n:,}건: {_top}{_more}")
+                else:
+                    # 대조 0건은 침묵이 아니다 — '없다' 도 사실이다(#54·#274).
+                    # ⚠️ 다만 잰 것은 **이 창 안**뿐이다(#165).
+                    print(f"{head} · 같은 구간(±{_pad_min}분) 안에는 다른 "
+                          "llm_call 이 없다(창 밖은 안 봤다)")
+        if sc["no_model_untimed"]:
+            print(f"      · 시각 없는 미기록 {sc['no_model_untimed']:,}콜 — "
+                  "묶음·이웃을 못 본다(판정 불가, #54)")
     if sc["missing"]:
         for m, n in sorted(sc["missing"].items(), key=lambda kv: -kv[1]):
             print(f"   ❌ 단가 미등재 {m} — {n:,}콜의 비용이 0 으로 집계된다")
@@ -829,8 +964,28 @@ def _check() -> int:
         print("⑥ 판정: ❌ ① _PRICING 에 위 모델을 공식 요율로 추가"
               f"(지어내지 말 것) ② 같은 커밋에서 {_RATE_PIN} 도 갱신")
         return 1
-    if sc["flagged"] or sc["unknown"] or sc["unrecorded"]:
-        print("⑥ 판정: ⚠️ 단가표엔 빠진 모델이 없다 — 위 항목은 과거분·기록 경로")
+    if sc["unknown"] or sc["unrecorded"]:
+        _now = time.time() if now is None else now
+        _cut = _now - _RECENT_DAYS * 86400
+        _recent = [t for t, _ in sc["no_model_events"] if t >= _cut]
+        if _recent:
+            # 마지막 시각을 찍어 놓고 '과거분' 이라 부르면 거짓이다(v3 의 오보).
+            print(f"⑥ 판정: ⚠️ 모델 미기록이 **지금도 발생** — 최근 "
+                  f"{_RECENT_DAYS}일 {len(_recent):,}콜(마지막 "
+                  f"{kst_span(max(_recent), max(_recent))}). 단가표가 아니라 "
+                  "기록 경로(UsageCallback·_extract_token_usage)를 볼 것")
+            return 0
+        if not sc["no_model_events"]:
+            # 시각이 하나도 없으면 최근인지 못 잰다 — '과거분' 이라 단정하지
+            # 않는다(#54·#165).
+            print("⑥ 판정: ❓ 단가표엔 빠진 모델이 없다 — 모델 미기록은 시각이 "
+                  "없어 지금도 나는지 판정 불가")
+            return 0
+        print(f"⑥ 판정: ⚠️ 단가표엔 빠진 모델이 없다 — 모델 미기록은 최근 "
+              f"{_RECENT_DAYS}일 안엔 없다(과거분 · 기록 경로)")
+        return 0
+    if sc["flagged"]:
+        print("⑥ 판정: ⚠️ 단가표엔 빠진 모델이 없다 — 위 항목은 과거분")
         return 0
     print("   ✅ 원장의 모든 모델이 단가표에 있다")
     print("⑥ 판정: ✅ 이상 없음")

@@ -53946,7 +53946,8 @@ class TestNoModelWindowIsMeasured20260909:
         사실은 다른 말이다(#54·#82). 배포전 셀프리뷰가 잡았다."""
         import bot.usage_tracker as ut
         monkeypatch.setattr(ut, "_scan_neighbors",
-                            lambda lo, hi: ({}, 0, "OSError: boom"))
+                            lambda windows: ([({}, 0)] * len(windows), 0,
+                                             "OSError: boom"))
         out, _ = self._run(monkeypatch, tmp_path, [self._nomodel()])
         seg = [ln for ln in out if "이웃" in ln]
         assert seg and "판정 불가" in seg[0], out
@@ -53962,6 +53963,192 @@ class TestNoModelWindowIsMeasured20260909:
         out, _ = self._run(monkeypatch, tmp_path, rows)
         seg = [ln for ln in out if "이웃" in ln]
         assert seg and "외 2종" in seg[0], seg
+
+
+class TestNoModelStillHappening20261108:
+    """VM `--check` v3 (2026-11-08): `모델 미기록('unknown') 17콜 · 2026-06-19
+    23:24 ~ 2026-11-08 06:43 KST` 인데 ⑥ 은 '과거분' 이라 적었다 — 9월의 12콜
+    에서 **5콜이 늘었고 마지막은 그날 아침**이었다. 세 결함:
+
+    ① 기록 경로가 모델을 `llm_output`·`generation_info` 에서만 찾았다 —
+       토큰은 `message.usage_metadata` 까지 가면서 바로 옆
+       `message.response_metadata` 는 안 봤고, 응답이 모델을 아예 안 실으면
+       (langchain-google-genai 는 finish_reason 이 있는 조각에만 싣는다) 시작
+       콜백이 아는 **요청 모델**도 버렸다.
+    ② ⑥ 판정이 마지막 미기록 시각을 찍어 놓고 판정에 안 썼다(#123·#165).
+    ③ 이웃 창을 [전체 첫, 전체 마지막] 한 덩어리로 잡아 150일치(10,123건)를
+       '이웃' 으로 셌다 — 아무것도 가르지 못했다(#91b).
+    """
+
+    _JUN = 1781879040.0            # 2026-06-19 23:24 KST
+    _NOV = 1794087780.0            # 2026-11-08 06:43 KST
+
+    def _run(self, monkeypatch, tmp_path, lines, now):
+        import bot.usage_tracker as ut
+        log = tmp_path / "usage.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in lines),
+                       encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "rollup.json")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut._check(now=now)
+        return buf.getvalue().splitlines(), rc
+
+    def _nm(self, ts):
+        return {"type": "llm_call", "model": "unknown", "cost_usd": 0.0,
+                "ts": ts, "prompt_tokens": 700, "completion_tokens": 300}
+
+    def _call(self, model, ts):
+        return {"type": "llm_call", "model": model, "ts": ts,
+                "prompt_tokens": 10, "completion_tokens": 5}
+
+    # ── ① 기록 경로 ─────────────────────────────────────────────────────
+    def test_model_read_from_message_response_metadata(self):
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, LLMResult
+        import bot.usage_tracker as ut
+        msg = AIMessage(content="x",
+                        response_metadata={"model_name": "gemini-2.5-pro"},
+                        usage_metadata={"input_tokens": 100, "output_tokens": 20,
+                                        "total_tokens": 120})
+        res = LLMResult(generations=[[ChatGeneration(message=msg)]],
+                        llm_output=None)
+        model, p, c, _ = ut._extract_token_usage(res)
+        assert (model, p, c) == ("gemini-2.5-pro", 100, 20)
+
+    def test_callback_falls_back_to_requested_model_and_says_so(
+            self, monkeypatch, tmp_path):
+        """응답이 모델을 안 실어 와도 시작 콜백이 요청 모델을 안다 — 쓰되
+        `model_src=request` 로 **밝힌다**(#43). 비용도 그 단가로 잡힌다."""
+        import uuid
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, LLMResult
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "usage.jsonl")
+        monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
+        cb = ut.UsageCallback()
+        rid = uuid.uuid4()
+        cb.on_chat_model_start({}, [[]], run_id=rid,
+                               metadata={"ls_model_name":
+                                         "models/gemini-2.5-flash"},
+                               invocation_params={})
+        msg = AIMessage(content="x",
+                        usage_metadata={"input_tokens": 1000,
+                                        "output_tokens": 500,
+                                        "total_tokens": 1500})
+        cb.on_llm_end(LLMResult(generations=[[ChatGeneration(message=msg)]]),
+                      run_id=rid)
+        rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
+        assert rec["model"] == "gemini-2.5-flash", rec
+        assert rec.get("model_src") == "request", rec
+        assert rec["cost_usd"] > 0 and "unpriced" not in rec, rec
+        assert not cb._req_model          # 끝에서 지운다(누수 없음)
+
+    def test_requested_model_does_not_override_a_reported_one(
+            self, monkeypatch, tmp_path):
+        """응답이 모델을 실었으면 그게 사실이다 — 요청 이름으로 덮지 않는다."""
+        import uuid
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, LLMResult
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "usage.jsonl")
+        cb = ut.UsageCallback()
+        rid = uuid.uuid4()
+        cb.on_llm_start({"kwargs": {"model": "gemini-2.5-flash"}}, ["p"],
+                        run_id=rid)
+        msg = AIMessage(content="x",
+                        response_metadata={"model_name": "gemini-2.5-pro"},
+                        usage_metadata={"input_tokens": 1, "output_tokens": 1,
+                                        "total_tokens": 2})
+        cb.on_llm_end(LLMResult(generations=[[ChatGeneration(message=msg)]]),
+                      run_id=rid)
+        rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
+        assert rec["model"] == "gemini-2.5-pro" and "model_src" not in rec, rec
+
+    def test_error_clears_the_pending_request(self):
+        import uuid
+        import bot.usage_tracker as ut
+        cb = ut.UsageCallback()
+        rid = uuid.uuid4()
+        cb.on_llm_start({"kwargs": {"model": "gemini-2.5-flash"}}, ["p"],
+                        run_id=rid)
+        cb.on_llm_error(RuntimeError("x"), run_id=rid)
+        assert not cb._req_model
+
+    def test_pending_requests_are_bounded(self, monkeypatch):
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "_REQ_MODEL_CAP", 3)
+        cb = ut.UsageCallback()
+        for i in range(10):
+            cb.on_llm_start({"kwargs": {"model": "gemini-2.5-flash"}}, ["p"],
+                            run_id=i)
+        assert len(cb._req_model) == 3 and 9 in cb._req_model
+
+    # ── ② 판정이 최근성을 본다 ─────────────────────────────────────────────
+    def test_recent_unrecorded_is_not_called_past(self, monkeypatch, tmp_path):
+        out, _ = self._run(monkeypatch, tmp_path,
+                           [self._nm(self._JUN), self._nm(self._NOV)],
+                           now=self._NOV + 3600)
+        verdict = [ln for ln in out if ln.startswith("⑥")]
+        assert verdict and "지금도 발생" in verdict[0], out
+        assert "1콜" in verdict[0] and "2026-11-08 06:43" in verdict[0], verdict
+        assert "과거분" not in verdict[0], verdict
+
+    def test_old_only_unrecorded_is_past(self, monkeypatch, tmp_path):
+        out, _ = self._run(monkeypatch, tmp_path, [self._nm(self._JUN)],
+                           now=self._JUN + 30 * 86400)
+        verdict = [ln for ln in out if ln.startswith("⑥")]
+        assert verdict and "과거분" in verdict[0], out
+        assert "지금도" not in verdict[0], verdict
+
+    def test_untimed_unrecorded_is_not_judged(self, monkeypatch, tmp_path):
+        rec = self._nm(0)
+        rec.pop("ts")
+        out, _ = self._run(monkeypatch, tmp_path, [rec], now=self._NOV)
+        verdict = [ln for ln in out if ln.startswith("⑥")]
+        assert verdict and "판정 불가" in verdict[0], out
+
+    # ── ③ 이웃은 묶음마다 ────────────────────────────────────────────────
+    def test_neighbours_are_counted_per_cluster_not_across_the_gap(
+            self, monkeypatch, tmp_path):
+        rows = [self._nm(self._JUN), self._call("gemini-2.5-flash",
+                                                self._JUN + 60),
+                # 두 묶음 사이 — 어느 창에도 안 든다(v3 은 이걸 셌다).
+                self._call("gemini-2.5-flash-lite", self._JUN + 86400 * 30),
+                self._call("gemini-2.5-flash-lite", self._JUN + 86400 * 60),
+                self._nm(self._NOV), self._call("gemini-2.5-pro",
+                                                self._NOV - 120)]
+        out, _ = self._run(monkeypatch, tmp_path, rows, now=self._NOV)
+        txt = "\n".join(out)
+        assert "실행 묶음 2개" in txt, out
+        nov = [ln for ln in out if "2026-11-08 06:43" in ln and "이웃" in ln]
+        jun = [ln for ln in out if "2026-06-19 23:24" in ln and "이웃" in ln]
+        assert nov and "gemini-2.5-pro 1콜" in nov[0], out
+        assert jun and "gemini-2.5-flash 1콜" in jun[0], out
+        assert not any("flash-lite" in ln for ln in nov + jun), out
+        # 최근순 — 11월 줄이 6월 줄보다 먼저.
+        assert out.index(nov[0]) < out.index(jun[0]), out
+
+    def test_close_calls_form_one_cluster(self, monkeypatch, tmp_path):
+        rows = [self._nm(self._NOV), self._nm(self._NOV + 300),
+                self._nm(self._NOV + 900)]
+        out, _ = self._run(monkeypatch, tmp_path, rows, now=self._NOV)
+        line = [ln for ln in out if "실행 묶음" in ln]
+        assert line and "실행 묶음 1개" in line[0], out
+        seg = [ln for ln in out if "- 2026-11-08" in ln]
+        assert seg and "3콜" in seg[0] and "토큰 3,000" in seg[0], seg
+
+    def test_many_clusters_are_truncated_and_say_so(self, monkeypatch,
+                                                    tmp_path):
+        import bot.usage_tracker as ut
+        rows = [self._nm(self._JUN + i * 86400) for i in range(7)]
+        out, _ = self._run(monkeypatch, tmp_path, rows, now=self._NOV)
+        line = [ln for ln in out if "실행 묶음" in ln]
+        assert line and "실행 묶음 7개" in line[0], out
+        assert f"오래된 {7 - ut._CLUSTER_SHOW}묶음은 생략" in line[0], line
+        assert sum(1 for ln in out if ln.startswith("        - ")) \
+            == ut._CLUSTER_SHOW
 
 
 # ── 🔋 Bollinger 보드 (2026-09-09) ─────────────────────────────────────────
