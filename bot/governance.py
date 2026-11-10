@@ -23,6 +23,7 @@ import os
 import time as _time
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def resolve_kr_target(query: str) -> tuple[str | None, str, list[dict]]:
     code = q.upper().split(".")[0]
     from bot.dart_client import DartClient
     dc = DartClient()
-    if code.isdigit() and len(code) == 6:
+    if is_krx_code(code):
         name = dc.stock_code_to_name(code) or code
         return code, name, []
     for var in _query_variants(q):

@@ -15,17 +15,18 @@ from __future__ import annotations
 
 import re
 from typing import Optional
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 # 이 메시지가 DAJU 실적 예정 알림인지 — 리스너의 relevance 필터가 쓴다.
 # (나쁜양파 리스너가 캡션 파싱으로 무관 콘텐츠를 거르는 것과 같은 패턴.)
 _HEADLINE_RE = re.compile(r"영업일\s*[후뒤]\s*실적\s*발표\s*예정")
-_STOCK_RE = re.compile(r"^\s*📌\s*(\d+)\.\s*(.+?)\s*\((\d{6})\)\s*$")
+_STOCK_RE = re.compile(r"^\s*📌\s*(\d+)\.\s*(.+?)\s*\((" + KRX_CODE_RE + r")\)\s*$")
 # 본문 어디든 '📌 N. 종목명 (123456)' 이 실제로 있는가 — relevance 판정의 핵심.
 # ⚠️ 옛 판정은 "📌" 가 텍스트에 있기만 하면 통과였는데, DAJU **신규 기능 안내문**
 # 에도 '📌 FAQ'·'📌 문의' 가 있어서, 실제로는 헤드라인의 '후' vs 안내문의 '뒤'
 # 한 글자 차이로만 갈렸다(2026-08-01 실측 — 표현이 바뀌면 안내문까지 수집됨).
 # 6자리 종목코드가 붙은 번호 항목을 요구해 확실히 가른다.
-_STOCK_ANY_RE = re.compile(r"📌\s*\d+\.\s*[^\n(]+\(\d{6}\)")
+_STOCK_ANY_RE = re.compile(r"📌\s*\d+\.\s*[^\n(]+\(" + KRX_CODE_RE + r"\)")
 # 진짜 헤드라인만 골라내는 엄격판 — "N영업일 후/뒤 실적 발표 예정" 바로 뒤에
 # 날짜 괄호 '(M/D 요일)' 이 붙어야 함. ⚠️ 2026-08-01 실측: DAJU 신규기능
 # 안내문(FAQ Q3 답변)에도 같은 문구가 그대로 등장해("...예정 종목이 있고,
@@ -41,7 +42,7 @@ _PRICE_RE = re.compile(
 _TOMORROW_RE = re.compile(r"^\s*📎\s*(.+?)\s*$")
 # '· S-Oil (010950) 10:00 🌟'  / '· LX인터내셔널 (001120)'
 _TOM_ITEM_RE = re.compile(
-    r"^\s*·\s*(.+?)\s*\((\d{6})\)\s*(\d{1,2}:\d{2})?\s*(🌟)?\s*$")
+    r"^\s*·\s*(.+?)\s*\((" + KRX_CODE_RE + r")\)\s*(\d{1,2}:\d{2})?\s*(🌟)?\s*$")
 _TOM_NOTE_RE = re.compile(r"^\s*└\s*(.+?)\s*$")
 _MORE_RE = re.compile(r"외\s*(\d+)\s*곳")
 _COUNT_RE = re.compile(r"발표\s*예정\s*(\d+)\s*곳\s*중\s*기대\s*상위\s*(\d+)\s*곳")

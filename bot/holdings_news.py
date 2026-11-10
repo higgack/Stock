@@ -46,6 +46,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.holdings_news")
 
@@ -218,7 +219,7 @@ def _code(ticker: str, market: str) -> str:
     t = str(ticker or "").strip().upper()
     if market == "KR":
         head = t.split(".")[0]
-        return head if re.fullmatch(r"\d{6}|[0-9A-Z]{6}", head) else t
+        return head if is_krx_code(head) else t
     return t
 
 
@@ -341,7 +342,7 @@ def aliases(stock: dict) -> list[tuple[str, str]]:
     out = [(a, "name") for a in dict.fromkeys(names) if len(a) >= 2]
     tk = str(stock.get("ticker") or "")
     if stock.get("market") == "KR":
-        if re.fullmatch(r"\d{6}", tk):
+        if is_krx_code(tk):
             out.append((tk, "code"))
     elif tk:
         out.append((tk.split(".")[0] if re.fullmatch(r"[A-Z0-9]+\.[A-Z]{1,3}", tk) else tk, "ticker"))
@@ -2936,7 +2937,8 @@ def _lookup(s: dict) -> str:
     붙여 보내면 '이미 티커 모양' 으로 그대로 쓰여 코스닥 종목이 빈 화면이 된다(#399). 그 밖은 자산
     기록의 티커 그대로(해외 접미·국내 영숫자 코드의 접미를 지우지 않는다)."""
     t = s["ticker"]
-    if s["market"] == "KR" and re.fullmatch(r"\d{6}", t):
+    # 영문 혼합 코드(0001A0)는 자산 기록의 접미(.KQ)를 그대로 — 아는 시장을 버리지 않는다.
+    if s["market"] == "KR" and is_krx_code(t) and t.isdigit():
         return f"lookup/{t}"
     return f"lookup/{s.get('sym') or t}"
 
@@ -4563,7 +4565,7 @@ def probe(tickers: list[str] | None = None, out=print) -> int:
         want = {t.upper() for t in tickers}
         pick = [s for s in stocks if s["ticker"].upper() in want]
         for t in want - {s["ticker"].upper() for s in pick}:
-            mk = "KR" if re.fullmatch(r"\d{6}", t) else "US"
+            mk = "KR" if is_krx_code(t) else "US"
             pick.append({"key": f"{mk}:{t}", "market": mk, "ticker": t, "name": t, "value": 0.0})
     else:
         pick = [s for s in stocks if s["market"] == "KR"][:2] + [s for s in stocks if s["market"] != "KR"][:1]

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger(__name__)
 
@@ -160,9 +161,10 @@ def fetch_kr_quote(code: str) -> dict | None:
     30초 SWR 캐시. 어떤 실패든 None 으로 degrade(상세는 yfinance 폴백 유지) —
     '오류 나면 안 된다'. 네트워크 실패 시 직전 캐시값(있으면) 유지."""
     code = (code or "").strip().upper().split(".")[0]
-    if not code.isdigit() or not (4 <= len(code) <= 6):
+    if code.isdigit() and 4 <= len(code) < 6:
+        code = code.zfill(6)
+    if not is_krx_code(code):
         return None
-    code = code.zfill(6)
     now = time.time()
     hit = _cache.get(code)
     if hit and (now - hit[0]) < _TTL:

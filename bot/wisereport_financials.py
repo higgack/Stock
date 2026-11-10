@@ -24,6 +24,7 @@ import re
 from typing import Optional
 
 import requests
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.wisereport_fin")
 
@@ -241,7 +242,7 @@ def latest_ev_ebitda(summary):
 def fetch_financial_summary(stock_code: str) -> Optional[dict]:
     """`parse_financial_summary` 결과 또는 None(무커버리지·실패). 12h 캐시."""
     code = str(stock_code or "").split(".")[0].strip()
-    if not (len(code) == 6 and code.isdigit()):
+    if not is_krx_code(code):
         return None
     try:
         from bot.finviz_client import _cache_write, _cached
@@ -360,7 +361,7 @@ def fetch_ev_ebitda(stock_code: str):
     ⚠️ 캐시 봉투에 `_ver` — 파서를 고치고 버전을 안 올리면 옛 결과가
     그대로 서빙된다(#216, 이 레포에서 여러 번 겪은 병)."""
     code = str(stock_code or "").split(".")[0].strip()
-    if not (len(code) == 6 and code.isdigit()):
+    if not is_krx_code(code):
         return None
     try:
         from bot.finviz_client import _cache_write, _cached

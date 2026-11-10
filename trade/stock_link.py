@@ -31,6 +31,8 @@ import logging
 import re
 import urllib.parse as _up
 
+from bot.krx_code import KRX_CODE_RE
+
 log = logging.getLogger(__name__)
 _WARNED: set = set()
 
@@ -64,7 +66,7 @@ LOOKUP_PREFIX = "../lookup/"
 # 있어야 한다 — 밖이면 검색실패 페이지로 간다(죽은 링크와 같다).
 _TICKER_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,9}$")
 _ALPHA_ONLY = re.compile(r"^[A-Za-z]{1,10}$")          # 미국 등 영문 심볼
-_KR_CODE = re.compile(r"^\d{6}$")                       # KRX 6자리(무접미)
+_KR_CODE = re.compile(r"^" + KRX_CODE_RE + r"$")        # KRX 단축코드(무접미, 영문 혼합 포함)
 # 도쿄 신·구 표기: 4자리 숫자(6857) 또는 3자리+영문자(285A, Kioxia 실측).
 _JP_CODE = re.compile(r"^\d{3}[0-9A-Za-z]$")
 _SUFFIXED = (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".BJ", ".HK")

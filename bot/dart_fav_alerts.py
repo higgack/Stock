@@ -23,6 +23,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.dart_fav_alerts")
 
@@ -31,7 +32,7 @@ _SEEN_CAP = 5000          # rcept_no 보존 상한 (FIFO)
 _SEND_CAP_PER_POLL = 10   # 폴당 발송 상한 — 초과분은 seen 미기록 → 다음 폴
 _SCAN_DAYS_BACK = 3       # 아카이브 스캔 윈도 (피드 fetch 윈도와 동일 계열)
 
-_KR_TICKER_RE = re.compile(r"^(\d{6})(?:\.(?:KS|KQ))?$", re.IGNORECASE)
+_KR_TICKER_RE = re.compile(r"^(" + KRX_CODE_RE + r")(?:\.(?:KS|KQ))?$")
 
 
 def _load_state() -> dict:
@@ -83,7 +84,7 @@ def fav_kr_codes() -> "set[str] | None":
         try:
             codes: set[str] = set()
             for f in _mf.get_favorites(strict=True) or []:
-                m = _KR_TICKER_RE.match(str(f.get("ticker", "")).strip())
+                m = _KR_TICKER_RE.match(str(f.get("ticker", "")).strip().upper())
                 if m:
                     codes.add(m.group(1))
             _LAST_FAV_ERROR = ""

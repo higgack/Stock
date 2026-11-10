@@ -18,6 +18,7 @@ import os
 import re
 from datetime import date as _date
 from typing import Optional
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 _log = logging.getLogger(__name__)
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
@@ -87,7 +88,7 @@ def get_naver_valuation(ticker: str) -> Optional[dict]:
     24h disk cache keyed by (code, today-ISO).
     """
     code = ticker.upper().split(".")[0]
-    if not re.fullmatch(r"\d{6}", code):
+    if not is_krx_code(code):
         return None
 
     today = _date.today().isoformat()
@@ -218,7 +219,7 @@ def get_naver_foreign_holding(ticker: str) -> Optional[dict]:
         or None on failure.
     """
     code = ticker.upper().split(".")[0]
-    if not re.fullmatch(r"\d{6}", code):
+    if not is_krx_code(code):
         return None
 
     today = _date.today().isoformat()

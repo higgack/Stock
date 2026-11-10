@@ -42,6 +42,7 @@ from trade import badonion_metrics as _metrics
 from trade import stock_link as _sl
 from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 # 헤더 = "종목명 (티커) 일본 수출 Update" **한 줄** → 다음 줄 "NN년 N월".
 # ⚠️ 세 마커를 따로 찾으면 안 된다 — 이 파서는 리스너의 관련성 필터이자
@@ -432,7 +433,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     # 봤다는 뜻이 아니다(#165). 전시장 동일하게 걸 뿐 한 보드용 게이트를 두지
     # 않는다(§UNIVERSAL — 한 시장이 드러낸 결함도 fix 는 전 코드패스에).
     _kr = _sl.kr_codes(r.get("stock_name") or "" for r in rows
-                       if re.fullmatch(r"\d{6}", r.get("ticker") or ""))
+                       if is_krx_code(r.get("ticker") or ""))
     cards = [_card_html(r, history(conn, r["ticker"]), media_url_prefix, _kr)
              for r in rows]
     return (_HEAD + "<div class='wrap'>" + nav +

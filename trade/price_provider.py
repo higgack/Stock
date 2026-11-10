@@ -41,11 +41,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from bot.krx_code import krx_code  # KRX 단축코드 단일 판정 — 영문 혼합(0015G0) 포함
+
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 _TOKEN_PATH = _DATA_DIR / ".kis_token.json"
 _QUOTE_CACHE = _DATA_DIR / "kis_quotes.json"
 _CODE_CACHE = _DATA_DIR / "stock_codes.json"     # 종목명→코드 durable 캐시
 _KRX_MASTER = _DATA_DIR / "krx_codes.json"       # KRX 상장 전종목 이름→코드(로컬 마스터)
+# 마스터를 만든 코드의 판 — 정규화가 바뀌면 올린다. 빌더(`--if-stale`)가 옆 `.ver` 와 다르면
+# 7일을 기다리지 않고 다시 만든다(#21b — 옛 판이 구운 마스터가 fix 를 가리지 않게).
+# 2: 영문 혼합 코드(0015G0)를 숫자만 남겨 000150(두산)과 겹치던 옛 판(2026-11-10).
+KRX_MASTER_VER = 2
 _OVERRIDES_PATH = _DATA_DIR / "stock_overrides.json"  # 운영자 /map 즉석 등록(코드보다 우선)
 _CODE_TTL_S = int(os.environ.get("TRADE_STOCK_CODE_TTL") or str(7 * 86400))  # 7일
 _MAX_SYMBOLS = int(os.environ.get("TRADE_PRICE_MAX_SYMBOLS") or "300")
@@ -221,7 +227,9 @@ def _kis_quote_kr(code: str, token: str, *,
                   transport: Transport = _default_transport) -> Optional[Quote]:
     """국내주식 현재가 1종목. 실패/빈 응답 → None."""
     appkey, appsecret = _kis_keys()
-    code = "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[:6]
+    code = krx_code(code)
+    if not code:
+        return None
     url = (f"{KIS_DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-price"
            f"?fid_cond_mrkt_div_code=J&fid_input_iscd={code}")
     try:
@@ -306,8 +314,7 @@ def _items_list(resp: dict) -> list[dict]:
 
 def _quote_from_dp_item(it: dict) -> Optional[Quote]:
     """주식시세정보 item → Quote. clpr(종가)·vs(대비)·fltRt(등락률)·srtnCd."""
-    code = "".join(ch for ch in str(it.get("srtnCd") or "") if ch.isdigit())
-    code = code.zfill(6)[:6] if code else ""
+    code = krx_code(it.get("srtnCd"))
     price = _fnum(it.get("clpr"))
     if not code or price <= 0:
         return None
@@ -349,13 +356,13 @@ def _dp_pick(items: list[dict], *, exact_name: Optional[str] = None,
     그중 최신 basDt. 정확 매칭 없으면 None(틀린 종목 붙이느니 생략)."""
     def _norm_nm(s):
         return (s or "").replace(" ", "")
+    code = krx_code(code) if code is not None else None
     cand = []
     for it in items:
         if exact_name is not None and _norm_nm(it.get("itmsNm")) != _norm_nm(exact_name):
             continue
         if code is not None:
-            c = "".join(ch for ch in str(it.get("srtnCd") or "") if ch.isdigit()).zfill(6)[:6]
-            if c != code:
+            if krx_code(it.get("srtnCd")) != code:
                 continue
         cand.append(it)
     if not cand:
@@ -455,7 +462,7 @@ def krx_name_for(code: str) -> str:
     """6자리 코드 → KRX 종목명(공백제거 표기) 역조회. 로컬 마스터만 사용(외부콜 0).
     /map의 오등록 검증용 — KIS inquire-price가 종목명(hts_kor_isnm)을 안 주는
     환경에서 운영자가 '맞는 회사인지' 확인할 수단. 마스터에 없으면 ""."""
-    c = "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[:6]
+    c = krx_code(code)
     if not c:
         return ""
     for nm, v in _load_krx_master().items():
@@ -468,8 +475,8 @@ def set_override(name: str, code: str) -> None:
     """/map — BeOn표기→6자리코드 오버라이드 저장(원자적). name은 strip만(공백
     포함 표기 허용)."""
     name = (name or "").strip()
-    code = "".join(ch for ch in str(code) if ch.isdigit())
-    if not name or len(code) != 6:
+    code = krx_code(code, pad=False)          # 사람이 친 값 — 5자리는 오타(0 을 채우지 않는다)
+    if not name or not code:
         return
     data = list_overrides()
     data[name] = code
@@ -521,10 +528,10 @@ def fetch_krx_master(*, transport: Transport = _default_transport,
         seen_sigs.add(sig)
         added = 0
         for it in items:
-            code = "".join(ch for ch in str(it.get("srtnCd") or "") if ch.isdigit()).zfill(6)[:6]
+            code = krx_code(it.get("srtnCd"))
             name = (it.get("itmsNm") or "").strip()
             basdt = str(it.get("basDt") or "")
-            if not code.strip("0") or not name:
+            if not code or not name:
                 continue
             prev = best.get(code)
             if prev is None:
@@ -627,7 +634,9 @@ def _naver_quote_kr(code: str, *,
                     transport: Transport = _default_transport) -> Optional[Quote]:
     """네이버 실시간 단일 종목 → Quote. 키 불필요. 실패/빈 응답 → None.
     pct 부호: compareToPreviousPrice.code '5'=하락. prev_close 는 price·pct 역산."""
-    code6 = "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[:6]
+    code6 = krx_code(code)
+    if not code6:
+        return None
     try:
         resp = transport("GET", _NAVER_URL.format(code=code6),
                          headers=_NAVER_HDRS, body=None)
@@ -872,13 +881,15 @@ _DIRECT_CODES: dict[str, str] = {
 # 4: KRX 로컬 마스터 도입 — 옛 음성캐시가 마스터 매칭을 가리지 않게 무효화.
 # 5: SPC그룹→SPC삼립 프록시 + 지앤비에스→지앤비에스에코 별칭 — 진단 중 생성된
 #    음성캐시가 새 매핑을 가리지 않게 무효화(특히 지앤비에스가 마스터에 없을 때).
-_RESOLVER_VERSION = 5
+# 6: 영문 혼합 KRX 코드(그린광학 0015G0) — 옛 판은 0015G0 을 000150(두산)으로 접어 한 회사의
+#    답을 남의 코드로 구웠을 수 있다(2026-11-10). 그 양성 캐시가 7일 동안 fix 를 가리지 않게.
+_RESOLVER_VERSION = 6
 
 
 def _norm(symbols: Iterable[str]) -> list[str]:
     seen, out = set(), []
     for s in symbols:
-        c = "".join(ch for ch in str(s) if ch.isdigit()).zfill(6)[:6]
+        c = krx_code(s)
         if c and c not in seen:
             seen.add(c)
             out.append(c)

@@ -251,7 +251,7 @@ fi
 # (`tests/test_restart_closure_20260928.py` — 상시 유닛 전부 공용, #423). ⚠️ `trade/*.py` 는
 # 폐포보다 넓다(대시보드 모듈도 걸린다) — 리스너가 재시작하는 사이 올라온 글은 주기 sync 가
 # 회수한다. `bot.market`(종목 링크 렌더)은 리스너 경로가 부르지 않아 조건 밖이다.
-BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$|^trade/scripts/requirements\.txt$' || true)
+BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$|^trade/scripts/__init__\.py$|^trade/[^/]+\.py$|^trade/scripts/requirements\.txt$|^bot/__init__\.py$|^bot/krx_code\.py$' || true)
 if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
     if ! systemctl is-active --quiet trade-bot-badonion-listener 2>/dev/null; then
         echo "trade-bot-update: trade-bot-badonion-listener 비활성(미설치·미인증·중지) — 재시작 생략, 새 코드는 다음 기동 때 로드"

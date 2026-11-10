@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from bot.krx_code import krx_code  # KRX 단축코드(영문 혼합 0015G0 포함)
 
 # ── 해외 한글음역 → (티커, 시장). 사용자 export 에서 실제 등장한 종목 + 한국
 #    투자자가 흔히 보유하는 미국/외국 종목. 키는 _normalize() 적용 후 형태
@@ -318,9 +319,12 @@ def resolve_via_naver(name: str) -> tuple[str, str] | None:
     q = (name or "").strip()
     if not q:
         return None
+    # 키 판(nv2) — 영문 혼합 KRX 코드(그린광학 0015G0)를 미국 티커로 분류하던 옛 판의 답을
+    # 7일 동안 다시 쓰지 않게(#18 · yf2 와 같은 방식, 2026-11-10)
     key = _normalize(q)
+    ckey = "nv2:" + key
     cache = _naver_cache_load()
-    hit = cache.get(key)
+    hit = cache.get(ckey)
     if hit and (time.time() - hit.get("ts", 0)) < 7 * 86400:
         v = hit.get("v")
         return tuple(v) if v else None
@@ -347,15 +351,15 @@ def resolve_via_naver(name: str) -> tuple[str, str] | None:
                    or it.get("market") or "").upper()
             if not code or _normalize(nm) != key:        # 정확일치만(오매칭 차단)
                 continue
-            if typ in _KR_MKT and code.isdigit():
-                res = (f"{code.zfill(6)}{_KR_MKT[typ]}", "KR")
+            if typ in _KR_MKT and krx_code(code):
+                res = (f"{krx_code(code)}{_KR_MKT[typ]}", "KR")
                 break
-            if typ in _US_MKT or (not code.isdigit() and code.isascii()):
+            if typ in _US_MKT or (not krx_code(code) and code.isascii()):
                 res = (code.upper(), "US")
                 break
     except Exception:
         res = None
-    cache[key] = {"ts": time.time(), "v": list(res) if res else None}
+    cache[ckey] = {"ts": time.time(), "v": list(res) if res else None}
     _naver_cache_save(cache)
     return res
 

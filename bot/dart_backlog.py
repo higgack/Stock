@@ -73,6 +73,7 @@ import re
 import threading
 import time
 from pathlib import Path as _Path
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.dart_backlog")
 
@@ -1419,7 +1420,7 @@ def backlog_total_excerpt(text: str, width: int = _TOTAL_EX_WIDTH) -> str:
 # ⚠️ KONEX(`.KN`)도 국내다 — `screener` 가 `.KS/.KQ/.KN` 을 KR 로 적는다.
 # 열거를 쓰되 목록이 갈리지 않게 회귀가 대조한다(#24).
 _KR_SUFFIXES = ("KS", "KQ", "KN")
-_KR_SUFFIX_RE = re.compile(r"^(\d{6})\.(?:" + "|".join(_KR_SUFFIXES) + r")$")
+_KR_SUFFIX_RE = re.compile(r"^(" + KRX_CODE_RE + r")\.(?:" + "|".join(_KR_SUFFIXES) + r")$")
 
 
 def norm_miss_ticker(ticker) -> str:

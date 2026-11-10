@@ -18,6 +18,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import requests
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.kind_ir")
 
@@ -34,6 +35,9 @@ _HEADERS = {
 }
 _DATE_RE = re.compile(r"(20\d{2})[-./](\d{1,2})[-./](\d{1,2})")
 _TIME_RE = re.compile(r"\b(\d{1,2}:\d{2})\b")
+# ⚠️ 본문 자유 텍스트용이라 숫자 6자리만 받는다 — 영문 혼합 꼴(KRX_CODE_RE)로 넓히면
+# `2026Q3` 같은 분기 표기가 코드로 잡힌다. 영문 혼합 코드(0015G0)는 아래 링크 속성
+# (_CODE_HREF_RE)에서만 잡힌다 — 못 보는 축(#274).
 _CODE_RE = re.compile(r"\b(\d{6})\b")
 _ANCHOR_RE = re.compile(r"<a[^>]*>(.*?)</a>", re.DOTALL | re.I)
 _NAME_STOP = ("투자자", "이해증진", "경영실적", "기업설명", "회의실", "온라인",
@@ -54,7 +58,7 @@ def _iso(y, m, d) -> str:
 
 
 _CODE_HREF_RE = re.compile(
-    r"(?:isurCd|isuCd|srtnCd|stockCd|short|code)\D{0,3}(\d{6})", re.I)
+    r"(?:isurCd|isuCd|srtnCd|stockCd|short|code)\D{0,3}(" + KRX_CODE_RE + r")", re.I)
 _TITLE_KW = ("투자자", "이해증진", "경영실적", "기업설명", "설명회", "현황", "컨퍼런스")
 
 
@@ -100,7 +104,7 @@ def parse_calendar(html: str, year: int, month: int) -> list[dict]:
                 continue
             name = name[:30]
             cm = _CODE_HREF_RE.search(li) or _CODE_RE.search(li)
-            code = cm.group(1) if cm else ""
+            code = cm.group(1).upper() if cm else ""      # re.I 라 소문자로 올 수 있다
             tm = _TIME_RE.search(txt)
             key = (code, d_iso, name)
             if key in seen:

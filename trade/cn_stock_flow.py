@@ -38,6 +38,7 @@ from trade import badonion_metrics as _metrics
 from trade import stock_link as _sl
 from trade.archive_template import (asof_footer, back_nav_html,
                                     card_html, max_ingest_iso)
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 # 파서 스키마 버전. 올리면 저장된 옛 행의 파생 필드를 upsert 가 **버리고**
 # 다시 채운다 — 파서를 고쳐도 이미 구운 값이 안 바뀌는 함정 차단(실수 #18).
@@ -550,7 +551,7 @@ def render_html(conn: sqlite3.Connection, flow: Flow, *,
     # 봤다는 뜻이 아니다(#165). 전시장 동일하게 걸 뿐 한 보드용 게이트를 두지
     # 않는다(§UNIVERSAL — 한 시장이 드러낸 결함도 fix 는 전 코드패스에).
     _kr = _sl.kr_codes(r.get("stock_name") or "" for r in rows
-                       if re.fullmatch(r"\d{6}", r.get("ticker") or ""))
+                       if is_krx_code(r.get("ticker") or ""))
     # 도쿄 상장사도 같은 방식이다(2026-09-23) — 도쿄 코드 모양 행만 JPX 목록에
     # 물어(페이지당 1회, 외부 호출 0) 코드의 영문명과 캡션 이름이 맞을 때만
     # `.T` 링크다. 4자리는 대만 코드와 모양이 같아 확인 없이는 평문이다(#34).

@@ -31,6 +31,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.kr_resolver")
 
@@ -80,7 +81,7 @@ def stock_code_to_ticker(stock_code: str) -> Optional[str]:
     yfinance and persists the result. Returns None when the code
     isn't listed on either KOSPI or KOSDAQ (delisted, preferred-only,
     etc.)."""
-    if not (stock_code and stock_code.isdigit() and len(stock_code) == 6):
+    if not is_krx_code(stock_code):
         return None
     cache = _load_suffix_cache()
     if stock_code in cache:

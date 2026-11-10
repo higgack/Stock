@@ -24,6 +24,7 @@ maps bare 6-digit to KR (#55 — a stale explanation is a bug).
 from __future__ import annotations
 
 from typing import TypedDict
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 
 class MarketConfig(TypedDict):
@@ -1126,7 +1127,7 @@ def has_kr_preferred_shares(ticker: str) -> bool:
     True. pykrx 부재/실패 시 False (보수적 — 진짜 corp-action 은 놓치지
     않음). 네트워크 호출 없이 캐시된 상장목록만 사용."""
     code = (ticker or "").upper().split(".")[0]
-    if not (code.isdigit() and len(code) == 6 and code.endswith("0")):
+    if not (is_krx_code(code) and code.endswith("0")):
         return False
     pref_candidates = [code[:5] + "5", code[:5] + "7", code[:5] + "K"]
     try:
@@ -1603,7 +1604,7 @@ def normalize_kr_ticker_suffix(ticker: str) -> str:
     if not (t.endswith(".KS") or t.endswith(".KQ")):
         return ticker
     base, suffix = t[:-3], t[-3:]
-    if not (len(base) == 6 and base.isdigit()):
+    if not is_krx_code(base):
         return ticker
     try:
         kospi, kosdaq = _kr_market_code_sets()

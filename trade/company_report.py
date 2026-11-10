@@ -18,6 +18,7 @@ import html as _html
 import logging
 import os
 import re
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("trade.company_report")
 
@@ -651,7 +652,7 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None,
             return hs_res
 
     digits = q.upper().split(".")[0]
-    is_code = digits.isdigit() and len(digits) == 6
+    is_code = is_krx_code(digits)
 
     # 이름 조회 1회 (회사 매칭 + 정확일치 판정 공유). 6자리 코드는 조회 불요.
     hits: list = []

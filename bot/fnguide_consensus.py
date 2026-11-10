@@ -29,6 +29,7 @@ import re
 from typing import Optional
 
 import requests
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.fnguide")
 
@@ -67,7 +68,7 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
         gracefully — never assume the fallback succeeded.
     """
     code = (stock_code or "").upper().split(".")[0]
-    if not (code.isdigit() and len(code) == 6):
+    if not is_krx_code(code):
         return None
 
     # 12h 디스크 캐시 (사용자 2026-06-16 A3) — 컨센서스를 yfinance 유무와

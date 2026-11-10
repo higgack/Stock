@@ -39,8 +39,20 @@ logging.basicConfig(
 log = logging.getLogger("build-krx-codes")
 
 
+_FAIL_BACKOFF_S = 3600
+
+
+def _ver_path() -> Path:
+    return pp._KRX_MASTER.with_suffix(".ver")
+
+
 def _is_stale() -> bool:
-    """마스터가 없거나 max-age보다 오래됐으면 True(재빌드 필요)."""
+    """마스터가 없거나 max-age보다 오래됐거나 **다른 판의 코드가 만들었으면** True(재빌드 필요)."""
+    try:
+        if _ver_path().read_text(encoding="utf-8").strip() != str(pp.KRX_MASTER_VER):
+            return True
+    except OSError:
+        return True                       # 판 기록 없음 = 옛 판이 만든 마스터
     max_age_days = float(os.environ.get("TRADE_KRX_MASTER_MAX_AGE_DAYS") or "7")
     try:
         age = time.time() - pp._KRX_MASTER.stat().st_mtime
@@ -56,9 +68,21 @@ def run(if_stale: bool = False) -> int:
     if if_stale and not _is_stale():
         log.info("KRX master fresh — skip (use --if-stale off to force)")
         return 0
+    fail = pp._KRX_MASTER.with_suffix(".fail")
+    try:   # 직전 실패 뒤 1시간은 다시 걷지 않는다 — 원천 장애 중 5분마다 전수 페이지를 치지 않게(#303)
+        if if_stale and time.time() - fail.stat().st_mtime < _FAIL_BACKOFF_S:
+            log.info("KRX master: last build failed <%ds ago — backoff", _FAIL_BACKOFF_S)
+            return 0
+    except OSError:
+        pass
     master = pp.fetch_krx_master()
     if not master:
         log.warning("fetched 0 KRX names — keep existing master")
+        try:
+            fail.parent.mkdir(parents=True, exist_ok=True)
+            fail.touch()
+        except OSError:
+            pass
         return 0
     path = pp._KRX_MASTER
     try:
@@ -66,6 +90,8 @@ def run(if_stale: bool = False) -> int:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)                 # 원자적 교체(부분쓰기 노출 방지)
+        _ver_path().write_text(str(pp.KRX_MASTER_VER), encoding="utf-8")   # 마스터 **뒤에** 판을 적는다
+        fail.unlink(missing_ok=True)
     except OSError as e:
         log.warning("write failed: %s", e)
         return 0

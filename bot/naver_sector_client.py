@@ -22,6 +22,7 @@ from typing import Optional
 import requests
 
 from bot import naver_diag as _nd
+from bot.krx_code import KRX_CODE_RE, is_krx_code  # KRX 단축코드(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.naver_sector")
 
@@ -44,7 +45,7 @@ _HEADERS = {
 }
 
 _PCT_RE = re.compile(r'([+\-]?)(\d{1,3}\.\d{1,2})\s*%')
-_ITEM_RE = re.compile(r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', re.I)
+_ITEM_RE = re.compile(r'/item/main\.naver\?code=(' + KRX_CODE_RE + r')"[^>]*>([^<]+)</a>', re.I)
 # 업종 그룹 링크(번호+이름) — 업종맵 멤버 스캔용(옛 HTML 경로).
 _UPJONG_NO_RE = re.compile(
     r'sise_group_detail\.naver\?type=upjong[^"]*?no=(\d+)"[^>]*>([^<]+)</a>', re.I)
@@ -155,7 +156,7 @@ def parse_themes_full(html: str) -> list[dict]:
         leaders = []
         seen_codes: set = set()
         for lm in re.finditer(
-                r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', row, re.I):
+                r'/item/main\.naver\?code=(' + KRX_CODE_RE + r')"[^>]*>([^<]+)</a>', row, re.I):
             code = lm.group(1)
             nm = _clean(lm.group(2))
             if nm and code not in seen_codes:
@@ -1017,7 +1018,7 @@ def theme_leaders(raw) -> list:
     seen: set = set()
     for part in str(raw or "").split("|"):
         bits = [b.strip() for b in part.split(",") if b.strip()]
-        code = next((b for b in bits if len(b) == 6 and b.isdigit()), "")
+        code = next((b for b in bits if is_krx_code(b)), "")
         if not code or code in seen:
             continue
         i = bits.index(code)

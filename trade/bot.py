@@ -61,6 +61,7 @@ from telegram.ext import (
 from trade import cost, hs_lookup, hs_map, ignored, operator, watchlist
 from trade import relay_origins as _relay
 from trade.parser import parse_caption
+from bot.krx_code import krx_code  # KRX 단축코드(영문 혼합 0015G0 포함)
 
 load_dotenv()
 
@@ -1183,11 +1184,12 @@ async def cmd_map(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_MAP_USAGE, parse_mode=ParseMode.HTML)
         return
     name = " ".join(args[:-1]).strip()
-    code = "".join(ch for ch in args[-1] if ch.isdigit())
-    if len(code) != 6:
+    code = krx_code(args[-1], pad=False)      # 5자리는 오타 — 0 을 채우지 않는다
+    if not code:
         await update.message.reply_text(
             f"<code>{_html.escape(args[-1])}</code>는 6자리 종목코드가 아님 "
-            f"(예: <code>226340</code>).", parse_mode=ParseMode.HTML)
+            f"(예: <code>226340</code> · 영문 혼합 <code>0015G0</code>).",
+            parse_mode=ParseMode.HTML)
         return
     # KIS로 실제 시세 확인 — 오등록(틀린 코드) 방지. 블로킹 HTTP(urllib)라
     # to_thread로 — 이벤트루프를 막으면 BeOn 채널 실시간 수신까지 정지함.

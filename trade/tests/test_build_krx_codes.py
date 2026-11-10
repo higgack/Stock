@@ -45,7 +45,10 @@ class BuildKrxTests(unittest.TestCase):
         self.assertEqual(json.loads(self.master.read_text()), {"old": "005930"})
 
     def test_if_stale_skips_when_fresh(self):
-        self.master.write_text(json.dumps({"x": "005930"}))   # 방금 생성 = 신선
+        # 신선 = 방금 생성 **그리고 지금 판의 코드가 만든 것**(2026-11-10 — 판 기록 없는 마스터는
+        # 영문 혼합 코드를 두산과 겹치던 옛 판이 만든 것이라 7일을 기다리지 않고 다시 만든다).
+        self.master.write_text(json.dumps({"x": "005930"}))
+        self.master.with_suffix(".ver").write_text(str(pp.KRX_MASTER_VER))
         with mock.patch.object(pp, "fetch_krx_master") as f:
             self.assertEqual(bk.run(if_stale=True), 0)
         f.assert_not_called()                                 # 신선 → 재빌드 안 함

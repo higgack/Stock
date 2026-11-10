@@ -39,6 +39,7 @@ log = logging.getLogger("bot.screener")
 # Data Center), preserving Phase α/β default behavior. New Wave 2/3
 # domains are added by dropping another module — no edits here required.
 from bot.screener_themes import resolve as _resolve_theme, available_summary
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 # ── Pricing for Gemini cost tracking (per 1M tokens, USD → KRW @ 1330) ─
 _PRO_INPUT_USD_PER_M = 1.25      # gemini-2.5-pro input
@@ -1027,7 +1028,7 @@ def _normalize_kr_suffix(text: str) -> tuple[str, int]:
     kr_map = _load_kr_ticker_map()
     if not kr_map:
         return text, 0
-    pattern = re.compile(r"\b(\d{6})\.(KS|KQ)\b")
+    pattern = re.compile(r"\b(" + KRX_CODE_RE + r")\.(KS|KQ)\b")
     n_fixes = 0
 
     def _replace(m: "re.Match") -> str:

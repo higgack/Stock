@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.krx_alert")
 
@@ -71,7 +72,7 @@ def _ticker_to_isin_or_code(ticker: str) -> Optional[str]:
     if not (t.endswith(".KS") or t.endswith(".KQ")):
         return None
     code = t.split(".")[0]
-    if len(code) == 6 and code.isdigit():
+    if is_krx_code(code):
         return code
     return None
 
@@ -236,7 +237,7 @@ def _fetch_all_classifications() -> dict:
             v = row.get(key)
             if v:
                 s = str(v).strip()
-                if s.isdigit() and len(s) == 6:
+                if is_krx_code(s):
                     return s
         return None
 

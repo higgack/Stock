@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger(__name__)
 
@@ -435,7 +436,7 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
     거래량은 분간 증분(diff)으로 변환. 키 불필요·VM 차단 없음. 실패/장전 → None."""
     iv_min = _INTERVAL_MINUTES.get(interval, 5)
     code = (ticker or "").upper().split(".")[0]
-    if not code.isdigit():
+    if not is_krx_code(code):
         return None
     try:
         import requests
@@ -903,7 +904,7 @@ def _fetch_naver_daily(ticker: str, period: str = "1y"):
                   "endDateTime": end.strftime("%Y%m%d") + "0000"}
         if t.endswith((".KS", ".KQ")):
             code = t.split(".")[0]
-            cands = [("domestic", code)] if code.isdigit() else []
+            cands = [("domestic", code)] if is_krx_code(code) else []
         else:
             from bot.world_quote import _candidates, _rc_cache
             ids = ([_rc_cache[t]] if t in _rc_cache else []) + _candidates(t)

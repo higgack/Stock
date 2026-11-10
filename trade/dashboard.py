@@ -424,10 +424,10 @@ def _stock_quotes_for(payload: list[dict]) -> dict:
         for nm, q in quotes.items():
             d = {"p": round(q.price), "c": round(q.change_pct, 2)}
             # 회사별 섹션 제목 → 종목분석 화면 딥링크의 재료(사용자 2026-09-22).
-            # 6자리 숫자일 때만 싣는다 — 합성키가 코드 자리에 앉으면 화면이
+            # KRX 단축코드 모양(영문 혼합 0015G0 포함)일 때만 싣는다 — 합성키가 코드 자리에 앉으면 화면이
             # 없는 종목코드를 있다고 말한다(#34·#43).
             _sym = str(getattr(q, "symbol", "") or "")
-            if len(_sym) == 6 and _sym.isdigit():
+            if _sl._KR_CODE.match(_sym):
                 d["s"] = _sym
             # EOD(지연 종가)만 기준일 요일 라벨 — KIS 현재가(최신)는 라벨 없음.
             if getattr(q, "source", "kis") == "eod":
@@ -1581,7 +1581,7 @@ function stockPx(name){
 // 바꾼다(#38·#359 — 절대로 적으면 토큰이 떨어져 404).
 function stockHref(name){
   var q=pxLookup(name); var s=q&&q.s?String(q.s):'';
-  return /^[0-9]{6}$/.test(s)?'../lookup/'+encodeURIComponent(s):'';
+  return /^(?:[0-9]{6}|0[0-9A-Z]{5})$/.test(s)?'../lookup/'+encodeURIComponent(s):'';
 }
 // 링크 마크업 단일 출처 — 섹션 제목·모달 관련종목이 같은 함수를 쓴다(#38).
 // href 가 비면 평문 그대로(죽은 링크를 만들지 않는다, #144·#43).
