@@ -3978,6 +3978,18 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
   색인, 전문은 필요할 때(이미 `--relocate`) · 승격은 반복 근거로(이미 '2회 이상 인용' 게이트).
 - 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
 
+## 모델·effort 선택 (사용자 2026-11-10 — claude.dev 「Which Claude model should you build with?」 2026-11-09 채택)
+> Claude Code 작업(이 세션·서브에이전트)에만 적용 — 봇의 분석 LLM(Gemini)은 별개.
+- **사용자가 모델·effort 를 지정하면 그대로**(이 규칙보다 우선). 지정이 없을 때의 기본 = Opus 5.5 · medium.
+- 부족하면 순서대로: ① 자기검증 수단(테스트·빌드·스크립트) 확보 ② effort 한 단계 ↑ ③ 그래도 부족하면
+  상위 모델을 **더 낮은 effort** 로. high 를 넘기는 대신 상위 모델을 먼저 잴 것. effort 는 없는 지식을 주지 않는다.
+- 하위로: 범위가 명확한 일상 작업 = Sonnet 5.5 · 분류·추출·대량 = Haiku 5.5. 명세가 있어도 마이그레이션·
+  성능 최적화처럼 어려우면 Opus(대형이면 Fable 5.2). Fable = 대형 리팩터·아키텍처·장시간 무인·Opus high 로 부족할 때.
+- 서브에이전트: 실수가 **싸게 드러나는** 일(파일 찾기·로그 읽기·테스트 실행)만 작은 모델에 —
+  코드 수정·판단은 메인 모델에. 메인 컨텍스트는 결정용으로 가볍게(장황한 읽기는 서브에이전트).
+- 모델 전환은 자연스러운 단락에서(캐시는 모델별 · 하위로 가면 앞선 추론이 사라진다 — `/compact` 또는 짧은 계획 후).
+- ⚠️ 이 세션의 모델은 내가 못 바꾼다(`/model`·`/effort`·`/fast` 는 사용자). 서브에이전트 모델 지정은 사용자 요청이 있을 때만.
+
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md
 US/KR/JP/TW/CN_A/HK 확장 · 실거래 E0 페이퍼+RiskGate · 차트 Phase · Daily Byte · Bottleneck
 Screener(운영+설계) · 부동산/청약/블로그/레딧/자산/가계부 · Gemini AI-Studio↔Vertex 토글 ·
