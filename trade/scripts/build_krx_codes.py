@@ -39,6 +39,9 @@ logging.basicConfig(
 log = logging.getLogger("build-krx-codes")
 
 
+_FAIL_BACKOFF_S = 3600
+
+
 def _ver_path() -> Path:
     return pp._KRX_MASTER.with_suffix(".ver")
 
@@ -65,9 +68,21 @@ def run(if_stale: bool = False) -> int:
     if if_stale and not _is_stale():
         log.info("KRX master fresh — skip (use --if-stale off to force)")
         return 0
+    fail = pp._KRX_MASTER.with_suffix(".fail")
+    try:   # 직전 실패 뒤 1시간은 다시 걷지 않는다 — 원천 장애 중 5분마다 전수 페이지를 치지 않게(#303)
+        if if_stale and time.time() - fail.stat().st_mtime < _FAIL_BACKOFF_S:
+            log.info("KRX master: last build failed <%ds ago — backoff", _FAIL_BACKOFF_S)
+            return 0
+    except OSError:
+        pass
     master = pp.fetch_krx_master()
     if not master:
         log.warning("fetched 0 KRX names — keep existing master")
+        try:
+            fail.parent.mkdir(parents=True, exist_ok=True)
+            fail.touch()
+        except OSError:
+            pass
         return 0
     path = pp._KRX_MASTER
     try:
@@ -76,6 +91,7 @@ def run(if_stale: bool = False) -> int:
         tmp.write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)                 # 원자적 교체(부분쓰기 노출 방지)
         _ver_path().write_text(str(pp.KRX_MASTER_VER), encoding="utf-8")   # 마스터 **뒤에** 판을 적는다
+        fail.unlink(missing_ok=True)
     except OSError as e:
         log.warning("write failed: %s", e)
         return 0

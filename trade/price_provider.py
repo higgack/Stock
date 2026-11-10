@@ -356,12 +356,13 @@ def _dp_pick(items: list[dict], *, exact_name: Optional[str] = None,
     그중 최신 basDt. 정확 매칭 없으면 None(틀린 종목 붙이느니 생략)."""
     def _norm_nm(s):
         return (s or "").replace(" ", "")
+    code = krx_code(code) if code is not None else None
     cand = []
     for it in items:
         if exact_name is not None and _norm_nm(it.get("itmsNm")) != _norm_nm(exact_name):
             continue
         if code is not None:
-            if krx_code(it.get("srtnCd")) != krx_code(code):
+            if krx_code(it.get("srtnCd")) != code:
                 continue
         cand.append(it)
     if not cand:

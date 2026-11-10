@@ -17318,7 +17318,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
 
                 ticker_link = ""
                 if is_krx_code(stock_code):
-                    ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
+                    # 접미 없이 — 리졸버가 KRX 목록으로 KS/KQ 를 가른다(`.KS` 를 박으면 코스닥이 빈 화면, #399).
+                    ticker_link = f' <a href="lookup/{stock_code}" class="df-ticker-link">{stock_code}</a>'
 
                 # 중요/미파싱(⚠️) 색상 구별 — 사전 패스 주석 사용
                 # (사용자 2026-06-12). 중요는 방향별 테두리(🔥호재 금색·🚨악재

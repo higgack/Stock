@@ -68,6 +68,16 @@ class BotPathAlnumTests(unittest.TestCase):
         self.assertTrue(dp._STOCK_RE.match("📌 1. 그린광학 (0015G0)"))
         self.assertTrue(dp._TOM_ITEM_RE.match("· 그린광학 (0015G0) 10:00"))
 
+    def test_dart_feed_ticker_link_has_no_hardcoded_ks(self):
+        """코스닥 코드에 `.KS` 를 박으면 그 종목 화면이 빈다(#399) — 접미 없이 리졸버에 맡긴다."""
+        src = (ROOT / "bot/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn('href="lookup/{stock_code}" class="df-ticker-link"', src)
+        self.assertNotIn('href="lookup/{stock_code}.KS"', src)
+
+    def test_kind_ir_href_code_is_uppercased(self):
+        from bot import kind_ir_client as k
+        self.assertEqual(k._CODE_HREF_RE.search("isurcd=0015g0").group(1).upper(), "0015G0")
+
     def test_fav_alert_ticker_regex(self):
         from bot import dart_fav_alerts as fa
         self.assertEqual(fa._KR_TICKER_RE.match("0015G0.KQ").group(1), "0015G0")
@@ -136,10 +146,13 @@ _ALLOW = {
     ("trade/scripts/build_hs_names.py", 'm = re.search(r"(20\\d{6})", os.path.basename(path))'): "파일명 날짜",
     ("trade/bot.py", 'c = "".join(ch for ch in data.split(":", 1)[1].strip() if ch.isdigit())'): "HS 코드",
     ("trade/bot.py", 'code = "".join(ch for ch in raw.strip() if ch.isdigit())'): "HS 코드",
+    ("trade/screening.py", "if len(s) >= 6 and s[:6].isdigit():"): "YYYYMM 월 키",
+    ("trade/dashboard.py", "return /^(?:[0-9]{6}|0[0-9A-Z]{5})$/.test(s)?'../lookup/'+encodeURIComponent(s):'';"):
+        "KRX_CODE_RE 의 JS 사본 — test_trade_js_regex_matches_python_shape 가 같음을 잰다",
 }
 _BAD = re.compile(
     r"(\w+)\.isdigit\(\) and len\(\1\) == 6|len\((\w+)\) == 6 and \2\.isdigit\(\)"
-    r"|\\d\{6\}|if ch\.isdigit\(\)\)")
+    r"|\\d\{6\}|\[0-9\]\{6\}|if ch\.isdigit\(\)\)|\[:6\]\.isdigit\(\)")
 
 
 _ALLOW_PREFIX = {
@@ -177,6 +190,8 @@ class NoDigitOnlyKrxCodeGuard(unittest.TestCase):
         self.assertTrue(_BAD.search("if code.isdigit() and len(code) == 6:"))
         self.assertTrue(_BAD.search('c = "".join(ch for ch in s if ch.isdigit())'))
         self.assertTrue(_BAD.search('re.fullmatch(r"\\d{6}", t)'))
+        self.assertTrue(_BAD.search('re.fullmatch(r"[0-9]{6}", t)'))
+        self.assertTrue(_BAD.search('if v and v[:6].isdigit():'))
 
     def test_trade_js_regex_matches_python_shape(self):
         src = (ROOT / "trade/dashboard.py").read_text(encoding="utf-8")

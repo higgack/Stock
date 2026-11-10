@@ -104,7 +104,7 @@ def parse_calendar(html: str, year: int, month: int) -> list[dict]:
                 continue
             name = name[:30]
             cm = _CODE_HREF_RE.search(li) or _CODE_RE.search(li)
-            code = cm.group(1) if cm else ""
+            code = cm.group(1).upper() if cm else ""      # re.I 라 소문자로 올 수 있다
             tm = _TIME_RE.search(txt)
             key = (code, d_iso, name)
             if key in seen:

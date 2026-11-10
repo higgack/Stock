@@ -72,6 +72,19 @@ class MasterVersionTests(unittest.TestCase):
         self.master.write_text('{"두산": "000150"}', encoding="utf-8")   # 방금 만든 옛 판 마스터
         self.assertTrue(self.bk._is_stale())
 
+    def test_failed_build_backs_off_an_hour(self):
+        """판이 달라 재빌드하는데 원천이 0건이면 5분마다 전수 페이지를 다시 치지 않는다(#303)."""
+        with mock.patch.dict(os.environ, {"TRADE_DATA_GO_KR_KEY": "DK"}), \
+             mock.patch.object(pp, "fetch_krx_master", return_value={}) as f:
+            self.bk.run(if_stale=True)
+            self.bk.run(if_stale=True)
+        self.assertEqual(f.call_count, 1)
+        self.assertTrue(self.master.with_suffix(".fail").exists())
+        with mock.patch.dict(os.environ, {"TRADE_DATA_GO_KR_KEY": "DK"}), \
+             mock.patch.object(pp, "fetch_krx_master", return_value={"그린광학": "0015G0"}):
+            self.bk.run()                       # 수동 실행은 백오프를 무시하고, 성공하면 실패 표식을 지운다
+        self.assertFalse(self.master.with_suffix(".fail").exists())
+
     def test_build_writes_version_and_then_is_fresh(self):
         with mock.patch.dict(os.environ, {"TRADE_DATA_GO_KR_KEY": "DK"}), \
              mock.patch.object(pp, "fetch_krx_master", return_value={"그린광학": "0015G0"}):
