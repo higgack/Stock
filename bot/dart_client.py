@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.dart")
 
@@ -1177,7 +1178,7 @@ class DartClient:
         """Resolve 6-digit KRX stock code → 8-digit DART corp_code.
         Strips a trailing `.KS`/`.KQ` for caller convenience."""
         code = (stock_code or "").upper().split(".")[0]
-        if not (code.isdigit() and len(code) == 6):
+        if not is_krx_code(code):
             return None
         return self._load_corp_code_map().get(code)
 
@@ -1188,7 +1189,7 @@ class DartClient:
         cached _name_map so we don't pay the O(n) cost more than once
         per bot lifetime."""
         code = (stock_code or "").upper().split(".")[0]
-        if not (code.isdigit() and len(code) == 6):
+        if not is_krx_code(code):
             return None
         self._load_corp_code_map()
         if not self._name_map:
@@ -1212,7 +1213,7 @@ class DartClient:
         is unavailable. Surfaced 2026-06-08 (NAVER 0-news bug)."""
         from bot.market import kr_news_query_name, has_hangul
         code = (stock_code or "").upper().split(".")[0]
-        if not (code.isdigit() and len(code) == 6):
+        if not is_krx_code(code):
             return None
         # company.json corp_name is reliably Korean for almost every filer.
         try:
@@ -1984,7 +1985,7 @@ class DartClient:
             _why("키 없음")
             return None
         code = (ticker or "").upper().split(".")[0]
-        if not (code.isdigit() and len(code) == 6):
+        if not is_krx_code(code):
             _why("티커 형식")
             return None
         try:

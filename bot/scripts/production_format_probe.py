@@ -36,6 +36,7 @@ import re
 import sys
 import time as _time
 import time
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 _PROBE_VER = 12         # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
@@ -62,7 +63,7 @@ def _universe(limit: int) -> list[str]:
     def add(t):
         t = (t or "").strip().upper()
         code = t.split(".")[0]
-        if not re.fullmatch(r"\d{6}", code) or code in seen:
+        if not is_krx_code(code) or code in seen:
             return
         seen.add(code)
         out.append(code)

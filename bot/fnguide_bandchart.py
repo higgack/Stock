@@ -31,6 +31,7 @@ import re
 from typing import Optional
 
 import requests
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.fnguide_band")
 
@@ -55,7 +56,7 @@ def fetch_band_chart(stock_code: str) -> Optional[dict]:
     per/pbr = {"mult": [v1..v4 float], "price": [[ms,y],...],
                "bands": [[[ms,y],...] ×4]}. 호출부는 None 우아 처리."""
     code = (stock_code or "").upper().split(".")[0]
-    if not (code.isdigit() and len(code) == 6):
+    if not is_krx_code(code):
         return None
 
     from bot.finviz_client import _cache_write, _cached

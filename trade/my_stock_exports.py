@@ -58,6 +58,7 @@ from trade import badonion_metrics as _metrics
 from trade import stock_link as _sl
 from trade.archive_template import (asof_footer, back_nav_html,
                                     card_html, max_ingest_iso)
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 # 헤더 = "종목명 (티커)" / "말레이시아 수출" / "NN년 N월 Update".
 # ⚠️ 세 마커를 따로 찾으면 안 된다 — 이 파서는 리스너의 관련성 필터이자
@@ -503,7 +504,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     # 채널 캡션). 형제 보드들엔 같은 규칙을 전시장 동일하게 걸 뿐이고 그쪽에서
     # 봤다는 뜻은 아니다(§UNIVERSAL·#165).
     _kr = _sl.kr_codes(r.get("stock_name") or "" for r in rows
-                       if re.fullmatch(r"\d{6}", r.get("ticker") or ""))
+                       if is_krx_code(r.get("ticker") or ""))
     # 도쿄 상장사도 같은 방식이다(2026-09-23) — 도쿄 코드 모양 행만 JPX 목록에
     # 물어(페이지당 1회, 외부 호출 0) 코드의 영문명과 캡션 이름이 맞을 때만
     # `.T` 링크다. 4자리는 대만 코드와 모양이 같아 확인 없이는 평문이다(#34).

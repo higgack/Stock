@@ -29,6 +29,7 @@ import re
 from typing import Optional
 
 import requests
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.wisereport")
 
@@ -52,7 +53,7 @@ def fetch_earnings_surprise(stock_code: str) -> Optional[dict]:
     Returns dict(아래 _parse 형식) 또는 None(무커버리지·네트워크/파싱 실패).
     호출부는 None 을 우아하게 처리해야 한다(없으면 표 미표시)."""
     code = (stock_code or "").upper().split(".")[0]
-    if not (code.isdigit() and len(code) == 6):
+    if not is_krx_code(code):
         return None
 
     from bot.finviz_client import _cache_write, _cached

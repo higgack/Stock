@@ -39,8 +39,17 @@ logging.basicConfig(
 log = logging.getLogger("build-krx-codes")
 
 
+def _ver_path() -> Path:
+    return pp._KRX_MASTER.with_suffix(".ver")
+
+
 def _is_stale() -> bool:
-    """마스터가 없거나 max-age보다 오래됐으면 True(재빌드 필요)."""
+    """마스터가 없거나 max-age보다 오래됐거나 **다른 판의 코드가 만들었으면** True(재빌드 필요)."""
+    try:
+        if _ver_path().read_text(encoding="utf-8").strip() != str(pp.KRX_MASTER_VER):
+            return True
+    except OSError:
+        return True                       # 판 기록 없음 = 옛 판이 만든 마스터
     max_age_days = float(os.environ.get("TRADE_KRX_MASTER_MAX_AGE_DAYS") or "7")
     try:
         age = time.time() - pp._KRX_MASTER.stat().st_mtime
@@ -66,6 +75,7 @@ def run(if_stale: bool = False) -> int:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)                 # 원자적 교체(부분쓰기 노출 방지)
+        _ver_path().write_text(str(pp.KRX_MASTER_VER), encoding="utf-8")   # 마스터 **뒤에** 판을 적는다
     except OSError as e:
         log.warning("write failed: %s", e)
         return 0

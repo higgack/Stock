@@ -43,6 +43,7 @@ from typing import Optional
 import requests
 
 from bot.env_keys import env_key as _env_key
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.kis")
 
@@ -64,7 +65,7 @@ def _ticker_to_code(ticker: str) -> Optional[str]:
     if not (t.endswith(".KS") or t.endswith(".KQ")):
         return None
     code = t.split(".")[0]
-    return code if (len(code) == 6 and code.isdigit()) else None
+    return code if is_krx_code(code) else None
 
 
 def _mkt_div(ticker: str) -> str:

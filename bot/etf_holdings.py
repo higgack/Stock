@@ -24,6 +24,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.etf_holdings")
 
@@ -35,7 +36,7 @@ SSGA_URL = ("https://www.ssga.com/us/en/institutional/library-content/products/f
 _TIMEOUT = (10, 30)
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-_KR_CODE = re.compile(r"^\d{6}$")
+_KR_CODE = re.compile(r"^" + KRX_CODE_RE + r"$")
 
 
 def _finite(v) -> bool:

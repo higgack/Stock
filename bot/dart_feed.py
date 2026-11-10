@@ -20,6 +20,7 @@ from pathlib import Path
 import requests
 
 from bot.env_keys import env_key as _env_key
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.dart_feed")
 
@@ -4071,7 +4072,7 @@ def _tally_drop(report_nm: str, stock_code: str) -> None:
     설명서/일괄신고/증권신고서, 펀드 동류 비대상)는 노이즈라 제외, 실제
     기업 사건 보강후보만 모니터링 (사용자 2026-06-13)."""
     try:
-        if not (stock_code and len(stock_code) == 6 and stock_code.isdigit()):
+        if not is_krx_code(stock_code):
             return
         if _is_noncorp_doc(report_nm):
             return
@@ -4133,7 +4134,7 @@ def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
             continue
         sc = it.get("stock_code") or ""
         nm = it.get("report_nm", "")
-        if len(sc) == 6 and sc.isdigit():
+        if is_krx_code(sc):
             key = _norm_report_nm(nm)
             if _is_noncorp_doc(nm):
                 tgt = dropped_noncorp
@@ -5566,7 +5567,7 @@ def warm_market_caps(days_back: int = 31) -> int:
     for items in load_all_archives(days_back=days_back).values():
         for it in items:
             sc = it.get("stock_code") or ""
-            if len(sc) == 6 and sc.isdigit():
+            if is_krx_code(sc):
                 codes.add(sc)
     warmed = 0
     for i, code in enumerate(sorted(codes)):

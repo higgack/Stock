@@ -43,6 +43,7 @@ _CACHE_TTL_HOURS = 12  # KRX flow updates once a day; 12h is generous
 # actionable 경고를 남기고 graceful skip → None.
 import os as _os
 import threading as _threading
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 _KRX_CRED_WARNED = False
 # ⚠️ '최초 1회' 는 확인과 표시가 **한 번에** 일어나야 참이다 — 병렬 워커가 동시에 게이트를
@@ -100,7 +101,7 @@ _quiet_pykrx_logging()
 def _normalize_code(ticker: str) -> Optional[str]:
     """Strip .KS/.KQ suffix, validate as 6-digit KRX code."""
     code = (ticker or "").upper().split(".")[0]
-    if not (code.isdigit() and len(code) == 6):
+    if not is_krx_code(code):
         return None
     return code
 

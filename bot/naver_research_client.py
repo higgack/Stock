@@ -36,6 +36,7 @@ from typing import Optional
 import requests
 
 from bot import naver_diag as _nd
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.naver_research")
 
@@ -242,7 +243,7 @@ def _normalize_code(ticker: str) -> Optional[str]:
     if not ticker:
         return None
     code = ticker.upper().split(".")[0]
-    if code.isdigit() and len(code) == 6:
+    if is_krx_code(code):
         return code
     return None
 

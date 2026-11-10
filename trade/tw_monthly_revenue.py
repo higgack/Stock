@@ -31,6 +31,7 @@ from trade.archive_template import (asof_footer, back_nav_html, card_html,
                                     max_ingest_iso)
 from trade.cn_stock_flow import _CSS, _THEME_JS
 from trade import stock_link as _sl
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 PARSE_VER = 2
 TABLE = "tw_monthly_revenue"
@@ -365,7 +366,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     # 봤다는 뜻이 아니다(#165). 전시장 동일하게 걸 뿐 한 보드용 게이트를 두지
     # 않는다(§UNIVERSAL — 한 시장이 드러낸 결함도 fix 는 전 코드패스에).
     _kr = _sl.kr_codes(r.get("stock_name") or "" for r in rows
-                       if re.fullmatch(r"\d{6}", r.get("ticker") or ""))
+                       if is_krx_code(r.get("ticker") or ""))
     # ⚠️ JPX(도쿄) 목록은 **묻지 않는다** — 이 보드는 TWSE 월매출이라 발행사가
     # 전부 대만 상장이다(데이터 소스 사유). 4자리 대만 코드는 도쿄 코드와 모양이
     # 같아서, 여기서 도쿄 확인을 걸면 맞는 링크는 나올 수 없고 **틀린 링크만**

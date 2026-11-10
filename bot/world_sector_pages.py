@@ -18,6 +18,7 @@ from datetime import date as _date
 from datetime import datetime, timedelta
 
 from bot import world_sectors as ws
+from bot.krx_code import KRX_CODE_RE  # KRX 단축코드 모양(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.world_sector_pages")
 
@@ -76,7 +77,7 @@ def lookup_href(sym: str) -> str:
 
 # 보유 목록 행의 거래소 — 섹터종목 나라(`STOCK_MARKETS`)마다 보유 목록 코드가 어느 거래소 꼴인지.
 # 미국 셋은 같은 꼴이라 NYSE 하나로 `lookup_ticker` 를 태운다(규칙을 복제하지 않는다, #38).
-_HOLD = {"KR": ("KRX", re.compile(r"\d{6}")),
+_HOLD = {"KR": ("KRX", re.compile(KRX_CODE_RE)),
          "US": ("NYSE", re.compile(r"[A-Z][A-Z0-9]{0,5}(?:[.-][A-Z]{1,2})?"))}
 
 

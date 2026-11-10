@@ -32,6 +32,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from bot.krx_code import KRX_CODE_RE, is_krx_code  # 영문 혼합(0015G0) 포함
 from trade import badonion_metrics as _metrics
 from trade import stock_link as _sl
 from trade import kr_company_flow as _flow
@@ -66,7 +67,7 @@ _NL = r"\n(?:[^\S\n]*\n)*"      # 줄바꿈(사이 빈 줄 허용)
 # 한국은 3줄만 받아 1줄 형식이 오면 같은 유실이 난다. 형제 전수 회귀가
 # 잡아냈다(#24). `\s*` 는 개행을 먹어 무관 조합을 통과시키므로 쓰지 않는다.
 _RE_BLOCK = re.compile(
-    r"^[^\S\n]*(?P<name>[^\n(]+?)[^\S\n]*\((?P<code>\d{6})\)"
+    r"^[^\S\n]*(?P<name>[^\n(]+?)[^\S\n]*\((?P<code>" + KRX_CODE_RE + r")\)"
     r"[^\S\n]*(?:" + _NL + r")?"
     r"[^\S\n]*한국[^\S\n]*수출[^\S\n]*(?:Update)?[^\S\n]*" + _NL +
     r"[^\S\n]*(?P<yy>\d{2})[^\S\n]*년[^\S\n]*(?P<mm>\d{1,2})[^\S\n]*월"
@@ -489,8 +490,8 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
                code_by_name: dict | None = None) -> str:
     raw_code = r.get("stock_code") or ""
     # 합성키(`nm:회사명`)는 **코드가 아니다** — 그대로 찍으면 화면이 없는
-    # 종목코드를 있다고 말한다(#34·#43). 6자리 숫자일 때만 코드로 인정한다.
-    code6 = raw_code if re.fullmatch(r"\d{6}", raw_code) else ""
+    # 종목코드를 있다고 말한다(#34·#43). KRX 단축코드 모양일 때만 코드로 인정한다.
+    code6 = raw_code if is_krx_code(raw_code) else ""
     code = _html.escape(code6)
     raw_name = r.get("stock_name") or code6 or ""
     # 카드 제목 = 종목분석 화면 딥링크(사용자 2026-09-22). 금액판 행은 코드가
@@ -574,7 +575,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     # 행 수만큼 다시 읽는다. 코드가 이미 있는 행은 리졸버가 필요 없다.
     _code_by_name = _sl.kr_codes(
         r.get("stock_name") or "" for r in rows
-        if not re.fullmatch(r"\d{6}", r.get("stock_code") or ""))
+        if not is_krx_code(r.get("stock_code") or ""))
     cards = [_card_html(r, history(conn, r["stock_code"]), media_url_prefix,
                         _code_by_name)
              for r in rows]

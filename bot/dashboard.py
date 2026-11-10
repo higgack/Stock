@@ -50,6 +50,7 @@ _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.m
 # `usage_tracker` 한 곳이다(#38·#119).
 from bot import naver_diag as _naver_diag                   # noqa: E402
 from bot import usage_tracker as _ut                        # noqa: E402
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 _KRW_PER_USD = _ut.KRW_PER_USD
 
 # ⚠️ 이건 표시 환율과 **다른 것**이다: 레거시 `cost_krw` 레코드가 기록될 때
@@ -2050,7 +2051,8 @@ def _ticker_market(ticker: str) -> str:
     # 4-digit + suffix, CN 6-digit carry .SS/.SZ — so an UNsuffixed 6-digit
     # is unambiguously KR. Portfolio holdings resolved via DART store the
     # bare code; without this they fell through to US (이오테크닉스 → US bug).
-    if len(t) == 6 and t.isdigit(): return "KR"
+    # 영문 혼합 단축코드(그린광학 0015G0)도 같은 KR 이다 — 판정은 bot.krx_code 단일 출처.
+    if is_krx_code(t): return "KR"
     return "US"
 
 
@@ -2059,7 +2061,8 @@ def _holding_market(h: dict) -> str:
     first (covers DART-matched KR items). Falls back to ticker suffix.
     Unmatched holdings (ticker=None, market=None) default to KR — all data
     comes from 뱅크샐러드 Korean brokerage exports (ETFs like TIGER/KODEX,
-    unlisted names like 그린광학/SK에코플랜트)."""
+    unlisted names like SK에코플랜트). 그린광학은 2025-11 코스닥 상장(0015G0 —
+    영문 혼합 코드, `bot.krx_code`)이라 이제 비상장 예시가 아니다."""
     mkt = h.get("market")
     if mkt:
         return mkt
@@ -16986,7 +16989,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
     _mcw_memo: dict[str, float | None] = {}
 
     def _shares_for(code: str):
-        if not (code and len(code) == 6 and code.isdigit()):
+        if not is_krx_code(code):
             return None
         if code not in _sh_memo:
             if _time.time() > _mc_deadline:
@@ -16998,7 +17001,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
         return _sh_memo[code]
 
     def _mcap_for(code: str):
-        if not (code and len(code) == 6 and code.isdigit()):
+        if not is_krx_code(code):
             return None
         if code not in _mcw_memo:
             if _time.time() > _mc_deadline:
@@ -17306,7 +17309,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
                 # ⚠️ 중복 판정도 접두로 — 부분문자열이면 `제목: 시가총액요건
                 # 미달…` 카드가 '이미 붙었다'로 읽혀 시총/현재가가 그 카드에만
                 # 영영 안 붙는다(2026-09-17 주연테크·SHD 에서 같이 드러났다).
-                if (stock_code and len(stock_code) == 6 and stock_code.isdigit()
+                if (is_krx_code(stock_code)
                         and not any(_dart_feed.is_market_cap_line(l)
                                     for l in detail_lines)):
                     for ln in _mc_lines(stock_code):
@@ -17314,7 +17317,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
                                         f'{_html.escape(str(ln))}</div>')
 
                 ticker_link = ""
-                if stock_code and len(stock_code) == 6 and stock_code.isdigit():
+                if is_krx_code(stock_code):
                     ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
 
                 # 중요/미파싱(⚠️) 색상 구별 — 사전 패스 주석 사용
@@ -20554,12 +20557,12 @@ def resolve_name_to_ticker(query: str) -> str | None:
     # ⚠️ 콜드 미스면 pykrx 왕복 2회가 **이 요청을 막는다**(#116). 새 비용은
     # 아니다 — 아래 이름 분기(DART)가 같은 함수를 이미 부르고 그쪽은 DART
     # 조회까지 먼저 한다. 즉 이 분기가 오히려 싼 경로다(콜드 시간은 안 쟀다).
-    if len(q) == 6 and q.isdigit():
+    if is_krx_code(q.upper()):
         try:
             from bot.market import normalize_kr_ticker_suffix
-            return normalize_kr_ticker_suffix(f"{q}.KS")
+            return normalize_kr_ticker_suffix(f"{q.upper()}.KS")
         except Exception:
-            return f"{q}.KS"
+            return f"{q.upper()}.KS"
     # Already looks like a ticker → skip further resolution
     if re.match(r'^[A-Z0-9][A-Z0-9.\-]{0,9}$', q.upper()):
         return None

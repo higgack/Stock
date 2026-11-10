@@ -32,6 +32,7 @@ from bot.bollinger import (PHASE, _date_key, avg5, avg5_extremes, breakouts_by_d
                            merge_series, resolve_thresholds, series_rows, _PCT_WINDOW,
                            trend, weak_streak, weak_streak_note,
                            DIR_LABEL, LEVEL_LABEL)
+from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
 
 log = logging.getLogger("bot.bollinger_board")
 
@@ -448,8 +449,8 @@ def _naver_pick(item: dict) -> tuple[str, str, float | None]:
     code = ""
     for k in ("itemCode", "code", "stockCode", "symbolCode", "reutersCode"):
         v = str(item.get(k) or "").strip()
-        if v and v[:6].isdigit():
-            code = v[:6]
+        if v and is_krx_code(v[:6].upper()):
+            code = v[:6].upper()
             break
     name = ""
     for k in ("stockName", "name", "itemName", "stockNameEng"):
