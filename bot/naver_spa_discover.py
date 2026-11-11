@@ -110,9 +110,27 @@ def absolute(path: str, *, host: str) -> str:
     return host.rstrip("/") + "/" + p.lstrip("/")
 
 
+def literal_contexts(js: str, *, width: int = 160, per: int = 3) -> dict:
+    """`/` 로 끝나는 API 경로 리터럴 → 그 **바로 뒤** 원문 조각들(순수).
+
+    2026-11-11 VM 실측: 청크가 `"/api/stockSecurity/rankings/v2/domestic/"` 처럼
+    **접두만** 리터럴로 두고 나머지를 이어 붙였다 — 경로 목록만으론 뒤에 무엇이
+    붙는지 모른다. 이어 붙이는 코드를 그대로 보여 줘 사람이 판정하게 한다(#82·#165
+    우리가 채워 넣지 않는다)."""
+    out: dict = {}
+    for m in _API_LITERAL.finditer(js or ""):
+        lit = m.group(1)
+        if not lit.endswith("/"):
+            continue
+        snips = out.setdefault(lit, [])
+        if len(snips) < per:
+            snips.append((js or "")[m.end(): m.end() + width])
+    return out
+
+
 def discover(page_url: str, *, must_contain: str, fetch,
              chunk_cap: int = _CHUNK_CAP, byte_cap: int = _BYTE_CAP,
-             prefer: str = "") -> tuple:
+             prefer: str = "", ctx_out: dict | None = None) -> tuple:
     """(발견한 경로들, 사유) — `fetch(url) -> (본문|None, 사유)` 를 주입받는다.
 
     주입이 계약인 이유: 샌드박스는 네트워크가 막혀 있어(#336 회귀가 소켓을
@@ -139,6 +157,10 @@ def discover(page_url: str, *, must_contain: str, fetch,
             continue
         scanned += 1
         used += len(js)
+        if ctx_out is not None:
+            for lit, snips in literal_contexts(js).items():
+                have = ctx_out.setdefault(lit, [])
+                have.extend(snips[:max(0, 3 - len(have))])
         for p in api_paths(js, must_contain=must_contain):
             if p not in seen:
                 seen.add(p)

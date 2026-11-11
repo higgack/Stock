@@ -228,3 +228,37 @@ def test_new_theme_basis_lifts_cooldown(iso, monkeypatch):
     _ORIG_MAYBE()
     assert started == [1]
     nsc._BG_KEYS.discard(nsc._UPJONG_MEMO)                 # start 를 막았으므로 직접 치운다
+
+
+def test_prefix_candidates_only_domestic_prefixes():
+    got = nsc.prefix_candidates(["/api/stockSecurity/rankings/v2/domestic/",
+                                 "/api/personal/users/favorite/groups/",
+                                 "/api/domestic/market/", "/api/x/list"], ("upjong",))
+    assert got == ["/api/stockSecurity/rankings/v2/domestic/upjong",
+                   "/api/stockSecurity/rankings/v2/domestic/upjong/list",
+                   "/api/domestic/market/upjong", "/api/domestic/market/upjong/list"]
+
+
+def test_literal_contexts_shows_what_follows_a_prefix():
+    from bot import naver_spa_discover as disc
+    js = 'a="/api/stockSecurity/rankings/v2/domestic/".concat(t,"?pageSize=")'
+    ctx = disc.literal_contexts(js, width=20)
+    assert ctx["/api/stockSecurity/rankings/v2/domestic/"] == ['.concat(t,"?pageSize']
+
+
+def test_discovery_validates_prefix_candidates_and_keeps_samples(iso, monkeypatch):
+    from bot import naver_spa_discover as disc
+    def _disc(*a, **k):
+        k["ctx_out"]["/api/domestic/market/"] = ['"+x+"/list"']
+        return ["/api/domestic/market/", "/api/news/list"], ""
+    monkeypatch.setattr(disc, "discover", _disc)
+    # 후보 순서는 `/list` 형태 먼저·알파벳순 — industry 가 sector 보다 먼저 물린다
+    good = "https://stock.naver.com/api/domestic/market/sector/list"
+    wrong = "https://stock.naver.com/api/domestic/market/industry/list"
+    _route(monkeypatch, {good: lambda: (_rows(79), ""),
+                         wrong: lambda: ([{"foo": 1}], "")})
+    nsc._discover_upjong_endpoint()
+    memo, _ = nsc._cache_read_any(nsc._UPJONG_MEMO)
+    assert memo["url"] == good, memo["tried"]
+    assert any("표본" in t and "foo" in t for t in memo["tried"])
+    assert memo["contexts"] == {"/api/domestic/market/": ['"+x+"/list"']}
