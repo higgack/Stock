@@ -234,9 +234,52 @@ def test_prefix_candidates_only_domestic_prefixes():
     got = nsc.prefix_candidates(["/api/stockSecurity/rankings/v2/domestic/",
                                  "/api/personal/users/favorite/groups/",
                                  "/api/domestic/market/", "/api/x/list"], ("upjong",))
+    # 맨 형태가 먼저, `/list` 는 뒤 — 시도 상한 안에 맨 형태가 물리게(2026-11-11 2차 실측)
     assert got == ["/api/stockSecurity/rankings/v2/domestic/upjong",
+                   "/api/domestic/market/upjong",
                    "/api/stockSecurity/rankings/v2/domestic/upjong/list",
-                   "/api/domestic/market/upjong", "/api/domestic/market/upjong/list"]
+                   "/api/domestic/market/upjong/list"]
+
+
+def test_prefix_candidates_query_direct_prefix_goes_first():
+    """VM 실측 원문: `"/api/stockSecurity/rankings/v2/domestic/".concat(t,"?")` —
+    접두 바로 뒤에 쿼리가 오는 접두가 목록 주소다. 그 접두를 먼저 묻는다."""
+    ctx = {"/api/domestic/market/": ['.concat(s,"/").concat(n,"/stocklist?")'],
+           "/api/stockSecurity/rankings/v2/domestic/":
+               ['function(t){ ⟦…⟧ .concat(t,"?").concat(E.toString())']}
+    got = nsc.prefix_candidates(["/api/domestic/market/",
+                                 "/api/stockSecurity/rankings/v2/domestic/"],
+                                ("upjong", "theme"), ctx)
+    assert got[:2] == ["/api/stockSecurity/rankings/v2/domestic/upjong",
+                       "/api/stockSecurity/rankings/v2/domestic/theme"], got
+    assert got[2] == "/api/domestic/market/upjong"
+
+
+def test_discovery_retries_without_query_when_route_exists(iso, monkeypatch):
+    """주소는 있는데(400) 우리 쿼리를 거절하면 쿼리 없이 한 번 더 — 새 쿼리 이름은
+    모르므로 지어내지 않는다(#165)."""
+    from bot import naver_spa_discover as disc
+    monkeypatch.setattr(disc, "discover", lambda *a, **k: (
+        ["/api/stockSecurity/rankings/v2/domestic/"], ""))
+    first = "https://stock.naver.com/api/stockSecurity/rankings/v2/domestic/upjong"
+    good = "https://m.stock.naver.com/api/stockSecurity/rankings/v2/domestic/upjong"
+    seen = []
+
+    def _get(url, **kw):
+        seen.append((url, kw.get("params")))
+        if url != good:
+            return _404()
+        if kw.get("params"):
+            return None, nd.http_reason(400, 40, body={"message": "bad query"})
+        return _rows(79), ""
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    nsc._discover_upjong_endpoint()
+    memo, _ = nsc._cache_read_any(nsc._UPJONG_MEMO)
+    assert memo["url"] == good, memo["tried"]
+    assert (good, None) in seen
+    assert seen[0][0] == first, seen            # 맨 형태가 `/list` 보다 먼저 물린다
+    # 404 후보엔 쿼리 없는 재시도를 걸지 않는다(주소가 없다는 답이다)
+    assert not any(u != good and p is None for u, p in seen), seen
 
 
 def test_literal_contexts_shows_what_follows_a_prefix():
@@ -244,6 +287,9 @@ def test_literal_contexts_shows_what_follows_a_prefix():
     js = 'a="/api/stockSecurity/rankings/v2/domestic/".concat(t,"?pageSize=")'
     ctx = disc.literal_contexts(js, width=20)
     assert ctx["/api/stockSecurity/rankings/v2/domestic/"] == ['.concat(t,"?pageSize']
+    # 앞쪽 원문 — 이어 붙는 변수가 무엇인지는 앞(함수 머리)에 있다
+    ctx = disc.literal_contexts(js, width=10, before=2)
+    assert ctx["/api/stockSecurity/rankings/v2/domestic/"] == ['a= ⟦…⟧ .concat(t,']
 
 
 def test_discovery_validates_prefix_candidates_and_keeps_samples(iso, monkeypatch):
@@ -252,7 +298,7 @@ def test_discovery_validates_prefix_candidates_and_keeps_samples(iso, monkeypatc
         k["ctx_out"]["/api/domestic/market/"] = ['"+x+"/list"']
         return ["/api/domestic/market/", "/api/news/list"], ""
     monkeypatch.setattr(disc, "discover", _disc)
-    # 후보 순서는 `/list` 형태 먼저·알파벳순 — industry 가 sector 보다 먼저 물린다
+    # 후보 순서는 맨 형태 먼저, `/list` 뒤 — industry/list 가 sector/list 보다 먼저 물린다
     good = "https://stock.naver.com/api/domestic/market/sector/list"
     wrong = "https://stock.naver.com/api/domestic/market/industry/list"
     _route(monkeypatch, {good: lambda: (_rows(79), ""),
