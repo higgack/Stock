@@ -691,6 +691,46 @@ _INTL_RANK_COOLDOWN = 6 * 3600   # 못 찾았으면 6시간 뒤 다시(30초마�
 _INTL_RANK_TRIES = 8
 
 
+# 해외 업종 화면이 실제로 부르는 주소는 아직 재지 못했다(VM 2026-11-11: 랭킹 v2 의
+# `USA`·`usa`·`us` 가 전부 404). 추측을 늘리지 않고 **원천에 묻는다** — 옛 주소의 지금
+# 상태와, 해외 화면 페이지의 청크가 품은 API 경로 중 해외로 보이는 것(#338·#340).
+# 페이지 목록은 청크를 얻을 입구일 뿐이라 틀려도 '못 받음' 으로 찍힐 뿐이다.
+_INTL_PROBE_PAGES = ("https://finance.naver.com/world/",
+                     "https://stock.naver.com/worldstock/",
+                     "https://m.stock.naver.com/worldstock/")
+_INTL_HINTS = ("foreign", "world", "overseas", "nation", "usa", "global", "industr",
+               "upjong", "sector")
+
+
+def intl_route_probe_lines(fetch, discover=None) -> list:
+    """`--check --fetch` 용 진단 줄 — `fetch(url) -> (본문|None, 사유)` 주입(#336).
+
+    ① 옛 `foreign/market/{nat}/upjong/list` 의 지금 답(나라별) ② 해외 화면 청크의
+    API 경로 중 해외·업종 낱말을 품은 것. 읽기만 한다(메모를 쓰지 않는다, #264)."""
+    from bot import naver_spa_discover as _disc
+    discover = discover or _disc.discover
+    out = []
+    for mk, nat in _UPJONG_NATION.items():
+        u = f"{_UPJONG_BASE}/{nat}/upjong/list"
+        body, why = fetch(u)
+        if body:
+            out.append(f"   옛 주소 [{mk}] {u} — 응답 {len(body):,}B · 앞: {body[:120]!r}")
+        else:
+            out.append(f"   옛 주소 [{mk}] {u} — {why or '응답 없음'}")
+    for page in _INTL_PROBE_PAGES:
+        paths, why = discover(page, must_contain="", fetch=fetch, prefer="page",
+                              chunk_cap=40, byte_cap=6_000_000)
+        hit = [p for p in paths if any(h in p.lower() for h in _INTL_HINTS)]
+        if not paths:
+            out.append(f"   청크 [{page}] — {why or '경로 0건'}")
+            continue
+        out.append(f"   청크 [{page}] — API 경로 {len(paths)}개 · 해외·업종 낱말 {len(hit)}개"
+                   + ("" if hit else " (아래는 전체 경로 — 해외 낱말이 없어 다 보인다)"))
+        for p in (hit or paths)[:40]:
+            out.append(f"     · {p}")
+    return out
+
+
 def intl_rank_memo(market: str) -> str:
     return f"naver_intl_rank_{market}.json"
 
