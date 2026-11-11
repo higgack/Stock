@@ -707,7 +707,19 @@ _ROUTE_LIT = re.compile(
     r'[A-Za-z0-9_\-\[\]{}$/]*)["\'`]', re.I)
 _PROBE_CHUNKS = 40
 _PROBE_BYTES = 6_000_000
-_PROBE_FOLLOW = 6
+_PROBE_FOLLOW = 8
+_NATION_SEG = re.compile(r"/(usa|chn|hkg|jpn|vnm)(?:/|$)", re.I)
+
+
+def _route_rank(route: str) -> int:
+    """따라갈 순서 — 나라 + 업종 화면이 먼저(VM 2026-11-11 3차: 이름순으로 따라가
+    `/briefing/sector/…` 를 먼저 읽고 상한에 걸려 정작 업종 화면을 못 읽었다)."""
+    low = route.lower()
+    if "industr" in low and _NATION_SEG.search(route):
+        return 0
+    if "industr" in low:
+        return 1
+    return 2
 
 
 def _scan_page(page: str, fetch) -> tuple:
@@ -715,10 +727,11 @@ def _scan_page(page: str, fetch) -> tuple:
     from bot import naver_spa_discover as _disc
     html, why = fetch(page)
     if not html:
-        return set(), set(), [], (why or "페이지를 받지 못했습니다")
+        return set(), set(), [], {}, (why or "페이지를 받지 못했습니다")
     apis = set(_disc.api_paths(html))
     routes = set(_ROUTE_LIT.findall(html))
     ctx: list = []
+    cctx: dict = {}
     used = 0
     urls = _disc.chunk_urls(html, page, prefer="page")
     for u in urls[:_PROBE_CHUNKS]:
@@ -727,6 +740,9 @@ def _scan_page(page: str, fetch) -> tuple:
             continue
         used += len(js)
         apis.update(_disc.api_paths(js))
+        for lit, snips in _disc.literal_contexts(js, before=160).items():
+            have = cctx.setdefault(lit, [])
+            have.extend(snips[:max(0, 2 - len(have))])
         routes.update(_ROUTE_LIT.findall(js))
         low = js.lower()
         for w in _INTL_WORDS:
@@ -738,7 +754,7 @@ def _scan_page(page: str, fetch) -> tuple:
                 i = low.find(w, i + 1)
         if used >= _PROBE_BYTES:
             break
-    return apis, routes, ctx, (f"청크 {len(urls)}개 중 일부" if urls else "청크 0개")
+    return apis, routes, ctx, cctx, (f"청크 {len(urls)}개 중 일부" if urls else "청크 0개")
 
 
 def intl_route_probe_lines(fetch) -> list:
@@ -757,24 +773,32 @@ def intl_route_probe_lines(fetch) -> list:
     routes_all: set = set()
     seen_pages: set = set()
 
-    def _report(page, apis, routes, ctx, why, tag):
+    def _report(page, apis, routes, ctx, cctx, why, tag):
         hit = sorted(p for p in apis if any(w in p.lower() for w in _INTL_WORDS))
         out.append(f"   {tag} [{page}] — API 경로 {len(apis)}개 · 업종 낱말 {len(hit)}개 · "
                    f"업종 화면 경로 {len(routes)}개" + ("" if apis or routes else f" · {why}"))
-        for p in hit[:30]:
+        # 따라간 업종 화면은 API 이름에 '업종' 낱말이 없을 수 있다 — 전부 보이고,
+        # 접두만 리터럴인 경로는 이어 붙이는 원문까지 싣는다(#165 우리가 채우지 않는다).
+        show = sorted(apis) if tag == "따라감" else hit
+        for p in show[:40]:
             out.append(f"     · API {p}")
-        for r in sorted(routes)[:20]:
-            out.append(f"     · 화면 {r}")
+        if tag == "따라감":
+            for lit in sorted(cctx)[:10]:
+                for sn in cctx[lit][:2]:
+                    out.append(f"     · 접두 {lit} 원문 {sn!r}")
+        else:
+            for r in sorted(routes, key=lambda r: (_route_rank(r), r))[:20]:
+                out.append(f"     · 화면 {r}")
         for c in ctx[:6]:
             out.append(f"     · 원문 {c!r}")
 
     for page in _INTL_PROBE_PAGES:
         seen_pages.add(page)
-        apis, routes, ctx, why = _scan_page(page, fetch)
+        apis, routes, ctx, cctx, why = _scan_page(page, fetch)
         routes_all |= routes
-        _report(page, apis, routes, ctx, why, "입구")
+        _report(page, apis, routes, ctx, cctx, why, "입구")
     follow = []
-    for r in sorted(routes_all):
+    for r in sorted(routes_all, key=lambda r: (_route_rank(r), r)):
         if any(ch in r for ch in "[{$"):
             continue                       # 구멍 있는 템플릿은 못 따라간다(사람이 본다)
         for h in _INTL_HOSTS:
@@ -785,8 +809,8 @@ def intl_route_probe_lines(fetch) -> list:
         out.append("   업종 화면 경로를 입구 코드에서 찾지 못해 따라가지 않았습니다")
     for u in follow[:_PROBE_FOLLOW]:
         seen_pages.add(u)
-        apis, routes, ctx, why = _scan_page(u, fetch)
-        _report(u, apis, routes, ctx, why, "따라감")
+        apis, routes, ctx, cctx, why = _scan_page(u, fetch)
+        _report(u, apis, routes, ctx, cctx, why, "따라감")
     if len(follow) > _PROBE_FOLLOW:
         out.append(f"   (따라갈 화면 {len(follow)}개 중 {_PROBE_FOLLOW}개만 읽었습니다)")
     return out

@@ -1321,7 +1321,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 11       # 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
+_CHECK_VER = 12       # 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -3138,6 +3138,17 @@ def check(fetch: bool = False) -> int:
         _n = len(_fvc._GROUP_ROW_RE.findall(_html)) if _html else 0
         print(f"③-d Finviz 업종: " + (f"응답 {len(_html):,}B · 업종 {_n}행" if _html
               else "못 받음(위 finviz 경고 줄이 상태코드·차단 여부를 말한다)"))
+        if _html and not _n:
+            # 200 인데 0행 = 우리 파서가 못 읽는 모양(VM 2026-11-11 실측 237KB·0행).
+            # 원문 표본을 같이 찍어야 다음 라운드에 파서를 고친다(#109·#82).
+            _low = _html.lower()
+            for _w in ("semiconductors", "screener.ashx?v=111&f=ind_", "f=ind_", "<table"):
+                _i = _low.find(_w)
+                if _i >= 0:
+                    print(f"   표본({_w}): {_html[max(0, _i - 300):_i + 500]!r}")
+                    break
+            else:
+                print(f"   표본(앞 600자): {_html[:600]!r}")
     except Exception as _exc:                                # noqa: BLE001
         print(f"③-d 해외 업종 원천을 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
     t1 = time.time()
