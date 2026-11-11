@@ -1228,37 +1228,47 @@ def _fetch_equity_fund_naver() -> list:
     from datetime import date, timedelta
     end = date.today()
     start = end - timedelta(days=220)
-    # ⚠️ 220일을 한 번에 물어도 화면엔 두 달(09.09~)만 그려졌다(2026-11-12 캡처) — 원천이 한
-    # 응답의 행 수를 자르는지는 재지 않았다(#165). 다른 유동성 차트와 같은 6개월 창을 채우려고
-    # 60일 조각으로 나눠 묻고 날짜로 합친다 — 원천이 정말 두 달치만 가졌다면 결과는 같고,
-    # 출처 줄의 기간이 그 사실을 말한다(#43). 한 조각의 실패는 나머지를 막지 않는다.
+    # ⚠️ VM 실측(2026-11-12): 이 원천은 startDate 를 무시하고 **endDate 에서 거슬러 40행**만
+    # 준다(60일 창 넷 모두 정확히 40행 · 첫 창 09-13~ 이 09-09~ 를 돌려줌). 그래서 한 번에
+    # 220일을 물으면 두 달만 오고, 고정 60일 조각은 거래일 수가 40 과 어긋나는 만큼 이음매에
+    # 구멍이 난다(실측 07-14·07-15 누락). 받은 가장 이른 날 전날을 다음 endDate 로 이어
+    # 물어 빈틈 없이 start 까지 간다 — 원천이 더 안 주면(새 날짜 0) 거기서 멈춘다.
     by_day: dict = {}
     fails = 0
-    chunk_end = end
-    while chunk_end > start:
-        chunk_start = max(start, chunk_end - timedelta(days=60))
+    cursor = end
+    for _ in range(12):                      # 220일 ≈ 150거래일 = 4쪽 — 상한은 넉넉히
+        if cursor < start:
+            break
         url = ("https://stock.naver.com/api/domestic/market/trendDeposit/chart"
-               f"?startDate={chunk_start:%Y%m%d}&endDate={chunk_end:%Y%m%d}")
+               f"?startDate={start:%Y%m%d}&endDate={cursor:%Y%m%d}")
         try:
             r = requests.get(url, timeout=12, headers={
                 "User-Agent": "Mozilla/5.0", "Accept": "application/json",
                 "Referer": "https://stock.naver.com/"})
             rows = r.json() if r.status_code == 200 else []
         except Exception as exc:
-            log.warning("naver equity fund fetch failed (%s~%s): %s",
-                        chunk_start, chunk_end, exc)
+            log.warning("naver equity fund fetch failed (~%s): %s", cursor, exc)
             rows, fails = [], fails + 1
+        new_days = []
         for it in rows if isinstance(rows, list) else []:
             d = str(it.get("bizdate") or "")
             try:
                 v = float(str(it.get("beneficiaryCertificateStock")).replace(",", ""))
             except Exception:
                 v = None
-            if len(d) == 8 and v is not None:
+            if len(d) == 8 and v is not None and d >= f"{start:%Y%m%d}":
+                if d not in by_day:
+                    new_days.append(d)
                 by_day[d] = v    # 억원
-        chunk_end = chunk_start - timedelta(days=1)
+        if not new_days:
+            break
+        try:
+            cursor = date(int(min(new_days)[:4]), int(min(new_days)[4:6]),
+                          int(min(new_days)[6:])) - timedelta(days=1)
+        except ValueError:
+            break
     if fails:
-        log.warning("naver equity fund: 조각 %d개 실패 — 받은 %d일치로 그린다", fails, len(by_day))
+        log.warning("naver equity fund: 요청 %d건 실패 — 받은 %d일치로 그린다", fails, len(by_day))
     return sorted(by_day.items())
 
 

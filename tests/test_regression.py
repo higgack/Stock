@@ -12799,6 +12799,41 @@ class TestEquityFundNaver:
         assert dep["equity_fund"] == 3567731.0 and dep["equity_fund_chg"] == 67731.0
         assert len(dep["equity_fund_series"]) == 2
 
+    def test_source_caps_40_rows_from_end_date_no_gaps(self, monkeypatch):
+        """VM 실측(2026-11-12): 원천은 startDate 를 무시하고 endDate 에서 거슬러 40행만 준다.
+        고정 60일 조각은 이음매에 구멍(07-14·07-15)을 냈다 — 받은 가장 이른 날 앞으로 이어
+        물어 220일 창의 모든 평일을 빈틈 없이 채워야 한다."""
+        import requests, re as _re
+        from datetime import date as _d, timedelta as _td
+        import bot.naver_sector_client as ns
+        import bot.finviz_client as fv
+        today = _d.today()
+        bdays = [today - _td(days=i) for i in range(400)
+                 if (today - _td(days=i)).weekday() < 5]       # 최신 → 과거
+
+        class R:
+            status_code = 200
+            def __init__(self, end):
+                self._end = end
+            def json(self):
+                rows = [b for b in bdays if b <= self._end][:40]
+                return [{"bizdate": f"{b:%Y%m%d}", "beneficiaryCertificateStock": "1"}
+                        for b in reversed(rows)]
+        calls = []
+        def fake_get(url, *a, **k):
+            m = _re.search(r"endDate=(\d{8})", url)
+            e = _d(int(m.group(1)[:4]), int(m.group(1)[4:6]), int(m.group(1)[6:]))
+            calls.append(e)
+            return R(e)
+        monkeypatch.setattr(requests, "get", fake_get)
+        monkeypatch.setattr(fv, "naver_paused", lambda: False)
+        ser = ns._fetch_equity_fund_naver()
+        got = {d for d, _ in ser}
+        start = today - _td(days=220)
+        want = {f"{b:%Y%m%d}" for b in bdays if b >= start}
+        assert got == want, sorted(want - got)[:5]
+        assert len(calls) <= 6
+
     def test_render_shows_third_chart(self):
         # 렌더 스캐폴드(merged)가 equity_fund_series 있으면 3번째 차트 + 3-col
         import bot.dashboard as d
