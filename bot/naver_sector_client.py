@@ -507,6 +507,8 @@ _UPJONG_MEMO = "upjong_endpoint.json"
 _UPJONG_DISCOVER_URL = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
 _UPJONG_DISCOVER_COOLDOWN = 6 * 3600   # 못 찾은 날 청크 수 MB 를 매번 받지 않게
 _UPJONG_DISCOVER_TRIES = 6             # 검증 호출 상한 — 리터럴로 못박는다(#66)
+_UPJONG_CHUNK_CAP = 40                 # 실측 12청크(2.8MB)로는 라우트 청크에 못 닿았다
+_UPJONG_BYTE_CAP = 9_000_000
 
 
 def _upjong_rows(raw: object) -> object:
@@ -537,6 +539,34 @@ def upjong_full(raw: object) -> bool:
     if "theme" in kinds:
         return False
     return len(parse_upjong_json(rows)) >= _UPJONG_MIN_GROUPS
+
+
+_UPJONG_WORDS = ("upjong", "industry", "sector")
+
+
+def upjong_like_paths(paths) -> list:
+    """발견한 경로 중 업종 자원으로 **보이는** 것만(순수). 템플릿 구멍은 뺀다(#165)."""
+    out = []
+    for p in paths or []:
+        low = str(p).lower()
+        if "{" in low or "$" in low:
+            continue
+        if any(w in low for w in _UPJONG_WORDS) and p not in out:
+            out.append(p)
+    return out
+
+
+def upjong_from_theme(theme_url: str) -> list:
+    """동작이 **확인된** 테마 주소 → 같은 자리의 업종 후보(순수).
+
+    옛 HTML 에서 업종·테마는 `sise_group*.naver?type=upjong|theme` 로 같은 자리였고
+    옛 JSON 도 `market/upjong/list`·`market/theme/list` 형제였다 — 테마가 옮겨 간
+    곳의 형제가 업종의 첫 후보다(지어낸 호스트가 아니다, #151). 검증은 호출부가
+    실호출로 한다."""
+    u = str(theme_url or "")
+    if "theme" not in u:
+        return []
+    return [u.replace("theme", w) for w in _UPJONG_WORDS]
 
 
 def _upjong_fetch_ladder() -> tuple:
@@ -594,11 +624,25 @@ def _discover_upjong_endpoint() -> None:
         except Exception as exc:                               # noqa: BLE001
             return None, _nd.http_reason(None, exc=exc)
 
-    paths, why = _disc.discover(_UPJONG_DISCOVER_URL, must_contain="upjong",
-                               fetch=_fetch, prefer="upjong")
+    # ⚠️ VM 실측(2026-11-11): 업종 페이지 청크 12개(2.8MB)에 'upjong' 을 품은 경로가
+    # **0건**이었다 — 새 SPA 가 같은 자원을 다른 낱말로 부를 수 있다. 낱말 하나로
+    # 거르지 않고 후보 낱말들로 거른다(#24). 무엇이든 실호출로 검증하므로 넓혀도
+    # 틀린 주소가 메모되지는 않는다(#25).
+    # 같은 실측: 공용 청크 12개(2.8MB)에서 상한에 걸려 멈췄다 — 그 화면이 부르는
+    # 주소는 **라우트 청크**(`app/…/page-….js`)에 있다. 라우트 청크를 앞에 두고
+    # 상한을 넓힌다(6시간에 한 번 도는 배경 작업이라 감당한다, #116).
+    all_paths, why = _disc.discover(_UPJONG_DISCOVER_URL, must_contain="",
+                                   fetch=_fetch, prefer="page",
+                                   chunk_cap=_UPJONG_CHUNK_CAP,
+                                   byte_cap=_UPJONG_BYTE_CAP)
+    paths = upjong_like_paths(all_paths)
+    if not paths and not why:
+        why = "청크에서 업종으로 보이는 API 경로를 찾지 못했습니다"
     url, tried = "", []
-    for cand in [c for c in theme_candidates(paths)
-                 if c != _UPJONG_API][:_UPJONG_DISCOVER_TRIES]:
+    cands = upjong_from_theme(theme_memo_url()) + theme_candidates(paths)
+    seen: set = set()
+    cands = [c for c in cands if c != _UPJONG_API and not (c in seen or seen.add(c))]
+    for cand in cands[:_UPJONG_DISCOVER_TRIES]:
         raw, rwhy = _get2_json(cand, params={"pageSize": _UPJONG_PAGE_SIZE})
         ok = upjong_full(raw)
         n = len(parse_upjong_json(_upjong_rows(raw)))
@@ -607,7 +651,11 @@ def _discover_upjong_endpoint() -> None:
             url = cand
             break
     _cache_write(_UPJONG_MEMO, {"url": url, "found": paths[:8], "tried": tried,
-                                "why": why, "at": time.time()})
+                                "why": why, "at": time.time(),
+                                "theme_basis": theme_memo_url(),
+                                # 업종처럼 안 보여 거른 것까지 남긴다 — 새 SPA 가
+                                # 자원을 다른 낱말로 부르면 사람이 이걸 보고 판정한다(#82).
+                                "all_paths": list(all_paths or [])[:60]})
     log.warning("naver_sector: 업종 엔드포인트 탐색 — 검증됨=%s · 후보=%s · 시도=%s · %s",
                 url or "없음", paths[:4], tried[:3], why or "")
 
@@ -623,8 +671,10 @@ def _maybe_discover_upjong() -> None:
         pass
     memo, age = _cache_read_any(_UPJONG_MEMO)
     # 검증된 주소가 있는데 그것도 죽었으면 냉각 없이 다시 찾는다.
+    # 테마 주소가 새로 발견됐으면(=형제 단서가 바뀌었으면) 냉각을 기다리지 않는다.
     if (age is not None and age < _UPJONG_DISCOVER_COOLDOWN
-            and not (memo or {}).get("url")):
+            and not (memo or {}).get("url")
+            and (memo or {}).get("theme_basis", "") == theme_memo_url()):
         return
     with _BG_LOCK:
         if _UPJONG_MEMO in _BG_KEYS:
@@ -1714,8 +1764,11 @@ def _discover_theme_endpoint() -> None:
         except Exception as exc:                               # noqa: BLE001
             return None, _nd.http_reason(None, exc=exc)
 
+    # 업종과 같은 상한·순서(2026-11-11 실측: 공용 청크 12개에서 상한에 걸렸다, #38).
     paths, why = _disc.discover(_THEME_DISCOVER_URL, must_contain="theme",
-                               fetch=_fetch, prefer="theme")
+                               fetch=_fetch, prefer="page",
+                               chunk_cap=_UPJONG_CHUNK_CAP,
+                               byte_cap=_UPJONG_BYTE_CAP)
     # ⚠️ **호스트를 추측하지 않는다**(독립 리뷰 2026-09-12). 옛 판은
     # `p.startswith("/api/")` 면 stock, 아니면 m.stock 으로 정했는데 minified
     # 번들은 슬래시 없는 `"api/domestic/market/theme/list"` 를 흔히 낸다 —
@@ -2804,6 +2857,11 @@ def check(fetch: bool = False) -> int:
     if _memo:
         print(f"③-a 업종 주소 메모: 검증됨={_memo.get('url') or '없음'} · "
               f"발견 {len(_memo.get('found') or [])}개 · {_memo.get('why') or ''}")
+        print(f"   테마 주소(형제 단서): {_memo.get('theme_basis') or '없음'}")
+        _all = _memo.get("all_paths") or []
+        print(f"   청크에서 읽은 API 경로 {len(_all)}개(업종 여부와 무관, 최대 60):")
+        for ln in _all:
+            print(f"     · {ln}")
         for ln in (_memo.get("tried") or [])[:_UPJONG_DISCOVER_TRIES]:
             print(f"   {ln}")
     raw, why, used = _upjong_fetch_ladder()
