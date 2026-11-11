@@ -1321,7 +1321,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 9        # 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
+_CHECK_VER = 10       # 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -3114,6 +3114,26 @@ def check(fetch: bool = False) -> int:
                 print(f"   {_t}")
     except Exception as _exc:                                # noqa: BLE001
         print(f"③-c 해외 업종 랭킹 v2 를 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
+    # ③-d 해외 화면이 실제로 부르는 주소 — 추측 대신 원천의 청크를 읽는다(#165·#338).
+    try:
+        import requests as _rq
+        from bot import naver_diag as _ndg
+        from bot import naver_ranking_client as _nrc2
+
+        def _pf(u: str) -> tuple:
+            try:
+                r = _rq.get(u, headers=_HEADERS, timeout=8)
+                if r.status_code != 200:
+                    return None, _ndg.http_reason(r.status_code, len(r.content or b""),
+                                                  body=r.text)
+                return r.text, ""
+            except Exception as e:                           # noqa: BLE001
+                return None, _ndg.http_reason(None, exc=e)
+        print("③-d 해외 업종 원천 실측(읽기만):")
+        for _ln in _nrc2.intl_route_probe_lines(_pf):
+            print(_ln)
+    except Exception as _exc:                                # noqa: BLE001
+        print(f"③-d 해외 업종 원천을 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
     t1 = time.time()
     # ⚠️ 여기서 네트워크가 나간다 — `--fetch` 를 태우는 테스트는 반드시 스텁할 것
     # (#312 테스트가 원천을 치면 안 된다). 기본(`--check`)은 조회만이라 안전하다.

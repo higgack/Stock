@@ -534,3 +534,35 @@ def test_rank_v2_is_not_asked_when_the_old_address_is_blocked_not_gone(iso, monk
     rows, marks, why, partial = nsc.collect_themes_json()
     assert not any(u.startswith(nsc._RANK_V2) for u in seen)
     assert len(marks) == len(nsc._THEME_API_RUNGS)
+
+
+class TestIntlRouteProbe:
+    """③-d — 옛 해외 주소의 지금 답 + 해외 화면 청크의 경로를 그대로 찍는다(읽기만)."""
+
+    def test_lines_report_old_route_and_filtered_paths(self):
+        from bot import naver_ranking_client as nrc
+
+        def fetch(u):
+            if "/USA/upjong/list" in u:
+                return None, "HTTP 404 — 원천: Route not found"
+            if "/JPN/upjong/list" in u:
+                return '[{"no":1}]', ""
+            return None, "HTTP 500"
+
+        def discover(page, **kw):
+            assert kw["must_contain"] == "" and kw["fetch"] is fetch
+            if "finance.naver.com" in page:
+                return ["/api/foreign/market/x", "/api/auth/userInfo"], ""
+            if page.startswith("https://stock."):
+                return ["/api/auth/userInfo"], ""
+            return [], "페이지를 받지 못했습니다"
+
+        out = "\n".join(nrc.intl_route_probe_lines(fetch, discover))
+        assert "[US]" in out and "HTTP 404" in out
+        assert "[JP]" in out and "응답 10B" in out
+        # 해외 낱말이 있으면 그것만, 없으면 전체를 찍는다(못 거른 사실이 보이게).
+        fin = out.split("청크 [https://finance.naver.com/world/]")[1].split("청크 [")[0]
+        assert "/api/foreign/market/x" in fin and "userInfo" not in fin
+        st = out.split("청크 [https://stock.naver.com/worldstock/]")[1].split("청크 [")[0]
+        assert "/api/auth/userInfo" in st and "전체 경로" in st
+        assert "페이지를 받지 못했습니다" in out
