@@ -537,32 +537,52 @@ def test_rank_v2_is_not_asked_when_the_old_address_is_blocked_not_gone(iso, monk
 
 
 class TestIntlRouteProbe:
-    """③-d — 옛 해외 주소의 지금 답 + 해외 화면 청크의 경로를 그대로 찍는다(읽기만)."""
+    """③-d — 옛 해외 주소의 지금 답 + 입구 코드가 가리키는 '업종' 화면을 한 단계 따라가 읽는다."""
 
-    def test_lines_report_old_route_and_filtered_paths(self):
-        from bot import naver_ranking_client as nrc
+    def _fetch(self):
+        home = ('<script src="/_next/static/chunks/app/home/page-1.js"></script>')
+        home_js = ('x="/api/realtime/worldstock/stock/";'
+                   'nav={href:"/worldstock/market/USA/industry"};t="/x/[nation]/industry"')
+        ind = '<script src="/_next/static/chunks/app/ind/page-2.js"></script>'
+        ind_js = ('f=async e=>get("/api/stockSecurity/rankings/v2/foreign/".concat(e,'
+                  '"/industries?size=100"))')
+        calls = []
 
         def fetch(u):
+            calls.append(u)
             if "/USA/upjong/list" in u:
                 return None, "HTTP 404 — 원천: Route not found"
             if "/JPN/upjong/list" in u:
                 return '[{"no":1}]', ""
+            if u == "https://m.stock.naver.com/worldstock/":
+                return home, ""
+            if u.endswith("page-1.js"):
+                return home_js, ""
+            if u == "https://stock.naver.com/worldstock/market/USA/industry":
+                return ind, ""
+            if u.endswith("page-2.js"):
+                return ind_js, ""
             return None, "HTTP 500"
+        return fetch, calls
 
-        def discover(page, **kw):
-            assert kw["must_contain"] == "" and kw["fetch"] is fetch
-            if "finance.naver.com" in page:
-                return ["/api/foreign/market/x", "/api/auth/userInfo"], ""
-            if page.startswith("https://stock."):
-                return ["/api/auth/userInfo"], ""
-            return [], "페이지를 받지 못했습니다"
-
-        out = "\n".join(nrc.intl_route_probe_lines(fetch, discover))
+    def test_follows_industry_route_and_reports_its_api(self):
+        from bot import naver_ranking_client as nrc
+        fetch, calls = self._fetch()
+        out = "\n".join(nrc.intl_route_probe_lines(fetch))
         assert "[US]" in out and "HTTP 404" in out
         assert "[JP]" in out and "응답 10B" in out
-        # 해외 낱말이 있으면 그것만, 없으면 전체를 찍는다(못 거른 사실이 보이게).
-        fin = out.split("청크 [https://finance.naver.com/world/]")[1].split("청크 [")[0]
-        assert "/api/foreign/market/x" in fin and "userInfo" not in fin
-        st = out.split("청크 [https://stock.naver.com/worldstock/]")[1].split("청크 [")[0]
-        assert "/api/auth/userInfo" in st and "전체 경로" in st
-        assert "페이지를 받지 못했습니다" in out
+        # 입구 코드의 업종 화면 경로를 찾고, 구멍 있는 템플릿은 따라가지 않는다.
+        assert "화면 /worldstock/market/USA/industry" in out
+        assert "https://stock.naver.com/worldstock/market/USA/industry" in calls
+        assert not any("[nation]" in c for c in calls)
+        # 따라간 화면의 원문이 이어 붙이는 코드를 보여 준다.
+        fol = out.split("따라감 [https://stock.naver.com/worldstock/market/USA/industry]")[1]
+        fol = fol.split("따라감 [")[0]
+        assert "foreign/" in fol and "/industries" in fol
+        # 업종 낱말이 없는 API(실시간 시세)는 목록에 안 싣는다.
+        assert "API /api/realtime" not in out
+
+    def test_no_route_says_so(self):
+        from bot import naver_ranking_client as nrc
+        out = "\n".join(nrc.intl_route_probe_lines(lambda u: (None, "HTTP 403")))
+        assert "따라가지 않았습니다" in out and "HTTP 403" in out
