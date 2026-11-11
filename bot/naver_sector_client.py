@@ -449,7 +449,8 @@ _UPJONG_DEFAULT_PAGE = 20        # 이 수가 오면 pageSize 가 안 먹은 것
 _UPJONG_MIN_GROUPS = 60          # 실측 79 에서 넉넉히 내린 하한
 
 
-_UPJONG_NAME_KEYS = ("name", "industryName", "groupName", "itemName", "title")
+_UPJONG_NAME_KEYS = ("name", "industryName", "groupName", "itemName", "title",
+                     "sectorName", "koreanName")   # 해외 sectors 응답 필드명은 아직 못 쟀다
 _UPJONG_RATE_KEYS = ("changeRate", "fluctuationsRatio", "changeRatio",
                      "fluctuationRate", "rate")
 
@@ -1321,7 +1322,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 12       # 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
+_CHECK_VER = 13       # 13 = 해외 sectors 주소·Finviz 새 링크 · 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -3138,6 +3139,11 @@ def check(fetch: bool = False) -> int:
         _n = len(_fvc._GROUP_ROW_RE.findall(_html)) if _html else 0
         print(f"③-d Finviz 업종: " + (f"응답 {len(_html):,}B · 업종 {_n}행" if _html
               else "못 받음(위 finviz 경고 줄이 상태코드·차단 여부를 말한다)"))
+        if _n:
+            # 어느 % 칸을 등락으로 읽는지 사람이 대조하게 첫 3행을 찍는다(파서와 같은 규칙).
+            for _sl, _nm, _tail in _fvc._GROUP_ROW_RE.findall(_html)[:3]:
+                _ps = _fvc._PCT_RE.findall(_tail)
+                print(f"   {_nm} · 읽은 등락 {(_ps or ['—'])[-1]}% · 그 행의 % 칸 {_ps}")
         if _html and not _n:
             # 200 인데 0행 = 우리 파서가 못 읽는 모양(VM 2026-11-11 실측 237KB·0행).
             # 원문 표본을 같이 찍어야 다음 라운드에 파서를 고친다(#109·#82).

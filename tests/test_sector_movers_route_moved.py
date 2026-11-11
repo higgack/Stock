@@ -456,7 +456,7 @@ def test_enum_swap_replaces_the_rejected_segment_only():
 
 def test_us_sector_movers_learn_the_region_from_the_source(intl, monkeypatch):
     # 처음 묻는 후보(USA·usa·us)에 없는 값 — 원천이 적어 보낸 허용값으로만 닿는다
-    good = nsc._RANK_V2 + "america/industries"
+    good = nsc._RANK_V2 + "foreign/america/sectors?sortType=changeRate"
     seen = []
 
     def _get(url, **kw):
@@ -464,8 +464,8 @@ def test_us_sector_movers_learn_the_region_from_the_source(intl, monkeypatch):
         if url == good:
             return {"items": _v2_rows(40, "industryName", "fluctuationsRatio"),
                     "hasNext": False}, ""
-        if url.startswith(nsc._RANK_V2):
-            seg = url[len(nsc._RANK_V2):].split("/")[0]
+        if url.startswith(nsc._RANK_V2 + "foreign/"):
+            seg = url[len(nsc._RANK_V2 + "foreign/"):].split("/")[0]
             # 원천이 실제로 보내는 봉투 모양(2026-11-11 VM — message 가 JSON 문자열, #155)
             import json as _json
             return None, nd.http_reason(400, 40, body=_json.dumps({
@@ -502,11 +502,12 @@ def test_us_sector_movers_fall_through_with_the_reason_and_cool_down(intl, monke
     out = nrc.fetch_intl_sector_movers_naver("US", top_n=10)
     assert out["up"] == [] and nd.status_from(out["reason"]) == 404      # 옛 경로의 사유
     n = len(calls)
-    assert n == 3                                                         # 그 나라 후보 셋
+    assert n == 1                                    # 실측 주소 하나(foreign/USA/sectors)
     nrc.fetch_intl_sector_movers_naver("US", top_n=10)
     assert len(calls) == n                                                # 냉각 — 다시 안 두드린다
     memo = _fvc._cached(nrc.intl_rank_memo("US"), ttl=10 ** 9)
-    assert memo["url"] == "" and len(memo["tried"]) == 3
+    assert memo["url"] == "" and len(memo["tried"]) == 1
+    assert calls[0] == nsc._RANK_V2 + "foreign/USA/sectors?sortType=changeRate"
 
 
 def test_a_handful_of_rows_is_not_adopted_as_the_us_industry_list(intl, monkeypatch):
@@ -613,3 +614,17 @@ class TestIntlRouteProbe:
         # 이름에 업종 낱말이 없어도 따라간 화면의 API 는 전부 · 접두 뒤 원문까지.
         assert "API /api/foreign/industry/" in fol
         assert "접두 /api/foreign/industry/ 원문" in fol and "/list?size=100" in fol
+
+
+def test_foreign_sectors_rows_with_sector_name_are_read(intl, monkeypatch):
+    """VM 4차 실측 주소 — 행의 이름 칸이 `sectorName` 이어도 읽는다(필드명은 아직 못 쟀다)."""
+    good = nsc._RANK_V2 + "foreign/JPN/sectors?sortType=changeRate"
+
+    def _get(url, **kw):
+        if url == good:
+            return {"items": _v2_rows(30, "sectorName", "changeRate"), "hasNext": False}, ""
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    rows, why = nrc._intl_rank_v2("JP")
+    assert len(rows) == 30 and why == ""
+    assert _fvc._cached(nrc.intl_rank_memo("JP"), ttl=10 ** 9)["url"] == good

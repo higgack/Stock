@@ -816,8 +816,17 @@ def intl_route_probe_lines(fetch) -> list:
     return out
 
 
+# VM 4차 실측(2026-11-11): 해외 업종 화면(`/market/stock/global/industry/{chn…}`)의 청크가
+# `"/api/stockSecurity/rankings/v2/foreign/".concat(t,"/sectors?")` + `sortType`(기본
+# "changeRate")·`size`·`period`·`cursor` 로 묻는다. `t` 는 nationType — 같은 청크가
+# `"CHN"===t||"HKG"===t` 로 비교한다(대문자 3자). 옛 추측(`v2/{나라}/industries`)은 전부 404.
+_INTL_SECTORS_TAIL = "/sectors?sortType=changeRate"
+
+
 def intl_rank_memo(market: str) -> str:
-    return f"naver_intl_rank_{market}.json"
+    # 이름에 판을 싣는다 — 옛 판(추측 주소 3개가 404)이 남긴 6시간 냉각 메모가 새 주소를
+    # 막지 않게(#21b 캐시가 fix 를 가린다).
+    return f"naver_intl_rank_v2_{market}.json"
 
 
 def _intl_rank_v2(market: str) -> tuple:
@@ -860,7 +869,7 @@ def _intl_rank_v2(market: str) -> tuple:
     except Exception:                                          # noqa: BLE001
         pass
     low = {a.lower() for a in aliases}
-    queue = [_nsc._RANK_V2 + a + "/industries" for a in aliases[:3]]
+    queue = [_nsc._RANK_V2 + "foreign/" + aliases[0] + _INTL_SECTORS_TAIL]
     seen, tried, url, got = set(queue), [], "", []
     while queue and len(tried) < _INTL_RANK_TRIES:
         cand = queue.pop(0)
