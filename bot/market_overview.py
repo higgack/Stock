@@ -14,9 +14,10 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1123,30 +1124,87 @@ def _kr_earnings_universe() -> list[tuple[str, str]]:
 
 
 def _earning_row_from_cal(cal, tk: str, name: str, today: date,
-                          cutoff: date) -> Optional[dict]:
+                          cutoff: date, tally: Optional[dict] = None) -> Optional[dict]:
     """yfinance .calendar dict → 예정 실적 행 또는 None. 순수(테스트 가능).
 
     KR + JP/TW/CN/HK 가 공유하는 파싱·윈도 필터. 추정치(EPS/매출)는
-    yfinance 가 비미국 종목에 종종 None → 그대로 둠('—' 표시는 렌더층)."""
+    yfinance 가 비미국 종목에 종종 None → 그대로 둠('—' 표시는 렌더층).
+
+    ⚠️ `Earnings Date` 는 **추정 범위(시작·끝)** 로 오기도 한다. 옛 판은 첫 원소만
+    보고 그게 지났으면 버려, 범위가 오늘을 걸치는 종목이 통째로 빠졌다(사용자
+    2026-11-11 "한국은 안나오네"). 창 [오늘, cutoff] 안의 **첫 날짜**를 쓴다.
+
+    `tally` 를 주면 갈래(무일정·지난 날짜만·창 밖·형식 오류·채택)를 센다 —
+    0건일 때 화면이 '왜' 를 말하는 재료다(#43·#82)."""
+    def _t(k: str) -> None:
+        if tally is not None:
+            tally[k] = tally.get(k, 0) + 1
     if not isinstance(cal, dict):
+        _t("no_cal")
         return None
     eds = cal.get("Earnings Date") or []
+    if not isinstance(eds, (list, tuple)):
+        eds = [eds]
     if not eds:
+        _t("no_cal")
         return None
-    d0 = eds[0]
-    ds = d0.strftime("%Y-%m-%d") if hasattr(d0, "strftime") else str(d0)[:10]
-    try:
-        dd = datetime.strptime(ds, "%Y-%m-%d").date()
-    except (ValueError, TypeError):
+    days = []
+    for d0 in eds:
+        ds = d0.strftime("%Y-%m-%d") if hasattr(d0, "strftime") else str(d0)[:10]
+        try:
+            days.append(datetime.strptime(ds, "%Y-%m-%d").date())
+        except (ValueError, TypeError):
+            continue
+    if not days:
+        _t("bad")
         return None
-    if dd < today or dd > cutoff:
+    inwin = sorted(d for d in days if today <= d <= cutoff)
+    if not inwin:
+        _t("past" if max(days) < today else "beyond")
         return None
+    _t("ok")
     return {
-        "symbol": tk, "name": name, "date": ds, "hour": "",
+        "symbol": tk, "name": name, "date": inwin[0].strftime("%Y-%m-%d"), "hour": "",
         "eps_estimate": cal.get("Earnings Average"),
         "revenue_estimate": cal.get("Revenue Average"),
         "quarter": None, "year": None,
     }
+
+
+# 시장별 실적 스캔 갈래 — 0건이 '원천에 일정이 없다' 인지 '못 받았다' 인지 화면이
+# 가르게 한다. 파일 하나(시장 키)에 마지막 스캔만 남긴다(가격 캐시와 별개).
+_EARN_TALLY_LABELS = (("ok", "채택"), ("past", "지난 날짜만"), ("beyond", "창 밖"),
+                      ("no_cal", "일정 없음"), ("bad", "형식 오류"), ("error", "조회 실패"))
+
+
+def _earn_note_path(key: str) -> Path:
+    return _CACHE_DIR / "finnhub" / f"earnings_note_{key}.json"
+
+
+def _write_earn_note(key: str, scanned: int, tally: dict, window_days: int) -> None:
+    try:
+        _earn_note_path(key).write_text(json.dumps(
+            {"scanned": scanned, "tally": tally, "window_days": window_days,
+             "at": time.time()}, ensure_ascii=False))
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
+def earnings_scan_note(key: str) -> str:
+    """마지막 스캔이 왜 0건이었나 — 사람 문장(없으면 ""). 키 = kr/JP/TW/CN_A/HK."""
+    try:
+        n = json.loads(_earn_note_path(key).read_text())
+    except Exception:                                          # noqa: BLE001
+        return ""
+    sc = int(n.get("scanned") or 0)
+    t = n.get("tally") or {}
+    if sc <= 0:
+        return "조회할 종목 목록을 만들지 못했습니다"
+    parts = [f"{lbl} {t[k]}" for k, lbl in _EARN_TALLY_LABELS if t.get(k)]
+    at = datetime.fromtimestamp(float(n.get("at") or 0),
+                                timezone(timedelta(hours=9))).strftime("%m-%d %H:%M")
+    return (f"yfinance 에서 {sc}종목을 조회했지만 앞으로 {n.get('window_days', 90)}일 안의 "
+            f"실적 예정일이 없습니다({' · '.join(parts) or '응답 없음'} · {at} KST 조회)")
 
 
 def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
@@ -1170,13 +1228,22 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
 
     cutoff = today + timedelta(days=days_ahead)
 
+    tally: dict = {}
+    _tl = threading.Lock()
+
     def _one(item):
         tk, name = item
+        loc: dict = {}
         try:
-            return _earning_row_from_cal(yf.Ticker(tk).calendar, tk, name,
-                                         today, cutoff)
+            r = _earning_row_from_cal(yf.Ticker(tk).calendar, tk, name,
+                                      today, cutoff, tally=loc)
         except Exception:
-            return None
+            loc = {"error": 1}
+            r = None
+        with _tl:
+            for k, v in loc.items():
+                tally[k] = tally.get(k, 0) + v
+        return r
 
     results: list[dict] = []
     try:
@@ -1202,6 +1269,9 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
             if r:
                 results.append(r)
     results.sort(key=lambda x: x.get("date", ""))
+    _write_earn_note("kr", len(universe), tally, days_ahead)
+    if not results:
+        log.warning("kr earnings: %d종목 조회 · 0건 — %s", len(universe), tally)
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
     except Exception:
@@ -1289,13 +1359,22 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
 
     cutoff = today + timedelta(days=days_ahead)
 
+    tally: dict = {}
+    _tl = threading.Lock()
+
     def _one(item):
         tk, name = item
+        loc: dict = {}
         try:
-            return _earning_row_from_cal(yf.Ticker(tk).calendar, tk, name,
-                                         today, cutoff)
+            r = _earning_row_from_cal(yf.Ticker(tk).calendar, tk, name,
+                                      today, cutoff, tally=loc)
         except Exception:
-            return None
+            loc = {"error": 1}
+            r = None
+        with _tl:
+            for k, v in loc.items():
+                tally[k] = tally.get(k, 0) + v
+        return r
 
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=12) as pool:
@@ -1303,6 +1382,7 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
             if r:
                 results.append(r)
     results.sort(key=lambda x: x.get("date", ""))
+    _write_earn_note(market, len(universe), tally, days_ahead)
     # 한글 종목명 (사용자 2026-06-13 '일본부터 티커말고 번역 한국종목명') — peer
     # 맵엔 이름 없어 name==ticker. 확정 실적일 있는 결과(희소)만 yfinance
     # longName → chart_translate(Flash·영구캐시) 번역. 6h 캐시에 이름까지 저장.

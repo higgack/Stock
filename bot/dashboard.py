@@ -19635,10 +19635,25 @@ def _render_market_page(data: dict) -> str:
     # 우선 순서 유지, 첫 비어있지 않은 탭이 active. 모두 비면 안내 문구.
     # HK 를 TW 앞으로 (사용자 2026-06-14 '대만·홍콩 순서 바꿔' — market.html 위젯
     # 순서와 통일).
+    # ⚠️ 빈 탭을 지우되 **한국은 사유와 함께 남긴다**(사용자 2026-11-11 "이것도
+    # 한국은 안나오네" — 기본 시장이 말없이 사라지면 고장인지 일정이 없는지 모른다,
+    # #43·#335). 다른 시장은 종전대로 내용 없으면 지운다(2026-06-13 '내용없으면 지워').
+    try:
+        from bot.market_overview import earnings_scan_note as _esn
+        _kr_why = "" if _earn_kr else _esn("kr")
+    except Exception:                                          # noqa: BLE001
+        _kr_why = ""
     _etab_defs = [(k, lbl, rows) for k, lbl, rows in (
         ("kr", "한국", _earn_kr), ("us", "미국", _earn_us),
         ("jp", "일본", _earn_jp), ("hk", "홍콩", _earn_hk),
-        ("cn", "중국", _earn_cn), ("tw", "대만", _earn_tw)) if rows]
+        ("cn", "중국", _earn_cn), ("tw", "대만", _earn_tw))
+        if rows or (k == "kr" and _kr_why)]
+
+    def _etab_body(k: str, rows: list) -> str:
+        if not rows and k == "kr":
+            return (f'<div class="empty-msg">⚠️ 한국 실적 예정일을 표시할 수 없습니다 — '
+                    f'{_html.escape(_kr_why)}</div>')
+        return _render_earnings_table(rows)
     if _etab_defs:
         _etab_btns = "".join(
             f'<button class="etab-btn{" active" if i == 0 else ""}" '
@@ -19646,7 +19661,7 @@ def _render_market_page(data: dict) -> str:
             for i, (k, lbl, rows) in enumerate(_etab_defs))
         _etab_panes = "".join(
             f'<div id="etab-{k}" class="etab-pane{" active" if i == 0 else ""}">'
-            f'{_render_earnings_table(rows)}</div>'
+            f'{_etab_body(k, rows)}</div>'
             for i, (k, lbl, rows) in enumerate(_etab_defs))
     else:
         _etab_btns = ""
