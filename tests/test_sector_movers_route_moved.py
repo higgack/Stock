@@ -17,6 +17,7 @@ import bot.naver_sector_client as nsc
 from bot import naver_diag as nd
 
 _OLD = nsc._UPJONG_API
+_ORIG_MAYBE = nsc._maybe_discover_upjong      # iso 가 갈아 끼우기 전의 원본
 _NEW = "https://stock.naver.com/api/domestic/upjong/list"
 
 
@@ -180,3 +181,50 @@ def test_kr_widget_screen_hides_the_route_dump():
                          nd.http_reason(404, 80, body={"message": "Route GET:/api/x not found"})])
     html = d._render_sector_movers({"up": [], "down": [], "reason": why})
     assert "새 주소를 탐색" in html and "Route GET" not in html
+
+
+def test_upjong_like_paths_keeps_other_words_and_drops_templates():
+    got = nsc.upjong_like_paths(["/api/domestic/industry/list", "/api/x/upjong/{c}/list",
+                                 "/api/news/list", "/api/sector/top"])
+    assert got == ["/api/domestic/industry/list", "/api/sector/top"]
+
+
+def test_upjong_from_theme_derives_siblings():
+    assert nsc.upjong_from_theme("https://stock.naver.com/api/a/theme/list") == [
+        "https://stock.naver.com/api/a/upjong/list",
+        "https://stock.naver.com/api/a/industry/list",
+        "https://stock.naver.com/api/a/sector/list"]
+    assert nsc.upjong_from_theme("") == []
+
+
+def test_discovery_tries_theme_sibling_and_keeps_all_paths(iso, monkeypatch):
+    from bot import naver_spa_discover as disc
+    seen = {}
+    monkeypatch.setattr(disc, "discover", lambda *a, **k: (
+        seen.update(k) or (["/api/news/list"], "")))
+    monkeypatch.setattr(nsc, "theme_memo_url",
+                        lambda: "https://stock.naver.com/api/b/theme/list")
+    sib = "https://stock.naver.com/api/b/industry/list"
+    _route(monkeypatch, {sib: lambda: (_rows(79), "")})
+    nsc._discover_upjong_endpoint()
+    memo, _ = nsc._cache_read_any(nsc._UPJONG_MEMO)
+    assert memo["url"] == sib and memo["all_paths"] == ["/api/news/list"]
+    assert memo["theme_basis"].endswith("/theme/list")
+    assert seen["chunk_cap"] == nsc._UPJONG_CHUNK_CAP and seen["prefer"] == "page"
+
+
+def test_new_theme_basis_lifts_cooldown(iso, monkeypatch):
+    """단서(테마 주소)가 같으면 6시간 냉각, 바뀌면 바로 다시 탐색한다."""
+    import threading
+    import bot.finviz_client as fc
+    monkeypatch.setattr(fc, "naver_paused", lambda: False)
+    started = []
+    monkeypatch.setattr(threading.Thread, "start", lambda self: started.append(1))
+    nsc._cache_write(nsc._UPJONG_MEMO, {"url": "", "theme_basis": "old"})
+    monkeypatch.setattr(nsc, "theme_memo_url", lambda: "old")
+    _ORIG_MAYBE()
+    assert started == []
+    monkeypatch.setattr(nsc, "theme_memo_url", lambda: "new")
+    _ORIG_MAYBE()
+    assert started == [1]
+    nsc._BG_KEYS.discard(nsc._UPJONG_MEMO)                 # start 를 막았으므로 직접 치운다
