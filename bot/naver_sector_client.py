@@ -449,6 +449,19 @@ _UPJONG_DEFAULT_PAGE = 20        # 이 수가 오면 pageSize 가 안 먹은 것
 _UPJONG_MIN_GROUPS = 60          # 실측 79 에서 넉넉히 내린 하한
 
 
+_UPJONG_NAME_KEYS = ("name", "industryName", "groupName", "itemName", "title")
+_UPJONG_RATE_KEYS = ("changeRate", "fluctuationsRatio", "changeRatio",
+                     "fluctuationRate", "rate")
+
+
+def _first_of(r: dict, keys) -> object:
+    for k in keys:
+        v = r.get(k)
+        if v not in (None, ""):
+            return v
+    return None
+
+
 def parse_upjong_json(rows: object) -> list:
     """네이버 업종 JSON → [{name, pct, rise, fall, mcap}] (순수).
 
@@ -462,11 +475,15 @@ def parse_upjong_json(rows: object) -> list:
     for r in rows:
         if not isinstance(r, dict):
             continue
-        name = str(r.get("name") or "").strip()
+        # 새 랭킹 가족(2026-11-11 `rankings/v2/domestic/industries`)의 필드 이름은
+        # 아직 재지 않았다 — 옛 이름을 먼저 보고, 네이버 형제 API 가 쓰는 이름을
+        # 뒤에 둔다. 채택은 여전히 '전 업종(≥60행)이 숫자로 읽히나' 가 가른다(#25).
+        name = str(_first_of(r, _UPJONG_NAME_KEYS) or "").strip()
         if not name:
             continue
         try:
-            pct = float(str(r.get("changeRate")).replace(",", ""))
+            pct = float(str(_first_of(r, _UPJONG_RATE_KEYS)).replace(",", "")
+                        .replace("%", ""))
         except (TypeError, ValueError):
             continue
         item = {"name": name, "pct": pct}
@@ -529,6 +546,13 @@ def upjong_memo_url() -> str:
     return str((memo or {}).get("url") or "")
 
 
+def upjong_memo_params() -> dict | None:
+    """탐색이 검증할 때 쓴 쿼리(없으면 None = 옛 `pageSize`)."""
+    memo, _ = _cache_read_any(_UPJONG_MEMO)
+    p = (memo or {}).get("params")
+    return dict(p) if isinstance(p, dict) else None
+
+
 def upjong_full(raw: object) -> bool:
     """이 응답이 전 업종 목록인가(순수) — 테마가 섞여 오면 아니다(#96)."""
     rows = _upjong_rows(raw)
@@ -554,6 +578,56 @@ def upjong_like_paths(paths) -> list:
         if any(w in low for w in _UPJONG_WORDS) and p not in out:
             out.append(p)
     return out
+
+
+_ENUM_RE = re.compile(r"Expected\s+((?:'[^']+'\s*\|?\s*)+)")
+_UPJONG_STEMS = ("industr", "upjong", "sector")
+
+
+def enum_values(why: str) -> list:
+    """원천이 400 에 적어 보낸 허용값(`Expected 'a' | 'b'`) → ['a','b'] (순수).
+
+    2026-11-11 VM 실측: `rankings/v2/domestic/upjong` → `category: Invalid enum
+    value. Expected 'industries' | 'themes' | 'groups'`. 이름을 짐작하지 않고
+    원천이 말한 값을 쓴다(#349·#353 원천이 적어 보낸 사유를 버리지 말 것)."""
+    m = _ENUM_RE.search(str(why or ""))
+    return re.findall(r"'([^']+)'", m.group(1)) if m else []
+
+
+def enum_candidates(url: str, why: str, stems) -> list:
+    """거절된 마지막 경로 조각을 원천이 밝힌 허용값 중 **이 자원의 것**으로 바꾼다."""
+    base = str(url).rsplit("/", 1)[0] + "/"
+    return [base + v for v in enum_values(why)
+            if any(st in v.lower() for st in stems)]
+
+
+_CURSOR_PAGE_CAP = 10
+
+
+def _get_cursor_pages(url: str, params: dict | None) -> tuple:
+    """(응답, 사유) — `{items, hasNext, cursor}` 봉투면 커서를 따라 끝까지 모은다.
+
+    새 랭킹 가족은 `size`·`cursor` 로 쪽을 나눈다(청크 원문 `E.set("cursor",o)`
+    · `!o.hasNext||!(t=o.cursor)`). 그 봉투가 아니면 한 번 받은 그대로 돌려준다.
+    중간 쪽이 실패하면 받은 데까지 주되 **사유에 적는다**(#280·#343)."""
+    raw, why = _get2_json(url, params=params) if params else _get2_json(url)
+    if not (isinstance(raw, dict) and isinstance(raw.get("items"), list)):
+        return raw, why
+    items = list(raw["items"])
+    cur, more, pages = raw.get("cursor"), raw.get("hasNext"), 1
+    while more and cur and pages < _CURSOR_PAGE_CAP:
+        q = dict(params or {})
+        q["cursor"] = cur
+        nxt, nwhy = _get2_json(url, params=q)
+        if not (isinstance(nxt, dict) and isinstance(nxt.get("items"), list)):
+            why = f"{pages + 1}쪽에서 멈춤 — {nwhy or '목록 아님'}"
+            break
+        items += nxt["items"]
+        cur, more, pages = nxt.get("cursor"), nxt.get("hasNext"), pages + 1
+    else:
+        if more and cur:
+            why = f"{_CURSOR_PAGE_CAP}쪽 상한에서 멈춤"
+    return {"items": items}, why
 
 
 _QUERY_DIRECT = re.compile(r'^\s*\.concat\(\s*\w+\s*,\s*"\?')
@@ -618,7 +692,9 @@ def _upjong_fetch_ladder() -> tuple:
     first = None
     notes = []
     for u in urls:
-        raw, why = _get2_json(u, params={"pageSize": _UPJONG_PAGE_SIZE})
+        mp = upjong_memo_params() if u == memo else None
+        raw, why = _get_cursor_pages(u, mp if mp is not None
+                                     else {"pageSize": _UPJONG_PAGE_SIZE})
         raw = _upjong_rows(raw)
         if first is None:
             first = (raw, why, u)
@@ -681,16 +757,30 @@ def _discover_upjong_endpoint() -> None:
              + theme_candidates(paths))
     seen: set = set()
     cands = [c for c in cands if c != _UPJONG_API and not (c in seen or seen.add(c))]
-    for cand in cands[:_UPJONG_DISCOVER_TRIES]:
-        raw, rwhy = _get2_json(cand, params={"pageSize": _UPJONG_PAGE_SIZE})
-        # 주소는 있는데(404 아님) 우리 쿼리를 거절했으면 쿼리 없이 한 번 더 —
-        # 새 SPA 의 쿼리 이름은 아직 모른다(#165 지어내지 않는다).
-        if raw is None and rwhy and _nd.status_from(rwhy) not in (None, 404):
-            raw2, rwhy2 = _get2_json(cand)
-            if raw2 is not None:
-                raw, rwhy = raw2, ""
-            else:
-                rwhy = f"{rwhy} · 쿼리 없이도 {rwhy2}"
+    url_params: dict | None = None
+    queue = list(cands)
+    tries = 0
+    while queue and tries < _UPJONG_DISCOVER_TRIES:
+        cand = queue.pop(0)
+        tries += 1
+        # 쿼리 이름은 가족마다 다르다(옛 `pageSize` · 새 랭킹 가족 `size` — 청크
+        # 원문 `E.set("size",…)`). 404 가 아닌 거절이면 다른 이름·쿼리 없이 다시
+        # 묻는다. 원천이 경로 조각의 허용값을 적어 보내면 그 값으로 바꿔 묻는다.
+        raw, rwhy, used = None, "", None
+        whys: list = []
+        for params in ({"pageSize": _UPJONG_PAGE_SIZE}, {"size": _UPJONG_PAGE_SIZE}, {}):
+            raw, rwhy = _get_cursor_pages(cand, params)
+            used = params
+            if raw is not None or _nd.status_from(rwhy or "") in (None, 404):
+                break
+            whys.append(rwhy)
+            learned = [c for c in enum_candidates(cand, rwhy, _UPJONG_STEMS)
+                       if c not in seen and not seen.add(c)]
+            if learned:
+                queue[:0] = learned
+                break
+        if raw is None and whys:
+            rwhy = " · ".join(dict.fromkeys(whys))
         ok = upjong_full(raw)
         n = len(parse_upjong_json(_upjong_rows(raw)))
         # 실패해도 **응답 모양**을 남긴다 — 주소는 맞는데 필드 이름이 바뀐 것과
@@ -698,9 +788,10 @@ def _discover_upjong_endpoint() -> None:
         _smp = "" if ok or rwhy else f" · 표본 {_nd.body_sample(raw, 160)}"
         tried.append(f"{cand} — {'✅ %d개' % n if ok else (rwhy or f'{n}개(하한 미달)')}{_smp}")
         if ok:
-            url = cand
+            url, url_params = cand, used
             break
-    _cache_write(_UPJONG_MEMO, {"url": url, "found": paths[:8], "tried": tried,
+    _cache_write(_UPJONG_MEMO, {"url": url, "params": url_params,
+                                "found": paths[:8], "tried": tried,
                                 "why": why, "at": time.time(),
                                 "theme_basis": theme_memo_url(),
                                 # 업종처럼 안 보여 거른 것까지 남긴다 — 새 SPA 가
@@ -1145,7 +1236,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 7        # 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유
+_CHECK_VER = 8        # 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -2915,6 +3006,7 @@ def check(fetch: bool = False) -> int:
     _memo, _age = _cache_read_any(_UPJONG_MEMO)
     if _memo:
         print(f"③-a 업종 주소 메모: 검증됨={_memo.get('url') or '없음'} · "
+              f"쿼리 {_memo.get('params')} · "
               f"발견 {len(_memo.get('found') or [])}개 · {_memo.get('why') or ''}")
         print(f"   테마 주소(형제 단서): {_memo.get('theme_basis') or '없음'}")
         for _lit, _sn in (_memo.get("contexts") or {}).items():
