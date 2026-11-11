@@ -1249,6 +1249,8 @@ def _fetch_equity_fund_naver() -> list:
         except Exception as exc:
             log.warning("naver equity fund fetch failed (~%s): %s", cursor, exc)
             rows, fails = [], fails + 1
+            if fails <= 2:
+                continue    # 일시 실패로 이어 묻기를 끊지 않는다 — 같은 커서로 다시(상한 2회)
         new_days = []
         for it in rows if isinstance(rows, list) else []:
             d = str(it.get("bizdate") or "")

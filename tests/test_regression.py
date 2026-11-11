@@ -12834,6 +12834,27 @@ class TestEquityFundNaver:
         assert got == want, sorted(want - got)[:5]
         assert len(calls) <= 6
 
+    def test_transient_failure_does_not_end_the_walk(self, monkeypatch):
+        """첫 요청이 일시 실패해도 같은 커서로 다시 물어 끝까지 간다(이어 묻기가 첫 실패에
+        끊기면 차트가 통째로 빈다)."""
+        import requests
+        import bot.naver_sector_client as ns
+        import bot.finviz_client as fv
+        from datetime import date as _d
+        n = {"c": 0}
+        class R:
+            status_code = 200
+            def json(self):
+                return [{"bizdate": f"{_d.today():%Y%m%d}", "beneficiaryCertificateStock": "5"}]
+        def fake_get(url, *a, **k):
+            n["c"] += 1
+            if n["c"] == 1:
+                raise requests.ConnectionError("blip")
+            return R()
+        monkeypatch.setattr(requests, "get", fake_get)
+        monkeypatch.setattr(fv, "naver_paused", lambda: False)
+        assert ns._fetch_equity_fund_naver() == [(f"{_d.today():%Y%m%d}", 5.0)]
+
     def test_render_shows_third_chart(self):
         # 렌더 스캐폴드(merged)가 equity_fund_series 있으면 3번째 차트 + 3-col
         import bot.dashboard as d
