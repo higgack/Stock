@@ -308,3 +308,59 @@ def test_discovery_validates_prefix_candidates_and_keeps_samples(iso, monkeypatc
     assert memo["url"] == good, memo["tried"]
     assert any("표본" in t and "foo" in t for t in memo["tried"])
     assert memo["contexts"] == {"/api/domestic/market/": ['"+x+"/list"']}
+
+
+# ── 2026-11-11 3차 VM 실측: 원천이 허용값을 적어 보냈다 ─────────────────────
+# `rankings/v2/domestic/upjong` → 400 `category: Invalid enum value. Expected
+# 'industries' | 'themes' | 'groups'`. 그 값으로 다시 묻고, `size`·`cursor` 로
+# 쪽을 넘긴다(청크 원문). 이름은 원천이 말한 것만 쓴다(#165·#349).
+_ENUM_WHY = ("원천이 HTTP 400 — 원천: category: Invalid enum value. Expected "
+             "'industries' | 'themes' | 'groups', received 'upjong' (invalid_enum_value)")
+
+
+def test_enum_values_reads_what_the_source_allows():
+    assert nsc.enum_values(_ENUM_WHY) == ["industries", "themes", "groups"]
+    assert nsc.enum_values("원천이 HTTP 404") == []
+    got = nsc.enum_candidates("https://x/api/r/v2/domestic/upjong", _ENUM_WHY,
+                              nsc._UPJONG_STEMS)
+    assert got == ["https://x/api/r/v2/domestic/industries"]       # themes·groups 는 업종 아님
+
+
+def test_discovery_learns_enum_and_follows_cursor(iso, monkeypatch):
+    from bot import naver_spa_discover as disc
+    monkeypatch.setattr(disc, "discover", lambda *a, **k: (
+        ["/api/stockSecurity/rankings/v2/domestic/"], ""))
+    base = "https://stock.naver.com/api/stockSecurity/rankings/v2/domestic/"
+    good = base + "industries"
+    # 새 가족의 필드 이름(옛 name/changeRate 가 아닐 수 있다) + 두 쪽
+    rows = [{"industryName": f"업종{i}", "fluctuationsRatio": f"{i - 40}.0"}
+            for i in range(79)]
+    seen = []
+
+    def _get(url, **kw):
+        p = kw.get("params") or {}
+        seen.append((url, dict(p)))
+        if url == base + "upjong" or (url.startswith(base) and url != good):
+            return None, nd.http_reason(400, 40, body={
+                "detailCode": "invalid_enum_value",
+                "message": "category: Invalid enum value. Expected 'industries' | "
+                           "'themes' | 'groups', received 'x'"})
+        if url != good:
+            return _404()
+        if "pageSize" in p:
+            return None, nd.http_reason(400, 40, body={"message": "unknown key pageSize"})
+        if p.get("cursor") == "c2":
+            return {"items": rows[50:], "hasNext": False, "cursor": None}, ""
+        return {"items": rows[:50], "hasNext": True, "cursor": "c2"}, ""
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    nsc._discover_upjong_endpoint()
+    memo, _ = nsc._cache_read_any(nsc._UPJONG_MEMO)
+    assert memo["url"] == good, memo["tried"]
+    assert memo["params"] == {"size": nsc._UPJONG_PAGE_SIZE}
+    assert (good, {"size": nsc._UPJONG_PAGE_SIZE, "cursor": "c2"}) in seen
+    # 원천이 말하지 않은 값(themes·groups)은 업종 후보로 묻지 않는다
+    assert not any(u.endswith(("/themes", "/groups")) for u, _ in seen)
+
+    # 사다리가 메모의 주소·쿼리로 79개를 받는다(화면 경로, #35)
+    raw, why, used = nsc._upjong_fetch_ladder()
+    assert used == good and len(nsc.parse_upjong_json(raw)) == 79, why
