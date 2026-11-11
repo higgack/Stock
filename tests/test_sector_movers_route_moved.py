@@ -586,3 +586,30 @@ class TestIntlRouteProbe:
         from bot import naver_ranking_client as nrc
         out = "\n".join(nrc.intl_route_probe_lines(lambda u: (None, "HTTP 403")))
         assert "따라가지 않았습니다" in out and "HTTP 403" in out
+
+    def test_nation_industry_routes_are_followed_first(self):
+        """VM 3차: 이름순으로 `/briefing/sector/…` 부터 따라가 상한에 걸렸다."""
+        from bot import naver_ranking_client as nrc
+        noise = ";".join(f'a{i}="/briefing/sector/x{i}"' for i in range(10))
+        home_js = noise + ';b="/market/stock/usa/industry"'
+        page_js = 'g=async e=>f("/api/foreign/industry/".concat(e,"/list?size=100"))'
+        calls = []
+
+        def fetch(u):
+            calls.append(u)
+            if u == "https://m.stock.naver.com/worldstock/":
+                return '<script src="/_next/static/chunks/app/h/page-1.js"></script>', ""
+            if u.endswith("page-1.js"):
+                return home_js, ""
+            if u == "https://stock.naver.com/market/stock/usa/industry":
+                return '<script src="/_next/static/chunks/app/i/page-2.js"></script>', ""
+            if u.endswith("page-2.js"):
+                return page_js, ""
+            return None, "HTTP 404"
+        out = "\n".join(nrc.intl_route_probe_lines(fetch))
+        assert "https://stock.naver.com/market/stock/usa/industry" in calls
+        fol = out.split("따라감 [https://stock.naver.com/market/stock/usa/industry]")[1]
+        fol = fol.split("따라감 [")[0]
+        # 이름에 업종 낱말이 없어도 따라간 화면의 API 는 전부 · 접두 뒤 원문까지.
+        assert "API /api/foreign/industry/" in fol
+        assert "접두 /api/foreign/industry/ 원문" in fol and "/list?size=100" in fol
