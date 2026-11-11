@@ -696,13 +696,27 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
         if _session_fresh(market, _mt, 30):   # 30초(사용자 2026-06-15 '업종 30초')
             return stale
     import requests
+    from bot import naver_diag as _nd
+    # 실패 갈래를 **사유로 싣는다** — 옛 판은 404·차단·모양 변경이 전부 같은 빈
+    # dict 라 호출부가 "왜 폴백했나" 를 말할 수 없었다(#82·#43).
     try:
-        codes = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12).json()
+        resp = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:                                  # noqa: BLE001
+                body = None
+            return {"up": [], "down": [], "ts": "", "source": "",
+                    "reason": _nd.http_reason(resp.status_code,
+                                              len(resp.content or b""), body=body)}
+        codes = resp.json()
     except Exception as exc:
         log.warning("naver 업종등락 list (%s): %s", market, exc)
-        return {"up": [], "down": [], "ts": "", "source": ""}
+        return {"up": [], "down": [], "ts": "", "source": "",
+                "reason": _nd.http_reason(None, exc=exc)}
     if not isinstance(codes, list):
-        return {"up": [], "down": [], "ts": "", "source": ""}
+        return {"up": [], "down": [], "ts": "", "source": "",
+                "reason": _nd.shape_reason("업종 목록", codes)}
     rows: list = []
     for ic in codes:
         if not isinstance(ic, dict):
@@ -741,7 +755,8 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
         if den > 0:
             rows.append({"name": name, "pct": round(num / den, 2)})
     if not rows:
-        return {"up": [], "down": [], "ts": "", "source": ""}
+        return {"up": [], "down": [], "ts": "", "source": "",
+                "reason": f"업종 {len(codes)}개를 받았지만 업종별 종목 등락을 한 건도 못 읽었습니다"}
     # 업종명 한글 유지 (사용자 2026-06-15 '일본·중국·홍콩도 대만처럼 한글로')
     # — name 은 industryGroupKor(네이버 한글). 2026-06-14 영문 번역 폐기.
     rows.sort(key=lambda r: r["pct"], reverse=True)

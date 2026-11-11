@@ -574,7 +574,8 @@ def top_l3_movers(top_n: int = 10) -> dict:
 
 def top_sector_movers(top_n: int = 10) -> dict:
     """11 GICS 섹터 상/하위(부호 분리). top_movers 와 동일 shape, 데이터만
-    섹터(간략). (미사용 — 메인은 top_l3_movers, 세부는 top_movers.)"""
+    섹터(간략). 메인 미국 업종 위젯의 **마지막 폴백**(네이버·Finviz L3 가 다
+    비었을 때 — `market_overview._fetch_us_sector_movers_safe`, 2026-11-11)."""
     data = fetch_sectors()
     gs = [g for g in data.get("groups", []) if g.get("pct") is not None]
     ups = [g for g in gs if g["pct"] > 0]
