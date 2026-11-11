@@ -58932,7 +58932,10 @@ class TestNaverWidgetSilence20260911:
         import bot.dashboard as d
         html = d._render_sector_movers({"up": [], "down": [],
                                         "reason": "원천이 HTTP 403 — 차단·봇 탐지 의심"})
-        assert "한국 업종 등락 TOP 10" in html and "403" in html   # 사라지지 않는다
+        # 사라지지 않고 갈래를 말한다. 2026-11-11 부터 화면엔 사람 문장만 싣는다
+        # (`public_reason`, #391 — 사용자 캡처의 `Route GET:/api/…` 원문). 그래서
+        # 옛 단언 `"403" in html` 을 **같은 갈래의 사람 문장**으로 다시 썼다(#222).
+        assert "한국 업종 등락 TOP 10" in html and "접근을 막았습니다" in html
         assert d._render_sector_movers({}) == ""       # 사유도 없으면 종전대로 생략
         stale = d._render_sector_movers({"up": [{"name": "반도체", "pct": 1.5}],
                                          "down": [], "ts": "2026-09-10 15:30",
