@@ -24,7 +24,7 @@ import bot.macro_snapshot as ms
 import bot.market_overview as mo
 
 _SID = "PCEPILFE"             # 월간 카드
-_DAILY = "DGS10"              # 일별 카드(월평균 스파크)
+_DAILY = "DGS10"              # 일별 카드(월말값 스파크 — 2026-11-11 부터 사본 이름에 `me`)
 _GDP = "A191RL1Q225SBEA"      # 분기 카드
 
 
@@ -107,7 +107,7 @@ def test_the_spark_reads_the_same_ttl_function_as_the_headline(spark, monkeypatc
     assert len(spark["calls"]) == 2, "헤드라인 TTL 을 줄였는데 스파크는 안 따라왔다"
     # 일별 카드는 일별 TTL 을 쓴다 — 같은 함수가 가른다
     ms._fred_monthly(_DAILY)
-    _age(_cache_file(_DAILY), 0.5)
+    _age(_cache_file(_DAILY, freq="me"), 0.5)   # 일별은 월말값(eop) 사본(2026-11-11)
     monkeypatch.setattr(mo, "_FRED_TTL_DAILY_H", 0.25)
     monkeypatch.setattr(mo, "_FRED_TTL_OTHER_H", 24.0)
     ms._fred_monthly(_DAILY)

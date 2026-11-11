@@ -18514,12 +18514,16 @@ def _ax_fmt(v: float) -> str:
     return f"{v:.2f}"
 
 
-def _svg_line_chart(labels: list, series: list) -> str:
+def _svg_line_chart(labels: list, series: list, *, split: bool = False) -> str:
     """Generic multi-series line chart in inline SVG. Theme-aware via
     currentColor for axes/grid; each series carries its own color.
 
     series item: {"name", "color", "data": [floats], "axis": "L"|"R"}
-    """
+
+    `split=True` — 좌축 계열은 위 띠, 우축 계열은 아래 띠에 그린다. 두 축의 눈금이
+    서로 무관한데 선이 겹치거나 닿으면 '금리차가 미 금리에 닿았다' 처럼 없는 관계로
+    읽힌다(2026-11-11 한·미 금리 차트, 사용자 "그래프 스케일이 좀 이상한데").
+    축 값은 그대로 정확하다 — 범위만 넓혀 띠를 가른다."""
     if not labels or not series:
         return ""
     has_right = any(s.get("axis") == "R" for s in series)
@@ -18549,6 +18553,10 @@ def _svg_line_chart(labels: list, series: list) -> str:
     rr = _range("R") if has_right else None
     if lr is None:
         return ""
+    if split and rr is not None:
+        # 좌축 데이터 = 위 58%, 우축 데이터 = 아래 34% (사이 8% 는 빈 띠).
+        lr = (lr[1] - (lr[1] - lr[0]) / 0.58, lr[1])
+        rr = (rr[0], rr[0] + (rr[1] - rr[0]) / 0.34)
     n = max(len(s["data"]) for s in series)
 
     def _x(i: int) -> float:
@@ -18568,6 +18576,8 @@ def _svg_line_chart(labels: list, series: list) -> str:
             f'stroke="currentColor" stroke-width="0.5" opacity="0.18"/>'
         )
         lv = lr[1] - (k / 4) * (lr[1] - lr[0])
+        if split and rr is not None and k / 4 > 0.58:
+            continue                  # 좌축 띠 밖 — 빈 칸에 좌축 값을 적지 않는다
         parts.append(
             f'<text x="{padL - 7:.0f}" y="{gy + 5:.1f}" font-size="13" '
             f'fill="currentColor" text-anchor="end">{_ax_fmt(lv)}</text>'
@@ -18577,6 +18587,8 @@ def _svg_line_chart(labels: list, series: list) -> str:
         for k in range(5):
             gy = padT + (k / 4) * plotH
             rv = rr[1] - (k / 4) * (rr[1] - rr[0])
+            if split and k / 4 < 0.66:
+                continue              # 우축 띠 밖
             parts.append(
                 f'<text x="{W - padR + 7:.0f}" y="{gy + 5:.1f}" font-size="13" '
                 f'fill="currentColor" text-anchor="start">{_ax_fmt(rv)}</text>'
@@ -19126,7 +19138,7 @@ def _render_macro_charts_row(macro: dict) -> str:
             {"name": "미국 10Y", "color": "#42a5f5", "data": _us, "axis": "L"},
             {"name": _krlbl, "color": "#26c6da", "data": _kr, "axis": "L"},
             {"name": "美-韓 금리차", "color": "#ab47bc", "data": _spread, "axis": "R"},
-        ])
+        ], split=True)
         cards.append(_chart_card(
             "한·미 국채 금리 추이",
             [("미국 10Y (좌)", "#42a5f5"), (f"{_krlbl} (좌)", "#26c6da"),

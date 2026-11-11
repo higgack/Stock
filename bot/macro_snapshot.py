@@ -239,7 +239,7 @@ def _spark_until(series_id: str, headline_time: str) -> str:
 
     월간·분기 원천 계열은 스파크를 같은 주기로 묻고(`frequency=m`/`q`) FRED 는 두 요청 모두
     관측일을 **기간 첫날**로 준다 — 날짜 문자열을 그대로 대조할 수 있다. 일별·주간 계열은
-    헤드라인이 일별 스팟이고 스파크는 월평균이라 **설계상** 다른 기간을 말한다(아래 FRED 분기
+    헤드라인이 일별 스팟이고 스파크는 월말값(진행 중 달 끝점은 `_splice_spot` 이 카드 값으로 맞춘다)이라(아래 FRED 분기
     주석) — 대조하지 않는다. 주기는 공표 규약(`macro_cadence.CADENCE`)이 단일 출처다(#38);
     표에 없으면 모르는 것이니 대조하지 않는다(#165)."""
     from bot.macro_cadence import CADENCE
@@ -271,6 +271,32 @@ def _fred_spark_use(doc: Optional[dict], until: str = "") -> _SparkVals:
             return _SparkVals()
         pairs = [(d, v) for d, v in pairs if d <= until]
     return _SparkVals([float(v) for _d, v in pairs], [d for d, _v in pairs])
+
+
+def _splice_spot(spark, spot: Optional[dict], series_id: str):
+    """일별 계열의 월말값 스파크 끝을 **카드의 현재값**으로 맞춘다(순수에 가깝다 — 규칙만 읽는다).
+
+    스파크는 월말값(`aggregation_method=eop`)이라 진행 중인 달의 점은 '지금까지의 마지막
+    관측' 이다 — 카드 값(FRED 최신 · 재무부가 하루 앞서면 그 값)과 같은 정의다. 같은 달이면
+    끝점을 갈아 끼우고, 카드가 새 달이면 한 점 더하고 앞을 잘라 창 길이를 지킨다. 그래야
+    차트 끝 = 카드 값이다(2026-11-11 미 10Y 차트 끝 5.16 vs 카드 4.98, #33). 월간·분기
+    계열은 건드리지 않는다(그쪽 헤드라인은 이미 스파크와 같은 기간이다, `_spark_until`)."""
+    rules = _fred_cache_rules()
+    if (not spot or spot.get("value") is None or not spark
+            or series_id not in getattr(rules, "_FRED_DAILY_SIDS", ())):
+        return spark
+    dates = list(getattr(spark, "dates", []) or [])
+    t = str(spot.get("time") or "")
+    if len(dates) != len(spark) or len(t) < 7:
+        return spark
+    vals = list(spark)
+    if dates[-1][:7] == t[:7]:
+        vals[-1], dates[-1] = float(spot["value"]), t
+    elif dates[-1][:7] < t[:7]:
+        vals.append(float(spot["value"]))
+        dates.append(t)
+        vals, dates = vals[-len(spark):], dates[-len(spark):]
+    return _SparkVals(vals, dates)
 
 
 def _stale_note(stale: Optional[dict], until: str) -> str:
@@ -355,7 +381,7 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
     받는다) — 그리고 한쪽만 계속 실패하면 같은 날 사본이 날짜가 바뀔 때까지 산다. 그래서
     `until`(같은 주기의 헤드라인 관측일, `_spark_until`)을 받으면 그 기간과 **맞춘다**: 사본이
     헤드라인보다 낡았으면 TTL 안이어도 다시 묻고, 그래도 못 닿으면 비운다(`_fred_spark_use`).
-    못 보는 축(#274): 일별·주간 계열은 대조하지 않는다(헤드라인=일별 스팟·스파크=월평균)."""
+    못 보는 축(#274): 일별·주간 계열은 대조하지 않는다(헤드라인=일별 스팟·스파크=월말값)."""
     # ⚠️ `os.getenv` 로 직접 읽으면 `load_dotenv()` 를 부르는 봇 엔트리포인트
     # 밖(진단 스크립트·크론)에서 **키가 있는데도 빈 리스트**를 준다 —
     # 스파크라인만 조용히 사라진다(실수 #23). 공용 헬퍼로 통일.
@@ -365,7 +391,12 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
         return _SparkVals()
     rules = _fred_cache_rules()
     freq = "q" if series_id in _FRED_QUARTERLY else "m"
-    cache_file = _fred_spark_cache_file(series_id, freq, months)
+    # 일별 계열(국채금리·금리차·하이일드)은 **월말값**으로 묻는다(`aggregation_method=eop`).
+    # 옛 판은 FRED 기본(월평균)이라 같은 화면의 ECOS 계열(`_monthly_buckets` = 그 달 마지막
+    # 값)과 정의가 갈렸고, 한·미 금리 차트가 미국 월평균 − 한국 월말값을 '금리차' 로 그렸다
+    # (2026-11-11 사용자 "그래프 스케일이 좀 이상한데" — 차트 끝 미 5.16 vs 카드 4.98, #33·#34).
+    eop = freq == "m" and series_id in getattr(rules, "_FRED_DAILY_SIDS", ())
+    cache_file = _fred_spark_cache_file(series_id, freq + ("e" if eop else ""), months)
     fresh, stale = _fred_spark_cache_read(cache_file, rules._fred_ttl_h(series_id))
     if fresh is not None and not _spark_reaches(fresh, until):
         # TTL 안이지만 헤드라인이 **더 새 기간**을 말한다 — 다시 묻고, 못 받으면 이 사본을
@@ -386,6 +417,7 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
                 "sort_order": "desc",
                 "limit": months * 2,
                 "frequency": freq,
+                **({"aggregation_method": "eop"} if eop else {}),
             },
             timeout=12,
         )
@@ -1236,6 +1268,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     log.warning("macro: FRED %s 스파크 실패 — 차트 없이 그린다: %s: %s",
                                 sid, type(exc).__name__, exc)
                     chart_spark = []
+                chart_spark = _splice_spot(chart_spark, _spot if _has_spot else None, sid)
                 card_spark = chart_spark      # 월간 시계열(스파크라인)
                 # 칩은 **그린 점 수**에서 센다 — 원천이 짧게 준 날에도 '12개월' 이라 적으면 창을
                 # 부풀려 말한다(독립 리뷰 L1 · ECOS 칩과 같은 규칙, #29). 안 그렸으면 칩도 없다.
@@ -1270,7 +1303,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     if len(pts) >= 2:
                         change = pts[-1][1] - pts[-2][1]
                     _mb = _monthly_buckets(pts)
-                    chart_spark = [v for _m, v in _mb]
+                    chart_spark = _SparkVals([v for _m, v in _mb], [m for m, _v in _mb])
                     card_spark = chart_spark
                     _ps_period = _fmt_asof(_mb[0][0]) if _mb else ""
                     # 칩은 **그린 점 수**에서 센다 — 원천이 12달보다 적게 준 날도 '12개월' 이라
@@ -1443,12 +1476,27 @@ def _build_charts(spark: dict[str, list[float]],
     kr10 = spark.get("kr_10y", [])
     krr = kr10 if kr10 else spark.get("kr_rate", [])
     kr_label = "한국 국고채 10년" if kr10 else "한국 기준금리"
+    # ⚠️ **달로 맞춘다** — 옛 판은 두 배열의 뒤 n개를 위치로 짝지었다. 미국 창이
+    # '2025-11~2026-10', 한국 창이 '2025-12~2026-11' 이면 미 10월과 한 11월을 같은 칸에
+    # 놓고 오늘 기준 달 라벨을 붙였다(2026-11-11 카드 '2025-11 대비' vs '2025-12 대비' 가
+    # 그 증거, #29·#46). 두 배열이 관측 기간을 갖고 있으면 공통 달만 쓴다.
+    _lab = None
+    _ud, _kd = getattr(us10, "dates", None), getattr(krr, "dates", None)
+    if _ud and _kd and len(_ud) == len(us10) and len(_kd) == len(krr):
+        def _mk(d):
+            return str(d).replace("-", "")[:6]       # 'YYYY-MM-DD' · 'YYYYMM(DD)' → YYYYMM
+        _um = {_mk(d): v for d, v in zip(_ud, us10)}
+        _km = {_mk(d): v for d, v in zip(_kd, krr)}
+        _common = sorted(set(_um) & set(_km))[-_SPARK_N:]
+        us10 = [_um[m] for m in _common]
+        krr = [_km[m] for m in _common]
+        _lab = [f"{m[:4]}-{m[4:6]}" for m in _common]
     n = _align([us10, krr])
     if n >= 2:
         _u, _k = us10[-n:], krr[-n:]
         spread = [round(u - k, 2) for u, k in zip(_u, _k)]   # 美 − 韓 (%p)
         charts["rates_fx"] = {
-            "labels": _month_labels(n),
+            "labels": _lab[-n:] if _lab else _month_labels(n),
             "us_10y": _u,
             "kr_10y": _k,
             "kr_label": kr_label,
