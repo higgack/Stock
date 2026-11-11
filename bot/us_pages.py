@@ -112,7 +112,9 @@ def render_us_industry_page() -> str:
             nm = _html.escape(_industry_kr(nm_raw) if nm_raw else "")
             slug = g.get("slug", "")
             if slug and slug.replace("ind_", "").replace("_", "").isalnum():
-                url = f"https://finviz.com/screener?v=111&f={_html.escape(slug)}&o=-change"
+                # 새 필터 이름(`industry_…`)은 새 경로에서만 듣는다(2026-11-11 실측 링크 모양).
+                _path = "screener/stocks" if slug.startswith("industry_") else "screener"
+                url = f"https://finviz.com/{_path}?v=111&f={_html.escape(slug)}&o=-change"
                 return (f'<a href="{url}" target="_blank" rel="noopener">{nm}</a>'
                         ' <span class="ts">↗</span>')
             return nm

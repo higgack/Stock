@@ -267,8 +267,11 @@ def is_rate_limit_error(exc) -> bool:
 # 선행 도메인/경로 허용. 옛 .ashx 형태도 동시 매칭(.ashx)? 라 하위호환.
 # 그룹1 = ind_ 슬러그(업종 클릭 → Finviz 해당 업종 종목 링크용, 사용자
 # 2026-06-10 '한국처럼 업종 클릭하면 종목 보기'). 그룹2 = 업종명, 그룹3 = tail.
+# ⚠️ 2026-11-11 VM 실측: Finviz 가 링크를 `/screener/stocks?v=111&f=industry_semiconductors`
+# 로 바꿨다(옛 `screener.ashx?…f=ind_…`). 200·237KB 인데 0행이라 '데이터센터 IP 차단' 처럼
+# 보였지만 막힘이 아니라 우리 파서였다(#463). 두 모양을 다 받는다.
 _GROUP_ROW_RE = re.compile(
-    r'<a[^>]+href="[^"]*screener(?:\.ashx)?\?[^"]*f=(ind_[^"&]*)[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
+    r'<a[^>]+href="[^"]*screener(?:\.ashx|/stocks)?\?[^"]*f=((?:ind|industry)_[^"&]*)[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
     re.DOTALL | re.IGNORECASE)
 _PCT_RE = re.compile(r'([-+]?\d+\.\d+)%')
 # 업종 행의 시가총액 셀 — v=110 의 Name 다음 첫 B/M 수치 ("16942.94B").
