@@ -80,6 +80,7 @@ def test_dead_memo_falls_back_to_old_address(iso, monkeypatch):
     nsc._cache_write(nsc._UPJONG_MEMO, {"url": _NEW})
     calls = _route(monkeypatch, {_NEW: _404, _OLD: lambda: (_rows(79), "")})
     out = nsc.fetch_sector_movers()
+    # 옛 주소가 답하면 랭킹 v2 는 묻지 않는다(404 일 때만 묻는다)
     assert calls == [_NEW, _OLD] and out["up"] and "reason" not in out
 
 
@@ -364,3 +365,172 @@ def test_discovery_learns_enum_and_follows_cursor(iso, monkeypatch):
     # 사다리가 메모의 주소·쿼리로 79개를 받는다(화면 경로, #35)
     raw, why, used = nsc._upjong_fetch_ladder()
     assert used == good and len(nsc.parse_upjong_json(raw)) == 79, why
+
+
+# ── 4차: 랭킹 v2 를 사다리의 단으로(탐색을 기다리지 않는다) ───────────────────
+def _v2_rows(n, name_key="name", rate_key="changeRate"):
+    return [{name_key: f"항목{i}", rate_key: f"{i - n // 2}.0", "code": str(i)}
+            for i in range(n)]
+
+
+def test_upjong_ladder_reads_rank_v2_industries_without_a_memo(iso, monkeypatch):
+    seen = []
+
+    def _get(url, **kw):
+        seen.append((url, dict(kw.get("params") or {})))
+        if url == nsc._RANK_V2_INDUSTRIES:
+            return {"items": _v2_rows(79), "hasNext": False}, ""
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    out = nsc.fetch_sector_movers()
+    assert out["scanned"] == 79 and out["up"] and "reason" not in out
+    # 옛 주소가 404(주소 없음)라고 답한 뒤에 묻는다 — 탐색은 기다리지 않는다
+    assert [u for u, _ in seen] == [_OLD, nsc._RANK_V2_INDUSTRIES]
+    assert seen[1][1] == {"size": nsc._UPJONG_PAGE_SIZE} and iso.kicked == []
+
+
+def test_rank_v2_rows_it_cannot_read_are_named_with_a_sample(iso, monkeypatch):
+    """답은 왔는데 필드 이름이 다르면 표본을 사유에 남긴다 — 다음 판정의 재료(#82)."""
+    def _get(url, **kw):
+        if url == nsc._RANK_V2_INDUSTRIES:
+            return {"items": [{"zzName": "x", "zzRate": 1}] * 79, "hasNext": False}, ""
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    raw, why, used = nsc._upjong_fetch_ladder()
+    assert not nsc.parse_upjong_json(raw)
+    assert "랭킹 v2" in why and "zzName" in why and nd.status_from(why) == 404
+
+
+def test_signed_rate_follows_the_direction_field():
+    rows = [{"name": "가", "fluctuationsRatio": "2.5", "fluctuationsType": {"code": "FALLING"}},
+            {"name": "나", "changeRate": "-1.0"},
+            {"name": "다", "fluctuationsRatio": "3.0", "fluctuationsType": "RISING"}]
+    assert [r["pct"] for r in nsc.parse_upjong_json(rows)] == [-2.5, -1.0, 3.0]
+
+
+def test_themes_come_from_rank_v2_first(iso, monkeypatch):
+    def _get(url, **kw):
+        p = kw.get("params") or {}
+        if url == nsc._RANK_V2_THEMES:
+            if p.get("cursor") == "c":
+                return {"items": _v2_rows(200)[100:], "hasNext": False}, ""
+            return {"items": _v2_rows(200)[:100], "hasNext": True, "cursor": "c"}, ""
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    rows, marks, why, partial = nsc.collect_themes_json()
+    assert len(rows) == 200 and not partial and not why
+    assert marks[-1].startswith("랭킹v2/themes ✅ 200개") and len(marks) == 4
+
+
+def test_a_short_rank_v2_theme_page_is_not_baked_as_the_full_list(iso, monkeypatch):
+    def _get(url, **kw):
+        if url == nsc._RANK_V2_THEMES:
+            return {"items": _v2_rows(40), "hasNext": False}, ""
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+    rows, marks, why, partial = nsc.collect_themes_json()
+    assert rows == [] and "하한" in marks[-1] and marks[-1].startswith("랭킹v2/themes ❌")
+
+
+# ── 4차: 해외(미국 …) 업종도 랭킹 v2 로 — 지역 조각은 실호출로만 채택 ────────────
+import bot.naver_ranking_client as nrc
+import bot.finviz_client as _fvc
+
+
+@pytest.fixture
+def intl(tmp_path, monkeypatch):
+    monkeypatch.setattr(_fvc, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(_fvc, "naver_paused", lambda: False)
+    return tmp_path
+
+
+def test_enum_swap_replaces_the_rejected_segment_only():
+    why = ("원천이 HTTP 400 — 원천: region: Invalid enum value. Expected 'domestic' | "
+           "'us' | 'jp', received 'USA' (invalid_enum_value)")
+    got = nsc.enum_swap("https://h/api/r/v2/USA/industries", why,
+                        lambda v: v.lower() in {"usa", "us"})
+    assert got == ["https://h/api/r/v2/us/industries"]
+    assert nsc.enum_swap("https://h/api/r/v2/USA/industries", "원천이 HTTP 404", bool) == []
+
+
+def test_us_sector_movers_learn_the_region_from_the_source(intl, monkeypatch):
+    # 처음 묻는 후보(USA·usa·us)에 없는 값 — 원천이 적어 보낸 허용값으로만 닿는다
+    good = nsc._RANK_V2 + "america/industries"
+    seen = []
+
+    def _get(url, **kw):
+        seen.append(url)
+        if url == good:
+            return {"items": _v2_rows(40, "industryName", "fluctuationsRatio"),
+                    "hasNext": False}, ""
+        if url.startswith(nsc._RANK_V2):
+            seg = url[len(nsc._RANK_V2):].split("/")[0]
+            # 원천이 실제로 보내는 봉투 모양(2026-11-11 VM — message 가 JSON 문자열, #155)
+            import json as _json
+            return None, nd.http_reason(400, 40, body=_json.dumps({
+                "detailCode": "invalid_enum_value",
+                "message": _json.dumps({"formErrors": [], "fieldErrors": {"region": [
+                    "Invalid enum value. Expected 'domestic' | 'america' | 'jp',"
+                    f" received '{seg}'"]}})}))
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    out = nrc.fetch_intl_sector_movers_naver("US", top_n=10)
+    assert len(out["up"]) == 10 and len(out["down"]) == 10 and "reason" not in out
+    assert out["up"][0]["pct"] == 19.0 and out["down"][0]["pct"] == -20.0
+    assert not any("/jp/" in u or "/domestic/" in u for u in seen)     # 남의 나라는 안 묻는다
+    memo = _fvc._cached(nrc.intl_rank_memo("US"), ttl=10 ** 9)
+    assert memo["url"] == good
+
+
+def test_us_sector_movers_fall_through_with_the_reason_and_cool_down(intl, monkeypatch):
+    calls = []
+
+    def _get(url, **kw):
+        calls.append(url)
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+
+    class _R:
+        status_code = 404
+        content = b"{}"
+
+        def json(self):
+            return {"message": "Route GET:/api/foreign/market/USA/upjong/list not found"}
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+    out = nrc.fetch_intl_sector_movers_naver("US", top_n=10)
+    assert out["up"] == [] and nd.status_from(out["reason"]) == 404      # 옛 경로의 사유
+    n = len(calls)
+    assert n == 3                                                         # 그 나라 후보 셋
+    nrc.fetch_intl_sector_movers_naver("US", top_n=10)
+    assert len(calls) == n                                                # 냉각 — 다시 안 두드린다
+    memo = _fvc._cached(nrc.intl_rank_memo("US"), ttl=10 ** 9)
+    assert memo["url"] == "" and len(memo["tried"]) == 3
+
+
+def test_a_handful_of_rows_is_not_adopted_as_the_us_industry_list(intl, monkeypatch):
+    def _get(url, **kw):
+        if url.startswith(nsc._RANK_V2):
+            return {"items": _v2_rows(5), "hasNext": False}, ""
+        return _404()
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    rows, why = nrc._intl_rank_v2("US")
+    assert rows == [] and "못 찾았습니다" in why
+    memo = _fvc._cached(nrc.intl_rank_memo("US"), ttl=10 ** 9)
+    assert memo["url"] == "" and "하한" in memo["tried"][0] and "표본" in memo["tried"][0]
+
+
+def test_rank_v2_is_not_asked_when_the_old_address_is_blocked_not_gone(iso, monkeypatch):
+    """막힘(403)·한도(429)는 주소 이전이 아니다 — 새 주소를 두드리지 않는다(#82)."""
+    seen = []
+
+    def _get(url, **kw):
+        seen.append(url)
+        return None, nd.http_reason(403, 10)
+    monkeypatch.setattr(nsc, "_get2_json", _get)
+    monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+    nsc._upjong_fetch_ladder()
+    rows, marks, why, partial = nsc.collect_themes_json()
+    assert not any(u.startswith(nsc._RANK_V2) for u in seen)
+    assert len(marks) == len(nsc._THEME_API_RUNGS)

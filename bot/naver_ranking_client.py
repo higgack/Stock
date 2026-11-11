@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 
 from bot import naver_diag as _nd
 
@@ -673,6 +674,86 @@ def world_quote_map(market: str) -> dict:
     return {}
 
 
+# ── 해외 업종: 랭킹 v2 가족(2026-11-11 — 옛 `foreign/market/{nat}/upjong/list` 가 404) ──
+# 국내는 `rankings/v2/domestic/industries` 로 옮겨 갔다(VM 실측). 해외의 지역 조각은
+# **아직 재지 못했다** — 그래서 그 나라만 가리키는 후보만 실호출로 묻고(여러 나라를
+# 뭉친 `foreign` 류는 묻지 않는다 — 200 이 와도 어느 나라인지 못 가른다, #165),
+# 원천이 400 에 허용값을 적어 보내면 그중 이 나라의 것으로 다시 묻는다. 채택은
+# 업종이 하한만큼 숫자로 읽힐 때만이고, 시도 기록을 메모에 남겨 `--check` 가 찍는다.
+_INTL_RANK_ALIASES = {
+    "US": ("USA", "usa", "us", "america"),
+    "JP": ("JPN", "jpn", "jp", "japan"),
+    "HK": ("HKG", "hkg", "hk", "hongkong"),
+    "CN_A": ("CHN", "chn", "cn", "china"),
+}
+_INTL_RANK_MIN = 20              # 업종 수 하한 — 첫 쪽만 온 것을 전 업종으로 쓰지 않는다
+_INTL_RANK_COOLDOWN = 6 * 3600   # 못 찾았으면 6시간 뒤 다시(30초마다 두드리지 않는다)
+_INTL_RANK_TRIES = 8
+
+
+def intl_rank_memo(market: str) -> str:
+    return f"naver_intl_rank_{market}.json"
+
+
+def _intl_rank_v2(market: str) -> tuple:
+    """(업종 행 [{name, pct}], 사유) — 검증된 주소 메모 우선, 없으면 후보를 실호출."""
+    from bot import naver_sector_client as _nsc
+    from bot import naver_diag as _nd
+    from bot.finviz_client import _CACHE_DIR, _cache_write, _cached
+    aliases = _INTL_RANK_ALIASES.get(market) or ()
+    if not aliases:
+        return [], ""
+    key = intl_rank_memo(market)
+    memo = _cached(key, ttl=30 * 86400)
+    memo = memo if isinstance(memo, dict) else {}
+
+    def _read(url: str) -> tuple:
+        raw, why = _nsc.rank_v2_rows(url)
+        if raw is None:
+            return [], why
+        rows = _nsc.parse_upjong_json(raw)
+        if len(rows) < _INTL_RANK_MIN:
+            return [], (f"{len(raw)}행 중 {len(rows)}개만 업종으로 읽힘(하한 {_INTL_RANK_MIN})"
+                        f" · 표본 {_nd.body_sample(raw[:1], 200)}")
+        return rows, ""
+
+    if memo.get("url"):
+        rows, why = _read(memo["url"])
+        if rows:
+            return rows, ""
+    else:
+        try:
+            age = time.time() - (_CACHE_DIR / key).stat().st_mtime
+        except OSError:
+            age = None
+        if age is not None and age < _INTL_RANK_COOLDOWN and memo.get("tried"):
+            return [], "랭킹 v2 해외 주소를 아직 못 찾았습니다(6시간마다 다시 탐색)"
+    try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():
+            return [], ""                 # 안 물어본 것을 '못 찾음' 으로 굳히지 않는다(#79)
+    except Exception:                                          # noqa: BLE001
+        pass
+    low = {a.lower() for a in aliases}
+    queue = [_nsc._RANK_V2 + a + "/industries" for a in aliases[:3]]
+    seen, tried, url, got = set(queue), [], "", []
+    while queue and len(tried) < _INTL_RANK_TRIES:
+        cand = queue.pop(0)
+        rows, why = _read(cand)
+        tried.append(f"{cand} — {'✅ %d개' % len(rows) if rows else (why or '0건')}")
+        if rows:
+            url, got = cand, rows
+            break
+        for c in _nsc.enum_swap(cand, why, lambda v: v.lower() in low):
+            if c not in seen:
+                seen.add(c)
+                queue.insert(0, c)
+    _cache_write(key, {"url": url, "tried": tried, "at": time.time()})
+    log.warning("naver 해외 업종 랭킹 v2 탐색(%s) — 검증됨=%s · 시도=%s",
+                market, url or "없음", tried[:3])
+    return got, ("" if got else "랭킹 v2 해외 주소를 아직 못 찾았습니다(6시간마다 다시 탐색)")
+
+
 def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
     """{up:[{name,pct}], down:[...], ts, source} — 네이버 업종별 등락(시총가중 평균)
     Top/Bottom (CN/HK/JP, 사용자 2026-06-14 '업종등락 네이버'). 전 업종 순회·각
@@ -697,6 +778,22 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
             return stale
     import requests
     from bot import naver_diag as _nd
+    # 랭킹 v2 가 답하면 그걸 쓴다 — 원천이 업종 등락률을 직접 준다(시총가중을 우리가
+    # 다시 만들지 않는다). 못 받으면 옛 경로로 내려가고 사유를 같이 싣는다(#136).
+    v2_rows, v2_why = [], ""
+    try:
+        v2_rows, v2_why = _intl_rank_v2(market)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("naver 해외 업종 랭킹 v2 (%s): %s", market, exc)
+    if v2_rows:
+        rows2 = sorted(v2_rows, key=lambda r: r["pct"], reverse=True)
+        out = {"up": [{"name": r["name"], "pct": round(r["pct"], 2)}
+                      for r in rows2 if r["pct"] > 0][:top_n],
+               "down": [{"name": r["name"], "pct": round(r["pct"], 2)}
+                        for r in reversed(rows2) if r["pct"] < 0][:top_n],
+               "ts": _now_label(), "source": "네이버 업종(랭킹)"}
+        _cache_write(cache, out)
+        return out
     # 실패 갈래를 **사유로 싣는다** — 옛 판은 404·차단·모양 변경이 전부 같은 빈
     # dict 라 호출부가 "왜 폴백했나" 를 말할 수 없었다(#82·#43).
     try:
