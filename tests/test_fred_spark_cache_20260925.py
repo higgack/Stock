@@ -24,7 +24,7 @@ import bot.macro_snapshot as ms
 import bot.market_overview as mo
 
 _SID = "PCEPILFE"             # 월간 카드
-_DAILY = "DGS10"              # 일별 카드(월말값 스파크 — 2026-11-11 부터 사본 이름에 `me`)
+_DAILY = "DGS10"              # 일별 카드(월평균 스파크)
 _GDP = "A191RL1Q225SBEA"      # 분기 카드
 
 
@@ -107,7 +107,7 @@ def test_the_spark_reads_the_same_ttl_function_as_the_headline(spark, monkeypatc
     assert len(spark["calls"]) == 2, "헤드라인 TTL 을 줄였는데 스파크는 안 따라왔다"
     # 일별 카드는 일별 TTL 을 쓴다 — 같은 함수가 가른다
     ms._fred_monthly(_DAILY)
-    _age(_cache_file(_DAILY, freq="me"), 0.5)   # 일별은 월말값(eop) 사본(2026-11-11)
+    _age(_cache_file(_DAILY), 0.5)
     monkeypatch.setattr(mo, "_FRED_TTL_DAILY_H", 0.25)
     monkeypatch.setattr(mo, "_FRED_TTL_OTHER_H", 24.0)
     ms._fred_monthly(_DAILY)
@@ -373,11 +373,14 @@ def test_the_snapshot_rebuild_does_not_ask_fred_again(spark, monkeypatch):
     fred_cards = [sid for *_x, src, sid, _d in ms.GLOBAL if src == "fred"]
     assert len(fred_cards) >= 5, fred_cards                      # 대조 0건은 통과가 아니다(#54)
     snap = spark["dir"]
+    # 미 10Y 는 두 번 묻는다 — 카드 스파크(월평균) + 한·미 금리 차트(월말값, 2026-11-12).
+    # 사본 이름이 달라(#61) 둘 다 첫 재생성에 한 번씩이고, 두 번째 재생성엔 둘 다 사본으로 산다.
+    asked = sorted(fred_cards + ["DGS10"])
     out1 = _build(monkeypatch, snap)
-    assert sorted(c["series_id"] for c in spark["calls"]) == sorted(fred_cards)
+    assert sorted(c["series_id"] for c in spark["calls"]) == asked
     (snap / "snapshot.json").unlink()                            # 30초 스냅샷 캐시가 지났다
     out2 = _build(monkeypatch, snap)                             # 라벨도 사본에서 와야 한다
-    assert len(spark["calls"]) == len(fred_cards), "재생성이 FRED 스파크를 다시 물었다"
+    assert len(spark["calls"]) == len(asked), "재생성이 FRED 스파크를 다시 물었다"
     r1 = {r["key"]: r for r in out1["global"]}
     r2 = {r["key"]: r for r in out2["global"]}
     assert r2["us_pce"]["spark"] == r1["us_pce"]["spark"] and len(r2["us_pce"]["spark"]) == 12

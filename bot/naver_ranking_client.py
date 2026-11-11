@@ -20,6 +20,7 @@ import threading
 import time
 
 from bot import naver_diag as _nd
+from bot.pool import map_bounded
 
 log = logging.getLogger("bot.naver_ranking")
 
@@ -443,12 +444,131 @@ def _upjong_ticker(sym: str, market: str) -> str:
     return sym
 
 
+# ── 해외 업종 → 종목 구성(2026-11-11 — 옛 `foreign/market/{nat}/upjong/{code}/list` 404) ──
+# VM 4차 실측 청크: 업종 목록 = `rankings/v2/foreign/{nat}/sectors`(✅ 114~136개), 종목 =
+# `"/api/stockSecurity/sectors/v2/foreign/".concat(nationType,"/").concat(sectorCode,"/items?")`
+# + sortType·sortDirection·cursor·size·includeOverMarket. **행의 칸 이름은 아직 못 쟀다** —
+# 그래서 후보 칸 이름으로 읽고, 못 읽으면 표본을 사유에 실어 `--check` 가 찍는다(#165·#82).
+# 업종맵·거래량맵·한글명맵 셋이 같은 재료를 쓰므로 한 곳에서 받는다(#38).
+_SECTORS_ITEMS = "https://stock.naver.com/api/stockSecurity/sectors/v2/foreign/{nat}/{code}/items"
+_SECTOR_CODE_KEYS = ("sectorCode", "industryCode", "code", "sectorId", "industryId", "id", "no")
+_ITEM_SYMBOL_KEYS = ("symbolCode", "reutersCode", "itemCode", "stockCode", "code", "ticker")
+_ITEM_KNAME_KEYS = ("koreanCodeName", "stockName", "itemName", "name", "koreanName")
+_ITEM_PAGES = 3                  # 업종당 최대 3쪽(100×3) — 옛 판 pageSize 300 과 같은 폭
+_ITEMS_MIN = 50                  # 시장 전체 종목 하한 — 몇 개만 읽힌 것을 맵으로 굽지 않는다
+
+
+def _num(v):
+    try:
+        return float(str(v).replace(",", "")) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _sort_retry(sent: str, allowed: list, current: str) -> tuple:
+    """(다시 물을지, 쓸 정렬값) — 판정은 **이 요청이 보낸 값**으로(순수).
+
+    업종들은 병렬로 묻는다 — 다른 업종이 이미 허용값을 배워 공유값을 바꿨어도 이 업종은
+    옛 값으로 거절당했으므로 다시 물어야 한다. 공유값으로 재면 그 업종만 빈손이 된다."""
+    if not allowed or sent in allowed:
+        return False, current
+    if current not in allowed:
+        current = next((a for a in allowed if "market" in a.lower()), allowed[0])
+    return True, current
+
+
+def world_sector_items(market: str) -> tuple:
+    """([(업종명, 종목행)], 사유) — 새 랭킹·업종 가족으로 해외 시장의 업종 구성을 받는다."""
+    from bot import naver_sector_client as _nsc
+    nat = _UPJONG_NATION.get(market)
+    if not nat:
+        return [], ""
+    sec_url = _nsc._RANK_V2 + "foreign/" + nat + _INTL_SECTORS_TAIL
+    raw, why = _nsc.rank_v2_rows(sec_url)
+    if not raw:
+        return [], f"업종 목록을 못 받았습니다 — {why or '빈 응답'}"
+    secs = []
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        name = _nsc._first_of(r, _nsc._UPJONG_NAME_KEYS)
+        code = _nsc._first_of(r, _SECTOR_CODE_KEYS)
+        if name and code not in (None, ""):
+            secs.append((str(name), str(code)))
+    if not secs:
+        return [], ("업종 행에서 이름·코드 칸을 못 읽었습니다 — 표본 "
+                    + _nd.body_sample(raw[:1], 300))
+    sort_box = {"v": "marketValue"}
+
+    def _items(sec):
+        name, code = sec
+        url = _SECTORS_ITEMS.format(nat=nat, code=code)
+        got, cur, w = [], None, ""
+        for _ in range(_ITEM_PAGES):
+            params = {"sortType": sort_box["v"], "size": 100}
+            if cur:
+                params["cursor"] = cur
+            body, w = _nsc._get2_json(url, params=params)
+            if body is None and _nd.status_from(w or "") == 400:
+                retry, sort_box["v"] = _sort_retry(params["sortType"],
+                                                   _nsc.enum_values(w), sort_box["v"])
+                if retry:
+                    continue                       # 원천이 적어 보낸 허용값으로 다시
+            if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+                if isinstance(body, list):
+                    got.extend(body)
+                break
+            got.extend(body["items"])
+            cur = body.get("cursor")
+            if not body.get("hasNext") or not cur:
+                break
+        return [(name, it) for it in got if isinstance(it, dict)], w
+
+    pairs, fails = [], 0
+    for res in map_bounded(_items, secs):
+        if not res:
+            fails += 1
+            continue
+        rows, _w = res
+        pairs.extend(rows)
+    mapped = sum(1 for _n, it in pairs
+                 if _upjong_ticker(_nsc._first_of(it, _ITEM_SYMBOL_KEYS), market))
+    if mapped < _ITEMS_MIN:
+        smp = _nd.body_sample([it for _n, it in pairs[:1]], 300) if pairs else "종목 0행"
+        return [], (f"업종 {len(secs)}개 · 종목 {len(pairs)}행 중 티커로 읽힌 것 {mapped}개"
+                    f"(하한 {_ITEMS_MIN}) · 표본 {smp}")
+    return pairs, (f"업종 {len(secs)}개 중 {fails}개 실패" if fails else "")
+
+
+def world_sector_probe(market: str) -> list:
+    """`--check --fetch` 용 — 업종 하나만 물어 종목 행의 칸 이름을 찍는다(읽기만, 2요청)."""
+    from bot import naver_sector_client as _nsc
+    nat = _UPJONG_NATION.get(market)
+    raw, why = _nsc.rank_v2_rows(_nsc._RANK_V2 + "foreign/" + nat + _INTL_SECTORS_TAIL)
+    if not raw:
+        return [f"업종 목록 못 받음 — {why}"]
+    r0 = raw[0] if isinstance(raw[0], dict) else {}
+    name, code = _nsc._first_of(r0, _nsc._UPJONG_NAME_KEYS), _nsc._first_of(r0, _SECTOR_CODE_KEYS)
+    out = [f"업종 {len(raw)}개 · 첫 행 이름={name!r} · 코드={code!r} · 칸 {sorted(r0)[:20]}"]
+    if code in (None, ""):
+        return out + ["업종 코드 칸을 못 찾았습니다 — 위 칸 목록에서 코드 칸 이름을 알려 주십시오"]
+    body, w = _nsc._get2_json(_SECTORS_ITEMS.format(nat=nat, code=code),
+                              params={"sortType": "marketValue", "size": 5})
+    items = (body.get("items") if isinstance(body, dict) else body) or []
+    if not items:
+        return out + [f"종목 0행 — {w or _nd.body_sample(body, 300)}"]
+    it = items[0] if isinstance(items[0], dict) else {}
+    sym = _nsc._first_of(it, _ITEM_SYMBOL_KEYS)
+    out.append(f"종목 {len(items)}행 · 첫 행 심볼={sym!r} → 티커 {_upjong_ticker(sym, market)!r}"
+               f" · 한글명={_nsc._first_of(it, _ITEM_KNAME_KEYS)!r} · 칸 {sorted(it)[:25]}")
+    return out
+
+
 def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: 소형주 무버
-    """{yfinance 티커 → 업종명(한글)} — 네이버 데스크탑 업종 API(CN/HK/JP, 사용자
-    2026-06-14). 전 업종(/upjong/list) 순회하며 reutersIndustryName 수집. 업종은
-    안정적 → 7d 디스크 캐시. graceful·429 면역. yfinance _fetch_industries 의
-    비-US 대체 — yfinance .info 가 CN A주/소형주 업종을 자주 비워 '업종 —' 이던
-    것 해소. (업종 endpoint 응답은 bare list 라 _get_stocks 안 씀)."""
+    """{yfinance 티커 → 업종명(한글)} — 네이버 해외 업종 구성(사용자 2026-06-14). 업종은
+    안정적 → 7d 디스크 캐시. graceful·429 면역. yfinance _fetch_industries 의 비-US 대체
+    — yfinance .info 가 CN A주/소형주 업종을 자주 비워 '업종 —' 이던 것 해소.
+    2026-11-11: 옛 `foreign/market/{nat}/upjong` 이 404 → `world_sector_items`(새 가족)."""
     nat = _UPJONG_NATION.get(market)
     if not nat:
         return {}
@@ -459,38 +579,24 @@ def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: �
         return cached
     if naver_paused():           # NAVER_PAUSE → 캐시만(fetch skip)
         return cached if isinstance(cached, dict) else {}
-    import requests
-    try:
-        cr = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
-        codes = cr.json() if cr.status_code == 200 else None
-    except Exception as exc:
-        log.warning("naver 업종 list (%s): %s", market, exc)
-        return {}
-    if not isinstance(codes, list):
-        return {}
+    pairs, why = world_sector_items(market)
+    if why:
+        log.warning("naver 해외 업종맵(%s): %s", market, why)
+    from bot import naver_sector_client as _nsc
     out: dict = {}
-    names: dict = {}      # {티커→koreanCodeName} 동반 캐시 (US 52주 한글명 등)
-    for ic in codes:
-        code = (ic or {}).get("code") if isinstance(ic, dict) else None
-        if not code:
+    names: dict = {}      # {티커→한글명} 동반 캐시 (US 52주 한글명 등)
+    counts: dict = {}
+    for ind, s in pairs:
+        tk = _upjong_ticker(_nsc._first_of(s, _ITEM_SYMBOL_KEYS), market)
+        if not tk:
             continue
-        try:
-            r = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/{code}/list"
-                             f"?orderType=marketValue&startIdx=0&pageSize={per_industry}",
-                             headers=_H, timeout=10)
-            st = r.json() if r.status_code == 200 else None
-        except Exception:
-            st = None
-        for s in (st or []):
-            if not isinstance(s, dict):
-                continue
-            tk = _upjong_ticker(s.get("symbolCode") or s.get("reutersCode"), market)
-            ind = s.get("reutersIndustryName")
-            nm = s.get("koreanCodeName")
-            if tk and ind:
-                out[tk] = ind
-            if tk and nm:
-                names[tk] = nm
+        if counts.get(ind, 0) >= per_industry:
+            continue
+        counts[ind] = counts.get(ind, 0) + 1
+        out.setdefault(tk, ind)
+        nm = _nsc._first_of(s, _ITEM_KNAME_KEYS)
+        if nm and _HANGUL_RE.search(str(nm)):
+            names.setdefault(tk, str(nm))
     # 업종명 한글 유지 (사용자 2026-06-15 '일본·중국·홍콩도 대만처럼 한글로')
     # — 네이버 reutersIndustryName 이 이미 한글. 2026-06-14 '모두 영문' 번역
     # 단계 폐기 (대만 _SECTOR_KR 한글 표기와 일관).
@@ -535,59 +641,29 @@ def world_upjong_name(market: str) -> dict:
 
 
 def _build_quote_map(market: str) -> None:
-    """네이버 업종 endpoint 순회 → {티커→{vol,value}} 거래량·거래대금(억) 캐시."""
-    nat = _UPJONG_NATION.get(market)
-    if not nat:
+    """네이버 해외 업종 구성 → {티커→{vol,value,mcap}} 거래량·거래대금·시총(억) 캐시."""
+    if not _UPJONG_NATION.get(market):
         return
     from bot.finviz_client import _cache_write, naver_paused
     if naver_paused():           # NAVER_PAUSE → fetch skip(기존 캐시 유지)
         return
-    import requests
-    try:
-        cr = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
-        codes = cr.json() if cr.status_code == 200 else None
-    except Exception:
-        return
-    if not isinstance(codes, list):
-        return
+    from bot import naver_sector_client as _nsc
+    pairs, why = world_sector_items(market)
+    if why:
+        log.warning("naver 해외 시세맵(%s): %s", market, why)
     out: dict = {}
-    for ic in codes:
-        code = (ic or {}).get("code") if isinstance(ic, dict) else None
-        if not code:
+    for _ind, s in pairs:
+        tk = _upjong_ticker(_nsc._first_of(s, _ITEM_SYMBOL_KEYS), market)
+        if not tk or tk in out:
             continue
-        try:
-            r = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/{code}/list"
-                             f"?orderType=marketValue&startIdx=0&pageSize=100",
-                             headers=_H, timeout=10)
-            st = r.json() if r.status_code == 200 else None
-        except Exception:
-            st = None
-        for s in (st or []):
-            if not isinstance(s, dict):
-                continue
-            tk = _upjong_ticker(s.get("symbolCode") or s.get("reutersCode"), market)
-            if not tk:
-                continue
-            try:
-                vol = int(float(s.get("accumulatedTradingVolume") or 0)) or None
-            except (TypeError, ValueError):
-                vol = None
-            try:
-                tv = s.get("accumulatedTradingValue")
-                value = round(float(tv) / 1e8, 2) if tv else None
-            except (TypeError, ValueError):
-                value = None
-            # 시총(marketValue/1e8 = 억$) — B 그룹(2026-06-16): US 52주 신고저가
-            # tier-1 Finviz(시총 미제공) 일 때 fast_info(rate-limit) 대신 무료
-            # 네이버 시총으로 채워 '시총 —' 연쇄 + 시총-정렬 붕괴 해소. 업종
-            # endpoint 가 orderType=marketValue 라 marketValue 항상 존재.
-            try:
-                mv = s.get("marketValue")
-                mcap = round(float(mv) / 1e8, 2) if mv else None
-            except (TypeError, ValueError):
-                mcap = None
-            if vol is not None or value is not None or mcap is not None:
-                out[tk] = {"vol": vol, "value": value, "mcap": mcap}
+        vol = _num(_nsc._first_of(s, ("accumulatedTradingVolume", "tradingVolume", "volume")))
+        tv = _num(_nsc._first_of(s, ("accumulatedTradingValue", "tradingValue")))
+        mv = _num(_nsc._first_of(s, ("marketValue", "marketCap")))
+        rec = {"vol": int(vol) if vol else None,
+               "value": round(tv / 1e8, 2) if tv else None,
+               "mcap": round(mv / 1e8, 2) if mv else None}
+        if any(v is not None for v in rec.values()):
+            out[tk] = rec
     if out:
         _cache_write(f"naver_quote_{market}.json", out)
 

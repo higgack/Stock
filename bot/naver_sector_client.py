@@ -1228,26 +1228,38 @@ def _fetch_equity_fund_naver() -> list:
     from datetime import date, timedelta
     end = date.today()
     start = end - timedelta(days=220)
-    url = ("https://stock.naver.com/api/domestic/market/trendDeposit/chart"
-           f"?startDate={start:%Y%m%d}&endDate={end:%Y%m%d}")
-    try:
-        r = requests.get(url, timeout=12, headers={
-            "User-Agent": "Mozilla/5.0", "Accept": "application/json",
-            "Referer": "https://stock.naver.com/"})
-        rows = r.json() if r.status_code == 200 else []
-    except Exception as exc:
-        log.warning("naver equity fund fetch failed: %s", exc)
-        return []
-    out = []
-    for it in rows if isinstance(rows, list) else []:
-        d = str(it.get("bizdate") or "")
+    # ⚠️ 220일을 한 번에 물어도 화면엔 두 달(09.09~)만 그려졌다(2026-11-12 캡처) — 원천이 한
+    # 응답의 행 수를 자르는지는 재지 않았다(#165). 다른 유동성 차트와 같은 6개월 창을 채우려고
+    # 60일 조각으로 나눠 묻고 날짜로 합친다 — 원천이 정말 두 달치만 가졌다면 결과는 같고,
+    # 출처 줄의 기간이 그 사실을 말한다(#43). 한 조각의 실패는 나머지를 막지 않는다.
+    by_day: dict = {}
+    fails = 0
+    chunk_end = end
+    while chunk_end > start:
+        chunk_start = max(start, chunk_end - timedelta(days=60))
+        url = ("https://stock.naver.com/api/domestic/market/trendDeposit/chart"
+               f"?startDate={chunk_start:%Y%m%d}&endDate={chunk_end:%Y%m%d}")
         try:
-            v = float(str(it.get("beneficiaryCertificateStock")).replace(",", ""))
-        except Exception:
-            v = None
-        if len(d) == 8 and v is not None:
-            out.append((d, v))    # 억원
-    return sorted(out)
+            r = requests.get(url, timeout=12, headers={
+                "User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                "Referer": "https://stock.naver.com/"})
+            rows = r.json() if r.status_code == 200 else []
+        except Exception as exc:
+            log.warning("naver equity fund fetch failed (%s~%s): %s",
+                        chunk_start, chunk_end, exc)
+            rows, fails = [], fails + 1
+        for it in rows if isinstance(rows, list) else []:
+            d = str(it.get("bizdate") or "")
+            try:
+                v = float(str(it.get("beneficiaryCertificateStock")).replace(",", ""))
+            except Exception:
+                v = None
+            if len(d) == 8 and v is not None:
+                by_day[d] = v    # 억원
+        chunk_end = chunk_start - timedelta(days=1)
+    if fails:
+        log.warning("naver equity fund: 조각 %d개 실패 — 받은 %d일치로 그린다", fails, len(by_day))
+    return sorted(by_day.items())
 
 
 def _fetch_deposit_naver() -> dict:
@@ -1322,7 +1334,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 13       # 13 = 해외 sectors 주소·Finviz 새 링크 · 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
+_CHECK_VER = 15       # 15 = 해외 업종 구성(items) 표본 · 14 = 해외 sectors 표본 행 · 13 = 해외 sectors 주소·Finviz 새 링크 · 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -3113,6 +3125,15 @@ def check(fetch: bool = False) -> int:
                   f"검증됨={_m.get('url') or '없음'}" + (f" · {_why}" if _why else ""))
             for _t in (_m.get("tried") or []):
                 print(f"   {_t}")
+            if _m.get("url"):
+                for _ln in _nrc.world_sector_probe(_mk):
+                    print(f"   종목 구성: {_ln}")
+            if _mk == "US" and _m.get("url"):
+                # 원천 행 하나의 모양 — 업종 코드 칸 이름을 재야 종목 구성(sectors/v2/foreign/
+                # {나라}/{코드}/items)으로 해외 업종맵을 다시 세울 수 있다(추측 금지, #165).
+                _raw, _w = rank_v2_rows(_m["url"])
+                print(f"   표본 행: {json.dumps((_raw or [None])[0], ensure_ascii=False)[:400]}"
+                      + (f" · {_w}" if _w and not _raw else ""))
     except Exception as _exc:                                # noqa: BLE001
         print(f"③-c 해외 업종 랭킹 v2 를 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
     # ③-d 해외 화면이 실제로 부르는 주소 — 추측 대신 원천의 청크를 읽는다(#165·#338).

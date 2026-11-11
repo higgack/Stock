@@ -239,7 +239,7 @@ def _spark_until(series_id: str, headline_time: str) -> str:
 
     월간·분기 원천 계열은 스파크를 같은 주기로 묻고(`frequency=m`/`q`) FRED 는 두 요청 모두
     관측일을 **기간 첫날**로 준다 — 날짜 문자열을 그대로 대조할 수 있다. 일별·주간 계열은
-    헤드라인이 일별 스팟이고 스파크는 월말값(진행 중 달 끝점은 `_splice_spot` 이 카드 값으로 맞춘다)이라(아래 FRED 분기
+    헤드라인이 일별 스팟이고 스파크는 월평균이라 **설계상** 다른 기간을 말한다(아래 FRED 분기
     주석) — 대조하지 않는다. 주기는 공표 규약(`macro_cadence.CADENCE`)이 단일 출처다(#38);
     표에 없으면 모르는 것이니 대조하지 않는다(#165)."""
     from bot.macro_cadence import CADENCE
@@ -365,7 +365,7 @@ def _fred_spark_write(cache_file: Path, doc: dict, series_id: str) -> None:
 
 
 def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
-                  until: str = "") -> _SparkVals:
+                  until: str = "", eop: bool = False) -> _SparkVals:
     """FRED observations, oldest→newest, last `months` values(+ 그 관측일). 분기 series 는
     frequency=q(monthly 요청 시 FRED 400).
 
@@ -381,7 +381,7 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
     받는다) — 그리고 한쪽만 계속 실패하면 같은 날 사본이 날짜가 바뀔 때까지 산다. 그래서
     `until`(같은 주기의 헤드라인 관측일, `_spark_until`)을 받으면 그 기간과 **맞춘다**: 사본이
     헤드라인보다 낡았으면 TTL 안이어도 다시 묻고, 그래도 못 닿으면 비운다(`_fred_spark_use`).
-    못 보는 축(#274): 일별·주간 계열은 대조하지 않는다(헤드라인=일별 스팟·스파크=월말값)."""
+    못 보는 축(#274): 일별·주간 계열은 대조하지 않는다(헤드라인=일별 스팟·스파크=월평균)."""
     # ⚠️ `os.getenv` 로 직접 읽으면 `load_dotenv()` 를 부르는 봇 엔트리포인트
     # 밖(진단 스크립트·크론)에서 **키가 있는데도 빈 리스트**를 준다 —
     # 스파크라인만 조용히 사라진다(실수 #23). 공용 헬퍼로 통일.
@@ -391,11 +391,12 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N, *,
         return _SparkVals()
     rules = _fred_cache_rules()
     freq = "q" if series_id in _FRED_QUARTERLY else "m"
-    # 일별 계열(국채금리·금리차·하이일드)은 **월말값**으로 묻는다(`aggregation_method=eop`).
-    # 옛 판은 FRED 기본(월평균)이라 같은 화면의 ECOS 계열(`_monthly_buckets` = 그 달 마지막
-    # 값)과 정의가 갈렸고, 한·미 금리 차트가 미국 월평균 − 한국 월말값을 '금리차' 로 그렸다
-    # (2026-11-11 사용자 "그래프 스케일이 좀 이상한데" — 차트 끝 미 5.16 vs 카드 4.98, #33·#34).
-    eop = freq == "m" and series_id in getattr(rules, "_FRED_DAILY_SIDS", ())
+    # `eop=True` = **월말값**(`aggregation_method=eop`) — 한·미 금리 차트 전용이다. 같은 차트의
+    # ECOS 계열(`_monthly_buckets` = 그 달 마지막 값)과 정의를 맞춰야 금리차가 한 정의의 차가
+    # 된다(2026-11-11 "그래프 스케일이 좀 이상한데" — 차트 끝 미 5.16 vs 카드 4.98, #33·#34).
+    # 카드의 12개월 스파크는 **월평균**(FRED 기본)이다 — 사용자 2026-11-12 "예전방식으로
+    # 월평균으로 되돌려줘". 두 정의는 사본 이름이 달라 섞이지 않는다(#61).
+    eop = bool(eop) and freq == "m"
     cache_file = _fred_spark_cache_file(series_id, freq + ("e" if eop else ""), months)
     fresh, stale = _fred_spark_cache_read(cache_file, rules._fred_ttl_h(series_id))
     if fresh is not None and not _spark_reaches(fresh, until):
@@ -1268,8 +1269,15 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     log.warning("macro: FRED %s 스파크 실패 — 차트 없이 그린다: %s: %s",
                                 sid, type(exc).__name__, exc)
                     chart_spark = []
-                chart_spark = _splice_spot(chart_spark, _spot if _has_spot else None, sid)
-                card_spark = chart_spark      # 월간 시계열(스파크라인)
+                card_spark = chart_spark      # 월간 시계열(스파크라인, 월평균)
+                if key == "us_10y":
+                    # 한·미 금리 차트 전용 월말값 계열 — 끝점 = 카드 값(#33). 카드 스파크는 월평균.
+                    try:
+                        spark_cache["us_10y_eop"] = _splice_spot(
+                            _fred_monthly(sid, eop=True), _spot if _has_spot else None, sid)
+                    except Exception as exc:                      # noqa: BLE001
+                        log.warning("macro: FRED %s 월말값 실패 — 금리 차트는 월평균으로 그린다:"
+                                    " %s: %s", sid, type(exc).__name__, exc)
                 # 칩은 **그린 점 수**에서 센다 — 원천이 짧게 준 날에도 '12개월' 이라 적으면 창을
                 # 부풀려 말한다(독립 리뷰 L1 · ECOS 칩과 같은 규칙, #29). 안 그렸으면 칩도 없다.
                 spark_span = f"{len(card_spark)}개월" if card_spark else ""
@@ -1453,6 +1461,24 @@ def _month_labels(n: int) -> list[str]:
     return list(reversed(seq))
 
 
+def _pair_by_month(a, b) -> tuple:
+    """(a', b', ['YYYY-MM'…]|None) — 두 월간 계열을 **관측 달**로 짝짓는다(순수).
+
+    둘 다 관측 기간(`dates`)을 들고 있을 때만 공통 달로 자르고, 아니면 그대로 돌려준다
+    (호출부가 옛 위치 규칙으로 폴백한다). 날짜 표기는 FRED 'YYYY-MM-DD'·ECOS 'YYYYMM'."""
+    da, db = getattr(a, "dates", None), getattr(b, "dates", None)
+    if not (da and db and len(da) == len(a) and len(db) == len(b)):
+        return list(a or []), list(b or []), None
+
+    def _mk(d):
+        return str(d).replace("-", "")[:6]       # 'YYYY-MM-DD' · 'YYYYMM(DD)' → YYYYMM
+    ma = {_mk(d): v for d, v in zip(da, a)}
+    mb = {_mk(d): v for d, v in zip(db, b)}
+    common = sorted(set(ma) & set(mb))[-_SPARK_N:]
+    return ([ma[m] for m in common], [mb[m] for m in common],
+            [f"{m[:4]}-{m[4:6]}" for m in common])
+
+
 def _build_charts(spark: dict[str, list[float]],
                   vix_value: Optional[float] = None) -> dict[str, Any]:
     """Build the 3 chart payloads from cached sparklines.
@@ -1472,7 +1498,8 @@ def _build_charts(spark: dict[str, list[float]],
     # (시장금리, like-for-like) 절대수준 + **美-韓 10Y 금리차(spread)**. 금리차가
     # 캐리·자본흐름·원화 압력을 설명하는 단일 핵심 지표 — 환율은 그 '결과'라 제외.
     # ECOS kr10y 부재 시 기준금리 폴백(라벨 동기).
-    us10 = spark.get("us_10y", [])
+    # 월말값 계열이 있으면 그것을(ECOS 와 같은 정의 — 끝점 = 카드 값), 없으면 월평균 폴백.
+    us10 = spark.get("us_10y_eop") or spark.get("us_10y", [])
     kr10 = spark.get("kr_10y", [])
     krr = kr10 if kr10 else spark.get("kr_rate", [])
     kr_label = "한국 국고채 10년" if kr10 else "한국 기준금리"
@@ -1480,17 +1507,7 @@ def _build_charts(spark: dict[str, list[float]],
     # '2025-11~2026-10', 한국 창이 '2025-12~2026-11' 이면 미 10월과 한 11월을 같은 칸에
     # 놓고 오늘 기준 달 라벨을 붙였다(2026-11-11 카드 '2025-11 대비' vs '2025-12 대비' 가
     # 그 증거, #29·#46). 두 배열이 관측 기간을 갖고 있으면 공통 달만 쓴다.
-    _lab = None
-    _ud, _kd = getattr(us10, "dates", None), getattr(krr, "dates", None)
-    if _ud and _kd and len(_ud) == len(us10) and len(_kd) == len(krr):
-        def _mk(d):
-            return str(d).replace("-", "")[:6]       # 'YYYY-MM-DD' · 'YYYYMM(DD)' → YYYYMM
-        _um = {_mk(d): v for d, v in zip(_ud, us10)}
-        _km = {_mk(d): v for d, v in zip(_kd, krr)}
-        _common = sorted(set(_um) & set(_km))[-_SPARK_N:]
-        us10 = [_um[m] for m in _common]
-        krr = [_km[m] for m in _common]
-        _lab = [f"{m[:4]}-{m[4:6]}" for m in _common]
+    us10, krr, _lab = _pair_by_month(us10, krr)
     n = _align([us10, krr])
     if n >= 2:
         _u, _k = us10[-n:], krr[-n:]
@@ -1504,15 +1521,21 @@ def _build_charts(spark: dict[str, list[float]],
         }
 
     # inflation
-    uscpi = spark.get("us_cpi", [])
-    krcpi = spark.get("kr_cpi", [])
-    n2 = _align([uscpi, krcpi])
+    # 같은 달끼리 짝짓고(#46) **첫 달 = 100 으로 환산**해 한 축에 그린다 — 옛 판은 두 지수
+    # 수준(미 ~330 · 한 ~120)을 좌·우 축에 따로 그려, 축 범위가 우연히 맞으면 두 선이 겹쳐
+    # '같이 오른다' 로 읽혔다(사용자 2026-11-12 "그래프에서도 수정이나 개선사항"). 환산하면
+    # 같은 눈금에서 누적 상승률을 바로 비교한다(값 = 첫 달 대비 지수, 마지막 − 100 = 누적 %).
+    uscpi, krcpi, _lab2 = _pair_by_month(spark.get("us_cpi", []), spark.get("kr_cpi", []))
+    n2 = min(len(uscpi), len(krcpi))      # 한쪽이 비면 그리지 않는다(_align 은 빈 쪽을 건너뛴다)
     if n2 >= 2:
-        charts["inflation"] = {
-            "labels": _month_labels(n2),
-            "us_cpi": uscpi[-n2:],
-            "kr_cpi": krcpi[-n2:],
-        }
+        _u2, _k2 = uscpi[-n2:], krcpi[-n2:]
+        if _u2[0] and _k2[0]:
+            charts["inflation"] = {
+                "labels": _lab2[-n2:] if _lab2 else _month_labels(n2),
+                "us_cpi": [round(v / _u2[0] * 100, 2) for v in _u2],
+                "kr_cpi": [round(v / _k2[0] * 100, 2) for v in _k2],
+                "rebased": True,
+            }
 
     # sentiment — 1차 실 CNN Fear & Greed(사용자 2026-07-08 '실제 F&G 로'),
     # 실패 시 기존 VIX 역산 폴백(출처 라벨로 구분 — 조용한 대체 금지).
