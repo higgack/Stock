@@ -495,6 +495,160 @@ def upjong_asof(rows: object) -> str:
     return ""
 
 
+# ── 업종 주소가 옮겨 간 날(2026-11-11 VM 화면 `HTTP 404 — Route GET:/api/domestic/
+# market/upjong/list?pageSize=100 not found`) ─────────────────────────────────
+# 404 는 '막혔다'(403·429)가 아니라 **그 주소가 없다**는 원천의 답이다. 옛 판은
+# 그 답을 받고도 같은 주소만 두드려 5일째 저장분을 그렸다. 새 주소를 **지어내지
+# 않고**(#151·#338) 테마와 같은 방식으로 원천의 SPA 청크에서 주소 리터럴을 읽고
+# (`naver_spa_discover`), **실호출해 업종 행이 전 업종만큼 오는 것만** 메모한다
+# (#25·#345 '찾음' 을 '동작함' 으로 렌더하지 말 것). 다음 수집이 그 메모를 1순위로
+# 쓰고, 메모가 죽으면 다시 옛 주소·탐색으로 돌아간다.
+_UPJONG_MEMO = "upjong_endpoint.json"
+_UPJONG_DISCOVER_URL = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
+_UPJONG_DISCOVER_COOLDOWN = 6 * 3600   # 못 찾은 날 청크 수 MB 를 매번 받지 않게
+_UPJONG_DISCOVER_TRIES = 6             # 검증 호출 상한 — 리터럴로 못박는다(#66)
+
+
+def _upjong_rows(raw: object) -> object:
+    """응답 → 업종 목록(순수). dict 로 감싸 와도 **전 업종만큼 읽힐 때만** 푼다.
+
+    1행짜리 dict 를 풀면 '목록이 아니라 dict' 라는 맞는 갈래가 '1행 못 읽음'
+    으로 바뀐다(#292 틀린 라벨) — 그래서 하한을 넘을 때만 목록으로 본다."""
+    if isinstance(raw, dict):
+        rows = _theme_rows_of(raw)
+        if rows and len(parse_upjong_json(rows)) >= _UPJONG_MIN_GROUPS:
+            return rows
+    return raw
+
+
+def upjong_memo_url() -> str:
+    """탐색이 **검증해 둔** 업종 주소(있으면). 없으면 빈 문자열."""
+    memo, _ = _cache_read_any(_UPJONG_MEMO)
+    return str((memo or {}).get("url") or "")
+
+
+def upjong_full(raw: object) -> bool:
+    """이 응답이 전 업종 목록인가(순수) — 테마가 섞여 오면 아니다(#96)."""
+    rows = _upjong_rows(raw)
+    if not isinstance(rows, list):
+        return False
+    kinds = {str(r.get("type") or "").strip().lower()
+             for r in rows if isinstance(r, dict)}
+    if "theme" in kinds:
+        return False
+    return len(parse_upjong_json(rows)) >= _UPJONG_MIN_GROUPS
+
+
+def _upjong_fetch_ladder() -> tuple:
+    """(응답, 사유, 쓴 주소) — 메모(탐색이 검증한 주소) → 옛 주소 순.
+
+    사유는 **옛 주소의 것**을 앞에 둔다 — 그게 화면이 지금까지 말해 온 갈래라
+    운영자가 비교할 수 있다. 옛 주소가 404 면 배경 탐색을 건다(#116 화면을
+    기다리게 하지 않는다)."""
+    urls = []
+    memo = upjong_memo_url()
+    if memo and memo != _UPJONG_API:
+        urls.append(memo)
+    urls.append(_UPJONG_API)
+    first = None
+    notes = []
+    for u in urls:
+        raw, why = _get2_json(u, params={"pageSize": _UPJONG_PAGE_SIZE})
+        raw = _upjong_rows(raw)
+        if first is None:
+            first = (raw, why, u)
+        if parse_upjong_json(raw):
+            if u != _UPJONG_API:
+                log.info("naver upjong: 탐색이 찾은 주소로 받음 %s", u)
+            return raw, why, u
+        if u != _UPJONG_API:
+            notes.append(f"탐색 주소({u})도 실패 — {why or '0건'}")
+        else:
+            first = (raw, why, u)
+    raw, why, u = first
+    if _nd.status_from(why or "") == 404:
+        _maybe_discover_upjong()
+        memo_all, _age = _cache_read_any(_UPJONG_MEMO)
+        if memo_all and not memo_all.get("url"):
+            notes.append("자동 탐색에서도 새 주소를 찾지 못했습니다(6시간 뒤 다시 탐색)")
+        else:
+            notes.append("원천이 주소를 옮긴 것으로 보여 새 주소를 탐색합니다")
+    if notes and why:
+        # 사람 문장이 **앞**이다 — 기계 상세(원천 본문)가 앞이면 화면용
+        # `public_reason` 이 그 뒤를 통째로 잘라 우리 문장이 사라진다(#398).
+        why = _nd.join_notes(notes + [why])
+    return raw, why, u
+
+
+def _discover_upjong_endpoint() -> None:
+    """원천에게 업종 주소를 묻는다 — 배경에서 한 번. 실호출로 검증한 것만 메모."""
+    from bot import naver_spa_discover as _disc
+
+    def _fetch(u: str) -> tuple:
+        try:
+            resp = requests.get(u, headers=_HEADERS, timeout=8)
+            if resp.status_code != 200:
+                return None, _nd.http_reason(resp.status_code,
+                                             len(resp.content or b""))
+            return resp.text, ""
+        except Exception as exc:                               # noqa: BLE001
+            return None, _nd.http_reason(None, exc=exc)
+
+    paths, why = _disc.discover(_UPJONG_DISCOVER_URL, must_contain="upjong",
+                               fetch=_fetch, prefer="upjong")
+    url, tried = "", []
+    for cand in [c for c in theme_candidates(paths)
+                 if c != _UPJONG_API][:_UPJONG_DISCOVER_TRIES]:
+        raw, rwhy = _get2_json(cand, params={"pageSize": _UPJONG_PAGE_SIZE})
+        ok = upjong_full(raw)
+        n = len(parse_upjong_json(_upjong_rows(raw)))
+        tried.append(f"{cand} — {'✅ %d개' % n if ok else (rwhy or f'{n}개(하한 미달)')}")
+        if ok:
+            url = cand
+            break
+    _cache_write(_UPJONG_MEMO, {"url": url, "found": paths[:8], "tried": tried,
+                                "why": why, "at": time.time()})
+    log.warning("naver_sector: 업종 엔드포인트 탐색 — 검증됨=%s · 후보=%s · 시도=%s · %s",
+                url or "없음", paths[:4], tried[:3], why or "")
+
+
+def _maybe_discover_upjong() -> None:
+    """냉각을 지키며 배경 탐색을 건다 — 같은 키는 한 번만(#113). 일시정지 중엔
+    안 한다(안 물어본 것을 '못 찾음' 으로 굳히지 않는다, #79·#143)."""
+    try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():
+            return
+    except Exception:                                          # noqa: BLE001
+        pass
+    memo, age = _cache_read_any(_UPJONG_MEMO)
+    # 검증된 주소가 있는데 그것도 죽었으면 냉각 없이 다시 찾는다.
+    if (age is not None and age < _UPJONG_DISCOVER_COOLDOWN
+            and not (memo or {}).get("url")):
+        return
+    with _BG_LOCK:
+        if _UPJONG_MEMO in _BG_KEYS:
+            return
+        _BG_KEYS.add(_UPJONG_MEMO)
+
+    def _run() -> None:
+        try:
+            _discover_upjong_endpoint()
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("naver_sector: 업종 엔드포인트 탐색 실패: %s", exc)
+        finally:
+            with _BG_LOCK:
+                _BG_KEYS.discard(_UPJONG_MEMO)
+
+    try:
+        threading.Thread(target=_run, daemon=True,
+                         name="naver-upjong-discover").start()
+    except Exception as exc:                                   # noqa: BLE001
+        with _BG_LOCK:
+            _BG_KEYS.discard(_UPJONG_MEMO)
+        log.warning("naver_sector: 업종 탐색 스레드 시작 실패: %s", exc)
+
+
 def fetch_sector_movers(top_n: int = 10) -> dict:
     """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 장중 30초 캐시.
 
@@ -505,7 +659,7 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
     c = _cached("upjong.json")
     if c is not None:
         return c
-    raw, why = _get2_json(_UPJONG_API, params={"pageSize": _UPJONG_PAGE_SIZE})
+    raw, why, _used = _upjong_fetch_ladder()
     groups = parse_upjong_json(raw)
     n_raw = len(raw) if isinstance(raw, list) else 0
     partial = bool(groups) and n_raw < _UPJONG_MIN_GROUPS
@@ -2637,13 +2791,28 @@ def check(fetch: bool = False) -> int:
     # (#312 테스트가 원천을 치면 안 된다). 기본(`--check`)은 조회만이라 안전하다.
     # ⚠️ **화면이 쓰는 그 경로**를 태운다(#35) — 2026-09-11 SPA 전환 뒤에도 옛
     # HTML(`sise_group.naver`)을 재고 있어 고친 뒤에도 영원히 ❌ 였다(독립 리뷰 M1).
-    raw, why = _get2_json(_UPJONG_API, params={"pageSize": _UPJONG_PAGE_SIZE})
+    # 화면과 **같은 사다리**(탐색 메모 → 옛 주소)를 탄다(#35). 옛 주소가 404 면
+    # 여기서는 탐색을 **기다려서** 결과를 찍는다 — 배경 스레드는 이 프로세스가
+    # 끝나면 같이 죽어 '탐색합니다' 가 지킬 수 없는 말이 된다(#380). 탐색은
+    # 찾은 주소를 메모에 **쓴다**(화면 수집이 하는 것과 같은 쓰기, #329g).
+    if _nd.status_from(_get2_json(_UPJONG_API, params={
+            "pageSize": _UPJONG_PAGE_SIZE})[1] or "") == 404:
+        print(f"③-a 옛 업종 주소가 404 — 원천 SPA 에서 새 주소를 탐색한다"
+              f"(메모 {_UPJONG_MEMO} 를 쓴다)")
+        _discover_upjong_endpoint()
+    _memo, _age = _cache_read_any(_UPJONG_MEMO)
+    if _memo:
+        print(f"③-a 업종 주소 메모: 검증됨={_memo.get('url') or '없음'} · "
+              f"발견 {len(_memo.get('found') or [])}개 · {_memo.get('why') or ''}")
+        for ln in (_memo.get("tried") or [])[:_UPJONG_DISCOVER_TRIES]:
+            print(f"   {ln}")
+    raw, why, used = _upjong_fetch_ladder()
     n_raw = len(raw) if isinstance(raw, list) else 0
     groups = parse_upjong_json(raw)
     if groups:
         asof = upjong_asof(raw) or "원천 미기록"
         print(f"③-b 업종 TOP 실측: {len(groups)}개 / 원천 {n_raw}행 · "
-              f"기준 {asof} · {time.time() - t1:.2f}초")
+              f"기준 {asof} · {time.time() - t1:.2f}초 · 주소 {used}")
         if n_raw < _UPJONG_MIN_GROUPS:
             # 값이 다 있어서 조용히 틀린다 — 세어 보지 않으면 안 보인다(#45).
             print(f"   ⚠️ 부분 수신(기대 하한 {_UPJONG_MIN_GROUPS}개) — 상·하위 "

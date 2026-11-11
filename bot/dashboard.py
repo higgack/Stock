@@ -18867,7 +18867,9 @@ def _render_sector_movers(movers: dict) -> str:
     최악 · #52 조용한 것과 죽은 것)."""
     up = (movers or {}).get("up", [])
     down = (movers or {}).get("down", [])
-    why = (movers or {}).get("reason") or ""
+    # 화면엔 **사람 문장만** — 원천 본문(`Route GET:/api/… not found`)은 운영자
+    # 로그·`--check` 가 읽는다(사용자 2026-11-11 캡처 · #391 public_reason).
+    why = _naver_diag.public_reason((movers or {}).get("reason") or "")
     _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     # 자식 페이지 링크는 **네이버 위젯 데이터와 무관**하다 — 사유 분기에서 빠뜨리면
     # 원천이 막힌 날 업종별 시세·신고저·급등락 입구까지 같이 사라진다(독립 리뷰
@@ -18987,8 +18989,27 @@ def _render_us_sector_movers(movers: dict) -> str:
     (가격제한폭 없는 시장 대응). 데이터 없으면 빈 문자열."""
     up = (movers or {}).get("up", [])
     down = (movers or {}).get("down", [])
+    why = _naver_diag.public_reason((movers or {}).get("reason") or "")
+    _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
+
+    def _hd(right: str) -> str:
+        return (
+            '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
+            '<h2>🇺🇸 미국 업종 등락 TOP 10</h2>'
+            f'<a href="usindustry" style="{_lnk}">🏭 업종별 시세(전체)</a>'
+            f'<a href="ushighlow" style="{_lnk}">📈 신고가·신저가</a>'
+            f'<a href="usmovers" style="{_lnk}">🚀 급등·급락</a>'
+            f'<a href="usprepost" style="{_lnk}">🌙 장전·장후</a>'
+            f'<span class="ts" style="margin-left:auto">{right}</span></div>')
+
     if not up and not down:
-        return ""
+        # 옛 판은 원천 셋(네이버·Finviz·섹터 ETF)이 다 비면 **위젯이 통째로
+        # 사라져** 자식 페이지 입구까지 같이 없어졌다(사용자 2026-11-11 "미국은
+        # 아예 안보여" — 한국 형제가 2026-09-11 에 고친 그 병, #335·#38).
+        if not why:
+            return ""
+        return (_hd("—") + f'<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — '
+                f'{_html.escape(why)}</div>')
 
     def _col(title: str, items: list) -> str:
         rows = []
@@ -19006,16 +19027,11 @@ def _render_us_sector_movers(movers: dict) -> str:
 
     ts = _html.escape((movers or {}).get("ts", ""))
     src = _html.escape((movers or {}).get("source", "Finviz"))
-    _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
+    # 폴백으로 내려왔으면 그 사실을 적는다(#136 폴백은 화면이 밝힌다).
+    note = (f'<div class="sm-note">⚠️ {_html.escape(why)}</div>') if why else ""
     return (
-        '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-        '<h2>🇺🇸 미국 업종 등락 TOP 10</h2>'
-        f'<a href="usindustry" style="{_lnk}">🏭 업종별 시세(전체)</a>'
-        f'<a href="ushighlow" style="{_lnk}">📈 신고가·신저가</a>'
-        f'<a href="usmovers" style="{_lnk}">🚀 급등·급락</a>'
-        f'<a href="usprepost" style="{_lnk}">🌙 장전·장후</a>'
-        f'<span class="ts" style="margin-left:auto">{ts} · {src}</span></div>'
-        '<div class="sm-wrap">'
+        _hd(f"{ts} · {src}") + note
+        + '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
         + '</div>'
     )

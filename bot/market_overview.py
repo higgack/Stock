@@ -2086,20 +2086,48 @@ def _fetch_us_sector_movers_safe() -> dict:
     """미국 업종 등락 TOP 10 — **네이버 업종(USA) 우선**(사용자 2026-06-14 개선점 A:
     데이터센터 IP Finviz 403 잦음 + 섹터ETF 폴백이 fast_info 트리거 → 네이버로).
     네이버 USA 업종맵(시총가중 등락, JP/CN/HK 와 동일 경로). 빈/실패 시 Finviz L3
-    폴백(top_l3_movers). 둘 다 {up:[{name,pct}],down} 동형이라 렌더 동일."""
+    폴백(top_l3_movers), 그것도 비면 11 GICS 섹터 ETF(yfinance). 셋 다
+    {up:[{name,pct}],down} 동형이라 렌더 동일.
+
+    ⚠️ 사다리를 **끝까지** 내려간다(사용자 2026-11-11 "미국은 아예 안보여" —
+    옛 판은 둘째 단에서 멈춰 빈 dict 를 주고 위젯이 통째로 사라졌다, #136·#335).
+    단마다 왜 못 받았는지 모아 `reason` 에 싣는다 — 셋 다 비면 화면이 그걸
+    적고, 폴백으로 받았으면 무엇을 건너뛰었는지 적는다(#43·#82)."""
+    from bot import naver_diag as _nd
+    failed: list = []       # 사람 문장 — 어느 단을 못 받았나
+    details: list = []      # 기계 상세 — 화면에선 잘리고 로그·감사가 읽는다(#391)
     try:
         from bot.naver_ranking_client import fetch_intl_sector_movers_naver
         nv = fetch_intl_sector_movers_naver("US", top_n=10)
         if nv.get("up") or nv.get("down"):
             return nv
+        failed.append("네이버 업종(미국)")
+        if nv.get("reason"):
+            details.append(str(nv["reason"]))
     except Exception as exc:
         log.warning("naver US 업종등락 → Finviz 폴백: %s", exc)
-    try:
-        from bot.finviz_client import top_l3_movers
-        return top_l3_movers(top_n=10)
-    except Exception as exc:
-        log.warning("us sector movers fetch error: %s", exc)
-        return {"up": [], "down": [], "ts": ""}
+        failed.append("네이버 업종(미국)")
+        details.append(f"원천에 닿지 못함 — {type(exc).__name__}: {str(exc)[:80]}")
+    for label, fn_name in (("Finviz 업종", "top_l3_movers"),
+                           ("섹터 ETF(yfinance)", "top_sector_movers")):
+        try:
+            from bot import finviz_client as _fv
+            r = getattr(_fv, fn_name)(top_n=10)
+        except Exception as exc:
+            log.warning("us sector movers (%s) error: %s", label, exc)
+            failed.append(label)
+            details.append(f"원천에 닿지 못함 — {type(exc).__name__}: {str(exc)[:80]}")
+            continue
+        if r.get("up") or r.get("down"):
+            out = dict(r)
+            if failed:
+                out["reason"] = _nd.join_notes(
+                    [f"{'·'.join(failed)}을(를) 못 받아 {label}로 대체했습니다"] + details)
+            return out
+        failed.append(label)
+    why = _nd.join_notes([f"{'·'.join(failed)} 모두 못 받았습니다"] + details)
+    log.warning("us sector movers: 전 원천 실패 — %s", why)
+    return {"up": [], "down": [], "ts": "", "reason": why}
 
 
 def _fetch_etf_sector_safe(market: str) -> dict:
