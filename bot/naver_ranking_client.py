@@ -692,42 +692,103 @@ _INTL_RANK_TRIES = 8
 
 
 # 해외 업종 화면이 실제로 부르는 주소는 아직 재지 못했다(VM 2026-11-11: 랭킹 v2 의
-# `USA`·`usa`·`us` 가 전부 404). 추측을 늘리지 않고 **원천에 묻는다** — 옛 주소의 지금
-# 상태와, 해외 화면 페이지의 청크가 품은 API 경로 중 해외로 보이는 것(#338·#340).
+# `USA`·`usa`·`us` 와 옛 `foreign/market/{nat}/upjong/list` 가 전부 404). 추측을 늘리지
+# 않고 **원천에 묻는다**(#338·#340). 같은 날 2차 실측: 해외 **홈** 청크엔 실시간 시세
+# 경로만 있었다 — 업종 화면의 주소는 그 화면의 라우트 청크에 있다. 그래서 홈의 코드에서
+# '업종' 화면 경로(링크 리터럴)를 찾아 **그 화면을 한 단계 따라가** 읽는다.
 # 페이지 목록은 청크를 얻을 입구일 뿐이라 틀려도 '못 받음' 으로 찍힐 뿐이다.
 _INTL_PROBE_PAGES = ("https://finance.naver.com/world/",
-                     "https://stock.naver.com/worldstock/",
-                     "https://m.stock.naver.com/worldstock/")
-_INTL_HINTS = ("foreign", "world", "overseas", "nation", "usa", "global", "industr",
-               "upjong", "sector")
+                     "https://m.stock.naver.com/worldstock/",
+                     "https://stock.naver.com/")
+_INTL_HOSTS = ("https://stock.naver.com", "https://m.stock.naver.com")
+_INTL_WORDS = ("industr", "upjong", "sector")
+_ROUTE_LIT = re.compile(
+    r'["\'`](/(?!api/|_next/)[A-Za-z0-9_\-\[\]{}$/]*(?:industr|upjong|sector)'
+    r'[A-Za-z0-9_\-\[\]{}$/]*)["\'`]', re.I)
+_PROBE_CHUNKS = 40
+_PROBE_BYTES = 6_000_000
+_PROBE_FOLLOW = 6
 
 
-def intl_route_probe_lines(fetch, discover=None) -> list:
+def _scan_page(page: str, fetch) -> tuple:
+    """(API 경로 set, 라우트 리터럴 set, '업종' 낱말 주변 원문 list, 사유)."""
+    from bot import naver_spa_discover as _disc
+    html, why = fetch(page)
+    if not html:
+        return set(), set(), [], (why or "페이지를 받지 못했습니다")
+    apis = set(_disc.api_paths(html))
+    routes = set(_ROUTE_LIT.findall(html))
+    ctx: list = []
+    used = 0
+    urls = _disc.chunk_urls(html, page, prefer="page")
+    for u in urls[:_PROBE_CHUNKS]:
+        js, _jw = fetch(u)
+        if not js:
+            continue
+        used += len(js)
+        apis.update(_disc.api_paths(js))
+        routes.update(_ROUTE_LIT.findall(js))
+        low = js.lower()
+        for w in _INTL_WORDS:
+            i = low.find(w)
+            while i >= 0 and len(ctx) < 8:
+                if "api" in low[max(0, i - 200): i + 200]:
+                    ctx.append(js[max(0, i - 160): i + 160].replace("\n", " "))
+                    break
+                i = low.find(w, i + 1)
+        if used >= _PROBE_BYTES:
+            break
+    return apis, routes, ctx, (f"청크 {len(urls)}개 중 일부" if urls else "청크 0개")
+
+
+def intl_route_probe_lines(fetch) -> list:
     """`--check --fetch` 용 진단 줄 — `fetch(url) -> (본문|None, 사유)` 주입(#336).
 
-    ① 옛 `foreign/market/{nat}/upjong/list` 의 지금 답(나라별) ② 해외 화면 청크의
-    API 경로 중 해외·업종 낱말을 품은 것. 읽기만 한다(메모를 쓰지 않는다, #264)."""
-    from bot import naver_spa_discover as _disc
-    discover = discover or _disc.discover
+    ① 옛 `foreign/market/{nat}/upjong/list` 의 지금 답(나라별) ② 입구 페이지와 그
+    코드가 가리키는 '업종' 화면(한 단계)의 API 경로·라우트·주변 원문. 읽기만 한다
+    (메모를 쓰지 않는다, #264)."""
     out = []
     for mk, nat in _UPJONG_NATION.items():
         u = f"{_UPJONG_BASE}/{nat}/upjong/list"
         body, why = fetch(u)
-        if body:
-            out.append(f"   옛 주소 [{mk}] {u} — 응답 {len(body):,}B · 앞: {body[:120]!r}")
-        else:
-            out.append(f"   옛 주소 [{mk}] {u} — {why or '응답 없음'}")
+        out.append(f"   옛 주소 [{mk}] {u} — "
+                   + (f"응답 {len(body):,}B · 앞: {body[:120]!r}" if body
+                      else (why or "응답 없음")))
+    routes_all: set = set()
+    seen_pages: set = set()
+
+    def _report(page, apis, routes, ctx, why, tag):
+        hit = sorted(p for p in apis if any(w in p.lower() for w in _INTL_WORDS))
+        out.append(f"   {tag} [{page}] — API 경로 {len(apis)}개 · 업종 낱말 {len(hit)}개 · "
+                   f"업종 화면 경로 {len(routes)}개" + ("" if apis or routes else f" · {why}"))
+        for p in hit[:30]:
+            out.append(f"     · API {p}")
+        for r in sorted(routes)[:20]:
+            out.append(f"     · 화면 {r}")
+        for c in ctx[:6]:
+            out.append(f"     · 원문 {c!r}")
+
     for page in _INTL_PROBE_PAGES:
-        paths, why = discover(page, must_contain="", fetch=fetch, prefer="page",
-                              chunk_cap=40, byte_cap=6_000_000)
-        hit = [p for p in paths if any(h in p.lower() for h in _INTL_HINTS)]
-        if not paths:
-            out.append(f"   청크 [{page}] — {why or '경로 0건'}")
-            continue
-        out.append(f"   청크 [{page}] — API 경로 {len(paths)}개 · 해외·업종 낱말 {len(hit)}개"
-                   + ("" if hit else " (아래는 전체 경로 — 해외 낱말이 없어 다 보인다)"))
-        for p in (hit or paths)[:40]:
-            out.append(f"     · {p}")
+        seen_pages.add(page)
+        apis, routes, ctx, why = _scan_page(page, fetch)
+        routes_all |= routes
+        _report(page, apis, routes, ctx, why, "입구")
+    follow = []
+    for r in sorted(routes_all):
+        if any(ch in r for ch in "[{$"):
+            continue                       # 구멍 있는 템플릿은 못 따라간다(사람이 본다)
+        for h in _INTL_HOSTS:
+            u = h + r
+            if u not in seen_pages:
+                follow.append(u)
+    if not follow:
+        out.append("   업종 화면 경로를 입구 코드에서 찾지 못해 따라가지 않았습니다")
+    for u in follow[:_PROBE_FOLLOW]:
+        seen_pages.add(u)
+        apis, routes, ctx, why = _scan_page(u, fetch)
+        _report(u, apis, routes, ctx, why, "따라감")
+    if len(follow) > _PROBE_FOLLOW:
+        out.append(f"   (따라갈 화면 {len(follow)}개 중 {_PROBE_FOLLOW}개만 읽었습니다)")
     return out
 
 

@@ -1321,7 +1321,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 10       # 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
+_CHECK_VER = 11       # 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -3132,6 +3132,12 @@ def check(fetch: bool = False) -> int:
         print("③-d 해외 업종 원천 실측(읽기만):")
         for _ln in _nrc2.intl_route_probe_lines(_pf):
             print(_ln)
+        # Finviz 업종(미국 둘째 단) — 지금 답하나. `_get` 이 차단·상태를 경고로 찍는다.
+        from bot import finviz_client as _fvc
+        _html = _fvc._get(f"{_fvc._BASE}/groups?g=industry&v=110&o=-change")
+        _n = len(_fvc._GROUP_ROW_RE.findall(_html)) if _html else 0
+        print(f"③-d Finviz 업종: " + (f"응답 {len(_html):,}B · 업종 {_n}행" if _html
+              else "못 받음(위 finviz 경고 줄이 상태코드·차단 여부를 말한다)"))
     except Exception as _exc:                                # noqa: BLE001
         print(f"③-d 해외 업종 원천을 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
     t1 = time.time()
