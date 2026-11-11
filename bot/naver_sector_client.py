@@ -1322,7 +1322,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 13       # 13 = 해외 sectors 주소·Finviz 새 링크 · 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
+_CHECK_VER = 14       # 14 = 해외 sectors 표본 행 · 13 = 해외 sectors 주소·Finviz 새 링크 · 12 = 업종 화면 우선 따라가기·Finviz 표본 · 11 = 해외 업종 화면 따라가기·Finviz · 10 = 해외 원천 실측 · 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -3113,6 +3113,12 @@ def check(fetch: bool = False) -> int:
                   f"검증됨={_m.get('url') or '없음'}" + (f" · {_why}" if _why else ""))
             for _t in (_m.get("tried") or []):
                 print(f"   {_t}")
+            if _mk == "US" and _m.get("url"):
+                # 원천 행 하나의 모양 — 업종 코드 칸 이름을 재야 종목 구성(sectors/v2/foreign/
+                # {나라}/{코드}/items)으로 해외 업종맵을 다시 세울 수 있다(추측 금지, #165).
+                _raw, _w = rank_v2_rows(_m["url"])
+                print(f"   표본 행: {json.dumps((_raw or [None])[0], ensure_ascii=False)[:400]}"
+                      + (f" · {_w}" if _w and not _raw else ""))
     except Exception as _exc:                                # noqa: BLE001
         print(f"③-c 해외 업종 랭킹 v2 를 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
     # ③-d 해외 화면이 실제로 부르는 주소 — 추측 대신 원천의 청크를 읽는다(#165·#338).
