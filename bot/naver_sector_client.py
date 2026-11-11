@@ -462,6 +462,22 @@ def _first_of(r: dict, keys) -> object:
     return None
 
 
+def _signed_rate(r: dict) -> float:
+    """행의 등락률(부호 포함) — 못 읽으면 ValueError.
+
+    네이버 가족 일부는 등락률을 **절댓값**으로 주고 방향을 따로 싣는다
+    (`fluctuationsType`·`compareToPreviousPrice` 의 FALLING·LOWER — 해외 업종
+    경로가 이미 그렇게 읽는다). 방향 칸이 내림이라 말하면 음수로 맞춘다."""
+    v = float(str(_first_of(r, _UPJONG_RATE_KEYS)).replace(",", "").replace("%", ""))
+    d = r.get("fluctuationsType") or r.get("compareToPreviousPrice") or ""
+    if isinstance(d, dict):
+        d = d.get("code") or d.get("name") or ""
+    d = str(d).upper()
+    if ("FALL" in d or "LOWER" in d) and v > 0:
+        v = -v
+    return v
+
+
 def parse_upjong_json(rows: object) -> list:
     """네이버 업종 JSON → [{name, pct, rise, fall, mcap}] (순수).
 
@@ -482,8 +498,7 @@ def parse_upjong_json(rows: object) -> list:
         if not name:
             continue
         try:
-            pct = float(str(_first_of(r, _UPJONG_RATE_KEYS)).replace(",", "")
-                        .replace("%", ""))
+            pct = _signed_rate(r)
         except (TypeError, ValueError):
             continue
         item = {"name": name, "pct": pct}
@@ -594,6 +609,28 @@ def enum_values(why: str) -> list:
     return re.findall(r"'([^']+)'", m.group(1)) if m else []
 
 
+def enum_swap(url: str, why: str, accept) -> list:
+    """거절된 **그 조각**(`received 'X'`)을 허용값 중 `accept(v)` 인 것으로 바꾼다(순수).
+
+    `enum_candidates` 는 마지막 조각만 바꾼다 — 지역처럼 가운데 조각이 거절되면
+    원천이 적어 보낸 `received` 로 그 자리를 찾는다. 못 찾으면 빈 목록(#165)."""
+    m = re.search(r"received '([^']*)'", str(why or ""))
+    if not m or not m.group(1):
+        return []
+    head, sep, path = str(url).partition("://")
+    parts = path.split("/")
+    if m.group(1) not in parts[1:]:
+        return []
+    i = len(parts) - 1 - parts[::-1].index(m.group(1))
+    out = []
+    for v in enum_values(why):
+        if accept(v):
+            c = head + sep + "/".join(parts[:i] + [v] + parts[i + 1:])
+            if c != url and c not in out:
+                out.append(c)
+    return out
+
+
 def enum_candidates(url: str, why: str, stems) -> list:
     """거절된 마지막 경로 조각을 원천이 밝힌 허용값 중 **이 자원의 것**으로 바꾼다."""
     base = str(url).rsplit("/", 1)[0] + "/"
@@ -628,6 +665,30 @@ def _get_cursor_pages(url: str, params: dict | None) -> tuple:
         if more and cur:
             why = f"{_CURSOR_PAGE_CAP}쪽 상한에서 멈춤"
     return {"items": items}, why
+
+
+# ── 랭킹 v2 가족(2026-11-11 VM 실측) ────────────────────────────────────────
+# 접두는 SPA 청크의 리터럴(`"/api/stockSecurity/rankings/v2/domestic/".concat(t,"?")`),
+# 범주 이름은 원천이 400 에 적어 보낸 허용값(`'industries' | 'themes' | 'groups'`)이다.
+# 둘 다 잰 값이지만 **응답 모양은 아직 못 쟀다** — 그래서 채택은 매번 실호출로
+# 행이 하한만큼 읽힐 때만이고, 못 읽으면 옛 사다리로 내려간다(#25·#136).
+_RANK_V2 = "https://stock.naver.com/api/stockSecurity/rankings/v2/"
+_RANK_V2_INDUSTRIES = _RANK_V2 + "domestic/industries"
+_RANK_V2_THEMES = _RANK_V2 + "domestic/themes"
+
+
+def rank_v2_rows(url: str) -> tuple:
+    """(행 목록|None, 사유) — `size` 로 묻고 거절되면 쿼리 없이. 커서는 끝까지."""
+    last = ""
+    for params in ({"size": _UPJONG_PAGE_SIZE}, {}):
+        raw, why = _get_cursor_pages(url, params)
+        rows = _theme_rows_of(raw)
+        if isinstance(rows, list) and rows:
+            return rows, why
+        last = why or _nd.shape_reason("랭킹 목록", raw)
+        if _nd.status_from(why or "") in (None, 404):
+            break
+    return None, last
 
 
 _QUERY_DIRECT = re.compile(r'^\s*\.concat\(\s*\w+\s*,\s*"\?')
@@ -689,12 +750,30 @@ def _upjong_fetch_ladder() -> tuple:
     if memo and memo != _UPJONG_API:
         urls.append(memo)
     urls.append(_UPJONG_API)
+    # 랭킹 v2 는 **옛 주소 뒤**에 둔다 — 옛 주소가 살아 있는 동안은 그 계약(전 업종·
+    # `thistime`)이 정본이고, 죽었으면 404 가 즉시 떨어져 지연이 없다.
+    if _RANK_V2_INDUSTRIES not in urls:
+        urls.append(_RANK_V2_INDUSTRIES)
     first = None
     notes = []
+    _rank_note = ""
     for u in urls:
         mp = upjong_memo_params() if u == memo else None
-        raw, why = _get_cursor_pages(u, mp if mp is not None
-                                     else {"pageSize": _UPJONG_PAGE_SIZE})
+        if u == _RANK_V2_INDUSTRIES and mp is None:
+            # 옛 주소가 **없다(404)** 고 답했을 때만 묻는다 — 막힘·모양 변경·부분
+            # 응답은 주소 이전이 아니라서 새 주소가 답이 아니다(#82 갈래마다 처방).
+            if not (first and _nd.status_from(first[1] or "") == 404):
+                continue
+            raw, why = rank_v2_rows(u)
+            if raw is not None and not upjong_full(raw):
+                # 답은 왔는데 전 업종으로 안 읽힌다 — 필드 이름이 다른 것이다.
+                # 표본을 사유에 남겨 다음 판정이 그걸 본다(#82·#109).
+                why = (f"{len(raw)}행을 받았지만 업종으로 못 읽음 · "
+                       f"표본 {_nd.body_sample(raw[:1], 200)}")
+                raw = None
+        else:
+            raw, why = _get_cursor_pages(u, mp if mp is not None
+                                         else {"pageSize": _UPJONG_PAGE_SIZE})
         raw = _upjong_rows(raw)
         if first is None:
             first = (raw, why, u)
@@ -702,11 +781,17 @@ def _upjong_fetch_ladder() -> tuple:
             if u != _UPJONG_API:
                 log.info("naver upjong: 탐색이 찾은 주소로 받음 %s", u)
             return raw, why, u
-        if u != _UPJONG_API:
+        if u == _RANK_V2_INDUSTRIES and u != memo:
+            log.warning("naver upjong: 랭킹 v2 실패 — %s", why or "0건")
+            _rank_note = why or "0건"
+        elif u != _UPJONG_API:
             notes.append(f"탐색 주소({u})도 실패 — {why or '0건'}")
         else:
             first = (raw, why, u)
     raw, why, u = first
+    if _rank_note:
+        # 새 주소의 사유가 옛 주소의 404 보다 행동 가능하다 — 기계 상세로 싣는다
+        why = _nd.join_notes([why, f"랭킹 v2: {_rank_note}"]) if why else _rank_note
     if _nd.status_from(why or "") == 404:
         _maybe_discover_upjong()
         memo_all, _age = _cache_read_any(_UPJONG_MEMO)
@@ -1236,7 +1321,7 @@ _THEME_PAGES = 7
 # KR 한 세션(6.5시간)을 덮게 넓혀, 장중 어느 클릭이든 저장분을 즉시 주고
 # 갱신은 뒤에서 한다. 세션 밖은 `_cached` 가 이미 재수집을 안 한다.
 _THEME_SWR_SEC = 6 * 3600
-_CHECK_VER = 8        # 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서
+_CHECK_VER = 9        # 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유 · 8 = 허용값 학습·커서 · 9 = 랭킹 v2 단·해외
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -1392,7 +1477,8 @@ def parse_theme_json(rows: object) -> list:
     for r in rows:
         if not isinstance(r, dict):
             continue
-        name = str(r.get("name") or r.get("themeName") or "").strip()
+        name = str(r.get("name") or r.get("themeName")
+                   or _first_of(r, _UPJONG_NAME_KEYS) or "").strip()
         if not name:
             continue
         no = str(r.get("no") or r.get("themeCode") or r.get("code") or "").strip()
@@ -1400,7 +1486,7 @@ def parse_theme_json(rows: object) -> list:
         if key in seen:
             continue
         try:
-            pct = round(float(str(r.get("changeRate")).replace(",", "")), 2)
+            pct = round(_signed_rate(r), 2)
         except (TypeError, ValueError):
             continue
         try:
@@ -2474,6 +2560,24 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
     return out
 
 
+def _theme_rank_v2_rung() -> tuple:
+    """랭킹 v2 `themes` 한 단 → (행, 사유, 부분여부, 경고여부) — 형제 단과 같은 모양.
+
+    하한(`_THEME_MIN_ROWS`) 미만이면 **채택하지 않는다** — 첫 쪽만 온 것을 전체
+    테마로 굽지 않는다(#280). 커서가 중간에 멈췄으면 값은 주되 부분이다."""
+    raw, why = rank_v2_rows(_RANK_V2_THEMES)
+    if raw is None:
+        return [], why, False, False
+    bad = wrong_resource(raw)
+    if bad:
+        return [], bad, False, False
+    rows = parse_theme_json(raw)
+    if len(rows) < _THEME_MIN_ROWS:
+        return [], (f"{len(raw)}행 중 {len(rows)}개만 테마로 읽힘(하한 {_THEME_MIN_ROWS}) · "
+                    f"표본 {_nd.body_sample(raw[:1], 200)}"), False, False
+    return rows, why, bool(why), bool(why)
+
+
 def collect_themes_json() -> tuple:
     """후보 사다리를 **순서대로 실호출** → (행, 단 표시, 사유, 부분여부).
 
@@ -2483,10 +2587,18 @@ def collect_themes_json() -> tuple:
     marks: list = []
     fails: list = []
     memo = theme_memo_url()
-    rungs = ([("탐색됨", memo)] if memo else []) + list(_THEME_API_RUNGS)
+    rungs = ([("탐색됨", memo)] if memo else []) \
+        + list(_THEME_API_RUNGS) + [("랭킹v2/themes", _RANK_V2_THEMES)]
     for label, url in rungs:
         _t = time.time()
-        rows, why, partial, warn = _theme_json_rung(url)
+        if url == _RANK_V2_THEMES:
+            # 앞 단이 **전부 주소 없음(404)** 일 때만 — 거절(400)·한도(429)는 주소
+            # 이전이 아니다(업종 사다리와 같은 규칙, #38).
+            if not fails or any(_nd.status_from(f[3] or "") != 404 for f in fails):
+                continue
+            rows, why, partial, warn = _theme_rank_v2_rung()
+        else:
+            rows, why, partial, warn = _theme_json_rung(url)
         # 재지 않으면 '느리다'는 진단이 아니다(#69·#110) — 단마다 소요를 싣는다.
         _dt = f" · {time.time() - _t:.1f}s"
         if rows:
@@ -2989,6 +3101,19 @@ def check(fetch: bool = False) -> int:
             return rc
     except Exception:                                        # noqa: BLE001
         pass
+    # 해외 업종(미국 …) 랭킹 v2 — 화면이 쓰는 그 함수를 태우고 시도 기록을 찍는다(#35).
+    try:
+        from bot import naver_ranking_client as _nrc
+        from bot.finviz_client import _cached as _fc
+        for _mk in _nrc._INTL_RANK_ALIASES:
+            _rows, _why = _nrc._intl_rank_v2(_mk)
+            _m = _fc(_nrc.intl_rank_memo(_mk), ttl=30 * 86400) or {}
+            print(f"③-c 해외 업종 랭킹 v2 [{_mk}]: {len(_rows)}개 · "
+                  f"검증됨={_m.get('url') or '없음'}" + (f" · {_why}" if _why else ""))
+            for _t in (_m.get("tried") or []):
+                print(f"   {_t}")
+    except Exception as _exc:                                # noqa: BLE001
+        print(f"③-c 해외 업종 랭킹 v2 를 재지 못했습니다 — {type(_exc).__name__}: {_exc}")
     t1 = time.time()
     # ⚠️ 여기서 네트워크가 나간다 — `--fetch` 를 태우는 테스트는 반드시 스텁할 것
     # (#312 테스트가 원천을 치면 안 된다). 기본(`--check`)은 조회만이라 안전하다.
