@@ -506,7 +506,7 @@ def upjong_asof(rows: object) -> str:
 _UPJONG_MEMO = "upjong_endpoint.json"
 _UPJONG_DISCOVER_URL = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
 _UPJONG_DISCOVER_COOLDOWN = 6 * 3600   # 못 찾은 날 청크 수 MB 를 매번 받지 않게
-_UPJONG_DISCOVER_TRIES = 6             # 검증 호출 상한 — 리터럴로 못박는다(#66)
+_UPJONG_DISCOVER_TRIES = 30            # 검증 호출 상한(접두×낱말×형태×호스트) — 리터럴로(#66)
 _UPJONG_CHUNK_CAP = 40                 # 실측 12청크(2.8MB)로는 라우트 청크에 못 닿았다
 _UPJONG_BYTE_CAP = 9_000_000
 
@@ -553,6 +553,25 @@ def upjong_like_paths(paths) -> list:
             continue
         if any(w in low for w in _UPJONG_WORDS) and p not in out:
             out.append(p)
+    return out
+
+
+def prefix_candidates(paths, words) -> list:
+    """`/` 로 끝나는 **접두** 경로 → 낱말을 붙인 후보(순수).
+
+    2026-11-11 VM 실측: 새 SPA 청크엔 `/api/stockSecurity/rankings/v2/domestic/`·
+    `/api/domestic/market/` 처럼 접두만 리터럴로 있었다. 옛 자원 이름(upjong·
+    theme…)을 붙여 **후보**를 만들 뿐이고, 채택은 호출부가 실호출로 한다(#25·#151).
+    국내 자원만 본다 — 해외·개인화 접두에 붙이면 후보만 늘어난다."""
+    out: list = []
+    for p in paths or []:
+        p = str(p)
+        if not p.endswith("/") or "domestic" not in p or "{" in p or "$" in p:
+            continue
+        for w in words:
+            for c in (p + w, p + w + "/list"):
+                if c not in out:
+                    out.append(c)
     return out
 
 
@@ -631,22 +650,27 @@ def _discover_upjong_endpoint() -> None:
     # 같은 실측: 공용 청크 12개(2.8MB)에서 상한에 걸려 멈췄다 — 그 화면이 부르는
     # 주소는 **라우트 청크**(`app/…/page-….js`)에 있다. 라우트 청크를 앞에 두고
     # 상한을 넓힌다(6시간에 한 번 도는 배경 작업이라 감당한다, #116).
+    ctx: dict = {}
     all_paths, why = _disc.discover(_UPJONG_DISCOVER_URL, must_contain="",
                                    fetch=_fetch, prefer="page",
                                    chunk_cap=_UPJONG_CHUNK_CAP,
-                                   byte_cap=_UPJONG_BYTE_CAP)
+                                   byte_cap=_UPJONG_BYTE_CAP, ctx_out=ctx)
     paths = upjong_like_paths(all_paths)
     if not paths and not why:
         why = "청크에서 업종으로 보이는 API 경로를 찾지 못했습니다"
     url, tried = "", []
-    cands = upjong_from_theme(theme_memo_url()) + theme_candidates(paths)
+    cands = (upjong_from_theme(theme_memo_url()) + theme_candidates(paths)
+             + theme_candidates(prefix_candidates(all_paths, _UPJONG_WORDS)))
     seen: set = set()
     cands = [c for c in cands if c != _UPJONG_API and not (c in seen or seen.add(c))]
     for cand in cands[:_UPJONG_DISCOVER_TRIES]:
         raw, rwhy = _get2_json(cand, params={"pageSize": _UPJONG_PAGE_SIZE})
         ok = upjong_full(raw)
         n = len(parse_upjong_json(_upjong_rows(raw)))
-        tried.append(f"{cand} — {'✅ %d개' % n if ok else (rwhy or f'{n}개(하한 미달)')}")
+        # 실패해도 **응답 모양**을 남긴다 — 주소는 맞는데 필드 이름이 바뀐 것과
+        # 주소가 틀린 것은 처방이 다르다(#82·#109 원문 표본).
+        _smp = "" if ok or rwhy else f" · 표본 {_nd.body_sample(raw, 160)}"
+        tried.append(f"{cand} — {'✅ %d개' % n if ok else (rwhy or f'{n}개(하한 미달)')}{_smp}")
         if ok:
             url = cand
             break
@@ -655,7 +679,10 @@ def _discover_upjong_endpoint() -> None:
                                 "theme_basis": theme_memo_url(),
                                 # 업종처럼 안 보여 거른 것까지 남긴다 — 새 SPA 가
                                 # 자원을 다른 낱말로 부르면 사람이 이걸 보고 판정한다(#82).
-                                "all_paths": list(all_paths or [])[:60]})
+                                "all_paths": list(all_paths or [])[:60],
+                                # 접두만 리터럴인 경로 뒤에 무엇이 붙는지(실측 원문)
+                                "contexts": {k: v for k, v in ctx.items()
+                                             if "domestic" in k}})
     log.warning("naver_sector: 업종 엔드포인트 탐색 — 검증됨=%s · 후보=%s · 시도=%s · %s",
                 url or "없음", paths[:4], tried[:3], why or "")
 
@@ -1711,7 +1738,7 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
     return got, "", False, False, False
 
 
-_THEME_DISCOVER_TRIES = 6        # 검증 호출 상한 — 리터럴로 못박는다(#66)
+_THEME_DISCOVER_TRIES = 12       # 검증 호출 상한(접두×형태×호스트 포함) — 리터럴로(#66)
 
 
 def theme_candidates(paths: list) -> list:
@@ -1765,17 +1792,21 @@ def _discover_theme_endpoint() -> None:
             return None, _nd.http_reason(None, exc=exc)
 
     # 업종과 같은 상한·순서(2026-11-11 실측: 공용 청크 12개에서 상한에 걸렸다, #38).
-    paths, why = _disc.discover(_THEME_DISCOVER_URL, must_contain="theme",
-                               fetch=_fetch, prefer="page",
-                               chunk_cap=_UPJONG_CHUNK_CAP,
-                               byte_cap=_UPJONG_BYTE_CAP)
+    all_paths, why = _disc.discover(_THEME_DISCOVER_URL, must_contain="",
+                                   fetch=_fetch, prefer="page",
+                                   chunk_cap=_UPJONG_CHUNK_CAP,
+                                   byte_cap=_UPJONG_BYTE_CAP)
+    paths = [p for p in all_paths if "theme" in str(p).lower()]
     # ⚠️ **호스트를 추측하지 않는다**(독립 리뷰 2026-09-12). 옛 판은
     # `p.startswith("/api/")` 면 stock, 아니면 m.stock 으로 정했는데 minified
     # 번들은 슬래시 없는 `"api/domestic/market/theme/list"` 를 흔히 낸다 —
     # 그러면 **검증된 호스트가 있는 경로가 엉뚱한 호스트로** 조립되고, 그걸
     # `✅ 탐색됨` 으로 6시간 못박는다('찾음' 을 '동작함' 으로 렌더 · #165·#25).
     # 대신 후보 × 두 호스트를 **실제로 호출해** 테마 행이 오는 것만 채택한다.
-    cands = theme_candidates(paths)
+    # 업종과 같은 실측(2026-11-11): 'theme' 낱말 경로가 없고 접두만 있다 — 접두에
+    # 'theme' 를 붙인 후보도 실호출로 잰다(#38 형제와 같은 규칙).
+    cands = theme_candidates(paths) + theme_candidates(
+        prefix_candidates(all_paths, ("theme",)))
     url, tried = "", []
     for cand in cands[:_THEME_DISCOVER_TRIES]:
         rows, rwhy, _partial, _warn = _theme_json_rung(cand, sweep=False)
@@ -2858,6 +2889,9 @@ def check(fetch: bool = False) -> int:
         print(f"③-a 업종 주소 메모: 검증됨={_memo.get('url') or '없음'} · "
               f"발견 {len(_memo.get('found') or [])}개 · {_memo.get('why') or ''}")
         print(f"   테마 주소(형제 단서): {_memo.get('theme_basis') or '없음'}")
+        for _lit, _sn in (_memo.get("contexts") or {}).items():
+            for _x in _sn[:2]:
+                print(f"   접두 {_lit} 뒤 원문: {_x!r}")
         _all = _memo.get("all_paths") or []
         print(f"   청크에서 읽은 API 경로 {len(_all)}개(업종 여부와 무관, 최대 60):")
         for ln in _all:
