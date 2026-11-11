@@ -456,6 +456,9 @@ _ITEM_SYMBOL_KEYS = ("symbolCode", "reutersCode", "itemCode", "stockCode", "code
 _ITEM_KNAME_KEYS = ("koreanCodeName", "stockName", "itemName", "name", "koreanName")
 _ITEM_PAGES = 3                  # 업종당 최대 3쪽(100×3) — 옛 판 pageSize 300 과 같은 폭
 _ITEMS_MIN = 50                  # 시장 전체 종목 하한 — 몇 개만 읽힌 것을 맵으로 굽지 않는다
+# 2026-11-11 VM 실측: 이 가족의 허용값은 changeRate|tradingVolume|tradingValue|marketCap
+# (worldstock 의 marketValue 는 400). 원천이 바꾸면 400 이 적어 보낸 허용값으로 다시 묻는다.
+_ITEM_SORT = "marketCap"
 
 
 def _num(v):
@@ -498,7 +501,7 @@ def world_sector_items(market: str) -> tuple:
     if not secs:
         return [], ("업종 행에서 이름·코드 칸을 못 읽었습니다 — 표본 "
                     + _nd.body_sample(raw[:1], 300))
-    sort_box = {"v": "marketValue"}
+    sort_box = {"v": _ITEM_SORT}
 
     def _items(sec):
         name, code = sec
@@ -552,8 +555,13 @@ def world_sector_probe(market: str) -> list:
     out = [f"업종 {len(raw)}개 · 첫 행 이름={name!r} · 코드={code!r} · 칸 {sorted(r0)[:20]}"]
     if code in (None, ""):
         return out + ["업종 코드 칸을 못 찾았습니다 — 위 칸 목록에서 코드 칸 이름을 알려 주십시오"]
-    body, w = _nsc._get2_json(_SECTORS_ITEMS.format(nat=nat, code=code),
-                              params={"sortType": "marketValue", "size": 5})
+    url = _SECTORS_ITEMS.format(nat=nat, code=code)
+    body, w = _nsc._get2_json(url, params={"sortType": _ITEM_SORT, "size": 5})
+    if body is None and _nd.status_from(w or "") == 400:      # 제품과 같은 재시도(#35)
+        retry, srt = _sort_retry(_ITEM_SORT, _nsc.enum_values(w), _ITEM_SORT)
+        if retry:
+            out.append(f"정렬 {_ITEM_SORT!r} 거절 → 원천이 적은 허용값 {srt!r} 로 다시 묻습니다")
+            body, w = _nsc._get2_json(url, params={"sortType": srt, "size": 5})
     items = (body.get("items") if isinstance(body, dict) else body) or []
     if not items:
         return out + [f"종목 0행 — {w or _nd.body_sample(body, 300)}"]

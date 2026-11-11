@@ -634,7 +634,10 @@ def test_foreign_sectors_rows_with_sector_name_are_read(intl, monkeypatch):
 class TestWorldSectorItems:
     """해외 업종 구성 — 새 가족(sectors/v2/foreign/{nat}/{code}/items)으로 업종맵·시세맵을 세운다."""
 
-    def _stub(self, monkeypatch, item_sort_reject=False):
+    # 2026-11-11 VM 실측 허용값(sectors/v2/foreign/*/items sortType)
+    VM_ALLOWED = ["changeRate", "tradingVolume", "tradingValue", "marketCap"]
+
+    def _stub(self, monkeypatch, allowed=None):
         secs = [{"sectorName": f"업종{i}", "sectorCode": f"S{i}", "changeRate": "1.0"}
                 for i in range(3)]
         seen = []
@@ -645,11 +648,13 @@ class TestWorldSectorItems:
             if "/rankings/v2/foreign/JPN/sectors" in url:
                 return {"items": secs, "hasNext": False}, ""
             if "/sectors/v2/foreign/JPN/S" in url:
-                if item_sort_reject and params.get("sortType") == "marketValue":
+                ok = allowed or self.VM_ALLOWED
+                if params.get("sortType") not in ok:
                     return None, nd.http_reason(400, 10, body=json.dumps({
                         "message": json.dumps({"fieldErrors": {"sortType": [
-                            "Invalid enum value. Expected 'marketCap' | 'up', "
-                            "received 'marketValue'"]}})}))
+                            "Invalid enum value. Expected "
+                            + " | ".join(f"'{a}'" for a in ok)
+                            + f", received '{params.get('sortType')}'"]}})}))
                 code = url.rsplit("/", 2)[-2]
                 rows = [{"symbolCode": f"{code[1:]}{j:03d}", "koreanCodeName": f"회사{j}",
                          "accumulatedTradingVolume": "1,000", "marketValue": "2e8"}
@@ -669,11 +674,24 @@ class TestWorldSectorItems:
         q = _fvc._cached("naver_quote_JP.json", ttl=10 ** 9)
         assert q["1005.T"] == {"vol": 1000, "value": None, "mcap": 2.0}
 
+    def test_first_ask_uses_the_measured_sort_value(self, intl, monkeypatch):
+        """2026-11-11 VM: marketValue 는 400 — 실측 허용값으로 첫 요청부터 받는다."""
+        seen = self._stub(monkeypatch)
+        pairs, _why = nrc.world_sector_items("JP")
+        assert len(pairs) == 90
+        item_sorts = [p.get("sortType") for u, p in seen if "/sectors/v2/" in u]
+        assert item_sorts and set(item_sorts) == {"marketCap"}
+
     def test_item_sort_enum_is_learned_from_the_source(self, intl, monkeypatch):
-        seen = self._stub(monkeypatch, item_sort_reject=True)
+        seen = self._stub(monkeypatch, allowed=["changeRate", "tradingValue"])
         pairs, why = nrc.world_sector_items("JP")
         assert len(pairs) == 90
-        assert any(p.get("sortType") == "marketCap" for _u, p in seen)
+        assert any(p.get("sortType") == "changeRate" for _u, p in seen)
+
+    def test_probe_retries_with_the_sources_allowed_sort(self, intl, monkeypatch):
+        self._stub(monkeypatch, allowed=["changeRate", "tradingValue"])
+        out = "\n".join(nrc.world_sector_probe("JP"))
+        assert "'changeRate' 로 다시" in out and "티커 '0000.T'" in out
 
     def test_unreadable_items_are_not_baked_and_say_why(self, intl, monkeypatch):
         def _get(url, **kw):
