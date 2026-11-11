@@ -18779,10 +18779,45 @@ def _render_deposit_widget(dep: dict) -> str:
     )
 
 
+_DEP_WINDOW_DAYS = 183     # 유동성 추이 차트 공통 창 — 최근 6개월(사용자 2026-11-12 "하나로 통일")
+
+
+def _period_suffix(labels) -> str:
+    """차트 출처 줄 꼬리 ` (처음~끝)` — 그 차트가 **실제로 그린** 기간(#29 요청이 아니라 데이터 폭)."""
+    labels = [str(x) for x in (labels or []) if x]
+    return f" ({labels[0]}~{labels[-1]})" if labels else ""
+
+
+def _dep_window(dep: dict) -> dict:
+    """유동성 추이 차트들을 **같은 창**으로 자른다(사용자 2026-11-12 "그래프별로 측정기한이 다
+    다른데 하나로 통일"). 기준 = 모든 계열 중 가장 늦은 날짜 − 6개월. 원천이 그보다 짧게 준
+    계열(주식형펀드 등)은 늘릴 수 없으므로 그대로 두고, 출처 줄의 기간이 사실을 말한다(#43)."""
+    from datetime import datetime as _dt, timedelta as _td
+    keys = ("deposit_series", "equity_fund_series", "credit_series",
+            "credit_kospi_series", "credit_kosdaq_series", "vkospi_series")
+    def _key(d) -> str:
+        # 계열마다 표기가 갈린다('YYYY.MM.DD' · 'YYYY-MM-DD') — 비교는 한 표기로(문자 '-' < '.').
+        return str(d or "")[:10].replace("-", ".")
+    ends = [_key(p["d"]) for k in keys for p in (dep.get(k) or [])[-1:] if p.get("d")]
+    if not ends:
+        return dep
+    try:
+        cut = (_dt.strptime(max(ends), "%Y.%m.%d") - _td(days=_DEP_WINDOW_DAYS)
+               ).strftime("%Y.%m.%d")
+    except ValueError:
+        return dep
+    out = dict(dep)
+    for k in keys:
+        if dep.get(k):
+            out[k] = [p for p in dep[k] if _key(p.get("d")) >= cut]
+    return out
+
+
 def _render_deposit_charts(dep: dict) -> str:
     """고객예탁금·신용잔고 6개월 추이 라인 차트 — 위젯 아래. 데이터 없으면 빈 문자열."""
     if not dep:
         return ""
+    dep = _dep_window(dep)
     cards: list[str] = []
     src_foot = "출처: " + str(dep.get("source") or "금융투자협회")
     dser = dep.get("deposit_series", [])
@@ -18793,7 +18828,8 @@ def _render_deposit_charts(dep: dict) -> str:
             [{"name": "고객예탁금", "color": "#ab47bc",
               "data": [p["v"] for p in dser], "axis": "L"}])
         cards.append(_chart_card("고객예탁금 추이 (억원)",
-                                 [("고객예탁금", "#ab47bc")], svg, src_foot))
+                                 [("고객예탁금", "#ab47bc")], svg,
+                                 src_foot + _period_suffix([p["d"] for p in dser])))
     # 주식형펀드 자금동향 — 고객예탁금 바로 옆(사용자 2026-07-08 위치 이동).
     # 데이터(equity_fund_series) 있을 때만 → graceful 회귀. 출처는 같은 KOFIA.
     eser = dep.get("equity_fund_series", [])
@@ -18803,14 +18839,16 @@ def _render_deposit_charts(dep: dict) -> str:
             [{"name": "주식형펀드", "color": "#26a69a",
               "data": [p["v"] for p in eser], "axis": "L"}])
         cards.append(_chart_card("주식형펀드 추이 (억원)",
-                                 [("주식형펀드", "#26a69a")], svg, src_foot))
+                                 [("주식형펀드", "#26a69a")], svg,
+                                 src_foot + _period_suffix([p["d"] for p in eser])))
     if len(cser) >= 2:
         svg = _svg_line_chart(
             [p["d"] for p in cser],
             [{"name": "신용잔고", "color": "#42a5f5",
               "data": [p["v"] for p in cser], "axis": "L"}])
         cards.append(_chart_card("신용잔고 추이 (억원)",
-                                 [("신용잔고", "#42a5f5")], svg, src_foot))
+                                 [("신용잔고", "#42a5f5")], svg,
+                                 src_foot + _period_suffix([p["d"] for p in cser])))
     # 코스피/코스닥 신용잔고 분리 차트 (사용자 2026-07-06 — 시장별 레버리지
     # 추이. KOFIA 신용공여 시장 필드, 있을 때만 graceful).
     _split_missing: list[str] = []
@@ -18823,7 +18861,8 @@ def _render_deposit_charts(dep: dict) -> str:
                 [{"name": _lbl, "color": _col,
                   "data": [p["v"] for p in _ser], "axis": "L"}])
             cards.append(_chart_card(f"{_lbl} 추이 (억원)",
-                                     [(_lbl, _col)], svg, src_foot))
+                                     [(_lbl, _col)], svg,
+                                     src_foot + _period_suffix([p["d"] for p in _ser])))
         else:
             _split_missing.append(_lbl)
     # ⚠️ 값이 없다고 **카드를 통째로 없애지 않는다** — 사용자 2026-09-14
@@ -18860,7 +18899,8 @@ def _render_deposit_charts(dep: dict) -> str:
             [{"name": "VKOSPI", "color": "#f5a623",
               "data": [p["v"] for p in vser], "axis": "L"}])
         cards.append(_chart_card("VKOSPI 추이 (코스피 200 변동성지수)",
-                                 [("VKOSPI", "#f5a623")], svg, "출처: KIS"))
+                                 [("VKOSPI", "#f5a623")], svg,
+                                 "출처: KIS" + _period_suffix([p["d"] for p in vser])))
     if not cards:
         return ""
     # 4개 이상이면 3열 wrap (5카드 1열 압착 방지)
@@ -19143,19 +19183,37 @@ def _render_macro_charts_row(macro: dict) -> str:
             "한·미 국채 금리 추이",
             [("미국 10Y (좌)", "#42a5f5"), (f"{_krlbl} (좌)", "#26c6da"),
              ("美-韓 금리차 %p (우)", "#ab47bc")],
-            svg, "출처: FRED · 한국은행",
+            # 두 나라 모두 **월말값**(이번 달은 최신 값)이다 — 카드 스파크(월평균)와 정의가
+            # 달라 같은 달 점이 다를 수 있으므로 기준을 라벨에 박는다(#34).
+            svg, f"출처: FRED · 한국은행 · 월말값(이번 달은 최신){_period_suffix(rf.get('labels'))}",
         ))
     inf = charts.get("inflation")
     if inf:
-        svg = _svg_line_chart(inf["labels"], [
-            {"name": "미국 CPI", "color": "#ffa726", "data": inf["us_cpi"], "axis": "L"},
-            {"name": "한국 CPI", "color": "#26a69a", "data": inf["kr_cpi"], "axis": "R"},
-        ])
-        cards.append(_chart_card(
-            "물가와 경기 모멘텀",
-            [("미국 CPI (좌)", "#ffa726"), ("한국 CPI (우)", "#26a69a")],
-            svg, "출처: FRED · 한국은행",
-        ))
+        if inf.get("rebased"):
+            # 첫 달 = 100 으로 환산한 두 계열 — **한 축**에 그려 누적 상승률을 같은 눈금으로
+            # 비교한다(옛 판은 지수 수준을 좌·우 축에 따로 그려 우연히 겹쳐 보였다, #34).
+            svg = _svg_line_chart(inf["labels"], [
+                {"name": "미국 CPI", "color": "#ffa726", "data": inf["us_cpi"], "axis": "L"},
+                {"name": "한국 CPI", "color": "#26a69a", "data": inf["kr_cpi"], "axis": "L"},
+            ])
+            _u, _k = inf["us_cpi"][-1], inf["kr_cpi"][-1]
+            cards.append(_chart_card(
+                "한·미 소비자물가 (첫 달 = 100)",
+                [(f"미국 CPI {_u - 100:+.1f}%", "#ffa726"),
+                 (f"한국 CPI {_k - 100:+.1f}%", "#26a69a")],
+                svg, "출처: FRED · 한국은행 · 첫 달 대비 누적 변화"
+                + _period_suffix(inf.get("labels")),
+            ))
+        else:
+            svg = _svg_line_chart(inf["labels"], [
+                {"name": "미국 CPI", "color": "#ffa726", "data": inf["us_cpi"], "axis": "L"},
+                {"name": "한국 CPI", "color": "#26a69a", "data": inf["kr_cpi"], "axis": "R"},
+            ])
+            cards.append(_chart_card(
+                "물가와 경기 모멘텀",
+                [("미국 CPI (좌)", "#ffa726"), ("한국 CPI (우)", "#26a69a")],
+                svg, "출처: FRED · 한국은행" + _period_suffix(inf.get("labels")),
+            ))
     sent = charts.get("sentiment")
     if sent:
         cards.append(_render_sentiment_gauge(sent))

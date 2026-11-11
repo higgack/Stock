@@ -16900,7 +16900,7 @@ class TestHkMovers:
         assert _INTL_MOVER_EX["US"] == [("NASDAQ", ""), ("NYSE", "")]
         assert _suffix_ticker("NVDA", "") == "NVDA"   # US 접미사 없음 직접
 
-    def test_naver_industry_map_and_routing(self):
+    def test_naver_industry_map_and_routing(self, monkeypatch):
         # 사용자 2026-06-14 'CN/HK/JP 업종 네이버'. nationType USA|CHN|HKG|JPN|VNM(probe).
         from bot.naver_ranking_client import (_upjong_ticker, _UPJONG_NATION,
                                               world_industry_map)
@@ -16917,9 +16917,12 @@ class TestHkMovers:
         assert world_industry_map("KR") == {} and world_industry_map("TW") == {}
         # _industries_for 라우팅: CN/HK/JP/US→네이버(미스만 yfinance 폴백)
         import bot.finviz_client as fc, bot.naver_ranking_client as nv
-        nv.world_industry_map = lambda m: {"7203.T": "Auto Manufacturers",
-                                           "AAPL": "Consumer Electronics"}
-        fc._fetch_industries = lambda tks, **k: {t: "YF" for t in tks}
+        # ⚠️ monkeypatch 로 — 직접 대입은 되돌리지 않아 뒤 테스트가 이 가짜를 물려받았다
+        # (2026-11-12 world_sector_items 회귀가 전체 실행에서만 빨간불, #397·#439).
+        monkeypatch.setattr(nv, "world_industry_map",
+                            lambda m: {"7203.T": "Auto Manufacturers",
+                                       "AAPL": "Consumer Electronics"})
+        monkeypatch.setattr(fc, "_fetch_industries", lambda tks, **k: {t: "YF" for t in tks})
         got = fc._industries_for(["7203.T", "9999.T"], "JP")
         assert got["7203.T"] == "Auto Manufacturers" and got["9999.T"] == "YF"
         # US 도 네이버 우선 — AAPL 네이버 업종 직접, 미스(MSFT)는 yfinance 폴백
@@ -16927,8 +16930,8 @@ class TestHkMovers:
         assert usg["AAPL"] == "Consumer Electronics" and usg["MSFT"] == "YF"
         # HK 도 Naver-first (2026-06-14 '홍콩도 다른것처럼') — 5자리↔4자리 zfill
         # 정규화 + 미스 yfinance 폴백
-        nv.world_industry_map = lambda m: {"0700.HK": "Internet",
-                                           "00005.HK": "Banks"}
+        monkeypatch.setattr(nv, "world_industry_map",
+                            lambda m: {"0700.HK": "Internet", "00005.HK": "Banks"})
         hkg = fc._industries_for(["0700.HK", "0005.HK", "0941.HK"], "HK")
         assert hkg["0700.HK"] == "Internet"      # 4자리 직접
         assert hkg["0005.HK"] == "Banks"         # 5자리 키 zfill 정규화
@@ -28093,6 +28096,7 @@ class TestFlowTrendDiagnosis20260818:
         bad = {k: (got.get(k), v) for k, v in native.items()
                if got.get(k) != v}
         bad.pop("FDHBFIN", None)   # 2026-08-20 카탈로그에서 제거된 시리즈
+        bad.pop("TRESEGCNM052N", None)   # 2026-11-12 카탈로그에서 제거된 시리즈
         assert not bad, f"단위 불일치(카탈로그, FRED): {bad}"
 
     def test_net_liquidity_converts_tga_from_millions(self):

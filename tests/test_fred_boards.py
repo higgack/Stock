@@ -461,7 +461,7 @@ class DiscontinuedSweepTests(unittest.TestCase):
         # 2026-08-20 +CBETHUSD(이더리움 — 사용자 'BTC 밑에 같은 형식으로')
         # 2026-10-23 +9(OECD CLI 3 · OECD 장기금리 2 · PortWatch 해협 4 —
         # 외부 레포 OpenBB 검토 ④, `bot/global_sources.py`). 54 → 63.
-        self.assertEqual(len(LIQ_SERIES), 63)
+        self.assertEqual(len(LIQ_SERIES), 62)   # 2026-11-12 TRESEGCNM052N 제거 63 → 62
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
@@ -828,8 +828,10 @@ class MarginPpiLiqExpansion20260724Tests(unittest.TestCase):
 
     def test_liq_fourth_batch_ids_and_wiring(self):
         ids = {s["id"] for s in LIQ_SERIES}
-        for want in ("EFFR", "ECOS:FXRESERVE", "TRESEGCNM052N", "ANFCI"):
+        for want in ("EFFR", "ECOS:FXRESERVE", "ANFCI"):
             self.assertIn(want, ids)
+        # 2026-11-12 제거 — FRED 사본이 5개월 뒤처짐(카탈로그 주석).
+        self.assertNotIn("TRESEGCNM052N", ids)
         # 2026-08-20 제거 — 되살리려면 카탈로그 주석의 사유를 먼저 볼 것.
         self.assertNotIn("FDHBFIN", ids)
         self.assertNotIn("AK:CNM2", ids)   # 재검증 없이 재등재 금지(위 독스트링)

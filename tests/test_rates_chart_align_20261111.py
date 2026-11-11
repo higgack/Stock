@@ -35,11 +35,12 @@ def test_splice_spot_replaces_same_month_and_appends_new(monkeypatch):
     assert ms._splice_spot(sp3, {"value": 9.9, "time": "2026-11-10"}, "CPIAUCSL") is sp3
 
 
-def test_eop_requested_for_daily_series(monkeypatch, tmp_path):
+def test_eop_only_when_asked(monkeypatch, tmp_path):
+    """월말값은 한·미 금리 차트 전용 — 카드 스파크는 월평균(사용자 2026-11-12 되돌림)."""
     monkeypatch.setattr(ms, "_fred_cache_rules", lambda: _Rules)
     monkeypatch.setattr(ms, "_CACHE_DIR", tmp_path)
     monkeypatch.setattr("bot.env_keys.env_key", lambda k: "x")
-    seen = {}
+    seen = []
 
     class _R:
         def raise_for_status(self):
@@ -49,12 +50,12 @@ def test_eop_requested_for_daily_series(monkeypatch, tmp_path):
             return {"observations": [{"date": "2026-10-01", "value": "4.2"}]}
 
     def _get(url, params=None, timeout=None):
-        seen[params["series_id"]] = params.get("aggregation_method")
+        seen.append(params.get("aggregation_method"))
         return _R()
     monkeypatch.setattr(ms.requests, "get", _get)
     ms._fred_monthly("DGS10")
-    ms._fred_monthly("CPIAUCSL")
-    assert seen == {"DGS10": "eop", "CPIAUCSL": None}
+    ms._fred_monthly("DGS10", eop=True)
+    assert seen == [None, "eop"]                     # 사본 이름이 달라 둘 다 물었다
 
 
 def test_rates_chart_pairs_by_month_not_position():
@@ -121,7 +122,7 @@ def test_snapshot_e2e_card_end_equals_headline_and_chart_aligns(tmp_path, monkey
     def fake_get(url, params=None, timeout=None):
         sid = (params or {}).get("series_id")
         if sid == "DGS10":
-            seen["agg"] = params.get("aggregation_method")
+            seen.setdefault("aggs", []).append(params.get("aggregation_method"))
             # FRED 월말값(내림차순) — 11월은 진행 중이라 지난 관측(11-07)까지.
             return _Resp([{"date": "2026-11-01", "value": "5.16"},
                           {"date": "2026-10-01", "value": "4.90"},
@@ -134,8 +135,9 @@ def test_snapshot_e2e_card_end_equals_headline_and_chart_aligns(tmp_path, monkey
                                          if sid == "DGS10" else None))
     out = ms.fetch_macro_snapshot()
     rows = {r["key"]: r for r in list(out["domestic"]) + list(out["global"])}
-    assert seen["agg"] == "eop"
-    assert rows["us_10y"]["value"] == 4.98 and rows["us_10y"]["spark"][-1] == 4.98
+    assert seen["aggs"] == [None, "eop"]             # 카드 = 월평균 · 차트 = 월말값
+    # 카드 스파크는 월평균 그대로 — 끝점을 현재값으로 갈지 않는다(사용자 2026-11-12).
+    assert rows["us_10y"]["value"] == 4.98 and rows["us_10y"]["spark"][-1] == 5.16
     ch = out["charts"]["rates_fx"]
     assert ch["labels"] == ["2026-08", "2026-09", "2026-10"]
     assert ch["us_10y"] == [4.60, 4.70, 4.90] and ch["kr_10y"] == [3.60, 3.70, 3.95]

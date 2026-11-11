@@ -9,6 +9,7 @@ pageSize=100 not found` 를 달고 5일째 저장분. 옛 판은 404(= 그 주�
 """
 from __future__ import annotations
 
+import json
 import types
 
 import pytest
@@ -628,3 +629,73 @@ def test_foreign_sectors_rows_with_sector_name_are_read(intl, monkeypatch):
     rows, why = nrc._intl_rank_v2("JP")
     assert len(rows) == 30 and why == ""
     assert _fvc._cached(nrc.intl_rank_memo("JP"), ttl=10 ** 9)["url"] == good
+
+
+class TestWorldSectorItems:
+    """해외 업종 구성 — 새 가족(sectors/v2/foreign/{nat}/{code}/items)으로 업종맵·시세맵을 세운다."""
+
+    def _stub(self, monkeypatch, item_sort_reject=False):
+        secs = [{"sectorName": f"업종{i}", "sectorCode": f"S{i}", "changeRate": "1.0"}
+                for i in range(3)]
+        seen = []
+
+        def _get(url, **kw):
+            params = dict(kw.get("params") or {})
+            seen.append((url, params))
+            if "/rankings/v2/foreign/JPN/sectors" in url:
+                return {"items": secs, "hasNext": False}, ""
+            if "/sectors/v2/foreign/JPN/S" in url:
+                if item_sort_reject and params.get("sortType") == "marketValue":
+                    return None, nd.http_reason(400, 10, body=json.dumps({
+                        "message": json.dumps({"fieldErrors": {"sortType": [
+                            "Invalid enum value. Expected 'marketCap' | 'up', "
+                            "received 'marketValue'"]}})}))
+                code = url.rsplit("/", 2)[-2]
+                rows = [{"symbolCode": f"{code[1:]}{j:03d}", "koreanCodeName": f"회사{j}",
+                         "accumulatedTradingVolume": "1,000", "marketValue": "2e8"}
+                        for j in range(30)]
+                return {"items": rows, "hasNext": False}, ""
+            return _404()
+        monkeypatch.setattr(nsc, "_get2_json", _get)
+        return seen
+
+    def test_industry_and_quote_maps_from_new_family(self, intl, monkeypatch):
+        self._stub(monkeypatch)
+        m = nrc.world_industry_map("JP")
+        assert len(m) == 90 and m["0000.T"] == "업종0" and m["2029.T"] == "업종2"
+        names = _fvc._cached("naver_upjong_name_JP.json", ttl=10 ** 9)
+        assert names["0000.T"] == "회사0"
+        nrc._build_quote_map("JP")
+        q = _fvc._cached("naver_quote_JP.json", ttl=10 ** 9)
+        assert q["1005.T"] == {"vol": 1000, "value": None, "mcap": 2.0}
+
+    def test_item_sort_enum_is_learned_from_the_source(self, intl, monkeypatch):
+        seen = self._stub(monkeypatch, item_sort_reject=True)
+        pairs, why = nrc.world_sector_items("JP")
+        assert len(pairs) == 90
+        assert any(p.get("sortType") == "marketCap" for _u, p in seen)
+
+    def test_unreadable_items_are_not_baked_and_say_why(self, intl, monkeypatch):
+        def _get(url, **kw):
+            if "/sectors?" in url or url.endswith("/sectors"):
+                return {"items": [{"sectorName": "a", "sectorCode": "1"}], "hasNext": False}, ""
+            return {"items": [{"weird": 1}], "hasNext": False}, ""
+        monkeypatch.setattr(nsc, "_get2_json", _get)
+        assert nrc.world_industry_map("HK") == {}
+        assert _fvc._cached("naver_industry_kr_HK.json", ttl=10 ** 9) in (None, {})
+        pairs, why = nrc.world_sector_items("HK")
+        assert pairs == [] and "티커로 읽힌 것 0개" in why and "weird" in why
+
+    def test_probe_names_the_columns(self, intl, monkeypatch):
+        self._stub(monkeypatch)
+        out = "\n".join(nrc.world_sector_probe("JP"))
+        assert "코드='S0'" in out and "티커 '0000.T'" in out and "symbolCode" in out
+
+
+def test_sort_retry_judges_by_the_value_this_request_sent():
+    """병렬 업종이 이미 공유값을 바꾼 뒤 옛 값으로 거절당한 업종도 다시 묻는다."""
+    allowed = ["marketCap", "up"]
+    assert nrc._sort_retry("marketValue", allowed, "marketCap") == (True, "marketCap")
+    assert nrc._sort_retry("marketValue", allowed, "marketValue") == (True, "marketCap")
+    assert nrc._sort_retry("marketCap", allowed, "marketCap") == (False, "marketCap")
+    assert nrc._sort_retry("x", [], "x") == (False, "x")
