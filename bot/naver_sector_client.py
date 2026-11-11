@@ -556,20 +556,36 @@ def upjong_like_paths(paths) -> list:
     return out
 
 
-def prefix_candidates(paths, words) -> list:
+_QUERY_DIRECT = re.compile(r'^\s*\.concat\(\s*\w+\s*,\s*"\?')
+
+
+def prefix_candidates(paths, words, contexts=None) -> list:
     """`/` 로 끝나는 **접두** 경로 → 낱말을 붙인 후보(순수).
 
     2026-11-11 VM 실측: 새 SPA 청크엔 `/api/stockSecurity/rankings/v2/domestic/`·
     `/api/domestic/market/` 처럼 접두만 리터럴로 있었다. 옛 자원 이름(upjong·
     theme…)을 붙여 **후보**를 만들 뿐이고, 채택은 호출부가 실호출로 한다(#25·#151).
-    국내 자원만 본다 — 해외·개인화 접두에 붙이면 후보만 늘어난다."""
+    국내 자원만 본다 — 해외·개인화 접두에 붙이면 후보만 늘어난다.
+
+    순서(같은 날 2차 실측): 원문이 `"…/domestic/".concat(t,"?")` 처럼 접두 **바로
+    뒤에 쿼리**를 붙이는 접두를 먼저, 그다음 맨 형태(`접두+낱말`), `/list` 는 맨
+    뒤. 옛 판은 `/list` 를 먼저 물어 시도 상한 안에 맨 형태가 한 번도 안 물렸다."""
+    ctx = contexts or {}
+
+    def _rank(p: str) -> int:
+        # 앞쪽 원문이 붙어 오면(`앞 ⟦…⟧ 뒤`) 뒤쪽만 본다
+        return 0 if any(_QUERY_DIRECT.match(str(x).split(" ⟦…⟧ ", 1)[-1])
+                        for x in ctx.get(p) or []) else 1
+
+    pref = [str(p) for p in paths or []]
+    pref = [p for p in pref if p.endswith("/") and "domestic" in p
+            and "{" not in p and "$" not in p]
+    pref = sorted(dict.fromkeys(pref), key=_rank)            # 안정 정렬 — 원래 순서 유지
     out: list = []
-    for p in paths or []:
-        p = str(p)
-        if not p.endswith("/") or "domestic" not in p or "{" in p or "$" in p:
-            continue
-        for w in words:
-            for c in (p + w, p + w + "/list"):
+    for tail in ("", "/list"):
+        for p in pref:
+            for w in words:
+                c = p + w + tail
                 if c not in out:
                     out.append(c)
     return out
@@ -659,12 +675,22 @@ def _discover_upjong_endpoint() -> None:
     if not paths and not why:
         why = "청크에서 업종으로 보이는 API 경로를 찾지 못했습니다"
     url, tried = "", []
-    cands = (upjong_from_theme(theme_memo_url()) + theme_candidates(paths)
-             + theme_candidates(prefix_candidates(all_paths, _UPJONG_WORDS)))
+    cands = (upjong_from_theme(theme_memo_url())
+             + theme_candidates(prefix_candidates(all_paths, _UPJONG_WORDS, ctx),
+                                keep_order=True)
+             + theme_candidates(paths))
     seen: set = set()
     cands = [c for c in cands if c != _UPJONG_API and not (c in seen or seen.add(c))]
     for cand in cands[:_UPJONG_DISCOVER_TRIES]:
         raw, rwhy = _get2_json(cand, params={"pageSize": _UPJONG_PAGE_SIZE})
+        # 주소는 있는데(404 아님) 우리 쿼리를 거절했으면 쿼리 없이 한 번 더 —
+        # 새 SPA 의 쿼리 이름은 아직 모른다(#165 지어내지 않는다).
+        if raw is None and rwhy and _nd.status_from(rwhy) not in (None, 404):
+            raw2, rwhy2 = _get2_json(cand)
+            if raw2 is not None:
+                raw, rwhy = raw2, ""
+            else:
+                rwhy = f"{rwhy} · 쿼리 없이도 {rwhy2}"
         ok = upjong_full(raw)
         n = len(parse_upjong_json(_upjong_rows(raw)))
         # 실패해도 **응답 모양**을 남긴다 — 주소는 맞는데 필드 이름이 바뀐 것과
@@ -1741,7 +1767,7 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
 _THEME_DISCOVER_TRIES = 12       # 검증 호출 상한(접두×형태×호스트 포함) — 리터럴로(#66)
 
 
-def theme_candidates(paths: list) -> list:
+def theme_candidates(paths: list, *, keep_order: bool = False) -> list:
     """발굴한 경로 목록 → **실호출할 URL 후보**(순수).
 
     호스트를 하나로 정하지 않고 검증된 두 호스트를 모두 낸다 — 어느 쪽이
@@ -1750,8 +1776,9 @@ def theme_candidates(paths: list) -> list:
     """
     out: list = []
     seen: set = set()
-    for p in sorted(paths or [], key=lambda x: (0 if x.rstrip("/").endswith("list")
-                                                else 1, x)):
+    seq = list(paths or []) if keep_order else sorted(
+        paths or [], key=lambda x: (0 if x.rstrip("/").endswith("list") else 1, x))
+    for p in seq:
         if "{" in p or "$" in p:
             continue
         path = p if p.startswith("/") else "/" + p
@@ -1792,10 +1819,11 @@ def _discover_theme_endpoint() -> None:
             return None, _nd.http_reason(None, exc=exc)
 
     # 업종과 같은 상한·순서(2026-11-11 실측: 공용 청크 12개에서 상한에 걸렸다, #38).
+    ctx: dict = {}
     all_paths, why = _disc.discover(_THEME_DISCOVER_URL, must_contain="",
                                    fetch=_fetch, prefer="page",
                                    chunk_cap=_UPJONG_CHUNK_CAP,
-                                   byte_cap=_UPJONG_BYTE_CAP)
+                                   byte_cap=_UPJONG_BYTE_CAP, ctx_out=ctx)
     paths = [p for p in all_paths if "theme" in str(p).lower()]
     # ⚠️ **호스트를 추측하지 않는다**(독립 리뷰 2026-09-12). 옛 판은
     # `p.startswith("/api/")` 면 stock, 아니면 m.stock 으로 정했는데 minified
@@ -1805,8 +1833,8 @@ def _discover_theme_endpoint() -> None:
     # 대신 후보 × 두 호스트를 **실제로 호출해** 테마 행이 오는 것만 채택한다.
     # 업종과 같은 실측(2026-11-11): 'theme' 낱말 경로가 없고 접두만 있다 — 접두에
     # 'theme' 를 붙인 후보도 실호출로 잰다(#38 형제와 같은 규칙).
-    cands = theme_candidates(paths) + theme_candidates(
-        prefix_candidates(all_paths, ("theme",)))
+    cands = theme_candidates(prefix_candidates(all_paths, ("theme",), ctx),
+                             keep_order=True) + theme_candidates(paths)
     url, tried = "", []
     for cand in cands[:_THEME_DISCOVER_TRIES]:
         rows, rwhy, _partial, _warn = _theme_json_rung(cand, sweep=False)
