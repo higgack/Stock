@@ -264,6 +264,17 @@ if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
         LISTENER_NOTE="${LISTENER_NOTE}$(sudo_failure_note "나쁜양파 리스너 재시작" "$err" \
             "journalctl -u trade-bot-badonion-listener -n 30")"
     fi
+    # 관련성 필터가 바뀐 배포는 **바로** 한 번 회수한다(사용자 2026-11-12 "새로 업데이트된
+    # 것들은 New 가 나오게" — 새 파서가 받는 글은 다음 6시간 주기 sync 가 돌 때까지 화면에
+    # 없어 NEW 도 안 붙었다). 창(3일/40일 회수)은 sync 가 지문으로 스스로 정한다(#403).
+    # --no-block: 배포 스크립트가 백필 끝을 기다리지 않는다. 실패는 알림에 싣는다(#12).
+    if err=$(LC_ALL=C sudo -n /bin/systemctl start --no-block trade-bot-badonion-sync.service 2>&1); then
+        echo "trade-bot-update: kicked trade-bot-badonion-sync (filter-relevant change)"
+        LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>+ 나쁜양파 회수(sync) 즉시 시작</i>"
+    else
+        LISTENER_NOTE="${LISTENER_NOTE}$(sudo_failure_note "나쁜양파 회수 시작" "$err" \
+            "journalctl -u trade-bot-badonion-sync -n 30")"
+    fi
 fi
 
 # Best-effort: also restart the dashboard server when the change set
