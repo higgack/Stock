@@ -158,7 +158,9 @@ SOURCES: tuple[Source, ...] = (
            _kri.open_kr_stock_import_db, _kri.ingest, _kri.regenerate,
            "kr_stock_import.db", "kr_stock_import.html",
            "🏢 한국 수입 데이터(회사별·나쁜양파)",
-           country="한국", basis="company", flow="import", grammars=("amount",)),
+           # 지표판(`(A006400)`/`한국`/`Update`)도 받는다 — 방향 미표기 판을 운영자
+           # 표가 수입으로 확인한 경우(2026-11-12 Samsung SDI). 형제 corr 계약 대상.
+           country="한국", basis="company", flow="import", grammars=("amount", "corr")),
     # 미국 **수출** 종목별(사용자 2026-10-08 "수출입대시보드에 미국수출종목은
     # 없는데 나쁜 양파에 이것도 떴어"). 한국 회사별 금액판과 같은 문법(`N월 수출
     # 미국` / `▶️ 회사 — 품목` / `$…M (YoY) (MoM)`)이라 엔진(`kr_company_flow`)을

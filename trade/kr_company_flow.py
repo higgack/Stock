@@ -489,7 +489,12 @@ def _sibling_line(flow: Flow) -> str:
 
 
 def render_html(conn: sqlite3.Connection, flow: Flow, *,
-                media_url_prefix: str = "../") -> str:
+                media_url_prefix: str = "../",
+                extra: list[tuple[str, str]] | None = None) -> str:
+    """`extra` = 다른 문법이 만든 (카드 HTML, 월) — 같은 보드에 함께 싣는다
+    (한국 수입: 지표판 `(A006400)`·`한국`·`Update`, 2026-11-12). 계수·최신월·
+    빈 상태 판정은 두 묶음을 **합쳐서** 한다(#45)."""
+    extra = list(extra or [])
     head = ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>{_html.escape(flow.title)}</title><style>" + _CSS +
@@ -500,7 +505,7 @@ def render_html(conn: sqlite3.Connection, flow: Flow, *,
     # 어댑터가 남의 나라 이름을 단 페이지가 된다(#330·#55).
     what = f"{_html.escape(flow.country)} {_html.escape(flow.marker)}"
     unit = _html.escape(flow.unit)
-    if not rows:
+    if not rows and not extra:
         # 빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약).
         return (head + "<div class='wrap'>" + back_nav_html() + title +
                 f"<div class='empty'>아직 수집된 {what} "
@@ -514,13 +519,14 @@ def render_html(conn: sqlite3.Connection, flow: Flow, *,
                      if flow.link == "kr_name" else {})
     cards = [_card_html(r, history(conn, flow, r["company"]), flow,
                         media_url_prefix, _code_by_name) for r in rows]
+    cards += [c for c, _m in extra]
+    months = [r.get("month") or "" for r in rows] + [m or "" for _c, m in extra]
     return (head + "<div class='wrap'>" + back_nav_html() + title +
             f"<div class='sub'>Badonions {what} 캡션을 "
             f"<b>{unit}별</b>로 정리한 페이지 · 새 월이 오면 카드가 자동 교체되고 "
             "과거 월은 히스토리 표에 남습니다" + _sibling_line(flow) + "</div>"
             "<div class='grid'>" + "".join(cards) + "</div>"
-            + asof_footer(len(rows), flow.unit,
-                          max((r.get("month") or "") for r in rows) or None,
+            + asof_footer(len(cards), flow.unit, max(months) or None,
                           max_ingest_iso(conn, flow.table))
             + "</div></body></html>")
 

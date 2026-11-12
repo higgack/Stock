@@ -77,7 +77,7 @@ _NL = r"\n(?:[^\S\n]*\n)*"      # 줄바꿈(사이 빈 줄 허용)
 _RE_BLOCK = re.compile(
     r"^[^\S\n]*(?P<name>[^\n(]+?)[^\S\n]*\(A?(?P<code>" + KRX_CODE_RE + r")\)"
     r"[^\S\n]*(?:" + _NL + r")?"
-    r"[^\S\n]*한국(?:[^\S\n]*수출)?[^\S\n]*(?:Update)?[^\S\n]*" + _NL +
+    r"[^\S\n]*한국(?:[^\S\n]*(?P<dir>수출|수입))?[^\S\n]*(?:Update)?[^\S\n]*" + _NL +
     r"[^\S\n]*(?P<yy>\d{2})[^\S\n]*년[^\S\n]*(?P<mm>\d{1,2})[^\S\n]*월"
     r"[^\S\n]*(?:Update)?",
     re.M | re.I)
@@ -86,8 +86,51 @@ _RE_BLOCK = re.compile(
 _RE_PRICE_YOY = re.compile(r"단가\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.I)
 # 3M 접두 유무를 **한 패턴에서** 구분한다. 옛 구현은 `(?<!3M\s)` 룩비하인드로
 # 걸렀는데 공백이 없는 '3M수출액' 을 못 막아 두 값이 같아졌다(독립 리뷰).
-_RE_EXP_YOY_ANY = re.compile(
-    r"(?P<pfx>\d+M)?\s*수출액\s*YoY\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)\s*%", re.I)
+def _amount_yoy_re(word: str) -> re.Pattern:
+    return re.compile(r"(?P<pfx>\d+M)?\s*" + word +
+                      r"\s*YoY\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)\s*%", re.I)
+
+
+# 방향 낱말 → 그 방향의 금액 라벨. 수입 보드(kri)도 같은 지표판을 받는다.
+_AMOUNT_WORD = {"수출": "수출액", "수입": "수입액"}
+_AMOUNT_YOY_RE = {d: _amount_yoy_re(w) for d, w in _AMOUNT_WORD.items()}
+_RE_EXP_YOY_ANY = _AMOUNT_YOY_RE["수출"]
+
+# 방향 낱말이 없는 판(`한국` 만)의 **운영자 확인 라우팅 표**(사용자 2026-11-12
+# "아..수입이네. 수출보드말고 수입보드로"). 캡션 글자로는 방향을 알 수 없고
+# 차트 이미지 제목(`Korea Import Basket` / `Korea Export Basket`)에만 있다 —
+# 추측하지 않고(#165) 운영자가 확인한 코드만 적는다. 표에 없으면 기존 결정대로
+# 수출 보드이고, 카드가 '방향 미표기' 라고 밝힌다(#43).
+ROUTE_CSV = Path(__file__).resolve().parent / "data" / "kr_undirected_direction.csv"
+_route_cache: tuple[float, dict] | None = None
+
+
+def _route_table() -> dict:
+    """{코드: 방향 낱말} — 파일이 바뀌면 다시 읽는다. 못 읽으면 빈 표."""
+    global _route_cache
+    try:
+        mt = ROUTE_CSV.stat().st_mtime
+    except OSError:
+        return {}
+    if _route_cache is None or _route_cache[0] != mt:
+        table = {}
+        try:
+            for line in ROUTE_CSV.read_text(encoding="utf-8").splitlines():
+                parts = [x.strip() for x in line.split(",")]
+                if (len(parts) >= 2 and is_krx_code(parts[0])
+                        and parts[1] in _AMOUNT_WORD):
+                    table[parts[0]] = parts[1]
+        except (OSError, UnicodeDecodeError):
+            table = {}
+        _route_cache = (mt, table)
+    return _route_cache[1]
+
+
+def undirected_route(code: str) -> str:
+    """방향 미표기 캡션의 방향 낱말("수출"|"수입"). 표에 없으면 "수출"."""
+    return _route_table().get(code, "수출")
+
+
 # `무역액 YoY` — 방향을 밝히지 않는 판의 지표(위 `_RE_BLOCK` 주석). 수출액과
 # 같은 칸에 넣으면 화면이 원문에 없는 '수출' 을 적는다(#34).
 _RE_TRADE_YOY = re.compile(r"무역액\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.I)
@@ -110,7 +153,7 @@ def _f(pat: re.Pattern, text: str):
         return None
 
 
-def parse_kr_stock_export(caption: str) -> dict | None:
+def parse_kr_stock_export(caption: str, *, direction: str = "수출") -> dict | None:
     """캡션 → {stock_name, stock_code, month, 지표…} 또는 None.
 
     헤더(종목명+코드)·'한국 수출'·'NN년 N월 Update' 3종이 모두 있어야 한다 —
@@ -129,9 +172,13 @@ def parse_kr_stock_export(caption: str) -> dict | None:
     yy, mm = int(m.group("yy")), int(m.group("mm"))
     if not 1 <= mm <= 12:
         return None
+    # 방향 — 원문 낱말이 있으면 그것, 없으면 운영자 확인 표(위 ROUTE_CSV).
+    # 이 파서는 수출(krs)·수입(kri) 두 보드가 같이 쓴다 — 자기 방향만 받는다.
+    if (m.group("dir") or undirected_route(m.group("code"))) != direction:
+        return None
     # 수출액 YoY — 접두(3M 등) 유무로 분리. 접두 없는 것이 당월치.
     exp_yoy = exp_yoy_3m = None
-    for mo in _RE_EXP_YOY_ANY.finditer(text):
+    for mo in _AMOUNT_YOY_RE[direction].finditer(text):
         try:
             v = float(mo.group("v"))
         except ValueError:
@@ -322,6 +369,14 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    ensure_schema(conn)
+    return conn
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """지표판 테이블 + 마이그레이션. 수입 보드(kri)도 **자기 DB 파일**에 같은
+    스키마를 만든다 — 테이블 이름(`kr_stock_exports`)은 스키마 이름일 뿐이고,
+    kri DB 안의 그 테이블엔 수입 행만 산다(`kr_stock_imports` 독스트링)."""
     conn.executescript(_SCHEMA)
     # 기존 DB 에 컬럼 추가 — CREATE TABLE IF NOT EXISTS 는 기존 테이블을
     # 손대지 않아, 이게 없으면 배포 후 첫 쓰기가 터진다(형제와 같은 규약).
@@ -335,7 +390,6 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
         if col not in have:
             conn.execute(
                 f"ALTER TABLE kr_stock_exports ADD COLUMN {col} {decl}")
-    return conn
 
 
 def upsert_kr_stock(conn: sqlite3.Connection, row: dict, *, chart_media,
@@ -488,7 +542,7 @@ def _metric(label: str, v, unit: str = "%") -> str:
             f'<span class="kr-mval {cls}">{arr}{v:+.1f}{unit}</span></div>')
 
 
-def _hist_table(hist: list[dict]) -> str:
+def _hist_table(hist: list[dict], amount: str = "수출액") -> str:
     rows = [h for h in sorted(hist, key=lambda h: h.get("month") or "",
                               reverse=True) if h.get("month")]
     if len(rows) < 2:
@@ -508,14 +562,16 @@ def _hist_table(hist: list[dict]) -> str:
                    f"<td>{c('price_yoy')}</td></tr>")
     # 두 문법이 한 표에 섞이므로 **없는 칸은 '—'** 로 둔다(빈칸은 0 으로
     # 읽힌다, #43·#181). 어느 열이 어느 판에서 오는지는 카드가 말한다.
-    return ('<table class="kr-htbl"><tr><th>월</th><th>수출액</th>'
-            '<th>수출액 YoY</th><th>무역액 YoY</th><th>MoM</th>'
-            '<th>3M 수출액 YoY</th><th>단가 YoY</th></tr>'
+    return ('<table class="kr-htbl"><tr><th>월</th>'
+            f'<th>{amount}</th><th>{amount} YoY</th><th>무역액 YoY</th><th>MoM</th>'
+            f'<th>3M {amount} YoY</th><th>단가 YoY</th></tr>'
             + "".join(trs) + "</table>")
 
 
 def _card_html(r: dict, hist: list[dict], media_prefix: str,
-               code_by_name: dict | None = None) -> str:
+               code_by_name: dict | None = None, *,
+               direction: str = "수출") -> str:
+    amount = _AMOUNT_WORD[direction]
     raw_code = r.get("stock_code") or ""
     # 합성키(`nm:회사명`)는 **코드가 아니다** — 그대로 찍으면 화면이 없는
     # 종목코드를 있다고 말한다(#34·#43). KRX 단축코드 모양일 때만 코드로 인정한다.
@@ -537,14 +593,14 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
     if amt is not None:
         # 원천이 적은 단위(USD M$)를 그대로 쓴다 — 환산하지 않는다(#165).
         summary.append('<div class="kr-metric"><span class="kr-mlabel">'
-                       f'💵 수출액</span><span class="kr-mval">${amt:,.1f}M'
+                       f'💵 {amount}</span><span class="kr-mval">${amt:,.1f}M'
                        '</span></div>')
-    summary.append(_metric("💰 수출액 YoY", r.get("export_yoy")))
+    summary.append(_metric(f"💰 {amount} YoY", r.get("export_yoy")))
     # 방향을 밝히지 않은 판 — 원문 라벨 그대로(#34). 왜 '수출액' 이 아닌지는
     # 카드가 한 줄로 말한다(#43).
     summary.append(_metric("🔁 무역액 YoY", r.get("trade_yoy")))
     summary.append(_metric("📈 MoM", r.get("export_mom")))
-    summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
+    summary.append(_metric(f"📊 3M {amount}", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
     if r.get("item"):
         summary.append(
@@ -571,8 +627,15 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
     if lead:
         summary.append(f'<div class="kr-lead">🔮 {" · ".join(lead)}</div>')
     if r.get("trade_yoy") is not None and r.get("export_yoy") is None:
+        # 방향 미표기 판 — 어느 보드에 왜 실렸는지 말한다(#43). 운영자 확인 표에
+        # 있으면 확인된 방향, 없으면 기본(수출) 보드라는 사실만 적는다(#165).
+        _code = r.get("stock_code") or ""
+        _why = ("운영자 확인 표(차트 제목 기준)로 이 보드에 실었습니다"
+                if _route_table().get(_code) == direction else
+                "방향 미확인 — 기본 수출 보드에 싣습니다(차트 제목이 Import 면 "
+                "운영자 표 `trade/data/kr_undirected_direction.csv` 에 등재)")
         summary.append('<div class="kr-lead">ℹ️ 원문이 수출·수입을 밝히지 않은 '
-                       '판(`무역액`) — 원문 라벨 그대로 싣습니다</div>')
+                       f'판(`무역액`) — {_why}</div>')
     if r.get("note"):
         summary.append(f'<div class="kr-lead">💬 {_html.escape(r["note"])}</div>')
     if r.get("rev_quarter") and r.get("rev_value_krw_b") is not None:
@@ -586,7 +649,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
                else media_prefix + media)
         chart = (f'<div class="kr-chart"><img loading="lazy" '
                  f'src="{_html.escape(src)}" alt=""></div>')
-    return card_html("kr", summary, [chart, _hist_table(hist)])
+    return card_html("kr", summary, [chart, _hist_table(hist, amount)])
 
 
 _HEAD = ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
@@ -595,8 +658,18 @@ _HEAD = ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
          "</style></head><body>" + _THEME_JS)
 
 
+def _undirected_only(r: dict) -> bool:
+    """방향 미표기 판에서만 온 행(수출 칸이 하나도 없다)."""
+    return all(r.get(k) is None for k in
+               ("export_yoy", "export_yoy_3m", "export_value_musd", "export_mom"))
+
+
 def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> str:
-    rows = list_kr_stock(conn)
+    # 운영자 표가 수입으로 확인한 코드의 **미표기 판 행**은 수입 보드(kri) 소관 —
+    # 표 등재 **전에** 이 DB 에 이미 구워진 행이 남아도 이 화면엔 안 싣는다(#18).
+    rows = [r for r in list_kr_stock(conn)
+            if not (_undirected_only(r)
+                    and undirected_route(r.get("stock_code") or "") != "수출")]
     if not rows:
         # 빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약).
         return (_HEAD + "<div class='wrap'>"
