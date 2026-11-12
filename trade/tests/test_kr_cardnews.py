@@ -78,10 +78,41 @@ def test_each_topic_folds_and_old_months_group_by_month(tmp_path):
     assert len(posts) == 4 and not any(posts)
     # 접힌 머리에 상위 품목이 보인다.
     assert re.search(r'<summary class="cn-hd">.*?상위: DRAM \+529%', html, re.S)
-    # 최신 달은 묶음 밖, 지난 달은 달마다 따로(최신 달이 먼저).
-    olds = re.findall(r'<details class="cn-old"><summary>📁 (\S+) 포스트 (\d+)건', html)
-    assert olds == [("2026-09", "1"), ("2026-08", "1")]
-    assert html.index("26.10 소비재") < html.index("📁 2026-09")
+    # 달 → 업종 2단(사용자 2026-11-12): 달마다 묶음 하나, 최신 달만 펼침.
+    months = re.findall(
+        r'<details class="cn-month"( open)?><summary>📁 (\S+) · 업종 (\d+)건', html)
+    assert months == [(" open", "2026-10", "2"), ("", "2026-09", "1"), ("", "2026-08", "1")]
+    # 업종 포스트는 제 달 묶음 **안**에 있다.
+    seg = html[html.index("📁 2026-10"):html.index("📁 2026-09")]
+    assert "26.10 소비재" in seg and "26.10 반도체" in seg
     # 같은 (달, 업종) 재게시는 덮는다 — 행 수 그대로.
     assert krc.ingest(conn, CAP, posted_at="", media_paths=[])
     assert conn.execute("select count(*) from kr_cardnews").fetchone()[0] == 4
+
+
+def test_prelim_is_replaced_by_final_of_same_month_and_topic(tmp_path):
+    """사용자 2026-11-12: 잠정치는 그달 확정치가 오면 지우고, 그 전엔 둔다."""
+    assert krc.topic_stage("잠정치 · 소비재") == ("prelim", "소비재")
+    assert krc.topic_stage("확정치 · 소비재") == ("final", "소비재")
+    assert krc.topic_stage("반도체") == ("final", "반도체")
+    conn = krc.open_kr_cardnews_db(tmp_path / "c.db")
+    pre = lambda t, mo="26.10": f"📊 {mo} 잠정치 · {t} 카드뉴스\n\n1. A  YoY +1%"
+    fin = lambda t, mo="26.10": f"📊 {mo} {t} 카드뉴스\n\n1. A  YoY +2%"
+    for t in ("소비재", "반도체"):
+        assert krc.ingest(conn, pre(t), posted_at="", media_paths=["m/a.jpg"])
+    assert krc.ingest(conn, pre("소비재", "26.09"), posted_at="", media_paths=[])
+    topics = lambda: sorted((p["month"], p["topic"]) for p in krc.list_posts(conn))
+    assert len(topics()) == 3                       # 확정치 전: 잠정치 그대로
+    assert krc.ingest(conn, fin("소비재"), posted_at="", media_paths=[])
+    assert topics() == [("2026-09", "잠정치 · 소비재"), ("2026-10", "소비재"),
+                        ("2026-10", "잠정치 · 반도체")]   # 다른 달·다른 업종은 남는다
+    n = conn.execute("SELECT COUNT(*) FROM kr_cardnews").fetchone()[0]
+    assert n == 3                                   # 삭제는 DB 에서(화면만 아님)
+    # 확정치 뒤에 다시 온 잠정치는 싣지 않는다
+    assert krc.ingest(conn, pre("소비재"), posted_at="", media_paths=[])
+    assert ("2026-10", "잠정치 · 소비재") not in topics()
+    # 이미 둘 다 있는 옛 DB 도 화면에선 잠정치를 뺀다
+    conn.execute("INSERT INTO kr_cardnews (month, topic) VALUES ('2026-10', '잠정 반도체')")
+    conn.execute("INSERT INTO kr_cardnews (month, topic) VALUES ('2026-10', '확정치 · 반도체')")
+    assert ("2026-10", "잠정 반도체") not in topics()
+    assert "잠정치 · 반도체" not in krc.render_html(conn)
