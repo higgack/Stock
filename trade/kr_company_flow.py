@@ -490,15 +490,17 @@ def _sibling_line(flow: Flow) -> str:
 
 def render_html(conn: sqlite3.Connection, flow: Flow, *,
                 media_url_prefix: str = "../",
-                extra: list[tuple[str, str]] | None = None) -> str:
+                extra: list[tuple[str, str]] | None = None,
+                extra_css: str = "") -> str:
     """`extra` = 다른 문법이 만든 (카드 HTML, 월) — 같은 보드에 함께 싣는다
     (한국 수입: 지표판 `(A006400)`·`한국`·`Update`, 2026-11-12). 계수·최신월·
-    빈 상태 판정은 두 묶음을 **합쳐서** 한다(#45)."""
+    빈 상태 판정은 두 묶음을 **합쳐서** 한다(#45). `extra_css` = 그 카드가 쓰는
+    클래스의 정의 — 카드만 싣고 CSS 를 안 실으면 스타일 없이 그려진다(#201)."""
     extra = list(extra or [])
     head = ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>{_html.escape(flow.title)}</title><style>" + _CSS +
-            "</style></head><body>" + _THEME_JS)
+            extra_css + "</style></head><body>" + _THEME_JS)
     rows = list_latest(conn, flow)
     title = f"<h1>{_html.escape(flow.title)}</h1>"
     # 화면 문구의 나라·단위는 Flow 에서 — 엔진에 '한국' 을 박아 두면 다른 나라

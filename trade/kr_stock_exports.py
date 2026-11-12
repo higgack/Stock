@@ -475,21 +475,11 @@ def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
     return saved
 
 
-_CSS = """
-:root{--bg:#f7f8f9;--card:#ffffff;--border:#e8e8ea;--text:#282a30;
-  --item:#16171a;--muted:#696e78;--accent:#5a66d1;--row:#eef0f2;--chartbd:#e8e8ea;--up:#d61e24;--down:#0b63f2}
-body.dark{--bg:#0b0c0e;--card:#141518;--border:#26272b;--text:#e2e3e6;
-  --item:#f7f8f8;--muted:#8a8f98;--accent:#9aa2f0;--row:#1f2023;--chartbd:#26272b;--up:#e75458;--down:#3e84f6}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-  font-family:'Inter',-apple-system,'Apple SD Gothic Neo','Pretendard',sans-serif;
-  line-height:1.5;-webkit-font-smoothing:antialiased;transition:background .3s,color .3s}
-.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 64px}
-.nav{font-size:13px;margin-bottom:14px}
-.nav a{color:var(--accent);text-decoration:none}.nav a:hover{text-decoration:underline}
-h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
-.sub{color:var(--muted);font-size:13px;margin:0 0 18px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+# 카드 블록 CSS — 이 카드를 **다른 보드에도** 싣는다(수입 보드의 방향 미표기
+# 판, `kr_stock_imports._corr_cards`). 클래스만 옮기고 정의를 안 옮기면 그
+# 보드에서 카드가 스타일 없이 그려진다(#201·#273 — 2026-11-12 Samsung SDI
+# 카드가 제목·코드가 붙고 차트가 맨 이미지로 펼쳐져 실측). 싣는 쪽은 이걸 붙인다.
+CARD_CSS = """
 .kr-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
 .kr-card[open]{border-color:var(--accent)}
 .kr-sum{list-style:none;padding:13px 16px;
@@ -515,6 +505,25 @@ details.kr-card > .kr-sum::after{content:"▸ 펼치기(차트·월별)";color:v
 .kr-htbl th,.kr-htbl td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--row)}
 .kr-htbl th{color:var(--muted);font-weight:500}
 .kr-htbl td:first-child,.kr-htbl th:first-child{text-align:left;color:var(--text)}
+"""
+
+
+_CSS = """
+:root{--bg:#f7f8f9;--card:#ffffff;--border:#e8e8ea;--text:#282a30;
+  --item:#16171a;--muted:#696e78;--accent:#5a66d1;--row:#eef0f2;--chartbd:#e8e8ea;--up:#d61e24;--down:#0b63f2}
+body.dark{--bg:#0b0c0e;--card:#141518;--border:#26272b;--text:#e2e3e6;
+  --item:#f7f8f8;--muted:#8a8f98;--accent:#9aa2f0;--row:#1f2023;--chartbd:#26272b;--up:#e75458;--down:#3e84f6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:'Inter',-apple-system,'Apple SD Gothic Neo','Pretendard',sans-serif;
+  line-height:1.5;-webkit-font-smoothing:antialiased;transition:background .3s,color .3s}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 64px}
+.nav{font-size:13px;margin-bottom:14px}
+.nav a{color:var(--accent);text-decoration:none}.nav a:hover{text-decoration:underline}
+h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
+.sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+""" + CARD_CSS + """
 .empty{color:var(--muted);font-size:14px;padding:40px 0;text-align:center}
 """ + _sl.LINK_CSS
 
@@ -630,12 +639,12 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
         # 방향 미표기 판 — 어느 보드에 왜 실렸는지 말한다(#43). 운영자 확인 표에
         # 있으면 확인된 방향, 없으면 기본(수출) 보드라는 사실만 적는다(#165).
         _code = r.get("stock_code") or ""
-        _why = ("운영자 확인 표(차트 제목 기준)로 이 보드에 실었습니다"
+        _why = (f"차트 제목 기준으로 {direction} 보드에 실었습니다"
                 if _route_table().get(_code) == direction else
                 "방향 미확인 — 기본 수출 보드에 싣습니다(차트 제목이 Import 면 "
                 "운영자 표 `trade/data/kr_undirected_direction.csv` 에 등재)")
-        summary.append('<div class="kr-lead">ℹ️ 원문이 수출·수입을 밝히지 않은 '
-                       f'판(`무역액`) — {_why}</div>')
+        summary.append('<div class="kr-lead">ℹ️ 원문은 `무역액`(수출·수입 미표기) '
+                       f'— {_why}</div>')
     if r.get("note"):
         summary.append(f'<div class="kr-lead">💬 {_html.escape(r["note"])}</div>')
     if r.get("rev_quarter") and r.get("rev_value_krw_b") is not None:

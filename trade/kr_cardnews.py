@@ -187,8 +187,15 @@ def list_posts(conn: sqlite3.Connection) -> list[dict]:
 
 _CSS = _BASE_CSS + """
 .cn-post{background:var(--card);border:1px solid var(--border);border-radius:10px;
-  padding:14px 16px;margin:0 0 16px}
-.cn-hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  margin:0 0 10px}
+.cn-post[open]{border-color:var(--accent)}
+.cn-hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:12px 16px;
+  cursor:pointer;list-style:none}
+.cn-hd::-webkit-details-marker{display:none}
+.cn-hd::before{content:"▸";color:var(--muted);font-size:12px}
+.cn-post[open] > .cn-hd::before{content:"▾"}
+.cn-body{padding:0 16px 14px;border-top:1px solid var(--border)}
+.cn-top{flex-basis:100%;font-size:12px;color:var(--muted);padding-left:18px}
 .cn-title{font-weight:700;font-size:16px;color:var(--item)}
 .cn-meta{font-size:12px;color:var(--muted);margin-left:auto}
 .cn-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;
@@ -205,6 +212,7 @@ _CSS = _BASE_CSS + """
   border-radius:8px;padding:10px 12px;margin:0}
 .cn-sec{font-size:12px;color:var(--muted);margin:4px 0 6px}
 .cn-old > summary{cursor:pointer;color:var(--accent);font-size:13px;margin:6px 0 12px}
+.cn-old{margin:0 0 6px}
 """
 
 
@@ -248,19 +256,31 @@ def _post_html(p: dict, media_prefix: str) -> str:
     if posted:
         meta += f" · 게시 {_html.escape(posted)} UTC"
     meta += f" · 그래프 {len(imgs)}장"
-    return (f'<section class="cn-post"><div class="cn-hd">'
+    # 업종(포스트)마다 접는다(사용자 2026-11-12) — 접힌 머리에도 상위 3품목을
+    # 실어 펼치지 않고 훑을 수 있게 한다(값은 캡션 원문 그대로).
+    items = p.get("items") or []
+    top = " · ".join(
+        f"{_html.escape(i.get('name') or '')}"
+        + (f" {i['yoy']:+.0f}%" if isinstance(i.get("yoy"), (int, float)) else "")
+        for i in items[:3])
+    top_html = (f'<span class="cn-top">상위: {top}'
+                + (f" 외 {len(items) - 3}개" if len(items) > 3 else "")
+                + " (YoY)</span>") if top else ""
+    return (f'<details class="cn-post"><summary class="cn-hd">'
             f'<span class="cn-title">{_html.escape(p.get("title") or "")}</span>'
-            f'<span class="cn-meta">{meta}</span></div>'
-            + gallery + _items_table(p.get("items") or [])
+            f'<span class="cn-meta">{meta}</span>{top_html}</summary>'
+            '<div class="cn-body">'
+            + gallery + _items_table(items)
             + '<div class="cn-sec">💬 원문 코멘트(캡션 전체)</div>'
             f'<pre class="cn-raw">{_html.escape(p.get("raw_text") or "")}</pre>'
-            "</section>")
+            "</div></details>")
 
 
 _SUB = ("Badonions <b>한국 수출 카드뉴스</b>(품목별 차트 앨범 + 요약 캡션)를 포스트 단위로 "
         "정리한 페이지 · 포스트의 그래프 전부와 캡션 원문을 그대로 싣습니다(관세청 수출 "
         f"확정치 기준 — 카드 표지의 원문 출처) · 종목별 수출은 <a href='{SIBLING}'>"
-        f"{SIBLING_LABEL}</a><br>최신 달의 포스트를 펼쳐 두고, 지난 달은 아래 접어 둡니다.")
+        f"{SIBLING_LABEL}</a><br>업종(포스트)마다 눌러서 펼칩니다 · 새 달이 오면 최신 달이 "
+        "맨 위에 오고, 지난 달은 달별로 아래에 접혀 그대로 남습니다(지우지 않습니다).")
 
 
 def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> str:
@@ -280,9 +300,15 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     cur = [p for p in posts if p["month"] == latest]
     old = [p for p in posts if p["month"] != latest]
     body = "".join(_post_html(p, media_url_prefix) for p in cur)
-    if old:
-        body += (f'<details class="cn-old"><summary>지난 달 포스트 {len(old)}건 펼치기'
-                 '</summary>' + "".join(_post_html(p, media_url_prefix) for p in old)
+    # 지난 달은 **달별로** 접는다 — 한 덩어리면 달이 쌓일수록 어느 달인지 못
+    # 찾는다. 같은 (월, 업종) 재게시만 덮이고 나머지는 남는다(PK = month, topic).
+    by_month: dict[str, list] = {}
+    for p in old:
+        by_month.setdefault(p["month"], []).append(p)
+    for mo, ps in by_month.items():
+        body += (f'<details class="cn-old"><summary>📁 {_html.escape(mo)} 포스트 '
+                 f'{len(ps)}건</summary>'
+                 + "".join(_post_html(p, media_url_prefix) for p in ps)
                  + "</details>")
     return (head + "<div class='wrap'>" + nav + f"<h1>{TITLE}</h1>"
             f"<div class='sub'>{_SUB}</div>" + body
