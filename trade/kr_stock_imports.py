@@ -92,7 +92,8 @@ def _corr_cards(conn: sqlite3.Connection, media_url_prefix: str) -> list:
 def render_html(conn: sqlite3.Connection, *,
                 media_url_prefix: str = "../") -> str:
     return _f.render_html(conn, FLOW, media_url_prefix=media_url_prefix,
-                          extra=_corr_cards(conn, media_url_prefix))
+                          extra=_corr_cards(conn, media_url_prefix),
+                          extra_css=_krs.CARD_CSS)
 
 
 def regenerate(db_path: Path | str, out_path: Path | str, *,

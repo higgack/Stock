@@ -326,7 +326,7 @@ class Nov2026LayoutTests(unittest.TestCase):
             self.assertIn("무역액 YoY", html)
             self.assertIn("▲+128.9%", html)
             self.assertIn("BE보다 주가 좋음", html)
-            self.assertIn("수출·수입을 밝히지 않은", html)
+            self.assertIn("수출·수입 미표기", html)
 
 
 class UndirectedRoutingTests(unittest.TestCase):
@@ -346,8 +346,30 @@ class UndirectedRoutingTests(unittest.TestCase):
                                        media_paths=["m/a.jpg"]))
             html = kri.render_html(conn)
             self.assertIn("Samsung SDI", html)
-            self.assertIn("운영자 확인 표", html)
+            self.assertIn("차트 제목 기준으로 수입 보드에", html)
             self.assertIn("1개 회사", html)
+
+    def test_import_board_defines_every_class_the_carried_card_uses(self):
+        """수입 보드에 실린 지표판 카드는 `kr-*` 클래스를 쓴다 — 그 정의가 수입
+        페이지 CSS 에 없으면 카드가 스타일 없이 그려진다(#201·#273, 2026-11-12
+        Samsung SDI 카드: 이름·코드가 붙고 차트가 맨 이미지로 펼쳐졌다).
+        렌더 **출력**에서 쓰는 클래스 ⊆ 정의된 클래스를 잰다."""
+        import re
+        from trade import kr_stock_imports as kri
+        with tempfile.TemporaryDirectory() as td:
+            conn = kri.open_kr_stock_import_db(Path(td) / "i.db")
+            self.assertTrue(kri.ingest(conn, Nov2026LayoutTests.SDI,
+                                       source_message_id=1, posted_at="",
+                                       media_paths=["m/a.jpg"]))
+            html = kri.render_html(conn)
+        # 인라인 style 을 같이 단 요소(공용 `asof_footer` 의 `asof-ftr`)는 스스로
+        # 스타일을 갖는다 — 정의 대조 대상이 아니다.
+        used = {t for grp in re.findall(r'class="([^"]+)"(?![^>]*style=)', html)
+                for t in grp.split()}
+        css = "".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+        defined = set(re.findall(r"\.(-?[A-Za-z_][\w-]*)(?=[^{};]*\{)", css))
+        self.assertIn("kr-hd", used)            # 대조 0건은 통과가 아니다(#54)
+        self.assertEqual(sorted(used - defined), [])
 
     def test_explicit_direction_word_wins_over_table(self):
         cap = Nov2026LayoutTests.SDI.replace("\n한국\n", "\n한국 수출\n")

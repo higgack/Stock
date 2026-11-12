@@ -62,3 +62,26 @@ def test_registry_places_it_before_stock_board():
     assert order.index("krc") + 1 == order.index("krs")
     src = srcs.by_key("krc")
     assert src.html_file == "kr_cardnews.html" and src.country == "한국"
+
+
+def test_each_topic_folds_and_old_months_group_by_month(tmp_path):
+    """업종(포스트)마다 접히고, 지난 달은 달별 묶음으로 남는다(사용자 2026-11-12)."""
+    import re
+    conn = krc.open_kr_cardnews_db(tmp_path / "c.db")
+    for mo, topic in (("26.10", "반도체"), ("26.10", "소비재"),
+                      ("26.09", "반도체"), ("26.08", "반도체")):
+        cap = CAP.replace("26.10 반도체", f"{mo} {topic}")
+        assert krc.ingest(conn, cap, posted_at="", media_paths=["m/a.jpg"])
+    html = krc.render_html(conn)
+    # 포스트 하나 = 접히는 블록 하나(4건), 기본은 접힘.
+    posts = re.findall(r'<details class="cn-post"( open)?>', html)
+    assert len(posts) == 4 and not any(posts)
+    # 접힌 머리에 상위 품목이 보인다.
+    assert re.search(r'<summary class="cn-hd">.*?상위: DRAM \+529%', html, re.S)
+    # 최신 달은 묶음 밖, 지난 달은 달마다 따로(최신 달이 먼저).
+    olds = re.findall(r'<details class="cn-old"><summary>📁 (\S+) 포스트 (\d+)건', html)
+    assert olds == [("2026-09", "1"), ("2026-08", "1")]
+    assert html.index("26.10 소비재") < html.index("📁 2026-09")
+    # 같은 (달, 업종) 재게시는 덮는다 — 행 수 그대로.
+    assert krc.ingest(conn, CAP, posted_at="", media_paths=[])
+    assert conn.execute("select count(*) from kr_cardnews").fetchone()[0] == 4
