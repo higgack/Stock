@@ -41954,14 +41954,17 @@ class TestUnlabeledCorrSeries20260829:
                 if "corr" not in src.grammars:
                     continue
                 flow = {"export": "수출", "import": "수입"}[src.flow]
-                tkr = "005930" if src.key == "krs" else "ABCD"
+                tkr = "005930" if src.country == "한국" else "ABCD"
                 cap = (f"어떤회사 ({tkr})\n{src.country} {flow}\n"
                        f"26년 7월 Update\n\n{flow}액 YoY: +1.0%\n\n"
                        f"상관: 0.98\n방향 일치율: 100%\n")
                 conn = src.open_db(Path(td) / src.db_file)
                 tbl = next(r[0] for r in conn.execute(
                     "select name from sqlite_master where type='table' "
-                    "and name not like 'sqlite_%'"))
+                    "and name not like 'sqlite_%'").fetchall()
+                    # 지표판 컬럼(corr)을 가진 테이블 — kri DB 는 금액판·지표판 둘(2026-11-12).
+                    if "corr" in {c[1] for c in conn.execute(
+                        f"PRAGMA table_info({r[0]})")})
                 src.ingest(conn, cap, source_message_id=1,
                            posted_at="2026-07-01T00:00:00", media_paths=[])
                 row = conn.execute(
@@ -42003,7 +42006,7 @@ class TestStockBoardCorrMetrics20260829:
     @staticmethod
     def _cap(src, tail):
         flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
-        tkr = "005930" if src.key == "krs" else "ABCD"
+        tkr = "005930" if src.country == "한국" else "ABCD"
         return (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                 f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n" + tail)
 
@@ -42064,7 +42067,10 @@ class TestStockBoardCorrMetrics20260829:
                 conn = src.open_db(Path(td) / src.db_file)
                 tbl = next(r[0] for r in conn.execute(
                     "select name from sqlite_master where type='table' "
-                    "and name not like 'sqlite_%'"))
+                    "and name not like 'sqlite_%'").fetchall()
+                    # 지표판 컬럼(corr)을 가진 테이블 — kri DB 는 금액판·지표판 둘(2026-11-12).
+                    if "corr" in {c[1] for c in conn.execute(
+                        f"PRAGMA table_info({r[0]})")})
                 have = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")}
                 missing = [c for c in m.FIELDS if c not in have]
                 if missing:
@@ -42244,7 +42250,7 @@ EML·DML·CW 레이저소자
             if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
-            tkr = "005930" if src.key == "krs" else "ABCD"
+            tkr = "005930" if src.country == "한국" else "ABCD"
             three = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                      f"{flow}액 YoY: +10.0%\n단가 YoY: +5.0%")
             one = (f"어떤회사 ({tkr}) {src.country} {flow} Update\n26년 7월\n\n"
@@ -42266,7 +42272,7 @@ EML·DML·CW 레이저소자
             if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
-            tkr = "005930" if src.key == "krs" else "ABCD"
+            tkr = "005930" if src.country == "한국" else "ABCD"
             cap = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                    f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n"
                    f"동시상관: 0.96\n방향 일치율: 89%\n")
@@ -42289,7 +42295,7 @@ EML·DML·CW 레이저소자
             if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
-            tkr = "005930" if src.key == "krs" else "ABCD"
+            tkr = "005930" if src.country == "한국" else "ABCD"
             base = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                     f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n")
             probe = src.parse(base + "* 합산하지 않습니다.\n") or {}
@@ -68067,7 +68073,10 @@ class TestKoreaCompanyFlowBoards20260916:
         corr = [s.key for s in bs.sources_with_grammar("corr")]
         assert len(corr) >= 6, corr
         # 반대 증거 — 금액판은 이 계약 밖이다(그게 이 축을 만든 이유다, #25).
-        assert "kri" not in corr and "twr" not in corr
+        # 금액판만 받는 소스는 밖이다. ⚠️ kri 는 2026-11-12 부터 **안**이다 — 방향 미표기
+        # 지표판을 운영자 표가 수입으로 확인하면 수입 보드가 받는다(Samsung SDI, #222).
+        assert "uss" not in corr and "twr" not in corr
+        assert "kri" in corr
         # 그리고 수출 페이지는 **둘 다** 받는다(합쳤으니까).
         krs = next(s for s in bs.SOURCES if s.key == "krs")
         assert set(krs.grammars) == {"corr", "amount"}, krs.grammars

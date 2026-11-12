@@ -295,7 +295,10 @@ class Nov2026LayoutTests(unittest.TestCase):
             "* BE보다 주가 좋음\n\nhttps://badonion.co.kr/trade/mapping")
 
     def test_parses_both_captions(self):
-        a = krs.parse_kr_stock_export(self.SDI)
+        # SDI 는 차트 제목이 `Korea Import Basket` — 운영자 표가 수입으로 확인해
+        # 수출 파서는 안 받고 수입 방향으로만 읽힌다(사용자 2026-11-12).
+        self.assertIsNone(krs.parse_kr_stock_export(self.SDI))
+        a = krs.parse_kr_stock_export(self.SDI, direction="수입")
         self.assertEqual((a["stock_code"], a["month"], a["trade_yoy"], a["corr"],
                           a["dir_hit"]), ("006400", "2026-10", 128.9, 0.85, 92.0))
         # 무역액은 수출액 칸에 들어가지 않는다(원문이 방향을 안 밝혔다).
@@ -315,7 +318,7 @@ class Nov2026LayoutTests(unittest.TestCase):
     def test_card_shows_trade_yoy_and_note(self):
         with tempfile.TemporaryDirectory() as td:
             conn = krs.open_kr_stock_db(Path(td) / "k.db")
-            for cap in (self.SDI, self.VINA):
+            for cap in (self.SDI.replace("A006400", "A005930"), self.VINA):
                 self.assertTrue(krs.ingest(conn, cap, source_message_id=1,
                                            posted_at="2026-11-12T04:31:00",
                                            media_paths=["m/x.jpg"]))
@@ -324,3 +327,41 @@ class Nov2026LayoutTests(unittest.TestCase):
             self.assertIn("▲+128.9%", html)
             self.assertIn("BE보다 주가 좋음", html)
             self.assertIn("수출·수입을 밝히지 않은", html)
+
+
+class UndirectedRoutingTests(unittest.TestCase):
+    """방향 미표기 판(`한국` 만)의 운영자 확인 라우팅 표 — 수입이면 수입 보드."""
+
+    def test_route_table_sends_sdi_to_import_board(self):
+        from trade import badonion_sources as bs
+        from trade import kr_stock_imports as kri
+        self.assertEqual(krs.undirected_route("006400"), "수입")
+        self.assertEqual(krs.undirected_route("999999"), "수출")   # 표 밖 = 기본
+        self.assertEqual(bs.matching_keys(Nov2026LayoutTests.SDI), ("kri",))
+        self.assertEqual(bs.matching_keys(Nov2026LayoutTests.VINA), ("krs",))
+        with tempfile.TemporaryDirectory() as td:
+            conn = kri.open_kr_stock_import_db(Path(td) / "i.db")
+            self.assertTrue(kri.ingest(conn, Nov2026LayoutTests.SDI,
+                                       source_message_id=1, posted_at="",
+                                       media_paths=["m/a.jpg"]))
+            html = kri.render_html(conn)
+            self.assertIn("Samsung SDI", html)
+            self.assertIn("운영자 확인 표", html)
+            self.assertIn("1개 회사", html)
+
+    def test_explicit_direction_word_wins_over_table(self):
+        cap = Nov2026LayoutTests.SDI.replace("\n한국\n", "\n한국 수출\n")
+        self.assertIsNotNone(krs.parse_kr_stock_export(cap))
+        self.assertIsNone(krs.parse_kr_stock_export(cap, direction="수입"))
+
+    def test_rows_baked_before_routing_leave_export_board(self):
+        with tempfile.TemporaryDirectory() as td:
+            conn = krs.open_kr_stock_db(Path(td) / "k.db")
+            row = krs.parse_kr_stock_export(Nov2026LayoutTests.SDI, direction="수입")
+            krs.upsert_kr_stock(conn, row, chart_media=None, source_message_id=1,
+                                posted_at="", raw_text="")
+            krs.ingest(conn, Nov2026LayoutTests.VINA, source_message_id=2,
+                       posted_at="")
+            html = krs.render_html(conn)
+            self.assertNotIn("Samsung SDI", html)
+            self.assertIn("비나텍", html)
