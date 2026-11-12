@@ -38,6 +38,7 @@ SUDOERS_LINES=(
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard"
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-beon-listener"
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-badonion-listener"
+    "higgack ALL=(ALL) NOPASSWD: /bin/systemctl start --no-block trade-bot-badonion-sync.service"
 )
 
 if [ ! -d "$DEPLOY" ]; then
