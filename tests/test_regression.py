@@ -68055,7 +68055,7 @@ class TestKoreaCompanyFlowBoards20260916:
         """문법 축이 비면 그 소스는 **어느 형제 계약에도 안 걸린다**(#24·#54).
         기본값을 안 둔 이유이고, 값은 아는 것만 쓴다(오타 = 조용한 눈멂)."""
         from trade import badonion_sources as bs
-        known = {"hs", "corr", "amount", "revenue", "ppi"}
+        known = {"hs", "corr", "amount", "revenue", "ppi", "cardnews"}
         for src in bs.SOURCES:
             assert src.grammars, src.key
             assert set(src.grammars) <= known, (src.key, src.grammars)
