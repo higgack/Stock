@@ -87,6 +87,21 @@ def _move(arr: str, v: str | None) -> float | None:
     return x if v and v[0] in "+-−" else None
 
 
+# 제목의 단계 표기(사용자 2026-11-12): `26.10 잠정치 · 소비재 카드뉴스` → 잠정.
+# 같은 (월, 업종)의 확정치가 오면 잠정치는 필요 없으므로 지운다 — 그 전엔
+# 그대로 둔다. 표기가 없으면 확정 취급(표지 원문 `FINAL`, 기존 포스트).
+_RE_STAGE = re.compile(r"^(?P<st>잠정치?|확정치?)(?:[^\S\n]*[·•|:\-/][^\S\n]*|[^\S\n]+)")
+
+
+def topic_stage(topic: str) -> tuple[str, str]:
+    """업종 문자열 → (단계 'prelim'|'final', 단계 표기를 뗀 업종)."""
+    m = _RE_STAGE.match(topic or "")
+    if not m:
+        return "final", (topic or "").strip()
+    base = topic[m.end():].strip(" ·-") or topic
+    return ("prelim" if m.group("st").startswith("잠정") else "final"), base
+
+
 def parse_kr_cardnews(caption: str) -> dict | None:
     """캡션 → {month, topic, items[]} 또는 None(카드뉴스가 아니면)."""
     if not caption:
@@ -151,6 +166,17 @@ def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
     p = parse_kr_cardnews(caption)
     if p is None:
         return False
+    stage, base = topic_stage(p["topic"])
+    same = [r["topic"] for r in conn.execute(
+        f"SELECT topic FROM {TABLE} WHERE month=?", (p["month"],))
+        if r["topic"] != p["topic"] and topic_stage(r["topic"])[1] == base]
+    if stage == "prelim" and any(topic_stage(t)[0] == "final" for t in same):
+        return True          # 확정치가 이미 있다 — 늦게 온 잠정치는 싣지 않는다
+    if stage == "final":     # 확정치 도착 → 같은 (월, 업종) 잠정치 삭제
+        for t in same:
+            if topic_stage(t)[0] == "prelim":
+                conn.execute(f"DELETE FROM {TABLE} WHERE month=? AND topic=?",
+                             (p["month"], t))
     media = [m for m in (media_paths or []) if m]
     ex = conn.execute(f"SELECT media_json FROM {TABLE} WHERE month=? AND topic=?",
                       (p["month"], p["topic"])).fetchone()
@@ -173,8 +199,13 @@ def list_posts(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         f"SELECT * FROM {TABLE} ORDER BY month DESC, posted_at DESC, topic ASC"
     ).fetchall()
+    finals = {(r["month"], topic_stage(r["topic"])[1]) for r in rows
+              if topic_stage(r["topic"])[0] == "final"}
     out = []
     for r in rows:
+        st, base = topic_stage(r["topic"])
+        if st == "prelim" and (r["month"], base) in finals:
+            continue         # 이미 확정치가 있는 잠정치(옛 행) — 화면에서도 뺀다
         d = dict(r)
         for k, dflt in (("items_json", []), ("media_json", [])):
             try:
@@ -211,8 +242,9 @@ _CSS = _BASE_CSS + """
 .cn-raw{white-space:pre-wrap;font-size:12.5px;line-height:1.6;background:var(--row);
   border-radius:8px;padding:10px 12px;margin:0}
 .cn-sec{font-size:12px;color:var(--muted);margin:4px 0 6px}
-.cn-old > summary{cursor:pointer;color:var(--accent);font-size:13px;margin:6px 0 12px}
-.cn-old{margin:0 0 6px}
+.cn-month > summary{cursor:pointer;color:var(--accent);font-size:14px;font-weight:600;
+  margin:8px 0 10px}
+.cn-month{margin:0 0 6px}
 """
 
 
@@ -279,8 +311,9 @@ def _post_html(p: dict, media_prefix: str) -> str:
 _SUB = ("Badonions <b>한국 수출 카드뉴스</b>(품목별 차트 앨범 + 요약 캡션)를 포스트 단위로 "
         "정리한 페이지 · 포스트의 그래프 전부와 캡션 원문을 그대로 싣습니다(관세청 수출 "
         f"확정치 기준 — 카드 표지의 원문 출처) · 종목별 수출은 <a href='{SIBLING}'>"
-        f"{SIBLING_LABEL}</a><br>업종(포스트)마다 눌러서 펼칩니다 · 새 달이 오면 최신 달이 "
-        "맨 위에 오고, 지난 달은 달별로 아래에 접혀 그대로 남습니다(지우지 않습니다).")
+        f"{SIBLING_LABEL}</a><br>달 → 업종 순으로 눌러서 펼칩니다 · 새 달이 오면 최신 달이 "
+        "펼친 채 맨 위에 오고, 지난 달은 달별로 아래에 접혀 그대로 남습니다 · <b>잠정치</b>는 같은 달·같은 "
+        "업종의 확정치가 오면 지워지고, 그 전까지는 그대로 남습니다.")
 
 
 def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> str:
@@ -297,17 +330,15 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
                 + asof_footer(0, "포스트", None, max_ingest_iso(conn, TABLE))
                 + "</div></body></html>")
     latest = posts[0]["month"]
-    cur = [p for p in posts if p["month"] == latest]
-    old = [p for p in posts if p["month"] != latest]
-    body = "".join(_post_html(p, media_url_prefix) for p in cur)
-    # 지난 달은 **달별로** 접는다 — 한 덩어리면 달이 쌓일수록 어느 달인지 못
-    # 찾는다. 같은 (월, 업종) 재게시만 덮이고 나머지는 남는다(PK = month, topic).
+    # 달 → 업종 2단으로 접는다(사용자 2026-11-12 "한 단계 위로 월별로 묶을 수
+    # 있게") — 최신 달만 펼친 채로, 지난 달은 접힌 채로. 업종 포스트는 늘 접힘.
     by_month: dict[str, list] = {}
-    for p in old:
+    for p in posts:                       # list_posts 가 달 내림차순이다
         by_month.setdefault(p["month"], []).append(p)
+    body = ""
     for mo, ps in by_month.items():
-        body += (f'<details class="cn-old"><summary>📁 {_html.escape(mo)} 포스트 '
-                 f'{len(ps)}건</summary>'
+        body += (f'<details class="cn-month"{" open" if mo == latest else ""}>'
+                 f'<summary>📁 {_html.escape(mo)} · 업종 {len(ps)}건</summary>'
                  + "".join(_post_html(p, media_url_prefix) for p in ps)
                  + "</details>")
     return (head + "<div class='wrap'>" + nav + f"<h1>{TITLE}</h1>"
