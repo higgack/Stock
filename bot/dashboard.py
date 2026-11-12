@@ -20684,6 +20684,43 @@ def resolve_name_to_ticker(query: str) -> str | None:
             return f"{code}.KS"
     except Exception:
         pass
+    # 신규 상장·해외 이름(사용자 2026-11-12 "동원파츠가 상장 3~4일이 지났는데 안
+    # 나온다 · 미국이나 다른 나라도 최대한 같이") — 위 두 단은 목록 기반이라 목록이
+    # 갱신되기 전엔 새 상장사를 모른다. 실시간 검색 둘을 뒤에 둔다(#136 사다리):
+    # ① 네이버 자동완성(국내 + 해외, 상장 당일 반영 · 이름 **정확일치**만)
+    # ② 야후 검색(전 시장 — 이름이 같은 회사일 때만, 아래 함수).
+    # 포트폴리오 리졸버가 이미 검증한 함수를 그대로 쓴다(#38).
+    try:
+        from bot import portfolio_resolve as _pr
+        hit = _pr.resolve_via_naver(q)
+        if hit:
+            return hit[0]
+    except Exception:
+        pass
+    return _yahoo_search_any_market(q)
+
+
+def _yahoo_search_any_market(q: str) -> str | None:
+    """야후 검색 → 전 시장 티커(`7203.T`·`2330.TW`·`NVDA` …) 또는 None.
+
+    ⚠️ 신원 확인 없이 첫 결과를 쓰면 무관한 종목 화면이 열린다(포트폴리오
+    리졸버가 국내 비상장을 미국 티커로 붙인 사고, 2026-10-14) — 원천 이름이
+    질의와 **같은 회사**일 때만 받는다(`same_company`). 한글 질의는 영문 원천
+    이름과 대조할 수 없어 받지 않는다(그건 ① 네이버가 맡는다)."""
+    try:
+        from bot import portfolio_resolve as _pr
+        if _pr._has_hangul(q):
+            return None
+        import yfinance as yf
+        for qd in getattr(yf.Search(q, max_results=6), "quotes", None) or []:
+            if (qd.get("quoteType") or "").upper() not in ("EQUITY", "ETF"):
+                continue
+            sym = (qd.get("symbol") or "").strip().upper()
+            nm = qd.get("longname") or qd.get("shortname") or ""
+            if sym and sym.isascii() and _pr.same_company(q, nm):
+                return sym
+    except Exception:
+        return None
     return None
 
 

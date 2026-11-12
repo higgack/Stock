@@ -34,6 +34,7 @@ from trade import cn_stock_exports as _cns
 from trade import cn_stock_imports as _cni
 from trade import jp2_exports as _jp2
 from trade import jp_stock_exports as _jps
+from trade import kr_cardnews as _krc
 from trade import kr_stock_exports as _krs
 from trade import kr_stock_imports as _kri
 from trade import mx_exports as _mx
@@ -132,6 +133,17 @@ SOURCES: tuple[Source, ...] = (
     # 새 판을 받는 소스가 없어 LS ELECTRIC 이 조용히 드랍되고 있었다 —
     # 관련성 필터가 곧 파서라 저장도 미매칭 알림도 없었다(#83·#261·#330·#332).
     # 사용자 결정으로 **한 페이지에 합치므로** 필터는 `parse_any` 다.
+    # 한국 수출 **카드뉴스**(사용자 2026-11-12 "한국 수출 데이터 라는 제목으로
+    # 새롭게 대시보드를 추가해줘. 위치는 한국 수출데이터 종목별 앞으로").
+    # 품목별 차트 앨범 + `📊 26.10 반도체 카드뉴스` 요약 캡션 — 받는 파서가 없어
+    # 관련성 필터에서 드랍되던 새 형식이다. 품목(item) 기준이라 nav 규약상
+    # 종목별(krs) **앞**에 저절로 놓인다. 마커(`YY.MM … 카드뉴스`)가 다른
+    # 문법과 겹치지 않는다(회귀가 교차로 잰다).
+    Source("krc", "한국 수출(카드뉴스)", _krc.parse_kr_cardnews,
+           _krc.open_kr_cardnews_db, _krc.ingest, _krc.regenerate,
+           "kr_cardnews.db", "kr_cardnews.html",
+           "📰 한국 수출 데이터(카드뉴스·나쁜양파)",
+           country="한국", basis="item", flow="export", grammars=("cardnews",)),
     Source("krs", "한국 수출(종목별)", _krs.parse_any,
            _krs.open_kr_stock_db, _krs.ingest, _krs.regenerate,
            "kr_stock.db", "kr_stock.html",

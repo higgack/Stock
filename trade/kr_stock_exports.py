@@ -66,10 +66,18 @@ _NL = r"\n(?:[^\S\n]*\n)*"      # 줄바꿈(사이 빈 줄 허용)
 # 바뀌어 통째로 드랍된 사고(2026-08-28)의 **반대 방향** 구멍이 여기 있었다:
 # 한국은 3줄만 받아 1줄 형식이 오면 같은 유실이 난다. 형제 전수 회귀가
 # 잡아냈다(#24). `\s*` 는 개행을 먹어 무관 조합을 통과시키므로 쓰지 않는다.
+# 2026-11-12 원천이 세 번째 변주를 냈다(사용자 캡처 — Samsung SDI · 비나텍
+# 10월분이 보드에 안 올라왔다): 코드에 `A` 접두(`(A006400)`) · 나라 줄이
+# 맨 `한국`(방향 낱말 없음) · 지표가 `무역액 YoY`. 셋 다 옛 헤더를 깨
+# 관련성 필터에서 조용히 드랍됐다(#83·#261·#330·#332·#370·#441 계열 아홉 번째).
+# `A` 는 KRX 표준코드 관례 접두라 벗기고, 방향 낱말은 **선택**으로 받는다.
+# ⚠️ 방향이 없는 캡션은 수출인지 수입인지 원문이 말하지 않는다 — 사용자
+# 결정(2026-11-12)으로 이 보드에 싣되, 지표는 원문 라벨(`무역액`) 그대로
+# 따로 저장해 '수출액' 으로 바꿔 적지 않는다(#34·#55).
 _RE_BLOCK = re.compile(
-    r"^[^\S\n]*(?P<name>[^\n(]+?)[^\S\n]*\((?P<code>" + KRX_CODE_RE + r")\)"
+    r"^[^\S\n]*(?P<name>[^\n(]+?)[^\S\n]*\(A?(?P<code>" + KRX_CODE_RE + r")\)"
     r"[^\S\n]*(?:" + _NL + r")?"
-    r"[^\S\n]*한국[^\S\n]*수출[^\S\n]*(?:Update)?[^\S\n]*" + _NL +
+    r"[^\S\n]*한국(?:[^\S\n]*수출)?[^\S\n]*(?:Update)?[^\S\n]*" + _NL +
     r"[^\S\n]*(?P<yy>\d{2})[^\S\n]*년[^\S\n]*(?P<mm>\d{1,2})[^\S\n]*월"
     r"[^\S\n]*(?:Update)?",
     re.M | re.I)
@@ -80,6 +88,12 @@ _RE_PRICE_YOY = re.compile(r"단가\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.
 # 걸렀는데 공백이 없는 '3M수출액' 을 못 막아 두 값이 같아졌다(독립 리뷰).
 _RE_EXP_YOY_ANY = re.compile(
     r"(?P<pfx>\d+M)?\s*수출액\s*YoY\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)\s*%", re.I)
+# `무역액 YoY` — 방향을 밝히지 않는 판의 지표(위 `_RE_BLOCK` 주석). 수출액과
+# 같은 칸에 넣으면 화면이 원문에 없는 '수출' 을 적는다(#34).
+_RE_TRADE_YOY = re.compile(r"무역액\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.I)
+# 본문 각주(`* BE보다 주가 좋음`) — 원천의 해석 코멘트라 버리지 않는다.
+# 마커 뒤 공백 필수(강조 `*중요*` 오탐 차단 — 형제 `cn_stock_flow` 와 같은 규약).
+_RE_NOTE = re.compile(r"^[^\S\n]*[*\-][^\S\n]+(?P<n>[^\n]+)$", re.M)
 # "- CY26Q2 매출 ₩29.9B(-20.6% YoY)" — 여러 분기가 올 수 있어 finditer.
 _RE_REV = re.compile(
     r"(CY\d{2}Q\d)\s*매출\s*₩?\s*([\d,]+(?:\.\d+)?)\s*B"
@@ -134,8 +148,18 @@ def parse_kr_stock_export(caption: str) -> dict | None:
                     "value_krw_b": float(v.replace(",", "")),
                     "yoy": float(y)} for q, v, y in _RE_REV.findall(text)),
                   key=lambda r: r["quarter"], reverse=True)
+    # 각주 — 분기 매출 줄(`- CY26Q2 매출 …`)도 `-` 로 시작하므로 그건 뺀다
+    # (이미 rev_* 칸이 싣는다 — 두 번 적으면 같은 사실이 두 줄이다).
+    # ⚠️ `text` 는 `*` 를 전부 지운 판이라 각주 마커가 없다 — 굵게(`**`)만
+    # 벗긴 원문에서 찾는다(형제 `cn_stock_flow` 와 같은 순서).
+    body = caption.replace("：", ":").replace("**", "")
+    hm = _RE_BLOCK.search(body)
+    notes = [n.strip() for n in _RE_NOTE.findall(body[hm.end():] if hm else "")
+             if n.strip() and not _RE_REV.search(n)]
     return {
         "stock_code": m.group("code"),
+        "trade_yoy": _f(_RE_TRADE_YOY, text),
+        "note": " / ".join(notes)[:300] or None,
         "stock_name": name,
         "month": f"20{yy:02d}-{mm:02d}",
         "price_yoy": _f(_RE_PRICE_YOY, text),
@@ -270,6 +294,7 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
   stock_name TEXT,
   price_yoy REAL, export_yoy REAL, export_yoy_3m REAL,
   export_value_musd REAL, export_mom REAL, item TEXT,
+  trade_yoy REAL, note TEXT,
   parse_ver INTEGER,
   corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
@@ -285,7 +310,8 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
 
 _COLS = ("stock_code", "month", "stock_name", "price_yoy", "export_yoy",
          "export_yoy_3m", "export_value_musd", "export_mom",
-         "item", "parse_ver") + _metrics.FIELDS + (
+         "item", "parse_ver", "trade_yoy",
+         "note") + _metrics.FIELDS + (
          "rev_quarter",
          "rev_value_krw_b", "rev_yoy", "chart_media", "source_message_id",
          "posted_at", "raw_text", "updated_at")
@@ -303,7 +329,8 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
             conn.execute("PRAGMA table_info(kr_stock_exports)")}
     added = dict(_metrics.FIELD_TYPES)
     added.update({"export_value_musd": "REAL", "export_mom": "REAL",
-                  "item": "TEXT", "parse_ver": "INTEGER"})
+                  "item": "TEXT", "parse_ver": "INTEGER",
+                  "trade_yoy": "REAL", "note": "TEXT"})
     for col, decl in added.items():
         if col not in have:
             conn.execute(
@@ -475,13 +502,14 @@ def _hist_table(hist: list[dict]) -> str:
         amt_s = f"${amt:,.1f}M" if amt is not None else "—"
         trs.append(f"<tr><td>{_html.escape(h['month'])}</td>"
                    f"<td>{amt_s}</td>"
-                   f"<td>{c('export_yoy')}</td><td>{c('export_mom')}</td>"
+                   f"<td>{c('export_yoy')}</td><td>{c('trade_yoy')}</td>"
+                   f"<td>{c('export_mom')}</td>"
                    f"<td>{c('export_yoy_3m')}</td>"
                    f"<td>{c('price_yoy')}</td></tr>")
     # 두 문법이 한 표에 섞이므로 **없는 칸은 '—'** 로 둔다(빈칸은 0 으로
     # 읽힌다, #43·#181). 어느 열이 어느 판에서 오는지는 카드가 말한다.
     return ('<table class="kr-htbl"><tr><th>월</th><th>수출액</th>'
-            '<th>수출액 YoY</th><th>MoM</th>'
+            '<th>수출액 YoY</th><th>무역액 YoY</th><th>MoM</th>'
             '<th>3M 수출액 YoY</th><th>단가 YoY</th></tr>'
             + "".join(trs) + "</table>")
 
@@ -512,6 +540,9 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
                        f'💵 수출액</span><span class="kr-mval">${amt:,.1f}M'
                        '</span></div>')
     summary.append(_metric("💰 수출액 YoY", r.get("export_yoy")))
+    # 방향을 밝히지 않은 판 — 원문 라벨 그대로(#34). 왜 '수출액' 이 아닌지는
+    # 카드가 한 줄로 말한다(#43).
+    summary.append(_metric("🔁 무역액 YoY", r.get("trade_yoy")))
     summary.append(_metric("📈 MoM", r.get("export_mom")))
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
@@ -539,6 +570,11 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
         lead.append(f"선행 방향 일치율 {r['lead_dir_hit']:.0f}%")
     if lead:
         summary.append(f'<div class="kr-lead">🔮 {" · ".join(lead)}</div>')
+    if r.get("trade_yoy") is not None and r.get("export_yoy") is None:
+        summary.append('<div class="kr-lead">ℹ️ 원문이 수출·수입을 밝히지 않은 '
+                       '판(`무역액`) — 원문 라벨 그대로 싣습니다</div>')
+    if r.get("note"):
+        summary.append(f'<div class="kr-lead">💬 {_html.escape(r["note"])}</div>')
     if r.get("rev_quarter") and r.get("rev_value_krw_b") is not None:
         summary.append(
             f'<div class="kr-rev">🧾 {_html.escape(r["rev_quarter"])} 매출 '

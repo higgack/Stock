@@ -126,7 +126,9 @@ class TestCorpMapLoader:
 
     def test_fresh_cache_is_used_without_network(self, corp):
         dc = corp["dc"]
-        _write_cache(corp["cache"], 1, [("00126380", "삼성전자", "005930")])
+        # 신선 = TTL 안(2026-11-12 TTL 30일 → 1일 — 옛 픽스처 '1일' 은 이제 만료다).
+        _write_cache(corp["cache"], dc._CORPCODE_TTL_DAYS / 2,
+                     [("00126380", "삼성전자", "005930")])
         cl = dc.DartClient(_KEY)
         assert cl.stock_code_to_corp_code("005930") == "00126380"
         assert corp["calls"] == 0
@@ -198,6 +200,8 @@ class TestCorpMapLoader:
             cl._corp_code_map = winner["stock_to_corp"]
             cl._name_map = {"sk하이닉스": []}
             cl._corp_map_provisional = False
+            # 실제 다시 받기는 새 목록의 수명도 세운다(2026-11-12 메모리 사본 만료).
+            cl._corp_map_expires_at = float("inf")
         t.join(5)
         assert not t.is_alive()
         assert corp["calls"] == calls0, "앞 스레드가 받은 뒤에 또 받으러 갔다"

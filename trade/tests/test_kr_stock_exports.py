@@ -281,3 +281,46 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Nov2026LayoutTests(unittest.TestCase):
+    """2026-11-12 사용자 캡처 — `A` 접두 코드 · 맨 `한국` · `무역액 YoY`.
+    옛 헤더가 이 셋을 못 받아 관련성 필터에서 드랍됐다."""
+
+    SDI = ("Samsung SDI Co., Ltd. (A006400)\n한국\n26년 10월 Update\n\n"
+           "무역액 YoY: +128.9%\n\n상관: 0.85\n방향 일치율: 92%\n\n"
+           "https://badonion.co.kr/trade/mapping")
+    VINA = ("비나텍 (A126340)\n한국\n26년 10월 Update\n\n단가 YoY: +35.0%\n"
+            "무역액 YoY: +61.6%\n\n선행상관: 0.89\n선행 방향 일치율: 75%\n\n"
+            "* BE보다 주가 좋음\n\nhttps://badonion.co.kr/trade/mapping")
+
+    def test_parses_both_captions(self):
+        a = krs.parse_kr_stock_export(self.SDI)
+        self.assertEqual((a["stock_code"], a["month"], a["trade_yoy"], a["corr"],
+                          a["dir_hit"]), ("006400", "2026-10", 128.9, 0.85, 92.0))
+        # 무역액은 수출액 칸에 들어가지 않는다(원문이 방향을 안 밝혔다).
+        self.assertIsNone(a["export_yoy"])
+        b = krs.parse_kr_stock_export(self.VINA)
+        self.assertEqual((b["stock_code"], b["price_yoy"], b["trade_yoy"],
+                          b["lead_corr"], b["lead_dir_hit"], b["note"]),
+                         ("126340", 35.0, 61.6, 0.89, 75.0, "BE보다 주가 좋음"))
+
+    def test_revenue_line_is_not_a_note(self):
+        self.assertIsNone(krs.parse_kr_stock_export(_JUL)["note"])
+
+    def test_import_header_is_still_rejected(self):
+        self.assertIsNone(krs.parse_kr_stock_export(
+            self.SDI.replace("\n한국\n", "\n한국 수입\n")))
+
+    def test_card_shows_trade_yoy_and_note(self):
+        with tempfile.TemporaryDirectory() as td:
+            conn = krs.open_kr_stock_db(Path(td) / "k.db")
+            for cap in (self.SDI, self.VINA):
+                self.assertTrue(krs.ingest(conn, cap, source_message_id=1,
+                                           posted_at="2026-11-12T04:31:00",
+                                           media_paths=["m/x.jpg"]))
+            html = krs.render_html(conn)
+            self.assertIn("무역액 YoY", html)
+            self.assertIn("▲+128.9%", html)
+            self.assertIn("BE보다 주가 좋음", html)
+            self.assertIn("수출·수입을 밝히지 않은", html)

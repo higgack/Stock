@@ -109,7 +109,10 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache"
 # Old v1 file (stock_code → corp_code only) is ignored and superseded;
 # anyone upgrading just re-downloads the corp_code.xml on first call.
 _CORPCODE_CACHE = _CACHE_DIR / "dart_corpcode_v2.json"
-_CORPCODE_TTL_DAYS = 30
+# 1일 — 신규 상장사가 **다음 날** 이름으로 검색되게(사용자 2026-11-12 "동원파츠가
+# 상장 3~4일이 지났는데 안 나온다"). 30일이면 새 상장사는 최대 한 달을 못 찾았다.
+# 목록은 zip 한 번(수 MB)이라 하루 한 번 받는 비용은 작다.
+_CORPCODE_TTL_DAYS = 1
 # 회사 목록 다운로드가 실패했을 때 다시 묻기까지(초) — 장애 중 요청마다 두드리지
 # 않고(#303), 그렇다고 재시작 전까지 영영 안 묻지도 않는다(#161).
 _CORPCODE_RETRY_SEC = 10 * 60
@@ -1006,7 +1009,11 @@ class DartClient:
 
     # ── corp_code mapping ───────────────────────────────────────────────
     def _corp_map_fresh(self) -> bool:
+        # ⚠️ 메모리에 한 번 올린 목록은 **프로세스 수명 내내** 쓰였다 — 상시
+        # 프로세스(대시보드)는 디스크 TTL 과 무관하게 재시작 전까지 새 상장사를
+        # 몰랐다. 메모리 사본도 디스크와 같은 수명(`_corp_map_expires_at`)을 갖는다.
         return (self._corp_code_map is not None and self._name_map is not None
+                and time.time() < getattr(self, "_corp_map_expires_at", float("inf"))
                 and not (self._corp_map_provisional
                          and time.time() >= self._corp_map_retry_at))
 
@@ -1043,6 +1050,8 @@ class DartClient:
                 if not isinstance(data, dict):
                     raise ValueError(f"dict 가 아니다({type(data).__name__})")
                 if age_days < _CORPCODE_TTL_DAYS:
+                    self._corp_map_expires_at = (
+                        _CORPCODE_CACHE.stat().st_mtime + _CORPCODE_TTL_DAYS * 86400)
                     self._corp_code_map = data.get("stock_to_corp", {})
                     self._name_map = data.get("name_to_entries", {})
                     self._stock_to_name = None
@@ -1073,6 +1082,9 @@ class DartClient:
             self._corp_map_provisional = retry
             if retry:
                 self._corp_map_retry_at = time.time() + _CORPCODE_RETRY_SEC
+            # 만료 사본을 쥐었을 때도 다음 시도는 재시도 간격 뒤다 — 수명을 옛
+            # 만료 시각에 두면 매 호출이 다시 받으러 간다(#303).
+            self._corp_map_expires_at = time.time() + _CORPCODE_RETRY_SEC
             return self._corp_code_map
 
         # Fetch fresh.
@@ -1124,6 +1136,7 @@ class DartClient:
         except Exception as exc:
             log.warning("dart: corp_code cache write failed: %s", exc)
 
+        self._corp_map_expires_at = time.time() + _CORPCODE_TTL_DAYS * 86400
         self._corp_code_map = stock_to_corp
         self._name_map = name_to_entries
         # 역방향 표(`stock_code_to_name`)는 처음 부를 때 한 번 만든다 — 목록을

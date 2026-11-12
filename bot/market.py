@@ -1549,7 +1549,9 @@ def get_market_config(ticker: str) -> MarketConfig:
 # 권위 있는 KRX 종목 목록(pykrx)으로 6자리 코드의 진짜 시장을 조회해 suffix
 # 를 자동 교정. 목록은 드물게 변하므로 7일 디스크 캐시. pykrx/creds 부재 시
 # graceful (원본 그대로 반환 — 절대 파이프라인 중단 안 함).
-_KR_CODES_CACHE_TTL = 7 * 24 * 3600  # 7d — 상장/폐지는 느리게 변함
+# 1일 — 신규 상장사의 .KS/.KQ 를 **다음 날** 맞게 붙이도록(사용자 2026-11-12 동원파츠).
+# 7일이면 코스닥 신규 상장이 그동안 `.KS` 로 남아 차트·시세가 빈다.
+_KR_CODES_CACHE_TTL = 24 * 3600
 
 
 def _correct_kr_suffix(base6: str, current_suffix: str,
