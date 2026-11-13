@@ -65,3 +65,27 @@ def test_contract_amount_header_opens_the_gate():
     from bot.dart_backlog import parse_backlog
     got = parse_backlog(_448280)
     assert got and got["value"] == 8_480 * 1e6, got   # 15,479 − 6,999 = 8,480
+
+
+# ── 452280 — 원문이 스스로 밝힌 미공시, 옛 어휘 밖의 두 꼴 ─────────────
+# `--ticker 452280` VM 출력 그대로. 25.3Q 는 위 `내용은 … 기밀` 갈래가 받는다.
+_452280_253 = ("다. 수주상황 수주잔고에 대한 내용은 당사 및 고객사의 영업과 관련된 기밀 등의 "
+               "사유로 기재를 생략합니다. 5. 위험관리 및 파생거래")
+
+
+def test_452280_q3_is_explicit_nondisclosure():
+    assert diagnose(_452280_253) == "명시적미공시"
+
+
+def test_hard_to_estimate_is_explicit_nondisclosure():
+    """`산정하기 곤란` 갈래만 맞는 예문(#91b)."""
+    t = "장래 매출로 확정된 수주금액 및 수주잔고를 합리적으로 산정하기 곤란합니다."
+    assert _NO_DATA_RE.search(t), t
+    assert diagnose(t) == "명시적미공시"
+
+
+def test_formal_not_written_is_explicit_nondisclosure():
+    """`기재하지 아니합니다` 갈래만 맞는 예문(#91b)."""
+    t = "이에 따라 수주잔고 금액은 별도로 기재하지 아니합니다."
+    assert _NO_DATA_RE.search(t), t
+    assert diagnose(t) == "명시적미공시"
