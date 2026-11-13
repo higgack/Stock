@@ -25,16 +25,20 @@ from pathlib import Path
 
 from bot import page_health as ph
 
-_VER = 1
+_VER = 2
 _KST = timezone(timedelta(hours=9))
 _FOSSIL_DAYS = 14
 _LIVE_CAP = 60
 _LIVE_TIMEOUT = 25
+_LIVE_RETRY_TIMEOUT = 90     # 첫 요청이 시간 초과면 한 번 더, 길게(캐시가 데워진 뒤)
 _LIVE_BUDGET = 300.0
 _SKIP_EXT = (".html", ".png", ".jpg", ".svg", ".css", ".js", ".json", ".csv",
              ".xml", ".ico", ".txt", ".pdf")
 _SKIP_HEAD = ("api/", "lookup", "media/", "static/")
 _HREF = re.compile(r'href="([^"#?]+)')
+# 스크립트가 런타임에 조립하는 링크(`'<a href="/' + href + '">'`)는 경로가 아니다 —
+# 2026-11-13 감사가 `/' + href +` 를 화면으로 읽어 404 를 ❌ 로 올렸다.
+_NOT_PATH = re.compile(r"[\s'\"+{}$<>\\`]")
 
 
 def _p(*a):
@@ -87,6 +91,8 @@ def live_routes(pages) -> list:
     out: list = []
     for _name, html in pages:
         for href in _HREF.findall(html):
+            if _NOT_PATH.search(href):
+                continue
             if re.match(r"[a-z][a-z0-9+.-]*:", href, re.I) or href.startswith("//"):
                 continue
             path = posixpath.normpath(href.lstrip("/"))
@@ -119,11 +125,11 @@ def _server_base() -> tuple:
     return base, ((user, pw) if user and pw else None)
 
 
-def _http_get(url: str, auth) -> tuple:
+def _http_get(url: str, auth, timeout: float = _LIVE_TIMEOUT) -> tuple:
     """(상태코드, 본문) — 못 닿으면 (None, 사유)."""
     import requests
     try:
-        r = requests.get(url, auth=auth, timeout=_LIVE_TIMEOUT)
+        r = requests.get(url, auth=auth, timeout=timeout)
         return r.status_code, r.text
     except Exception as exc:                                  # noqa: BLE001
         return None, type(exc).__name__
@@ -139,11 +145,25 @@ def live_pages(routes, *, get=None, base_auth=None, clock=time.monotonic) -> tup
             return pages, probs, f"시간 예산({_LIVE_BUDGET:.0f}초)에서 멈춤 — {len(routes) - i}개 못 읽음"
         code, body = get(base + r, auth)
         name = "/" + r
+        slow = code is None and "Timeout" in str(body)
+        if slow:
+            # 시간 초과는 '화면이 값을 못 보여 준다' 가 아니라 우리가 못 읽은 것이다(#165) —
+            # 길게 한 번 더 묻고, 열리면 그 화면을 읽고 느렸다는 사실만 따로 적는다.
+            code, body = get(base + r, auth, _LIVE_RETRY_TIMEOUT)
+            if code is not None and code < 400:
+                probs.append((name, {"kind": "warn", "where": "", "age_h": None,
+                                     "text": f"⚠ 화면이 {_LIVE_TIMEOUT}초 안에 안 열림"
+                                             f"(다시 물어 {_LIVE_RETRY_TIMEOUT}초 안에 열림)"}))
         if code is None:
-            if not pages and i == 0:
+            if not slow and not pages and i == 0:
                 return pages, probs, f"대시보드 서버에 못 닿음({body})"
-            probs.append((name, {"kind": "blocked", "where": "", "age_h": None,
-                                 "text": f"화면을 못 읽음({body})"}))
+            if slow:
+                probs.append((name, {"kind": "warn", "where": "", "age_h": None,
+                                     "text": f"⚠ 화면이 응답하지 않음({body} · {_LIVE_TIMEOUT}초·"
+                                             f"{_LIVE_RETRY_TIMEOUT}초 두 번) — 화면 상태 판정 불가"}))
+            else:
+                probs.append((name, {"kind": "blocked", "where": "", "age_h": None,
+                                     "text": f"화면을 못 읽음({body})"}))
         elif code in (401, 403):
             return pages, probs, f"대시보드 서버가 인증을 거절(HTTP {code})"
         elif code >= 400:
