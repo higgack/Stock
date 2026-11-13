@@ -221,7 +221,7 @@ _GENERIC_BAL = {"기말"}
 # 바로 뒤 `당반기말` 의 `기말` 에 문맥을 빌려 줘 '헤더에 … 열 없음' 으로 고칠 목록에 올랐다).
 _ORDER_CTX = re.compile(
     r"수주|총\s*도급|도급\s*(?:계약\s*)?(?:금?액|공사|잔액|현황)"
-    r"|(?<!생기는 )(?<!생기는)계약잔액")
+    r"|(?<!생기는\s)(?<!생기는)계약잔액")
 # 앞쪽 문맥은 **이 절 안에서만** — 같은 단계의 절 머리(`마.`)를 넘어 앞 절
 # 제목의 `수주` 를 빌리지 않는다(2026-10-16 376300 실측: `라. 수주계약 현황
 # … 해당사항 없습니다. 마. 공정가치평가 내역 … 당반기말` 의 `기말` 이 앞 절
@@ -1026,6 +1026,15 @@ MISS_NO_DOC = "원문미제공"
 # 파서 갭이 아니라 **원천 값**이라 개선 여지로 세면 다음 라운드가 고칠 수
 # 없는 것을 고치러 간다(#93·#260). 차트 각주에는 이 이름이 그대로 실린다.
 MISS_NON_POSITIVE = "잔고0이하"
+# 잔고 자리가 **재무제표 주석의 건설계약 변동표**에만 있고 합계 줄이 없다 — 연결 범위의
+# 건설계약분이지 회사 전체 수주잔고가 아니다(2026-11-13 021240 25.4Q 실측 `33. 건설계약
+# (연결) 수주 계약 변동 내역 … 공사계약 당기초 158,008,926 … 당기말 249,956,797`). 사용자
+# 결정 "받지 않는 쪽" — 받으면 사업보고서 분기에만 부분 잔고 막대가 서서 회사 잔고로
+# 읽힌다(#34). 차트 각주에 이 이름이 그대로 실린다.
+MISS_NOTE_PARTIAL = "부분공시(건설계약 주석만)"
+# 주석 변동표의 머리 — 잔고 자리가 이 머리 아래(_NOTE_HEAD_WINDOW 안)에 있으면 주석 자리다.
+_NOTE_HEAD_RE = re.compile(r"수주\s*계약\s*변동\s*내역")
+_NOTE_HEAD_WINDOW = 600
 
 # 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
 # SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
@@ -1147,6 +1156,10 @@ def diagnose(text: str) -> str:
     # '합계 있음' 을 만들어 사유와 상세가 또 갈렸다(배포 전 2차 독립 리뷰 L3).
     gated = [p for p in with_unit if _header_gated(text, p)]
     if not any(_total_row(text, p)[1] for p in (gated or with_unit)):
+        # 모든 자리가 주석 변동표 아래면 파서 갭이 아니라 부분 공시다. 한 자리라도
+        # 본문 쪽이면 그게 진짜 갭일 수 있어 개선 여지로 남긴다(#385).
+        if _note_only(text):
+            return MISS_NOTE_PARTIAL
         return "합계없음"
     # 항등식은 맞는데 잔고가 0 이하(영풍 실측) — 원천 값이지 파서 갭이 아니다.
     # 빈 표와 섞여도 같은 결론이지만, **다른 자리가 하나라도** 있으면 그건
@@ -1157,6 +1170,26 @@ def diagnose(text: str) -> str:
     if "nonpos" in verdicts and all(verdicts):
         return MISS_NON_POSITIVE
     return "형식미지원"
+
+
+def _note_only(text: str) -> bool:
+    """잔고 자리가 **전부** 건설계약 주석 변동표 아래이고 라벨이 범용 `기말` 뿐인가.
+
+    · 판정은 관문·단위와 무관하게 **모든** 잔고 자리로 한다 — 관문을 지난 주석 자리만
+      보면 관문을 못 지났거나 단위가 없는 본문 표의 진짜 갭이 숨는다(독립 리뷰 H1, #385).
+    · `수주잔고` 라벨이 하나라도 있으면 아니다 — `_parse_xbrl` 은 `수주잔고, 기말` 주석을 이미
+      회사 잔고로 받는다. `수주잔고, 당기말` 같은 꼴은 그 파서의 갭이지 부분 공시가 아니다(H2).
+    · 주석 머리 뒤에 장 번호(`34.`)가 오면 다른 표다 — 창을 거기서 끊는다(M1).
+    """
+    ms = _balance_matches(text)
+    if not ms or any(m.group(0) not in _GENERIC_BAL for m in ms):
+        return False
+    for m in ms:
+        before = text[max(0, m.start() - _NOTE_HEAD_WINDOW):m.start()]
+        heads = list(_NOTE_HEAD_RE.finditer(before))
+        if not heads or _CHAPTER_HEAD.search(before, heads[-1].end()):
+            return False
+    return True
 
 
 def _total_row(text: str, at: int):
@@ -1718,7 +1751,8 @@ _LEDGER_LOCK = threading.RLock()
 
 # 원천에 **낼 값이 없다** — 원장에 남기지 않는다(`_log_miss`). 남기면 보고서가
 # 고칠 수 없는 것을 '고칠 것' 으로 센다(#93·#260).
-SOURCE_HAS_NO_VALUE = ("미공시", "명시적미공시", MISS_NON_POSITIVE)
+# 회사 전체 잔고가 아닌 부분 공시(MISS_NOTE_PARTIAL)도 같다 — 파서로 고칠 것이 없다.
+SOURCE_HAS_NO_VALUE = ("미공시", "명시적미공시", MISS_NON_POSITIVE, MISS_NOTE_PARTIAL)
 # 파서로는 못 고치는 사유 — 원천에 값이 없거나(미공시류) 원문을 못 받았거나
 # 원문 경로가 아니다. **여집합이 개선 여지**라, `diagnose` 가 새 관문 사유를
 # 내면 자동으로 '고칠 것' 으로 분류된다(#24 목록을 우리가 들면 새 항목을 못 잡는다).
