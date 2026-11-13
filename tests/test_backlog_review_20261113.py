@@ -5,6 +5,8 @@
 것이 없으므로 `명시적미공시` 다. 단 그 선언은 한 부문만 말할 수 있어, 잔고 표
 머리행이 있는 문서에서는 개선 여지로 남긴다(#385).
 """
+import pytest
+
 from bot.dart_backlog import _NO_DATA_RE, _NO_TABLE_DECL_RE, diagnose
 
 # 보고서 발췌 그대로(437730 2026/11012).
@@ -89,3 +91,27 @@ def test_formal_not_written_is_explicit_nondisclosure():
     t = "이에 따라 수주잔고 금액은 별도로 기재하지 아니합니다."
     assert _NO_DATA_RE.search(t), t
     assert diagnose(t) == "명시적미공시"
+
+
+# ── 021240 — K-IFRS 1115 계약잔액 주석이 `기말` 에 문맥을 빌려 줬다 ────────
+# `--ticker 021240` VM 출력 그대로(26.2Q). 수취채권·계약자산·계약부채 표라 잔고가 아니다.
+_021240 = ("기업회계기준서 제1116호에 해당하는 리스와 관련된 수익입니다. 고객과의 계약에서 생기는 "
+           "계약잔액 및 변동에 대한 공시 당반기말 (단위 : 천원) 공시금액 수취채권 179,464,001 "
+           "계약자산 11,796,539 유동 계약부채 224,380,883 비유동 계약부채 65,061,687 환불부채 "
+           "216,003,691 계약부채에 대한 설명 초과청구공사, 선수금, 선수수익 등이 포함되어 있으며")
+
+
+@pytest.mark.parametrize("gap", [" ", ""])
+def test_contract_balance_note_title_is_not_order_context(gap):
+    """DART 평문은 띄어쓰기가 붙기도 한다 — 두 꼴 다 문맥이 아니다(#91c)."""
+    from bot.dart_backlog import _balance_matches
+    t = _021240.replace("생기는 계약잔액", "생기는" + gap + "계약잔액")
+    assert _balance_matches(t) == []
+    assert diagnose(t) == "미공시"
+
+
+def test_contract_balance_word_still_lends_context_elsewhere():
+    """반대 증거(#25) — 도급표의 `계약잔액` 은 여전히 문맥이다."""
+    from bot.dart_backlog import _balance_matches
+    t = "구 분 계약금액 계약잔액 (단위 : 백만원) 구분 기초 증가 기말 A 100 50 120"
+    assert [m.group(0) for m in _balance_matches(t)] == ["기말"]
