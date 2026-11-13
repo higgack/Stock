@@ -1,0 +1,91 @@
+"""2026-11-13 격주 수주잔고 보고서 — 원문이 스스로 밝힌 미공시 2건.
+
+437730 · 043260 은 '헤더에 … 열 없음' 으로 고칠 목록에 올랐지만, 발췌는 원문이
+수주잔고를 '비공개 사항' 이라 하거나 '발생하지 않는다' 고 밝힌다. 파서로 고칠
+것이 없으므로 `명시적미공시` 다. 단 그 선언은 한 부문만 말할 수 있어, 잔고 표
+머리행이 있는 문서에서는 개선 여지로 남긴다(#385).
+"""
+from bot.dart_backlog import _NO_DATA_RE, _NO_TABLE_DECL_RE, diagnose
+
+# 보고서 발췌 그대로(437730 2026/11012).
+_437730 = ("합 계 국 내 29,514 74,330 77,797 수 출 10,246 20,712 22,651 합 계 39,760 "
+           "95,042 100,448 (5) 수주현황 수주잔고에 대한 상세 내용은 거래 상대방과의 "
+           "영업과 관련된 기밀 또는 고객사의 신규 프로젝트 등 비공개 사항으로 관련 "
+           "내용을 기재하지 않았습니다.")
+# 보고서 발췌 그대로(043260 2026/11012).
+_043260 = ("마. 수주상황 ① 콘덴서 및 파워: 가전·산업장비 OEM 고객 대상 반복 공급(Run-rate) "
+           "거래 및 단기 발주(Forecast 기반) 거래로 운영되어, 장기매출계약 또는 장기용역 "
+           "제공계약 형태의 수주잔고가 발생하지 않습니다. ③ 건설: 건설사 발주 기반의 단기 "
+           "납품 거래로, 수주~납품 리드타임이 짧아 별도 수주잔고 관리 대상이 아닙니다.")
+# 같은 문서에 관문을 지나는 잔고 표가 있으면 선언은 한 부문의 것일 수 있다.
+_TABLE = (" (단위 : 백만원) 구분 수주일자 납기 수주총액 기납품액 수주잔고 "
+          "A사 2026.01 2027.01 1,000 400")
+
+
+def test_declarations_are_soft_only():
+    """이 어구는 표가 없을 때만 믿는다 — 강한 정규식에 들어가면 안 된다."""
+    for t in (_437730, _043260):
+        assert _NO_TABLE_DECL_RE.search(t), t
+        assert not _NO_DATA_RE.search(t), t
+
+
+def test_no_table_declarations_are_explicit_nondisclosure():
+    assert diagnose(_437730) == "명시적미공시"
+    assert diagnose(_043260) == "명시적미공시"
+
+
+def test_each_branch_alone():
+    """갈래마다 그 갈래만 맞는 예문(#91b)."""
+    assert diagnose("수주잔고가 발생하지 않습니다.") == "명시적미공시"
+    assert diagnose("별도 수주잔고 관리 대상이 아닙니다.") == "명시적미공시"
+    assert diagnose("수주잔고의 내용은 비공개 사항입니다.") == "명시적미공시"
+
+
+def test_gated_table_keeps_the_gap():
+    """반대 증거 — 관문을 지난 잔고 표가 있으면 선언이 있어도 개선 여지다."""
+    for decl in (_437730, _043260):
+        assert diagnose(decl + _TABLE) != "명시적미공시", decl
+
+
+def test_footnote_about_other_things_is_not_declaration():
+    assert not _NO_TABLE_DECL_RE.search("수주잔고 산정 시 발주처명은 비공개입니다.")
+
+
+# ── 448280 — 머리열이 `수주총액` 이 아니라 `수주금액` ────────────────────
+# `--ticker 448280` VM 출력 그대로(26.2Q). 수량·금액 쌍 6칸이라 금액만 쓴다.
+_448280 = ("라. 수주상황 [탄소배출권 이전계약 현황] (기준일: 2026년 06월 30일) (단위 : 톤, 백만원) "
+           "사업유치국 사업유형 품목 수주일자 납 기 수주금액 기납품액 수주잔고 비고 수 량 금 액 "
+           "수 량 금 액 수 량 금 액 미얀마 쿡스토브 i-KOC 2018-09-27 i-KOC 이전일 150,000 1,698 "
+           "100,000 1,132 50,000 566 - 미얀마 쿡스토브 i-KOC 2019-04-30 i-KOC 이전일 30,000 363 "
+           "19,565 237 10,435 126 - 합계 2,825,303 15,479 1,078,335 6,999 1,746,968 8,480 - "
+           "마. 판매경로")
+
+
+def test_contract_amount_header_opens_the_gate():
+    from bot.dart_backlog import parse_backlog
+    got = parse_backlog(_448280)
+    assert got and got["value"] == 8_480 * 1e6, got   # 15,479 − 6,999 = 8,480
+
+
+# ── 452280 — 원문이 스스로 밝힌 미공시, 옛 어휘 밖의 두 꼴 ─────────────
+# `--ticker 452280` VM 출력 그대로. 25.3Q 는 위 `내용은 … 기밀` 갈래가 받는다.
+_452280_253 = ("다. 수주상황 수주잔고에 대한 내용은 당사 및 고객사의 영업과 관련된 기밀 등의 "
+               "사유로 기재를 생략합니다. 5. 위험관리 및 파생거래")
+
+
+def test_452280_q3_is_explicit_nondisclosure():
+    assert diagnose(_452280_253) == "명시적미공시"
+
+
+def test_hard_to_estimate_is_explicit_nondisclosure():
+    """`산정하기 곤란` 갈래만 맞는 예문(#91b)."""
+    t = "장래 매출로 확정된 수주금액 및 수주잔고를 합리적으로 산정하기 곤란합니다."
+    assert _NO_DATA_RE.search(t), t
+    assert diagnose(t) == "명시적미공시"
+
+
+def test_formal_not_written_is_explicit_nondisclosure():
+    """`기재하지 아니합니다` 갈래만 맞는 예문(#91b)."""
+    t = "이에 따라 수주잔고 금액은 별도로 기재하지 아니합니다."
+    assert _NO_DATA_RE.search(t), t
+    assert diagnose(t) == "명시적미공시"
