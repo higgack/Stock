@@ -49,3 +49,19 @@ def test_gated_table_keeps_the_gap():
 
 def test_footnote_about_other_things_is_not_declaration():
     assert not _NO_TABLE_DECL_RE.search("수주잔고 산정 시 발주처명은 비공개입니다.")
+
+
+# ── 448280 — 머리열이 `수주총액` 이 아니라 `수주금액` ────────────────────
+# `--ticker 448280` VM 출력 그대로(26.2Q). 수량·금액 쌍 6칸이라 금액만 쓴다.
+_448280 = ("라. 수주상황 [탄소배출권 이전계약 현황] (기준일: 2026년 06월 30일) (단위 : 톤, 백만원) "
+           "사업유치국 사업유형 품목 수주일자 납 기 수주금액 기납품액 수주잔고 비고 수 량 금 액 "
+           "수 량 금 액 수 량 금 액 미얀마 쿡스토브 i-KOC 2018-09-27 i-KOC 이전일 150,000 1,698 "
+           "100,000 1,132 50,000 566 - 미얀마 쿡스토브 i-KOC 2019-04-30 i-KOC 이전일 30,000 363 "
+           "19,565 237 10,435 126 - 합계 2,825,303 15,479 1,078,335 6,999 1,746,968 8,480 - "
+           "마. 판매경로")
+
+
+def test_contract_amount_header_opens_the_gate():
+    from bot.dart_backlog import parse_backlog
+    got = parse_backlog(_448280)
+    assert got and got["value"] == 8_480 * 1e6, got   # 15,479 − 6,999 = 8,480
