@@ -97,17 +97,44 @@ def test_live_routes_come_from_the_pages_own_links():
 
 
 def test_live_pages_reads_through_the_server_and_names_broken_ones():
-    def get(url, auth):
+    """2026-11-13 계약 변경(#222): 시간 초과는 'blocked'(값을 못 보여 주는 화면)가 아니다 —
+    우리가 못 읽은 것이라 길게 한 번 더 묻고, 그래도 안 열리면 판정 불가 경고로 적는다.
+    옛 판은 `/earnings`·`/earnings_week` 의 ReadTimeout 을 이틀째 ❌ 로 결산에 올렸다."""
+    calls = []
+
+    def get(url, auth, timeout=None):
+        calls.append((url.rsplit("/", 1)[-1], timeout))
         if url.endswith("/theme"):
             return 200, _PAGE
         if url.endswith("/boom"):
             return 500, "x"
+        if url.endswith("/warm") and timeout:
+            return 200, _PAGE
         return None, "ReadTimeout"
-    pages, probs, why = pha.live_pages(["theme", "boom", "slow"], get=get,
+    pages, probs, why = pha.live_pages(["theme", "boom", "slow", "warm"], get=get,
                                        base_auth=("http://h/", None))
-    assert [n for n, _ in pages] == ["/theme"] and why == ""
-    assert [(n, f["kind"]) for n, f in probs] == [("/boom", "blocked"), ("/slow", "blocked")]
+    assert [n for n, _ in pages] == ["/theme", "/warm"] and why == ""
+    assert [(n, f["kind"]) for n, f in probs] == [
+        ("/boom", "blocked"), ("/slow", "warn"), ("/warm", "warn")]
     assert "HTTP 500" in probs[0][1]["text"]
+    assert "판정 불가" in probs[1][1]["text"] and "값을" not in probs[1][1]["text"]
+    assert "안에 열림" in probs[2][1]["text"]
+    assert ("slow", pha._LIVE_RETRY_TIMEOUT) in calls and ("boom", pha._LIVE_RETRY_TIMEOUT) not in calls
+    # 판정까지: 시간 초과는 이틀째에도 ❌ 가 아니다
+    assert ph.judge(probs[1][1], 2)[0] != "fail"
+
+
+def test_first_route_timeout_is_not_called_unreachable():
+    pages, probs, why = pha.live_pages(["a", "b"], get=lambda u, a, t=None: (None, "ReadTimeout"),
+                                       base_auth=("http://h/", None))
+    assert why == "" and [f["kind"] for _, f in probs] == ["warn", "warn"]
+
+
+def test_script_built_links_are_not_routes():
+    """2026-11-13 감사 ❌: 인라인 JS 의 `'<a href="/' + href + '">'` 를 경로로 읽어 404."""
+    html = ('<a href="theme">t</a><script>x=\'<a href="/\' + href + \'">\';'
+            'y=\'<a href="/\'+esc(r.href)+\'">\';z=\'<a href="usindustry">\'</script>')
+    assert pha.live_routes([("market.html", html)]) == ["theme", "usindustry"]
 
 
 def test_unreachable_or_locked_server_is_said_once_not_per_page():
