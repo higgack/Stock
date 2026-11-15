@@ -51,6 +51,7 @@ _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.m
 from bot import naver_diag as _naver_diag                   # noqa: E402
 from bot import usage_tracker as _ut                        # noqa: E402
 from bot.krx_code import is_krx_code  # KRX 단축코드 단일 판정(영문 혼합 0015G0 포함)
+from bot.page_health import static_region as _ph_static  # 고정 구역 표식(화면 감사가 건너뜀)
 _KRW_PER_USD = _ut.KRW_PER_USD
 
 # ⚠️ 이건 표시 환율과 **다른 것**이다: 레거시 `cost_krw` 레코드가 기록될 때
@@ -1811,10 +1812,12 @@ def _render_errors_page(
                 # (019680/014680/039030 in their 2026-05-17 view).
                 kr_name = _ticker_kr_name(ticker)
                 label = kr_name or ticker
-                items_html = "".join(
+                # 과거 분석의 기록 라벨이다 — 상태 경고가 아니다(화면 감사가
+                # 기록을 '며칠째 그대로' 로 세지 않게 밝힌다, bot.page_health).
+                items_html = _ph_static("".join(
                     f'<div class="item">⚠️ {_html.escape(i)}</div>'
                     for i in issues
-                )
+                ))
                 cards_html.append(f"""
                 <div class="issue-card">
                   <div class="issue-head">
@@ -13306,7 +13309,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         </summary>
         <div class="card-body">
           {img_html}
-          <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
+          <div class="analysis-sec"><div class="analysis-b" data-section="brief">{_ph_static(body)}</div></div>
         </div>
       </details>
     """)
@@ -13472,7 +13475,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
     </summary>
     <div class="card-body">
       {img_html}
-      <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
+      <div class="analysis-sec"><div class="analysis-b" data-section="brief">{_ph_static(body)}</div></div>
     </div>
   </details>
 """)
@@ -14695,7 +14698,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
       <b>4) 활용</b> — 대형 고객사(예: SK하이닉스)의 호재·실적 → <b>그 공급사들이 수혜 후보</b>. 동종 회사로 peer 비교, 취급/수출품목으로 사업 파악.<br>
       <b>5) 정리</b> — "관계 N건" 목록의 각 행 끝 <b>🗑️</b> = 잘못된 매칭 숨김(영구). 이후 페이지·텔레그램·분석 컨텍스트 모두에서 제외됩니다.<br>
       <b>6) 신선도</b> — 자동발굴(kg) 관계는 학습 후 오래(기본 6개월) 재확인이 안 되면 <b>🟡 오래됨</b>으로 흐려지고 <b>분석 컨텍스트에서 제외</b>됩니다. 1년 넘으면 <b>⚪ 보관</b>으로 목록에서 숨겨집니다(삭제 아님 — 상단 카운트로만 표기). 운영자가 <a href="blog.html">관계후보에서 승인</a>한 관계와 관세청 데이터는 노후화 면제(항상 표시).<br>
-      <b>⚠️ 주의</b> — 자동발굴(LLM·관세청)이라 일부 부정확할 수 있습니다. <b>참고 신호</b>로만 쓰고 확정 사실로 단정하지 마세요. 후보 검토·반영은 <a href="blog.html">📝 블로그 → 🔗 관계후보</a>에서.
+      {_ph_static('<b>⚠️ 주의</b> — 자동발굴(LLM·관세청)이라 일부 부정확할 수 있습니다. <b>참고 신호</b>로만 쓰고 확정 사실로 단정하지 마세요. 후보 검토·반영은 <a href="blog.html">📝 블로그 → 🔗 관계후보</a>에서.')}
     </div>
   </details>
   <div class="stats">
@@ -18085,7 +18088,14 @@ def _research_window_html(note: dict | None) -> str:
     (독립 리뷰 2026-09-11 H1 · #43·#52·#45 총계와 모집단).
     """
     w = (note or {}).get("window") or ""
-    return f'<div class="sm-note">⚠️ {_html.escape(w)}</div>' if w else ""
+    if not w:
+        return ""
+    # 수율 문구가 스스로 정보라고 밝히면(값이 원천에 없는 정상 수렴) ⚠️ 를 달지
+    # 않는다 — 창 절단 같은 진짜 경고가 앞에 붙으면 그대로 ⚠️ 다(2026-11-15).
+    from bot.naver_research_client import INFO_MARK as _im
+    if w.startswith(_im):
+        return f'<div class="sm-note">{_html.escape(w)}</div>'
+    return f'<div class="sm-note">⚠️ {_html.escape(w)}</div>'
 
 
 def _render_research_kr_table(research: list, note: dict | None = None) -> str:

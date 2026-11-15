@@ -18,7 +18,15 @@
 
 ⚠️ 못 보는 축(#274): 경고 문구 없이 값이 틀린 화면 · 가이드(`<details class=
 "…guide">`) 안의 문구(일부러 뺀다 — 고정 설명문이 사흘 뒤 알림이 된다) · 스크립트가
-런타임에 그리는 문구.
+런타임에 그리는 문구 · `static_region()` 으로 감싼 구역(아래).
+
+'상태가 아니다' 는 **그 문구를 쓰는 쪽이 밝힌다**(#86 — 2026-11-15 첫 주 결산
+❌ 17건 중 15건이 기록·본문·면책문이었다: 오류 카탈로그의 과거 기록 라벨,
+Daily Byte 브리프 본문의 소제목, 밸류체인 면책문, 크립토 카드의 설계 설명).
+고정된 글은 처음부터 끝까지 '며칠째 그대로' 라 나흘째 알림이 된다 — 감사가
+낱말로 추측하면(#146) 진짜 상태 경고까지 지우므로, 생성부가 `static_region()`
+으로 감싼 구역만 뺀다. 새 화면의 고정 ⚠️ 는 감싸기 전까지 알림이 된다(시끄러운
+쪽으로 틀린다 — 조용히 빠지지 않는다, #24).
 """
 from __future__ import annotations
 
@@ -32,8 +40,18 @@ REPEAT_DAYS = 7
 MAX_CHUNK = 240            # 이보다 긴 ⚠️ 문단은 설명문이다(상태 한 줄이 아니다)
 STATE_KEEP_DAYS = 2        # 하루 걸러 사라졌다 돌아온 문구는 같은 사건으로 센다
 
+STATIC_OPEN = "<!--ph:static-->"
+STATIC_CLOSE = "<!--/ph:static-->"
+
+
+def static_region(html: str) -> str:
+    """생성부용 — 이 구역의 ⚠️ 는 상태가 아니라 기록·본문·고정 설명이라고 밝힌다."""
+    return f"{STATIC_OPEN}{html}{STATIC_CLOSE}"
+
+
 _DROP_BLOCK = re.compile(
     r"<(script|style)\b.*?</\1>"
+    r"|" + re.escape(STATIC_OPEN) + r".*?" + re.escape(STATIC_CLOSE) +
     r"|<details\b[^>]*class=\"[^\"]*guide[^\"]*\".*?</details>",
     re.S | re.I)
 _BLOCK_TAG = re.compile(
@@ -48,7 +66,7 @@ _UNIT_H = {"일": 24.0, "시간": 1.0, "분": 1.0 / 60}
 
 
 def visible_chunks(html: str) -> list:
-    """HTML → 블록 단위 보이는 글 조각(순수). 스크립트·스타일·가이드는 뺀다."""
+    """HTML → 블록 단위 보이는 글 조각(순수). 스크립트·스타일·가이드·고정 구역은 뺀다."""
     s = _DROP_BLOCK.sub("\n", html or "")
     s = _HEAD_TAG.sub("\n" + HEAD_MARK, s)
     s = _BLOCK_TAG.sub("\n", s)

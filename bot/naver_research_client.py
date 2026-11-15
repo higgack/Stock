@@ -1072,6 +1072,9 @@ def _detail_tag(scope: dict) -> str:
     return "" if scope.get("fetch_detail", True) else "_nodetail"
 
 
+INFO_MARK = "ℹ️"   # 이 접두로 시작하는 수율 문구는 정보(정상 수렴)다 — 경고 아님
+
+
 def detail_yield_note(rows: list, *, budget_left: int = 0,
                       fetched: int = 0, from_cache: int = 0) -> str:
     """목표가·투자의견 칸이 빈 이유(순수). "" = 할 말 없음.
@@ -1109,7 +1112,11 @@ def detail_yield_note(rows: list, *, budget_left: int = 0,
     if len(graded) < len(rows):
         # 예산은 남았는데 못 채운 행이 있다 = 그 행들은 **상세가 값을 안 준 것**
         # 이다(예산에서 빠진 것과 처방이 다르다, #82). 그 사실을 말한다(#43).
-        return (f"목표가·투자의견 {len(graded)}/{len(rows)}건 — 나머지는 상세에 "
+        # ℹ️ 로 시작한다 — 결함이 아니라 수렴한 정상 상태라(값이 원천에 없다),
+        # 화면이 ⚠️ 를 달면 원장이 바뀔 때까지 매일 '며칠째 그대로' 가 되어
+        # 화면 감사가 고칠 것 없는 ❌ 를 올렸다(2026-11-15, #260). 접두는
+        # `_research_window_html` 이 읽는다(아는 쪽이 등급을 말한다, #86).
+        return (f"{INFO_MARK} 목표가·투자의견 {len(graded)}/{len(rows)}건 — 나머지는 상세에 "
                 f"목표가·투자의견이 없는 리포트입니다"
                 + (f" · 경로 {_via_note}" if _via_note else ""))
     # ⚠️ **경로가 갈렸을 때만** 말한다(독립 리뷰 2026-09-12 Medium).

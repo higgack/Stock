@@ -23,6 +23,15 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from bot.page_health import static_region as _ph_static
+
+# 크립토 카드의 설계 설명 — 데이터와 무관하게 늘 같은 글이다(상태 경고가 아니라
+# 화면 감사가 '며칠째 그대로' 로 세지 않게 고정 구역으로 밝힌다, bot.page_health).
+_CRYPTO_DESIGN_NOTE = """⚠️ 지금 점수에 실제로 반영되는 건 <b>ATH 대비 낙폭 한 가지</b>입니다 — 설계상 6개
+컴포넌트(SMA추세·도미넌스·30일모멘텀 등)가 있지만 데이터소스가 아직 안 붙어 생략되고,
+확보된 것만 평균 내므로 결과가 낙폭 그 자체가 됩니다. <b>BTC 가격은 점수에 안 들어갑니다</b>
+(추세 컴포넌트가 SMA50·SMA200 을 함께 요구)."""
+
 log = logging.getLogger(__name__)
 
 # 규칙 10a — 모든 시각은 KST 명시계산(서버 로컬타임 의존 금지).
@@ -1949,10 +1958,7 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
 <div class="sub" style="margin-top:2px">= 100 + (ATH 대비 {_num1(crypto.get("ath_change_pct"))})</div></div>
 </div>
 <div class="note">CoinGecko 무료 공개 API. 100=risk-on · 0=risk-off.
-⚠️ 지금 점수에 실제로 반영되는 건 <b>ATH 대비 낙폭 한 가지</b>입니다 — 설계상 6개
-컴포넌트(SMA추세·도미넌스·30일모멘텀 등)가 있지만 데이터소스가 아직 안 붙어 생략되고,
-확보된 것만 평균 내므로 결과가 낙폭 그 자체가 됩니다. <b>BTC 가격은 점수에 안 들어갑니다</b>
-(추세 컴포넌트가 SMA50·SMA200 을 함께 요구). {_asof_note(crypto.get("as_of"))}</div></div>"""
+{_ph_static(_CRYPTO_DESIGN_NOTE)} {_asof_note(crypto.get("as_of"))}</div></div>"""
 
     cot = data.get("cot", {})
     cot_card = ""
