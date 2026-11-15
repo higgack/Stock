@@ -167,7 +167,7 @@ def kst_span(first: float, last: float) -> str:
     return f"{lo} KST" if lo == hi else f"{lo} ~ {hi} KST"
 
 
-def unpriced_notes(sp: dict, window: str) -> list[str]:
+def unpriced_notes(sp: dict, window: str, *, now: float | None = None) -> list[str]:
     """₩0 집계 경고를 **한 곳에서** 만든다 — 비용카드·`/usage` 공용(#38).
 
     문구를 두 화면에 각각 적어 두면 한쪽만 고쳐진다. 이 세션에서 실제로
@@ -183,10 +183,21 @@ def unpriced_notes(sp: dict, window: str) -> list[str]:
         out.append(f"⚠️ 단가 미등재 {sp['missing_rate']}콜({window}) — "
                    "실제 비용은 더 큼")
     if sp.get("no_model"):
+        # ⚠️ 마지막 미기록이 `--check` ⑥ 의 '최근' 창(_RECENT_DAYS) 밖이면 지금 나는
+        #    일이 아니라 원장에 남은 **과거분**이다 — 원장이 굴러갈 때까지 매일 ⚠️ 로
+        #    그대로 떠 화면 감사가 '며칠째 그대로' ❌ 로 올렸다(2026-11-15, 고칠 것
+        #    없는 ❌ 는 진짜 ❌ 를 가린다 #260). 사실(콜 수·구간·과소 집계)은 그대로
+        #    적고 등급만 ℹ️ 로 — 판정은 ⑥ 과 같은 창(#38). 시각이 없으면 최근인지
+        #    못 재므로 ⚠️ 를 둔다(#54).
+        _last = _num(sp.get("no_model_last"))
+        _now = time.time() if now is None else now
+        _past = bool(_last) and _last < _now - _RECENT_DAYS * 86400
         out.append(
-            f"⚠️ 모델 미기록 {sp['no_model']}콜({window}) · "
+            ("ℹ️" if _past else "⚠️")
+            + f" 모델 미기록 {sp['no_model']}콜({window}) · "
             f"{kst_span(sp.get('no_model_first'), sp.get('no_model_last'))}"
-            " — 실제 비용은 더 큼 · 기록 경로 문제(요율표 아님)")
+            " — 실제 비용은 더 큼 · 기록 경로 문제(요율표 아님)"
+            + (f" · 최근 {_RECENT_DAYS}일엔 없음(과거분)" if _past else ""))
     return out
 
 
