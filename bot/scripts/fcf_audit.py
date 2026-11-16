@@ -252,6 +252,25 @@ def _yf_rows(snap: dict, kind: str) -> list[tuple[str, dict]]:
                   key=lambda x: x[0])
 
 
+def no_cf_reason(snap: dict | None) -> str | None:
+    """현금흐름표 행이 0일 때 **스냅샷 자체는 받았나**를 가른다.
+
+    시세(현재가)가 안 왔으면 수집이 실패한 것이라 None(= ❌ 갈래).
+    시세가 왔으면 원천이 표를 안 준 것이므로 그 사실을 문장으로 돌려준다.
+    """
+    snap = snap or {}
+    price = snap.get("current_price")
+    if not price:
+        return None
+    fins = snap.get("financials") or {}
+    ftd = snap.get("first_trade_date") or ""
+    px = f"{price:,}" if isinstance(price, (int, float)) else str(price)
+    fact = f"스냅샷은 받음(현재가 {px}" + (f" · 상장 {ftd}" if ftd else "") + ")"
+    if not fins:
+        return f"원천(야후)이 재무제표를 아직 주지 않음 — {fact} · 신규 상장이면 첫 정기보고서 전일 수 있다"
+    return f"손익·재무상태표는 왔는데 현금흐름표만 원천에 없음 — {fact}"
+
+
 def mark_finding(tk: str, line: str) -> str:
     """결함(❌) 줄에 종목을 붙인다. 이미 있거나 결함이 아니면 그대로."""
     if "❌" not in line or tk in line:
@@ -356,10 +375,18 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     # ⚠️ **대조 0건은 통과가 아니다**(#54). 2026-08-22 실측: VM 에서 venv
     # 밖 인터프리터로 돌려 yfinance 가 없자 스냅샷이 통째로 비었는데
     # `① 재계산 ✅ 전 기간 일치` 가 찍혔다 — 감사가 거짓 안심을 준 것.
-    if not yq and not ya:
+    if not yq and not ya and no_cf_reason(snap) is None:
         say("     ① 재계산 ❌ 대조 0건 — 현금흐름표를 못 받았다"
             "(스냅샷 실패·원천 차단·의존성 누락 중 하나)")
         flag(False, "①재계산(yf)")
+    elif not yq and not ya:
+        # ⚠️ 스냅샷은 받았는데(시세가 온다) 원천이 현금흐름표를 안 준 경우다
+        # — 신규 상장사는 첫 정기보고서 전이라 원천에 표 자체가 없다
+        # (2026-11-16 결산 ❌ 0162D0.KQ 동원파츠). 우리가 고칠 것이 없는
+        # ❌ 가 매일 오면 진짜 ❌ 를 가리므로(#260) 판정 불가로 두고
+        # 사실(시세·상장일)을 같은 줄에 싣는다(#356). 수집 실패는 위 ❌ 그대로.
+        say(f"     ① 재계산 ❓ 대조 대상 없음 — {no_cf_reason(snap)}")
+        flag(None, "①재계산(yf)")
     elif not _re_n:
         # ⚠️ 행은 받았는데 **한 건도 대조하지 않은** 경우다. 2026-09-07 VM
         # 실측(098070.KQ)에서 옛 판이 이 자리를 `✅ 전 기간 일치(0건)` 이라
