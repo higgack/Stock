@@ -568,6 +568,34 @@ class CatalogGuardTests(unittest.TestCase):
         self.assertIn("연계표 rename 의심", msg)       # 보수적으로 교정 안내
         self.assertNotIn("(큐레이션 CSV", msg)         # 모르는 수를 머리에 적지 않는다
 
+    def _msg(self, repo, overlay, known=True):
+        from trade.scripts import catalog_guard
+        return catalog_guard._build_message({
+            "version": "v", "n_mti": 1294, "n_reinforce": 642,
+            "n_reinforce_repo": 159, "reinforce_src_known": known,
+            "reinforce_orphan": repo + overlay, "reinforce_orphan_repo": repo if known else [],
+            "reinforce_orphan_overlay": overlay if known else [],
+            "pin_orphan": [], "theme_orphan": [],
+            "hs_names_effective": "20260101", "hs_names_rows": "17072"})
+
+    def test_overlay_only_orphans_are_not_counted_as_drop_risk(self):
+        """2026-11-18 월례 DM: 476개 전부 '반영' 적재분인데 머리줄이 'silent drop
+        위험' 이라 적었다 — 그 위험은 큐레이션 키에만 참이다(#45·#260)."""
+        msg = self._msg([], ["2nm공정", "abf"])
+        self.assertNotIn("silent drop", msg)
+        self.assertNotIn("⚠️", msg)
+        self.assertIn("✅ 카탈로그에 없는 큐레이션 키 0", msg)
+        self.assertIn("'반영' 적재분 품목키 2개", msg)
+        self.assertIn("abf", self._bullet(msg, "abf"))     # 목록은 그대로 싣는다
+
+    def test_drop_risk_counts_only_curation_keys(self):
+        msg = self._msg(["옛품목명"], ["2nm공정", "abf"])
+        self.assertIn("카탈로그에 없는 큐레이션 키 1개</b> (연계표 갱신 시 silent drop 위험)", msg)
+        self.assertNotIn("✅", msg)
+        # 출처를 모르면 보수적으로 전부 위험으로 센다(#54·#165)
+        unk = self._msg(["옛품목명"], ["2nm공정"], known=False)
+        self.assertIn("큐레이션 키 2개", unk)
+
     def test_scan_marks_source_unknown_when_curation_csv_is_unreadable(self):
         """큐레이션 CSV 를 못 읽으면 조용히 '반영 적재분'으로 분류하지 않고
         **판정 불가**로 남긴다 — `_merge` 가 예외를 삼켜(#12) 읽기 실패가 예외로
