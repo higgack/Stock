@@ -161,7 +161,19 @@ def _build_message(r: dict) -> str:
             f"'연계표 웹확인' 요청(꼼꼼한 웹검색).")
     if not n_orphan:
         return head + "\n\n✅ 카탈로그에 없는 큐레이션 키 0 — 정합 OK."
-    body = [f"\n\n⚠️ <b>카탈로그에 없는 키 {n_orphan}개</b> (연계표 갱신 시 silent drop 위험):"]
+    # ⚠️ 'silent drop 위험' 은 **큐레이션 키**(CSV·핀·테마)에만 참이다 — '반영'
+    # 적재분은 KG 후보의 자유서술 품목명이라 연계표가 바뀌어도 잃을 것이 없다.
+    # 둘을 한 수로 세면 매달 476개가 ⚠️ 로 와 진짜 rename 을 가린다(2026-11-18
+    # 월례 DM: 476개 전부 '반영' 분인데 머리줄은 위험이라 적었다, #45·#260).
+    n_ov = len(r.get("reinforce_orphan_overlay") or [])
+    n_risk = n_orphan - n_ov      # 출처를 모르면 scan 이 오버레이를 비워 둔다 → 전부 위험
+    if n_risk:
+        body = [f"\n\n⚠️ <b>카탈로그에 없는 큐레이션 키 {n_risk}개</b>"
+                " (연계표 갱신 시 silent drop 위험):"]
+    else:
+        body = ["\n\n✅ 카탈로그에 없는 큐레이션 키 0 — 정합 OK.",
+                f"\nℹ️ '반영' 적재분 품목키 {n_ov}개는 카탈로그에 없다"
+                " (연계표와 무관 — 교정 대상 아님):"]
     # reinforce 고아는 **출처별로** 적는다 — 처방이 정반대라 한 줄로 뭉치면
     # 운영자를 엉뚱한 fix 로 보낸다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
     def _list(keys, n=30):
