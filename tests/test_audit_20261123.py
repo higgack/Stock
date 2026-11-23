@@ -139,3 +139,22 @@ def test_klac_wiring_through_audit_rows():
     ax = {a: (m, d) for m, a, d in audit_rows({"rows": rows, "basis": "edgar-a"})}
     m, d = ax["분할"]
     assert m == "❌" and "그대로 실렸다" in d and "edgar-a" in d, d
+
+
+def test_lookup_detail_failure_says_reason(monkeypatch):
+    """기본 정보 실패 문구가 사유와 '서버가 물은 결과' 를 말한다(2026-11-23 499790.KS)."""
+    import bot.stock_snapshot as ss
+    import bot.dashboard as d
+
+    def _fail(t, **k):
+        ss._LAST_FAIL[t] = "야후 종목 정보(.info)가 비어 왔습니다 — 시험"
+        return None
+
+    monkeypatch.setattr(ss, "collect_stock_snapshot", _fail)
+    monkeypatch.setattr(d, "_load_stored_stock_info", lambda t: None)
+    h = d.render_lookup_detail("0162D0.KQ")
+    assert "사유: 야후 종목 정보(.info)가 비어 왔습니다" in h
+    assert "인터넷과 무관" in h
+    monkeypatch.setattr(ss, "collect_stock_snapshot", lambda t, **k: None)
+    ss._LAST_FAIL.pop("ZZZ.KS", None)
+    assert "사유:" not in d.render_lookup_detail("ZZZ.KS")

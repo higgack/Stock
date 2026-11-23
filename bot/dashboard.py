@@ -20860,8 +20860,20 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
     # ── 지연로딩 fragment: data-lk 파트 분할 — shell JS 가 슬롯에 제자리
     # 주입(헤더/탭/기타 pane 위치 고정, 차트는 shell 소유라 안 움직임).
     if not has_tabs:
+        # 사유를 화면에 — '내 인터넷이 느린가?' 를 사용자가 묻지 않게(2026-11-23
+        # 499790.KS·0162D0.KQ, #43·#82). 실패는 캐시되지 않아 새로고침이 다시 묻는다.
+        _why = ""
+        try:
+            from bot.stock_snapshot import last_failure
+            _why = last_failure(ticker)
+        except Exception:
+            pass
+        _why_html = (f'<br><span class="muted">사유: {_html.escape(_why)} · '
+                     '서버가 야후에 물은 결과라 접속 PC·인터넷과 무관합니다 · '
+                     '새로고침하면 다시 묻습니다</span>') if _why else ""
         return (f'<div data-lk="desc"><div class="lk-loading">⚠️ {_tkr_esc} '
-                '기본 정보를 불러오지 못했습니다 (차트는 위에 표시).</div></div>')
+                f'기본 정보를 불러오지 못했습니다 (차트는 위에 표시).{_why_html}'
+                '</div></div>')
     return (
         f'<div data-lk="header">{si_header}</div>\n'
         f'<div data-lk="tabs">{si_tabs}</div>\n'
