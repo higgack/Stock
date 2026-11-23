@@ -75,6 +75,32 @@ _DIRECT_PER_BASES = frozenset({"finmind", "baidu", "fnguide"})
 _STALE_DAYS = 500
 
 
+def screen_eps_jump(rows: list, denom: str = "EPS", basis: str = "") -> str | None:
+    """화면 행에 **남아 있는** 설명 안 된 분모 급변 — 사유 문장(없으면 None).
+
+    ⚠️ 옛 판은 제품의 잘라내기 사유(`eps_break_reason`)를 그대로 실어 "그 이전
+    구간은 뺐습니다" 라고 적었다(2026-11-23 결산 ❌ KLAC). 그런데 감사가 보는 건
+    **화면 행**이라 급변이 보인다는 건 제품이 그걸 안 잘랐다는 뜻이다 — 같은
+    문장이 화면과 반대 사실을 말했다(#169·#55). 판정 기준(인접·간격·문턱)은
+    제품 함수 하나에서 오고(#38), 문장은 화면에 실린 두 값을 나란히 적는다(#202).
+    """
+    import bot.per_band as pb
+    pairs = [(r["period"], r.get("eps")) for r in rows]
+    kept, why = pb.trim_at_eps_break(pairs)
+    if not why or not kept:
+        return None
+    cut = str(kept[0][0])
+    prev = [(p, v) for p, v in pairs if str(p) < cut and v is not None and v > 0]
+    now = next((v for p, v in pairs if str(p) == cut), None)
+    if not prev or now is None:
+        return why
+    p0, v0 = max(prev, key=lambda x: str(x[0]))
+    ratio = max(v0, now) / min(v0, now)
+    return (f"화면에 {denom} {p0} {v0:,.2f} → {cut} {now:,.2f}({ratio:.1f}배) 급변이 "
+            f"그대로 실렸다 — 제품은 이 급변을 잘라내지 않았다(분할 이력을 알아 실적으로 "
+            f"둔 경로 · 경로 {basis or '?'}). 분할이 없었다면 원천 값의 기준 차이다")
+
+
 def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
     """[(마크, 축, 설명)] — 순수 함수라 픽스처로 동작을 고정할 수 있다(#41).
 
@@ -118,7 +144,7 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
         # 잴 게 없으면 ✅ 가 아니다 — ① 과 같은 함정(#54).
         out.append(("❓", "분할", f"{denom} 가 한 행도 없어 판정 불가"))
     else:
-        why = pb.eps_break_reason([(r["period"], r.get("eps")) for r in rows])
+        why = screen_eps_jump(rows, denom, tbl.get("basis") or "")
         out.append(("❌" if why else "✅", "분할",
                     why or f"인접 {denom} 급변 없음"))
 

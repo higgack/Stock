@@ -325,7 +325,7 @@ def _audit_home_surfaces(show_all):
         from bot import earnings_calendar as ec
         t = date.today()
         for mkt in ("kr", "us"):
-            rows = ec.fetch_month(t.year, t.month) if mkt == "kr" else []
+            rows = ec.kr_month(t.year, t.month) if mkt == "kr" else []
             fut = sorted(r for r in (x.get("date", "") for x in rows) if r >= t.isoformat())
             _p(f"   {mkt.upper():3} 이번달 {len(rows):>4}건 · 오늘 이후 {len(fut)}건"
                f" · 가장 가까운 {fut[0] if fut else '—'}")

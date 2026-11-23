@@ -8018,14 +8018,25 @@ class TestFcfAccuracyAudit20260821:
         assert r["bad"] >= 1
 
     def test_zero_comparisons_is_a_failure_not_a_pass(self, monkeypatch):
-        """대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54)."""
+        """대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54).
+
+        ⚠️ 2026-11-23 다시 씀(#222): 옛 픽스처는 yfinance 분기표가 **아예 없는**
+        경우였는데, 그 결측은 ① 이 이미 ❌/❓ 로 말하므로 ② 가 '기간 키' ❌ 로
+        또 세면 같은 결측이 두 번 세어진다(#289 · 결산 0162D0.KQ). 기간 키 ❌ 는
+        양쪽에 표가 있는데 안 맞을 때다 — 표가 없는 경우도 ✅ 는 아니다.
+        """
         qs = [{"label": "25.4Q", "year": 2025, "quarter": 4,
                "financials": {"영업활동현금흐름": 100.0, "유형자산취득": 20.0,
                               "FCF": 80.0}}]
-        r = self._run(monkeypatch, "004370.KS", self._snap([], []), qs)
+        q = [self._q("2025-11-30", 100.0, -20.0)]          # 분기말과 안 맞는 키
+        r = self._run(monkeypatch, "004370.KS", self._snap(q, []), qs)
         txt = "\n".join(r["lines"])
         assert "대조된 기간이 0건" in txt, txt
-        assert r["bad"] >= 1, txt
+        assert "②교차출처(분기)" in r["bad_axes"], txt
+        r = self._run(monkeypatch, "004370.KS", self._snap([], []), qs)
+        txt = "\n".join(r["lines"])
+        assert "②교차출처(분기)" in r["unknown_axes"], txt
+        assert "대조 상대 없음" in txt and r["bad"] >= 1, txt
 
     def test_cumulative_contamination_is_caught(self, monkeypatch):
         q = [self._q("2025-03-31", 1145.0, 0.0), self._q("2025-06-30", 1634.0, 0.0),

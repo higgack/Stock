@@ -56,8 +56,19 @@ def fetch_month(year: int, month: int) -> list[dict]:
 
     각 이벤트에 market 필드('us'|'kr') 부착. 한국은 KIND IR일정(실제 개최일·
     미래 포함)을 1차로, 비면 DART(아카이브 + 월-fetch·공시 접수일) 폴백.
-    한국이 안 되면 미국만 graceful."""
-    events = [dict(e, market="us") for e in _fetch_us_month(year, month)]
+    한국이 안 되면 미국만 graceful.
+
+    ⚠️ 한 시장만 필요하면 이 함수를 부르지 말 것 — `kr_month` 를 쓴다. 한국
+    화면(`/earnings` 기본)이 이걸 불러 미국 Finnhub 한 달치를 **동기로** 받았다가
+    버리고 있었다(2026-11-23 감사: `/earnings` 가 나흘째 25초 안에 안 열림).
+    """
+    return ([dict(e, market="us") for e in _fetch_us_month(year, month)]
+            + kr_month(year, month))
+
+
+def kr_month(year: int, month: int) -> list[dict]:
+    """한국 IR 일정 한 달 — KIND IR일정 1차, 비면 DART 폴백(market='kr')."""
+    events: list[dict] = []
     # 한국 IR 일정 — 사용자 정책 2026-06-10: KIND IR일정(실제 미래 개최일)을
     # 1차로, DART(공시 접수일·과거)는 폴백. KIND 가 미래 일정까지 줘서 DART 가
     # '완료된 일정만' 나오던 문제 해소. 둘은 날짜 의미가 달라(개최일 vs 접수일)
@@ -372,8 +383,31 @@ def _market_toggle(year: int, month: int, market: str,
     return '<div class="mkt-toggle">' + "".join(btns) + '</div>'
 
 
+_TIMING_TAG = "render-timing"
+_SLOW_RENDER_SEC = 10.0
+
+
+def render_timing_comment(stages: list) -> str:
+    """[(단계, 초)] → `<!-- render-timing names=0.1s … total=0.3s -->`.
+
+    `page_health_audit` 가 '느렸다' 를 적을 때 이 주석을 같이 읽어 어느 단계였는지
+    댄다 — 단일 출처(#38). 이름·값에 `--` 가 들어갈 수 없게 만든다(주석이 깨진다).
+    """
+    parts = [f"{str(n).replace('-', '_')}={float(v):.1f}s" for n, v in stages]
+    total = sum(float(v) for _n, v in stages)
+    return f"<!-- {_TIMING_TAG} " + " ".join(parts + [f"total={total:.1f}s"]) + " -->"
+
+
 def render_page(year: int, month: int, market: str = "kr") -> str:
     """Render the earnings calendar — market='kr'(KIND IR일정·DART 폴백) | 'us'(Finnhub 실적)."""
+    # 단계별 소요(초) — 페이지 주석으로 싣는다. 감사가 '25초 안에 안 열림' 만
+    # 적으면 어느 단계가 느린지 다시 추측해야 한다(#69 재는 것부터 · #356).
+    _t0 = time.monotonic()
+    _stages: list[tuple[str, float]] = []
+
+    def _stamp(name: str) -> None:
+        _stages.append((name, time.monotonic() - _t0 - sum(v for _n, v in _stages)))
+
     try:
         # 1차 NASDAQ Trader(정규 거래소 ~8천, 이름 깔끔) + 2차 SEC company_
         # tickers(보고기업 ~1만, ADR/OTC 보고기업 포함 — HFUS 류 보완, 사용자
@@ -391,6 +425,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
             _us_names = _sp500_names() or {}
     except Exception:
         _us_names = {}
+    _stamp("names")
     market = market if market in ("kr", "us", "jp", "tw", "cn", "hk") else "kr"
     _us_reason = ""          # us 분기 밖에서도 참조된다(#63 조기 바인딩)
     # intl 가용성 — cache_only(동기 스캔 0·페이지 hang 방지). 데이터 있는 시장만
@@ -402,6 +437,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
             intl_avail[_ck] = bool(_fei(_mk, cache_only=True))
     except Exception:
         pass
+    _stamp("intl")
     if market in _INTL_CAL_MAP and not intl_avail.get(market):
         market = "kr"          # 선택 intl 미가용 → 한국 폴백
     if market in _INTL_CAL_MAP:
@@ -419,8 +455,8 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
         _rows, _us_reason = us_month(year, month)
         events = [dict(e, market="us") for e in _rows]
     else:
-        events = [e for e in fetch_month(year, month)
-                  if e.get("market", "us") == market]
+        events = kr_month(year, month)
+    _stamp(f"events:{market}")
     by_date: dict[str, list[dict]] = defaultdict(list)
     for e in events:
         by_date[e["date"]].append(e)
@@ -561,9 +597,15 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
     except Exception:
         pass
     _ts_sfx = f" · {_ts} 기준" if _ts else ""
+    _stamp("render")
+    _timing = render_timing_comment(_stages)
+    if sum(v for _n, v in _stages) > _SLOW_RENDER_SEC:
+        # 감사가 다시 물을 땐 캐시가 데워져 빨라진다 — 느린 첫 요청의 단계는 로그만 안다.
+        log.warning("earnings_cal: 느린 렌더 %s", _timing)
 
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
+{_timing}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>실적 캘린더</title>
 {_CSS}
@@ -628,8 +670,7 @@ def _why(year: int, month: int) -> int:
     # 대조군 — 한국이 살아 있으면 페이지·네트워크가 아니라 **미국 경로**가
     # 문제다. 대조군이 같이 죽으면 '미제공' 이 아니라 판정 불가다(#143).
     try:
-        kr = [e for e in fetch_month(year, month)
-              if e.get("market") == "kr"]
+        kr = kr_month(year, month)
         print(f"  🇰🇷 대조군 한국 {len(kr)}건"
               + ("" if kr else " — 대조군도 0건이라 미국만의 문제라고 말할 수 없다"))
     except Exception as exc:                                   # noqa: BLE001
