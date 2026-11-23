@@ -17707,6 +17707,11 @@ _MARKET_CSS = (
     ".mcard td:nth-child(3){text-align:right;width:64px;"
     "font-variant-numeric:tabular-nums;font-size:12px}"
     ".up{color:var(--pos)}.dn{color:var(--neg)}"
+    # 오늘 휴장 배지(`bot.market_holiday`, 사용자 2026-11-23) — 지수 카드 라벨 옆 · 업종 위젯 머리.
+    ".hol-badge{display:inline-block;font-size:11px;font-weight:600;line-height:1.4;"
+    "padding:0 6px;border-radius:6px;border:1px solid var(--border);"
+    "background:var(--accent-soft);color:var(--text);margin-left:4px;white-space:nowrap}"
+    ".hol-note{color:var(--muted);font-size:12px;margin-left:6px}"
     ".tbl-wrap{overflow-x:auto;margin-bottom:28px}"
     ".dtbl{width:100%;border-collapse:collapse;font-size:13px}"
     ".dtbl th{text-align:left;padding:8px 10px;font-size:12px;"
@@ -17919,15 +17924,19 @@ def _chg_cell(chg: float | None, pct: float | None) -> str:
 
 def _render_market_card(title: str, items: list, yf: dict) -> str:
     """Render one market snapshot card."""
+    from bot.market_holiday import row_badge, xcal_for_symbol
     rows: list[str] = []
     for label, tk in items:
         d = yf.get(tk)
+        # 오늘 그 거래소가 평일 휴장이면 라벨 옆에 '휴장' — 값은 마지막 거래일 것이라 그대로
+        # 두면 오늘 등락처럼 읽힌다(사용자 2026-11-23 일본 근로감사의 날, #43).
+        lab = _html.escape(label) + row_badge(xcal_for_symbol(tk))
         if not d:
-            rows.append(f'<tr><td>{_html.escape(label)}</td>'
+            rows.append(f'<tr><td>{lab}</td>'
                         f'<td>—</td><td class="neu">—</td></tr>')
             continue
         val_str = _fmt_price(d.get("close"), label)
-        rows.append(f'<tr><td>{_html.escape(label)}</td>'
+        rows.append(f'<tr><td>{lab}</td>'
                     f'<td>{val_str}</td>'
                     f'{_chg_cell(d.get("change"), d.get("pct"))}</tr>')
     return (f'<div class="mcard"><div class="mcard-title">'
@@ -18941,6 +18950,18 @@ def _render_deposit_charts(dep: dict) -> str:
             + "".join(cards) + '</div>')
 
 
+def _hol_note(market: str) -> str:
+    """업종 위젯 머리의 '오늘 휴장' 줄 — 위젯 시각은 우리가 받아 온 시각(오늘)이라 휴장일에도 오늘
+    값처럼 읽힌다(사용자 2026-11-23 일본 '2026-11-23 15:02 · 네이버 업종'). 판정은 `bot.market_holiday`
+    한 곳(#38). 실패하면 빈 문자열 — 곁들이가 위젯을 죽이지 않는다(#315)."""
+    try:
+        from bot.market_holiday import section_note
+        return section_note(market)
+    except Exception as exc:                                   # noqa: BLE001
+        log.info("휴장 표시 실패(%s): %s", market, exc)
+        return ""
+
+
 def _render_sector_movers(movers: dict) -> str:
     """업종 등락 TOP 10 (상승/하락) 위젯 — Naver 업종별 시세.
 
@@ -18974,7 +18995,7 @@ def _render_sector_movers(movers: dict) -> str:
     def _hd(right: str) -> str:
         return ('<div class="section-hd" style="display:flex;align-items:baseline;'
                 'gap:6px;flex-wrap:wrap"><h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
-                + _links
+                + _hol_note("KR") + _links
                 + f'<span class="ts" style="margin-left:auto">{right}</span></div>')
 
     if not up and not down:
@@ -19020,7 +19041,8 @@ def _render_sector_movers(movers: dict) -> str:
             + '</div>')
 
 
-def _render_etf_sector_movers(movers: dict, heading: str, links: str = "") -> str:
+def _render_etf_sector_movers(movers: dict, heading: str, links: str = "", *,
+                              market: str | None = None) -> str:
     """JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1) 또는 거래소 직접(TWSE,
     Phase 2). KR/US 위젯과 동일 구조(상승/하락 업종). links = 자식 페이지
     링크 HTML(있는 시장만). 데이터 없으면 빈 문자열 → 위젯 자동 생략."""
@@ -19057,7 +19079,7 @@ def _render_etf_sector_movers(movers: dict, heading: str, links: str = "") -> st
         ts = f'저장분 {ts}{f" ({_ago})" if _ago else ""} ⚠️'
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-        f'<h2>{heading}</h2>{links}'
+        f'<h2>{heading}</h2>{_hol_note(market) if market else ""}{links}'
         f'<span class="ts" style="margin-left:auto">{ts} · {src}</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
@@ -19078,7 +19100,7 @@ def _render_us_sector_movers(movers: dict) -> str:
     def _hd(right: str) -> str:
         return (
             '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-            '<h2>🇺🇸 미국 업종 등락 TOP 10</h2>'
+            '<h2>🇺🇸 미국 업종 등락 TOP 10</h2>' + _hol_note("US") +
             f'<a href="usindustry" style="{_lnk}">🏭 업종별 시세(전체)</a>'
             f'<a href="ushighlow" style="{_lnk}">📈 신고가·신저가</a>'
             f'<a href="usmovers" style="{_lnk}">🚀 급등·급락</a>'
@@ -20600,19 +20622,19 @@ def _render_asia_page(data: dict) -> str:
     parts.append(_render_etf_sector_movers(
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
         f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'
-        f'<a href="jpmovers" style="{_lk2}">🚀 급등·급락</a>'))
+        f'<a href="jpmovers" style="{_lk2}">🚀 급등·급락</a>', market="JP"))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
         f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'      # 재도입 2026-06-17
-        f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>'))
+        f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>', market="CN"))
     parts.append(_render_etf_sector_movers(
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 업종 등락 TOP 10",
         f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'
-        f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>'))
+        f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>', market="HK"))
     _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'
                 f'<a href="twhighlow" style="{_lk}">🚀 급등·급락</a>')
     parts.append(_render_etf_sector_movers(
-        data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
+        data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link, market="TW"))
     # 4개 시장이 전부 비면(수집 전면 실패) 위젯이 모두 생략돼 **백지**가 된다 —
     # 침묵이 최악이다(실수 #43). 무엇이 없는지 밝힌다.
     if not any((data.get(k) or {}).get("up") or (data.get(k) or {}).get("down")
