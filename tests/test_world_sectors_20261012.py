@@ -2232,3 +2232,48 @@ def test_every_nav_puts_sentiment_map_before_sector_mix():
                 bad.append(f"{f.relative_to(root)}:{src[:a.start()].count(chr(10)) + 1}")
     assert seen >= 4, f"이웃한 두 링크를 {seen}곳만 봤다 — 스캔이 눈멀었나"   # 0건은 통과가 아니다(#54)
     assert not bad, f"섹터혼합이 심리지도 앞: {bad}"
+
+
+# ── 오늘 휴장 표시(사용자 2026-11-23 "휴장표시 없으면 잘못된건지 진짜 휴장인지 모르잖아" ·
+#    정정 "주말은 넣지 않고 … 평일일때 휴장일때") ─────────────────────────────────────────
+@pytest.mark.parametrize("market,now,want", [
+    ("JP", _at(2026, 11, 23, 19, 2), "오늘(11-23) 휴장(거래소 달력) · 다음 세션 11-24는 11-24 18:30 KST 이후 받음"),
+    ("US", _at(2026, 11, 26, 20, 0), "오늘(11-26) 휴장(거래소 달력) · 다음 세션 11-27는 11-28 06:00 KST 이후 받음"),
+    ("US", _at(2026, 11, 26, 13, 0), ""),          # KST 13:00 = ET 11-25 — 현지는 아직 휴장일 아님
+    ("KR", _at(2026, 11, 22, 12, 0), ""),          # 주말은 적지 않는다
+    ("US", _at(2026, 11, 23, 19, 2), ""),          # 평일 장 전 — 휴장이 아니면 아무 말 안 함
+    ("KR", _at(2026, 11, 23, 10, 0), ""),          # 평일 장 중
+    ("CN_A", _at(2027, 2, 10, 12, 0), ""),         # 달력 범위 밖 — 모르는 날에 약속하지 않는다(#380)
+])
+def test_today_note_only_on_weekday_holidays(market, now, want):
+    assert ws.today_note(market, now) == want
+
+
+def test_status_line_carries_the_holiday_note_on_every_board(store):
+    """판정 줄(세 보드·감사·--why 공용)에 실린다 — 헬퍼만 재면 배선을 떼는 변형이 통과한다(#20)."""
+    store.now = _at(2026, 10, 9, 18, 40)
+    ws.tick(store.now)                                      # 10-09(금) 수집
+    t = _at(2026, 10, 12, 12, 0)                            # 10-12(월) 일본 체육의 날
+    kind, line = ws.market_verdict("JP", ws.load_state(), t)
+    assert kind == "ok" and line.startswith("2026-10-09 받음 · 오늘(10-12) 휴장(거래소 달력)")
+    assert "오늘(" not in ws.market_verdict("TW", ws.load_state(), t)[1], "개장일엔 아무 말 안 함"
+    page = wp.status_lines(ws.load_state(), t)
+    assert any(wp.market_name("JP") in x and "오늘(10-12) 휴장" in x for x in page)
+
+
+@pytest.mark.parametrize("state,want_kind", [
+    ({}, "wait"),                                                          # 아직 안 받음
+    ({"markets": {"JP": {"date": "2026-10-09", "kind": "fail", "n": 1, "reason": "HTTP 403"}}}, "fail"),
+])
+def test_holiday_note_rides_every_branch_not_only_ok(store, state, want_kind):
+    """받음 줄에만 붙이면 휴장일에 직전 세션이 실패한 날엔 '오늘 휴장' 이 안 보인다(독립 리뷰 2026-11-23)."""
+    kind, line = ws.market_verdict("JP", state, _at(2026, 10, 12, 12, 0))   # 10-12 일본 체육의 날
+    assert kind == want_kind
+    assert "오늘(10-12) 휴장(거래소 달력)" in line, line
+
+
+def test_every_market_has_a_holiday_calendar():
+    """나라를 늘리면 그 나라만 조용히 휴장 안내가 없다(#24) — 전수로 잰다."""
+    from bot.market_holiday import MARKET_XCAL
+    assert set(ws.MARKETS) <= set(ws._HOLIDAY_XCAL)
+    assert {ws._HOLIDAY_XCAL[m] for m in ws.MARKETS} <= set(MARKET_XCAL.values())

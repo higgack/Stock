@@ -172,6 +172,31 @@ def ready_kst(market: str, now: datetime | None = None) -> tuple[datetime, str] 
     return last
 
 
+def today_note(market: str, now: datetime | None = None) -> str:
+    """그 시장이 **현지 오늘 평일 휴장**이면 '오늘(MM-DD) 휴장 · 다음 세션 … 이후 받음', 아니면 "".
+
+    상태 줄이 '직전 세션 받음' 만 적으면 오늘이 휴장인지 수집이 늦은 건지 화면만으로 못 가른다
+    (사용자 2026-11-23 일본 근로감사의 날 "휴장표시 없으면 잘못된건지 진짜 휴장인지 모르잖아", #43).
+    사용자 정정(같은 날): **주말은 넣지 않는다**, 평일 휴장만 — 그래서 장 전·장 중 안내도 두지
+    않는다(매일 문구가 바뀌어 page_health 경과 키·재생성이 흔들린다, 독립 리뷰).
+    판정은 메인 카드·업종 위젯과 같은 `bot.market_holiday`(#38) — 달력이 그 날짜를 모르면(범위
+    밖) 말하지 않는다. 평일 가정으로 '이후 받음' 을 약속하면 지켜지지 않을 수 있다(#380·#165)."""
+    try:
+        from bot.market_holiday import holiday
+        h = holiday(_HOLIDAY_XCAL.get(market), now)
+    except Exception as exc:                                   # noqa: BLE001
+        log.info("world_sectors: %s 휴장 판정 실패(%s) — 안내 생략", market, exc)
+        return ""
+    if not h:
+        return ""
+    nx = ready_kst(market, now)
+    nxt = f" · 다음 세션 {nx[1][5:]}는 {nx[0]:%m-%d %H:%M} KST 이후 받음" if nx else ""
+    return f"오늘({h['date']:%m-%d}) 휴장(거래소 달력){nxt}"
+
+
+_HOLIDAY_XCAL = {"KR": "XKRX", "US": "XNYS", "JP": "XTKS", "TW": "XTAI", "CN_A": "XSHG"}
+
+
 def next_open(market: str, d: str) -> datetime | None:
     """`d` 다음 세션의 개장(UTC) — 그 뒤엔 원천이 다음 세션 값을 주므로 `d` 를 못 받는다."""
     dd = _date.fromisoformat(d)
@@ -824,6 +849,18 @@ def tick(now: datetime | None = None) -> dict:
 
 
 def market_verdict(market: str, state: dict, now: datetime | None = None) -> tuple[str, str]:
+    """`_market_verdict` 에 '오늘' 사정(`today_note`)을 붙인다 — **모든 갈래에**. 받음·대기에만
+    붙이면 일본 휴장일에 직전 세션 수집이 실패한 날엔 '오늘 휴장' 이 안 보여 고치려던 혼동이 그
+    갈래에 남는다(독립 리뷰 2026-11-23). 'none'(받을 세션 자체가 없음)만 뺀다."""
+    kind, line = _market_verdict(market, state, now)
+    if kind != "none":
+        note = today_note(market, now)
+        if note:
+            line = f"{line} · {note}"
+    return kind, line
+
+
+def _market_verdict(market: str, state: dict, now: datetime | None = None) -> tuple[str, str]:
     """한 나라 수집 상태 — (갈래, 사람이 읽는 한 줄). 화면 상태 줄·`--why`·감사가 같이 쓴다(#35).
 
     ok = 받아야 할 세션을 받음 · wait = 받을 때가 됐고 다음 주기에 받는다 · stale = 원천이 아직
