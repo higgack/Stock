@@ -601,3 +601,12 @@ def test_reading_lines_follow_their_sections_when_dcf_is_absent():
     html = vl.render_html(vl.build(s, "AAPL"))
     assert "📖 " + vl._READ["inputs"] in html
     assert "📖 " + vl._READ["reverse"] not in html and "📖 " + vl._READ["mc"] not in html
+
+
+def test_vlab_says_when_snapshot_is_naver_fallback(monkeypatch):
+    """야후 빈 응답 → 네이버로 채운 스냅샷이면 계산 위에 그 사실을 밝힌다(2026-11-23)."""
+    s = dict(_snap(), info_source_note="야후 종목 정보(.info)가 비어 와 … 네이버 시세로 채웠습니다")
+    st, body = _vlab_reply(monkeypatch, "0162D0.KQ", lambda t, **k: dict(s), (None, ""))
+    assert st == 200 and body["ok"], body
+    head = body["html"].split("</div>", 1)[0]
+    assert "네이버 시세로 채웠습니다" in head
