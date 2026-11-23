@@ -34,7 +34,11 @@ import argparse
 import sys
 import time as _time
 
-_AUDIT_VER = 4
+_AUDIT_VER = 5
+# 스냅샷이 빈 응답(None)이면 한 번 더 묻기 전 기다리는 초 — 대량 조회의 레이트리밋을
+# '죽은 데이터' 로 오보하지 않게(#21). 그래도 비면 판정 불가로 두고, 종목 다수가
+# 비는 날만 원천 차단으로 ❌ 를 올린다(`snapshot_block_line`).
+_SNAP_RETRY_SEC = 20.0
 _GAP_OK = 1.0        # 교차출처 허용 차이(%) — 정의가 같으면 소수점까지 맞는다
 _SUM_OK = 5.0        # 분기합 vs 연간 허용 차이(%)
 _BASIS_OK = 1.0      # CAPEX 구성 항등식(|yfCAPEX| = 유형+무형) 허용 차이(%)
@@ -271,6 +275,19 @@ def no_cf_reason(snap: dict | None) -> str | None:
     return f"손익·재무상태표는 왔는데 현금흐름표만 원천에 없음 — {fact}"
 
 
+def snapshot_block_line(empty: list, n: int) -> str:
+    """종목 다수가 빈 스냅샷이면 원천 차단 ❌ 한 줄(아니면 빈 문자열).
+
+    종목 하나의 빈 응답은 판정 불가(❓)지만, 절반 넘게 비면 원천이 막힌 것이라
+    화면 전체가 같은 빈칸이다 — 그건 고칠 대상이다(#54·#260). 대상 종목을 줄에
+    싣는다(#356).
+    """
+    if n <= 0 or len(empty) < 2 or len(empty) * 2 <= n:
+        return ""
+    return (f"[yfinance] ❌ 스냅샷 빈 응답 {len(empty)}/{n}종목 — 원천 차단·레이트리밋 의심"
+            f"({', '.join(empty[:8])}{' …' if len(empty) > 8 else ''})")
+
+
 def mark_finding(tk: str, line: str) -> str:
     """결함(❌) 줄에 종목을 붙인다. 이미 있거나 결함이 아니면 그대로."""
     if "❌" not in line or tk in line:
@@ -321,7 +338,16 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             bad_axes.append(axis)
 
     say(f"── {tk}  [{mkt}]")
-    snap = collect_stock_snapshot(tk, use_cache=False) or {}
+    snap = collect_stock_snapshot(tk, use_cache=False)
+    snap_empty = False
+    if snap is None:
+        # ⚠️ 2026-11-23 결산 ❌ 4건(BDX·0162D0.KQ·2914.T·3443.TW)이 전부 이 갈래였다 —
+        # `.info` 가 빈 응답이면 수집기가 None 을 준다. 필수 모듈 누락은 배너가 이미
+        # 막으므로(#132) 남는 원인은 원천의 빈 응답이다 — 한 번 더 묻는다(#21).
+        _time.sleep(_SNAP_RETRY_SEC)
+        snap = collect_stock_snapshot(tk, use_cache=False)
+        snap_empty = snap is None
+    snap = snap or {}
     yq, ya = _yf_rows(snap, "quarterly"), _yf_rows(snap, "annual")
 
     # ── 재무제표 탭(전 시장 공통) — 화면이 쓰는 그 행에서 그대로 뽑는다
@@ -375,9 +401,17 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     # ⚠️ **대조 0건은 통과가 아니다**(#54). 2026-08-22 실측: VM 에서 venv
     # 밖 인터프리터로 돌려 yfinance 가 없자 스냅샷이 통째로 비었는데
     # `① 재계산 ✅ 전 기간 일치` 가 찍혔다 — 감사가 거짓 안심을 준 것.
-    if not yq and not ya and no_cf_reason(snap) is None:
-        say("     ① 재계산 ❌ 대조 0건 — 현금흐름표를 못 받았다"
-            "(스냅샷 실패·원천 차단·의존성 누락 중 하나)")
+    if snap_empty:
+        # 원천이 그 종목에 빈 응답을 두 번 준 것이다 — 우리가 고칠 것이 없는 ❌ 가
+        # 매일 오면 진짜 ❌ 를 가린다(#260). 종목 다수가 비는 날(원천 차단)은
+        # `main` 이 한 줄로 ❌ 를 올린다(#54 — 판정 불가를 통과로 굽지 않는다).
+        say(f"     ① 재계산 ❓ 대조 대상 없음 — yfinance 스냅샷이 빈 응답"
+            f"({_SNAP_RETRY_SEC:.0f}초 뒤 다시 물어도 빈 응답 · 필수 모듈은 배너에서 확인됨)")
+        flag(None, "①재계산(yf)")
+    elif not yq and not ya and no_cf_reason(snap) is None:
+        _keys = ", ".join(sorted(snap)[:8]) or "없음"
+        say("     ① 재계산 ❌ 대조 0건 — 스냅샷은 왔는데 현재가·현금흐름표가 둘 다 없다"
+            f"(받은 칸: {_keys})")
         flag(False, "①재계산(yf)")
     elif not yq and not ya:
         # ⚠️ 스냅샷은 받았는데(시세가 온다) 원천이 현금흐름표를 안 준 경우다
@@ -455,7 +489,8 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             # 자격증명이다. 틀린 라벨은 라벨이 없는 것보다 나쁘다(#82·#187b).
             flag(None, "DART경로(키 없음)")
         return {"lines": out, "bad": bad, "unknown": unknown,
-            "bad_axes": bad_axes, "unknown_axes": unknown_axes}
+            "bad_axes": bad_axes, "unknown_axes": unknown_axes,
+            "snap_empty": snap_empty}
 
     # ── 밸류에이션 탭 · 분기실적 탭(KR) — 둘 다 이 시계열 하나를 본다
     from bot.dart_quarterly import get_quarterly_series
@@ -466,7 +501,8 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     if not qs:
         flag(None, "③payload")
         return {"lines": out, "bad": bad, "unknown": unknown,
-            "bad_axes": bad_axes, "unknown_axes": unknown_axes}
+            "bad_axes": bad_axes, "unknown_axes": unknown_axes,
+            "snap_empty": snap_empty}
     # ① 누적 오염(DART 분기) — 이 경로가 실제로 앓았던 병이다(#96: DART
     # 현금흐름은 연초부터의 **누적**이라 그대로 실으면 분기 칸에 누적이
     # 앉는다. 농심 25.4Q 가 FY2025 와 완전히 같았다).
@@ -522,7 +558,13 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             f"yfinance {y / 1e8:,.1f}억  " + _mark(g, _GAP_OK, _why)
             + ("  " + _materials(_fin, _row) if _bad else ""))
         flag(None if g is None else (_expl or g <= _GAP_OK), "②교차출처(분기)")
-    if not seen:
+    if not seen and not yq:
+        # yfinance 쪽 분기표가 아예 없으면 기간 키를 맞춰 볼 상대가 없다 — 그 사유는
+        # ① 줄이 이미 말한다. 같은 결측을 ❌ 로 한 번 더 세지 않는다(#289).
+        say("        ❓ 대조 상대 없음 — yfinance 분기 현금흐름표가 없다(① 줄 참조)"
+            f" · DART 분기 {sum(1 for q in qs if (q.get('financials') or {}).get('FCF') is not None)}개")
+        flag(None, "②교차출처(분기)")
+    elif not seen:
         # ⚠️ 대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54).
         say("        ❌ 대조된 기간이 0건 — 기간 키가 안 맞는다"
             "(12월 결산이 아니거나 원천이 그 분기를 안 준다)")
@@ -550,7 +592,8 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             + ("  " + _materials(fin, _row) if _bad else ""))
         flag(None if g is None else (_expl or g <= _GAP_OK), "②교차출처(연간)")
     return {"lines": out, "bad": bad, "unknown": unknown,
-            "bad_axes": bad_axes, "unknown_axes": unknown_axes}
+            "bad_axes": bad_axes, "unknown_axes": unknown_axes,
+            "snap_empty": snap_empty}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -601,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
     print("⚠️ `| tail` 로 받으면 끝날 때까지 한 줄도 안 보인다 — "
           "`| tee /tmp/fcf.log`\n")
     tot_bad = tot_unknown = 0
+    empty: list[str] = []
     for _i, tk in enumerate(tickers, 1):
         try:
             r = audit_one(tk, dart, years=args.years)
@@ -616,6 +660,12 @@ def main(argv: list[str] | None = None) -> int:
               + f"  {fmt_eta(_i, len(tickers), _t0)}\n")
         tot_bad += r["bad"]
         tot_unknown += r["unknown"]
+        if r.get("snap_empty"):
+            empty.append(tk)
+    _blk = snapshot_block_line(empty, len(tickers))
+    if _blk:
+        print(_blk)
+        tot_bad += 1
     print("=" * 60)
     print(f"종합: 불일치 {tot_bad}건 · 판정불가 {tot_unknown}건 "
           f"/ 종목 {len(tickers)}개")

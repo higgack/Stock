@@ -135,6 +135,16 @@ def _http_get(url: str, auth, timeout: float = _LIVE_TIMEOUT) -> tuple:
         return None, type(exc).__name__
 
 
+def render_timing_note(body) -> str:
+    """화면이 싣는 `<!-- render-timing … -->` 를 판정 줄에 붙인다(#356 그 줄이 자족).
+
+    ⚠️ 다시 물은 요청의 값이다 — 첫 요청이 캐시를 데웠으면 빠르게 나온다.
+    그 사실을 같이 적는다(#165). 주석이 없는 화면은 빈 문자열.
+    """
+    m = re.search(r"<!--\s*render-timing\s+([^<>]{1,300}?)\s*-->", str(body or ""))
+    return f" · 다시 물은 요청의 단계 {m.group(1)}(첫 요청은 대시보드 로그 '느린 렌더')" if m else ""
+
+
 def live_pages(routes, *, get=None, base_auth=None, clock=time.monotonic) -> tuple:
     """(페이지 [(이름, html)], 화면별 문제 [(이름, finding)], 못 읽은 사유)."""
     get = get or _http_get
@@ -153,7 +163,8 @@ def live_pages(routes, *, get=None, base_auth=None, clock=time.monotonic) -> tup
             if code is not None and code < 400:
                 probs.append((name, {"kind": "warn", "where": "", "age_h": None,
                                      "text": f"⚠ 화면이 {_LIVE_TIMEOUT}초 안에 안 열림"
-                                             f"(다시 물어 {_LIVE_RETRY_TIMEOUT}초 안에 열림)"}))
+                                             f"(다시 물어 {_LIVE_RETRY_TIMEOUT}초 안에 열림)"
+                                             + render_timing_note(body)}))
         if code is None:
             if not slow and not pages and i == 0:
                 return pages, probs, f"대시보드 서버에 못 닿음({body})"
