@@ -158,3 +158,157 @@ def test_lookup_detail_failure_says_reason(monkeypatch):
     monkeypatch.setattr(ss, "collect_stock_snapshot", lambda t, **k: None)
     ss._LAST_FAIL.pop("ZZZ.KS", None)
     assert "사유:" not in d.render_lookup_detail("ZZZ.KS")
+
+
+class _EmptyYfTicker:
+    """야후가 .info 를 빈 dict 로 주는 종목(신규 상장 0162D0.KQ 류)."""
+    def __init__(self, t):
+        self.ticker = t
+        self.info = {}
+
+    def __getattr__(self, name):          # 나머지 속성은 전부 실패 — 수집기가 견뎌야 한다
+        raise RuntimeError(f"yfinance {name} unavailable")
+
+    def history(self, *a, **k):
+        import pandas as pd
+        return pd.DataFrame()
+
+
+def _stub_empty_yahoo(monkeypatch, quote):
+    import yfinance
+    import bot.stock_snapshot as ss
+    import bot.naver_quote as nq
+    import bot.naver_finance_client as nf
+    monkeypatch.setattr(yfinance, "Ticker", _EmptyYfTicker)
+    monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: quote)
+    monkeypatch.setattr(nf, "get_naver_valuation", lambda t: {"shares": 12_345_678})
+    ss._LAST_FAIL.clear()
+    ss._SNAP_CACHE.clear()
+    return ss
+
+
+def test_kr_empty_yahoo_info_falls_back_to_naver(monkeypatch):
+    """야후 .info 가 비어도 국내 종목은 네이버로 헤더를 채운다(사용자 2026-11-23)."""
+    ss = _stub_empty_yahoo(monkeypatch, {"price": 20000.0, "mcap": 2.5e11,
+                                         "name": "동원파츠", "pct": 1.0})
+    snap = ss.collect_stock_snapshot("0162D0.KQ", use_cache=False)
+    assert snap is not None
+    assert snap["long_name"] == "동원파츠"
+    assert snap["current_price"] == 20000.0
+    # 시총은 등록 주식수 × 화면 현재가로 다시 맞춰진다(#205 — 기존 규칙)
+    assert snap["market_cap"] == 20000.0 * 12_345_678
+    assert snap["currency"] == "KRW"
+    assert snap["quote_type"] == ""           # 주식/ETF 를 추측하지 않는다
+    assert "네이버" in snap["info_source_note"]
+    assert snap.get("shares_source", "").startswith("네이버"), snap.get("shares_source")
+
+
+def test_naver_fallback_note_reaches_header(monkeypatch):
+    ss = _stub_empty_yahoo(monkeypatch, {"price": 20000.0, "mcap": 2.5e11,
+                                         "name": "동원파츠"})
+    import bot.dashboard as d
+    snap = ss.collect_stock_snapshot("0162D0.KQ", use_cache=False)
+    parts = d._render_stock_info_html({"ticker": "0162D0.KQ", "stock_info": snap})
+    assert "네이버 시세로 채웠습니다" in parts["header"]
+
+
+def test_naver_fallback_failure_keeps_reason(monkeypatch):
+    ss = _stub_empty_yahoo(monkeypatch, None)
+    assert ss.collect_stock_snapshot("0162D0.KQ", use_cache=False) is None
+    assert "네이버 시세도 받지 못했습니다" in ss.last_failure("0162D0.KQ")
+
+
+def test_non_kr_empty_info_does_not_ask_naver(monkeypatch):
+    calls = []
+    ss = _stub_empty_yahoo(monkeypatch, {"price": 1.0})
+    import bot.naver_quote as nq
+    monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: calls.append(t) or {"price": 1.0})
+    assert ss.collect_stock_snapshot("BDX", use_cache=False) is None
+    assert calls == []
+    assert "네이버" not in ss.last_failure("BDX")
+
+
+def test_fallback_note_carries_trade_time(monkeypatch):
+    ss = _stub_empty_yahoo(monkeypatch, {"price": 20000.0, "name": "동원파츠",
+                                         "ts": "2026-11-23T15:30:00+09:00"})
+    snap = ss.collect_stock_snapshot("0162D0.KQ", use_cache=False)
+    assert "체결시각 2026-11-23T15:30:00+09:00" in snap["info_source_note"]
+    assert "_naver_ts" not in snap
+
+
+def test_stored_full_snapshot_beats_naver_fallback(tmp_path, monkeypatch):
+    """얇은 네이버 스냅샷이 온전한 저장분을 밀어내지 않는다(리뷰 2026-11-23)."""
+    import json
+    import bot.dashboard as d
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
+    for day, si in (("2026-11-01", {"long_name": "풀", "sector": "IT"}),
+                    ("2026-11-20", {"long_name": "얇음", "info_source_note": "네이버"})):
+        (tmp_path / day).mkdir()
+        (tmp_path / day / "005930.KS.json").write_text(
+            json.dumps({"stock_info": si}), encoding="utf-8")
+    si, day = d._load_stored_stock_info_dated("005930.KS")
+    assert si["long_name"] == "풀" and day == "2026-11-01"
+    thin = {"long_name": "새얇음", "info_source_note": "네이버"}
+    assert d._prefer_stored_over_naver_fallback(thin, "005930.KS")["long_name"] == "풀"
+    full = {"long_name": "새풀"}
+    assert d._prefer_stored_over_naver_fallback(full, "005930.KS") is full
+    assert d._prefer_stored_over_naver_fallback(thin, "000660.KS") is thin
+    assert d._prefer_stored_over_naver_fallback(None, "000660.KS") is None
+
+
+def test_only_thin_stored_is_still_used(tmp_path, monkeypatch):
+    import json
+    import bot.dashboard as d
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
+    (tmp_path / "2026-11-20").mkdir()
+    (tmp_path / "2026-11-20" / "0162D0.KQ.json").write_text(
+        json.dumps({"stock_info": {"long_name": "얇음", "info_source_note": "n"}}),
+        encoding="utf-8")
+    assert d._load_stored_stock_info_dated("0162D0.KQ")[0]["long_name"] == "얇음"
+
+
+def test_fcf_audit_counts_naver_fallback_as_empty_snapshot(monkeypatch):
+    """네이버 폴백 스냅샷도 야후 빈 응답으로 센다 — 원천 차단 계수에서 빠지지 않게."""
+    thin = {"current_price": 1.0, "info_source_note": "네이버"}
+    fa, r, sleeps = _fa_run(monkeypatch, [dict(thin), dict(thin)])
+    assert sleeps == [fa._SNAP_RETRY_SEC]
+    assert r["snap_empty"] is True
+    assert "①재계산(yf)" in r["unknown_axes"]
+
+
+def test_fallback_shares_not_labelled_yfinance(monkeypatch):
+    """등록 주식수 사다리가 비어도 네이버에서 온 주식수를 'yfinance' 라 적지 않는다."""
+    ss = _stub_empty_yahoo(monkeypatch, {"price": 20000.0, "name": "동원파츠"})
+    monkeypatch.setattr(ss, "kr_registry_shares", lambda t: {})
+    snap = ss.collect_stock_snapshot("0162D0.KQ", use_cache=False)
+    assert snap["shares_outstanding"] == 12_345_678
+    assert "yfinance" not in str(snap.get("shares_source")), snap.get("shares_source")
+
+
+def _stored_vs_thin(tmp_path, monkeypatch):
+    import json
+    import bot.dashboard as d
+    import bot.stock_snapshot as ss
+    monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
+    (tmp_path / "2026-11-01").mkdir()
+    (tmp_path / "2026-11-01" / "005930.KS.json").write_text(
+        json.dumps({"stock_info": {"long_name": "STORED-FULL"}}), encoding="utf-8")
+    monkeypatch.setattr(ss, "collect_stock_snapshot", lambda t, **k: {
+        "long_name": "THIN", "info_source_note": "네이버"})
+    monkeypatch.setattr(d, "_ensure_detail_enrichment", lambda t, si: None)
+    seen = []
+    monkeypatch.setattr(d, "_render_stock_info_html",
+                        lambda rec: seen.append(rec["stock_info"].get("long_name")) or {})
+    return d, seen
+
+
+def test_lookup_detail_prefers_stored_full_over_thin(tmp_path, monkeypatch):
+    d, seen = _stored_vs_thin(tmp_path, monkeypatch)
+    d.render_lookup_detail("005930.KS", enrich=False)
+    assert seen == ["STORED-FULL"]
+
+
+def test_live_quote_full_prefers_stored_full_over_thin(tmp_path, monkeypatch):
+    d, seen = _stored_vs_thin(tmp_path, monkeypatch)
+    d.build_live_quote("005930.KS", full=True)
+    assert "STORED-FULL" in seen and "THIN" not in seen, seen

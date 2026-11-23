@@ -62,6 +62,34 @@ def _kr_arbiter(ticker: str) -> dict | None:
         return None
 
 
+def naver_info_fallback(ticker: str) -> dict | None:
+    """야후 .info 가 빈 국내 종목의 대체 info — 네이버 실시간 시세 + 상장주식수.
+
+    야후 .info 와 **같은 키**로 돌려줘 스냅샷 본 경로가 그대로 읽는다. 원천이
+    주지 않는 것은 지어내지 않는다 — quoteType 은 네이버가 안 주므로 ""(주식/
+    ETF 를 추측하지 않는다, #165). 시세를 못 받으면 None."""
+    q = _kr_arbiter(ticker)
+    if not q or not q.get("price"):
+        return None
+    info: dict = {"quoteType": "", "currency": "KRW",
+                  "currentPrice": float(q["price"])}
+    if q.get("name"):
+        info["longName"] = q["name"]
+    if q.get("mcap"):
+        info["marketCap"] = float(q["mcap"])
+    if q.get("ts"):
+        info["_naver_ts"] = str(q["ts"])
+    try:
+        from bot.naver_finance_client import get_naver_valuation
+        nv = get_naver_valuation(ticker) or {}
+    except Exception as exc:
+        log.debug("naver_info_fallback %s valuation: %s", ticker, exc)
+        nv = {}
+    if nv.get("shares"):
+        info["sharesOutstanding"] = int(nv["shares"])
+    return info
+
+
 def _consistent_mcap(price, shares, orig_price, orig_mcap):
     """표시가와 **같은 기준**의 시총. 못 만들면 None(그럼 시총을 비운다).
 
@@ -150,19 +178,40 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         # ⚠️ `.info` 는 **직렬**이다 — 보조 6종 병렬 수집보다 앞이라 이게
         # 느리면 나머지를 아무리 떼어내도 첫 화면이 안 빨라진다.
         _TIMING.set(ticker, "yf.info", time.time() - _t0)
+        _info_note = ""
         if not info or info.get("quoteType") is None:
-            # 야후 .info 차단/실패 → None. 호출부(render_lookup_detail)가 직전 분석
-            # 스냅샷으로 폴백(_load_stored_stock_info) — 야후 차단 중 상세 표시 유지.
-            _LAST_FAIL[ticker] = ("야후 종목 정보(.info)가 비어 왔습니다"
-                                  " — 야후 차단·요청 제한이거나 야후에 없는 심볼")
-            log.warning("stock_snapshot: %s — yfinance .info 빈 응답", ticker)
-            return None
+            # 국내 종목은 네이버가 이름·현재가·시총·상장주식수를 준다 — 야후가
+            # 신규 상장(0162D0.KQ)·일시 빈 응답이어도 상세가 통째로 비지 않게
+            # (사용자 2026-11-23 "네이버 폴백도 넣어줘"). 나머지 칸은 원래 경로
+            # 그대로 채워지고, 어느 칸이 네이버 것인지 헤더가 밝힌다(#43).
+            _fb = naver_info_fallback(ticker)
+            if _fb:
+                info = _fb
+                _ts = str(_fb.get("_naver_ts") or "")
+                _info_note = ("야후 종목 정보(.info)가 비어 와 이름·현재가·시총·"
+                              "상장주식수는 네이버 시세로 채웠습니다"
+                              + (f"(네이버 체결시각 {_ts})" if _ts else "")
+                              + " · 업종·52주 범위·컨센서스는 야후 몫이라 비어 있습니다")
+                log.warning("stock_snapshot: %s — yfinance .info 빈 응답 → 네이버 폴백",
+                            ticker)
+            else:
+                # 야후 .info 차단/실패 → None. 호출부(render_lookup_detail)가 직전 분석
+                # 스냅샷으로 폴백(_load_stored_stock_info) — 야후 차단 중 상세 표시 유지.
+                _LAST_FAIL[ticker] = ("야후 종목 정보(.info)가 비어 왔습니다"
+                                      " — 야후 차단·요청 제한이거나 야후에 없는 심볼"
+                                      + (" · 네이버 시세도 받지 못했습니다"
+                                         if ticker.upper().endswith((".KS", ".KQ"))
+                                         else ""))
+                log.warning("stock_snapshot: %s — yfinance .info 빈 응답", ticker)
+                return None
 
         def _g(k, default=None):
             v = info.get(k)
             return v if v is not None else default
 
         snap: dict = {}
+        if _info_note:
+            snap["info_source_note"] = _info_note
 
         # ── identity ────────────────────────────────────────────────
         snap["long_name"] = _g("longName") or _g("shortName") or ""
@@ -647,7 +696,8 @@ def _apply_share_count(ticker: str, snap: dict) -> None:
                     f"({_mc:,.0f})의 {_r:.2f}배 · 복수 클래스 합산일 수 "
                     f"있습니다")
         r = _resolve_shares(snap.get("current_price"), snap.get("market_cap"),
-                            snap.get("shares_outstanding"), "yfinance",
+                            snap.get("shares_outstanding"),
+                            "네이버" if snap.get("info_source_note") else "yfinance",
                             q.get("shares"), reg_label)
         if r["shares"]:
             snap["shares_outstanding"] = r["shares"]

@@ -4594,6 +4594,18 @@ def diagnose_detail_sources(ticker: str) -> dict:
     return out
 
 
+def _prefer_stored_over_naver_fallback(fresh: dict | None, ticker: str) -> dict | None:
+    """신선 스냅샷이 없거나 네이버로만 채운 얇은 것이면 직전 분석의 온전한
+    스냅샷을 쓴다 — 야후 장애 중 업종·설명·재무 탭을 잃지 않게(2026-11-23 리뷰).
+    온전한 저장분이 없으면 받은 것을 그대로 돌려준다."""
+    if fresh and not fresh.get("info_source_note"):
+        return fresh
+    stored = _load_stored_stock_info(ticker)
+    if stored and (not fresh or not stored.get("info_source_note")):
+        return stored
+    return fresh
+
+
 def _load_stored_stock_info(ticker: str) -> dict | None:
     """Return the ``stock_info`` from the most recent archived analysis of
     ``ticker``, or None. Used as a fallback for the live FULL overlay when a
@@ -4611,6 +4623,7 @@ def _load_stored_stock_info_dated(ticker: str) -> tuple[dict | None, str]:
         tkr = (ticker or "").upper()
         best_date = ""
         best_si = None
+        best_key: tuple = (False, "")
         if not ARCHIVE_ROOT.exists():
             return None, ""
         for day_dir in ARCHIVE_ROOT.iterdir():
@@ -4624,9 +4637,13 @@ def _load_stored_stock_info_dated(ticker: str) -> tuple[dict | None, str]:
             except Exception:
                 continue
             si = rec.get("stock_info")
-            if si and day_dir.name > best_date:
-                best_date = day_dir.name
-                best_si = si
+            # 야후가 비어 네이버로 채운 얇은 스냅샷은 온전한 옛 스냅샷을 이기지
+            # 못한다 — 최신 날짜만 보면 얇은 기록이 폴백 자리를 빼앗는다(2026-11-23).
+            if not si:
+                continue
+            key = (not si.get("info_source_note"), day_dir.name)
+            if best_si is None or key > best_key:
+                best_key, best_date, best_si = key, day_dir.name, si
         # Return a deep copy so the in-place enrichment below never mutates
         # the file-backed record the rest of the page renders from.
         if not best_si:
@@ -5292,8 +5309,7 @@ def build_live_quote(ticker: str, full: bool = False,
             log.warning("build_live_quote: full snapshot failed for %s: %s", ticker, exc)
         # 2) Fall back to the stored snapshot when yfinance bailed, so the
         #    heavy panes still render real data (financials / holders / etc.).
-        if not fresh:
-            fresh = _load_stored_stock_info(ticker)
+        fresh = _prefer_stored_over_naver_fallback(fresh, ticker)
         if not fresh:
             return None
         # 3) Ensure the slow-moving tabs are filled even when the snapshot
@@ -6940,6 +6956,11 @@ def _render_stock_info_html(rec: dict) -> str:
     _glitch = si.get("price_glitch_note") or ""
     _glitch_html = (f'<div style="grid-column:1/-1;font-size:11px;'
                     f'color:#f5a623">⚠️ {esc(_glitch)}</div>' if _glitch else "")
+    # 야후 .info 대신 네이버로 채운 헤더 — 어느 원천인지 밝힌다(2026-11-23, #43)
+    _isrc = si.get("info_source_note") or ""
+    if _isrc:
+        _glitch_html += (f'<div style="grid-column:1/-1;font-size:11px;'
+                         f'color:var(--fg-soft)">ℹ️ {esc(_isrc)}</div>')
     _sh_tip_attr = (f' title="{esc(shares_tip)}"' if shares_tip else "")
     header = f"""<div class="si-header">
   <div class="si-card"><span class="si-label">현재가</span>
@@ -20821,8 +20842,8 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
         si = collect_stock_snapshot(ticker)
     except Exception:
         pass
-    if not si:        # 스냅샷 실패(야후 차단 등) → 직전 분석 스냅샷 폴백(분석 종목)
-        si = _load_stored_stock_info(ticker)
+    # 스냅샷 실패(야후 차단 등)·네이버로만 채운 얇은 스냅샷 → 직전 분석 스냅샷(분석 종목)
+    si = _prefer_stored_over_naver_fallback(si, ticker)
 
     # Enrich missing tabs (news/research/consensus) on-demand — full 만
     if si and enrich:

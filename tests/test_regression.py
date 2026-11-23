@@ -4903,8 +4903,15 @@ class TestLiveQuoteOverlay:
         src = open("bot/dashboard.py", encoding="utf-8").read()
         i = src.find("def build_live_quote")
         body = src[i:i + 6000]
-        # yfinance 실패 시 저장 스냅샷으로 폴백해야 (None 즉시반환 금지)
-        assert "_load_stored_stock_info(ticker)" in body, "저장 스냅샷 폴백 누락"
+        # yfinance 실패 시 저장 스냅샷으로 폴백해야 (None 즉시반환 금지).
+        # 2026-11-23 계약 갱신(#222): 폴백은 `_prefer_stored_over_naver_fallback`
+        # 하나로 모였다(네이버로만 채운 얇은 스냅샷도 온전한 저장분에 진다).
+        # 배선은 여기서, 값은 tests/test_audit_20261123.py 의 동작 테스트가 잰다.
+        assert "_prefer_stored_over_naver_fallback(fresh, ticker)" in body, \
+            "저장 스냅샷 폴백 누락"
+        import bot.dashboard as d
+        assert d._prefer_stored_over_naver_fallback.__code__.co_names.count(
+            "_load_stored_stock_info") == 1
         # 뉴스/리서치 enrichment 를 명시적으로 보장
         assert "_ensure_detail_enrichment(ticker" in body, "탭 enrichment 보장 누락"
 

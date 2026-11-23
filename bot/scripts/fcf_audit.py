@@ -340,13 +340,15 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     say(f"── {tk}  [{mkt}]")
     snap = collect_stock_snapshot(tk, use_cache=False)
     snap_empty = False
-    if snap is None:
+    # 네이버 폴백 스냅샷(`info_source_note`)도 야후 `.info` 빈 응답이다 — 재무표가
+    # 없어 '신규 상장' 사유로 읽히고 원천 차단 계수에서 빠지지 않게 같은 갈래로 센다.
+    if snap is None or snap.get("info_source_note"):
         # ⚠️ 2026-11-23 결산 ❌ 4건(BDX·0162D0.KQ·2914.T·3443.TW)이 전부 이 갈래였다 —
         # `.info` 가 빈 응답이면 수집기가 None 을 준다. 필수 모듈 누락은 배너가 이미
         # 막으므로(#132) 남는 원인은 원천의 빈 응답이다 — 한 번 더 묻는다(#21).
         _time.sleep(_SNAP_RETRY_SEC)
         snap = collect_stock_snapshot(tk, use_cache=False)
-        snap_empty = snap is None
+        snap_empty = snap is None or bool(snap.get("info_source_note"))
     snap = snap or {}
     yq, ya = _yf_rows(snap, "quarterly"), _yf_rows(snap, "annual")
 

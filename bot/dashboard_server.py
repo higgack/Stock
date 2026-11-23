@@ -1805,7 +1805,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             def _build():
                 import bot.stock_snapshot as _ss
                 snap = _ss.collect_stock_snapshot(ticker)
-                stored_note = ""
+                # 야후가 비어 네이버로 채운 스냅샷이면 그 사실을 계산 위에 밝힌다(#43)
+                from html import escape as _esc
+                stored_note = (f"ℹ️ {snap['info_source_note']}"
+                               if snap and snap.get("info_source_note") else "")
                 if not snap:
                     # 상세 페이지의 다른 탭과 같은 사다리 — 야후가 실패하면 직전
                     # 분석 스냅샷으로 폴백한다(build_live_quote 와 같은 순서, #38).
