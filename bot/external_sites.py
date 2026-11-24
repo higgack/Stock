@@ -77,6 +77,9 @@ SITES: tuple[Site, ...] = (
     # 사용자 2026-11-05: "Sites 와 메인대시보드에 Update, 제목은 'Finboard'
     # 로 양쪽 다" — 두 표면 명시라 nav 등재.
     Site("Finboard", "Finboard", "https://www.finboard.co.kr/?view=agent"),
+    # 사용자 2026-11-24: "'장르만케미칼' 로 Sites 와 main board 에 모두 등록" —
+    # 두 표면 명시라 nav 등재.
+    Site("장르만케미칼", "장르만케미칼", "https://jangreuman-chemical.netlify.app/"),
 )
 
 

@@ -1188,7 +1188,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://mosobamboocompany.github.io/">모소밤부</a>
  • <a href="https://dashboard.camelresearch.com/">Axis</a>
  • <a href="https://consensus.cryptoquant.com/">Cryptoquant</a>
- • <a href="https://www.finboard.co.kr/?view=agent">Finboard</a>"""
+ • <a href="https://www.finboard.co.kr/?view=agent">Finboard</a>
+ • <a href="https://jangreuman-chemical.netlify.app/">장르만케미칼</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
