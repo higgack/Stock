@@ -17249,9 +17249,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
                        '회색 점선 — 설계상 구조화 대상 아님(자율공시·첨부정정, 제목이 곧 내용)')
         # 접힘 기본(사용자 2026-10-14 '내용이 많아져서 설명, 접어져있게 해줘') —
         # 요약 줄은 지금 있는 배지 이름만, 펼치면 한 줄에 하나씩 기준을 적는다.
-        parts.append('<details class="df-legend"><summary>색상 범례 · '
+        # 범례는 배지의 뜻을 적는 고정 설명이다 — 화면 감사(page_health)가 '⚠️ 문구가
+        # 며칠째 그대로' 로 세지 않게 고정 구역으로 밝힌다(#470 · 2026-11-26 결산 ❌ 2건).
+        parts.append(_ph_static('<details class="df-legend"><summary>색상 범례 · '
                      + ' '.join(_lg_names) + '</summary><ul>'
-                     + ''.join(f'<li>{x}</li>' for x in _lg) + '</ul></details>')
+                     + ''.join(f'<li>{x}</li>' for x in _lg) + '</ul></details>'))
 
     from collections import OrderedDict as _OD
     _months: "_OD[str, list]" = _OD()
@@ -17368,7 +17370,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]], *,
                 if _unp:
                     _card_cls += " df-unparsed"
                     _flags.append("unparsed")
-                    _badges += ('<span class="df-badge df-badge-unp" '
+                    # 카드 라벨(분류)이지 화면 상태 문구가 아니다 — 파서 갭의 계수는
+                    # 미파싱 필·dart_feed --why 가 맡는다(#470).
+                    _badges += _ph_static('<span class="df-badge df-badge-unp" '
                                 'title="우리 방식으로 파싱되지 않은 카드 — 제목·원문 '
                                 '링크를 공유하면 파서를 추가합니다">⚠️ 미파싱</span>')
                 if _nop:

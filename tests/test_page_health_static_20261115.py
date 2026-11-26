@@ -122,3 +122,28 @@ class TestResearchYieldGrade:
         # 창 절단(진짜 경고)이 앞에 붙으면 수렴 문구가 뒤따라도 ⚠️ 다
         cut = "30일 중 20일만 받음 · " + detail_yield_note(self._ROWS)
         assert "⚠️" in d._research_window_html({"window": cut})
+
+
+class TestDartFeedLegendAndBadge:
+    """2026-11-26 결산 ❌ 2건 — DART 피드의 색상 범례 줄과 카드 '⚠️ 미파싱' 배지가
+    '경고 문구 4일째 그대로' 로 올랐다. 둘 다 분류 라벨·고정 설명이라 생성부가
+    고정 구역으로 밝힌다(#470). 상태 줄(키 없음·저장분)은 여전히 세어야 한다."""
+
+    def _html(self):
+        import bot.dashboard as d
+        it = {"rcept_no": "20261125000001", "date": "20261125", "corp_name": "테스트",
+              "stock_code": "000001", "corp_code": "00100001",
+              "report_nm": "단일판매ㆍ공급계약체결", "category": "계약", "detail": []}
+        return d._render_dart_feed_page({"2026-11-25": [it]})[0]
+
+    def test_unparsed_legend_and_badge_are_not_state(self):
+        html = self._html()
+        assert 'class="df-badge df-badge-unp"' in html   # 배지·범례는 그대로 그려진다
+        assert "파란 점선" in html
+        texts = [f["text"] for f in ph.findings(html)]
+        assert not any("미파싱" in t for t in texts), texts
+
+    def test_state_line_outside_still_counted(self):
+        """반대 증거 — 감싸기가 페이지 전체를 삼키지 않는다."""
+        html = self._html() + '<div>⚠️ 수집 중단 — 테스트 상태</div>'
+        assert any("수집 중단" in f["text"] for f in ph.findings(html))
