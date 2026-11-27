@@ -24,15 +24,20 @@ month-over-month change — the stock-relevant signal (Korean exporters).
 
 Schedule: trade-bot-customs-fetch.service (daily, after fetch).
 Run by hand:  .venv/bin/python -m trade.scripts.customs_alert
+HS 개정 판정만 (읽기 전용, 보내지 않음):  … customs_alert --hs-check
 """
 
 import html
+import json
 import logging
 import os
+import re
 import subprocess
 import sqlite3
 import sys
 import time
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -52,15 +57,23 @@ CAP = int(os.environ.get("TRADE_CUSTOMS_ALERT_MAX") or "10")
 TEASER = 3  # how many biggest movers to show when over cap
 
 # HS reference freshness — the operator asked 'how do I even know the
-# data changed?'. 관세청 HS부호 is revised ~annually (Jan 1). 180 days
-# catches a missed annual update with margin; 30-day re-alert lockout
-# stops nagging when the operator hasn't gotten to it yet.
-HS_REF_STALE_DAYS = int(os.environ.get("TRADE_HS_REF_STALE_DAYS") or "180")
+# data changed?'. The judge is the REVISION, not the file's age: the
+# portal page names its latest file 관세청_HS부호_YYYYMMDD (the Telegram
+# preview of this very alert showed '관세청_HS부호_20260101', 2026-11-27).
+# An age threshold (180 days) fired on a file downloaded in May that
+# already WAS the 2026-01-01 revision — and would have kept firing every
+# 30 days until the next one. 30-day re-alert lockout stays.
 HS_REF_REALERT_DAYS = int(os.environ.get("TRADE_HS_REF_REALERT_DAYS") or "30")
+HS_PORTAL_URL = "https://www.data.go.kr/data/15049722/fileData.do"
+_HS_REV_RE = re.compile(r"관세청_HS부호_(\d{8})")
+_KST = timezone(timedelta(hours=9))
 
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 _HS_REF_PATHS = (_DATA_DIR / "hs_codes.xlsx", _DATA_DIR / "hs_codes.csv")
 _HS_REF_MARKER = _DATA_DIR / ".hs_ref_alert_seen"
+# Which revision the host file holds, recorded when we see the file change
+# (the content doesn't reliably say — unmeasured — so we attribute it).
+_HS_REF_STATE = _DATA_DIR / ".hs_ref_revision.json"
 
 _SEEN_SQL = """
 CREATE TABLE IF NOT EXISTS customs_alert_seen (
@@ -94,22 +107,118 @@ def _mark(conn: sqlite3.Connection, hs_code: str, ym: str) -> None:
     )
 
 
-def _check_hs_reference_freshness(now: float | None = None) -> str | None:
-    """Return an alert body when ~/.trade/hs_codes.{xlsx,csv} is older
-    than HS_REF_STALE_DAYS — or None when fresh, missing (caller skips),
-    or recently re-alerted.
+def _kst_date(ts: float) -> date:
+    return datetime.fromtimestamp(ts, _KST).date()
 
-    Marker file at .hs_ref_alert_seen records the last alert time so
-    successive runs don't nag the operator daily. The marker is touched
-    only after the alert text is returned to a successful send path —
-    that's the caller's responsibility (mirrors how seen-marker timing
-    works for the ±30% path)."""
+
+def portal_revision(timeout: float = 15) -> tuple[date | None, str]:
+    """Latest revision the portal page names → (date, '') or (None, reason).
+
+    Two failure branches are told apart (#82): couldn't reach the page vs.
+    the page no longer carries '관세청_HS부호_YYYYMMDD' (layout change)."""
+    try:
+        req = urllib.request.Request(
+            HS_PORTAL_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(3_000_000).decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001 — reason goes to the caller
+        return None, f"포털 접속 실패({type(e).__name__})"
+    dates = []
+    for m in _HS_REV_RE.finditer(body):
+        try:
+            dates.append(datetime.strptime(m.group(1), "%Y%m%d").date())
+        except ValueError:
+            continue
+    if not dates:
+        return None, "포털 페이지에 '관세청_HS부호_날짜' 표기가 없음(구조 변경?)"
+    return max(dates), ""
+
+
+def _file_revision(ref: Path, portal_rev: date | None, *,
+                   record: bool) -> date | None:
+    """Revision the host file holds, as far as we can know — None = older
+    than the portal's (or not attributable right now).
+
+    The content doesn't reliably carry it, so we attribute: a file that
+    CHANGED since our last record was downloaded from the portal, i.e. it
+    is the portal's latest at that moment (we look 4×/day). A file we
+    have never recorded (first run) counts as that revision only when it
+    was saved on/after the revision date — so a December download of a
+    pre-published January revision isn't misread as old after the first
+    run. `record=False` (the read-only check) never writes the state."""
+    st = ref.stat()
+    key = st.st_mtime_ns
+    try:
+        rec = json.loads(_HS_REF_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    if not isinstance(rec, dict):
+        rec = None
+    if rec is not None and rec.get("key") == key:
+        try:
+            return date.fromisoformat(rec["revision"])
+        except (KeyError, TypeError, ValueError):
+            rec = None
+    if portal_rev is None:
+        return None
+    if rec is None and _kst_date(st.st_mtime) < portal_rev:
+        return None        # first sight, saved before the revision → older
+    if record:
+        try:
+            _HS_REF_STATE.parent.mkdir(parents=True, exist_ok=True)
+            _HS_REF_STATE.write_text(json.dumps(
+                {"key": key, "revision": portal_rev.isoformat()}),
+                encoding="utf-8")
+        except OSError as e:
+            log.warning("HS revision record not written: %s", e)
+    return portal_rev
+
+
+def hs_reference_status(now: float | None = None, *,
+                        record: bool = True) -> dict | None:
+    """Judge the host HS reference against the latest revision. None when
+    no file. `held` is the one sentence both the alert and --hs-check
+    print, so the two can't say different things (#38)."""
     now = now if now is not None else time.time()
     ref = next((p for p in _HS_REF_PATHS if p.exists()), None)
     if ref is None:
         return None  # no file → /hs search already shows a download hint
-    age_days = (now - ref.stat().st_mtime) / 86400.0
-    if age_days < HS_REF_STALE_DAYS:
+    p_rev, p_err = portal_revision()
+    f_rev = _file_revision(ref, p_rev, record=record)
+    saved = _kst_date(ref.stat().st_mtime)
+    if p_rev is not None:
+        expected, basis = p_rev, "포털 최신판"
+        stale = f_rev is None or f_rev < p_rev
+    else:
+        # Portal unreadable — fall back to the calendar (annual Jan 1
+        # revision) and say so; the message names the reason.
+        expected = date(_kst_date(now).year, 1, 1)
+        basis = f"달력 기준(1월 1일 개정) — {p_err}"
+        stale = (f_rev or saved) < expected
+    if f_rev is not None:
+        held = f"{f_rev:%Y-%m-%d} 판"
+    elif stale:
+        held = "그보다 앞선 판"
+    else:   # calendar fallback, never attributed: judged by the save date
+        held = "판 기록 없음 — 저장일이 개정일 뒤라 최신판으로 봄"
+    return {"file": ref.name, "saved": saved, "file_rev": f_rev,
+            "expected": expected, "basis": basis, "stale": stale,
+            "held": held}
+
+
+def _check_hs_reference_freshness(now: float | None = None) -> str | None:
+    """Alert body when the host file holds an older revision than the
+    latest — None when current, missing, or re-alerted within
+    HS_REF_REALERT_DAYS. The marker is touched by the caller only after
+    a successful send (same timing as the ±30% path)."""
+    now = now if now is not None else time.time()
+    st = hs_reference_status(now)
+    if st is None:
+        return None
+    log.info("HS reference: file=%s saved=%s rev=%s expected=%s (%s) stale=%s",
+             st["file"], st["saved"], st["file_rev"], st["expected"],
+             st["basis"], st["stale"])
+    if not st["stale"]:
         return None
     if _HS_REF_MARKER.exists():
         since = (now - _HS_REF_MARKER.stat().st_mtime) / 86400.0
@@ -117,12 +226,11 @@ def _check_hs_reference_freshness(now: float | None = None) -> str | None:
             return None
     return (
         "📅 <b>관세청 HS부호 개정 확인</b>\n"
-        f"현재 호스트 파일이 <b>{int(age_days)}일</b> 전 것 "
-        f"(<code>{html.escape(ref.name)}</code>).\n"
-        "1월 1일자 연 1회 개정. 새 파일을 받아 같은 경로에 덮어쓰면 "
-        "다음 검색부터 자동 반영.\n"
-        "<a href=\"https://www.data.go.kr/data/15049722/fileData.do\">"
-        "dataset 15049722</a>"
+        f"{html.escape(st['basis'])}: <b>{st['expected']:%Y-%m-%d}</b> 개정\n"
+        f"호스트 파일(<code>{html.escape(st['file'])}</code>): "
+        f"{st['saved']:%Y-%m-%d} 저장 → {st['held']}\n"
+        "새 파일을 받아 같은 경로에 덮어쓰면 다음 검색부터 자동 반영.\n"
+        f"<a href=\"{HS_PORTAL_URL}\">dataset 15049722</a>"
     )
 
 
@@ -322,7 +430,32 @@ def run(db_path=None, notify=None) -> int:
         conn.close()
 
 
+def hs_check() -> int:
+    """`--hs-check`: read-only verdict of the HS reference reminder — no
+    send, no marker, no revision record (#264). Prints a line on every
+    branch, including the healthy one (#274)."""
+    st = hs_reference_status(record=False)
+    if st is None:
+        print(f"❓ HS부호 참조 파일 없음 ({_HS_REF_PATHS[0]}) — 알림 대상 아님")
+        return 0
+    print(f"HS부호 참조 파일: {st['file']} ({st['saved']:%Y-%m-%d} 저장)")
+    print(f"{st['basis']}: {st['expected']:%Y-%m-%d} 개정")
+    print(f"파일이 가진 판(판단): {st['held']}")
+    if not st["stale"]:
+        print("✅ 최신판 — 개정 알림 안 보냄")
+        return 0
+    lock = ""
+    if _HS_REF_MARKER.exists():
+        since = (time.time() - _HS_REF_MARKER.stat().st_mtime) / 86400.0
+        if since < HS_REF_REALERT_DAYS:
+            lock = f" (직전 알림 {since:.0f}일 전 — {HS_REF_REALERT_DAYS}일 안엔 다시 안 보냄)"
+    print(f"⚠️ 새 판을 받아 덮어쓸 것 — {HS_PORTAL_URL}{lock}")
+    return 1
+
+
 def main() -> int:
+    if "--hs-check" in sys.argv[1:]:
+        return hs_check()
     return run()
 
 

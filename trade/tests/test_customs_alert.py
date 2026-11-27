@@ -151,19 +151,39 @@ class TestCustomsAlert(unittest.TestCase):
         self.assertEqual(c.msgs, [])
 
 
+def _ts(y, m, d, hh=12):
+    """KST wall clock → epoch (file mtimes / `now` pinned to real dates)."""
+    from datetime import datetime, timedelta, timezone
+    return datetime(y, m, d, hh, tzinfo=timezone(timedelta(hours=9))).timestamp()
+
+
 class TestHsReferenceFreshness(unittest.TestCase):
-    """The annual-update reminder. Has to silently no-op when fresh /
-    missing / recently-alerted — anything else nags."""
+    """The HS revision reminder judges the REVISION, not the file's age.
+
+    Rewritten 2026-11-27 (#222): the old contract was 'older than 180 days
+    → alert', and it fired on a file saved 2026-05-31 that already WAS the
+    2026-01-01 revision the portal still offered (the alert's own link
+    preview showed 관세청_HS부호_20260101) — and would have re-fired every
+    30 days until the next revision. Kept guarantees: silent when missing /
+    current / re-alerted within 30 days; marker only after a good send."""
+
+    D = __import__("datetime").date
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         self.ref = self.dir / "hs_codes.xlsx"
         self.marker = self.dir / ".hs_ref_alert_seen"
+        self.state = self.dir / ".hs_ref_revision.json"
+        self.portal = (self.D(2026, 1, 1), "")
+        self.now = _ts(2026, 11, 27)
         self._patches = [
             mock.patch.object(customs_alert, "_HS_REF_PATHS",
                               (self.ref, self.dir / "hs_codes.csv")),
             mock.patch.object(customs_alert, "_HS_REF_MARKER", self.marker),
+            mock.patch.object(customs_alert, "_HS_REF_STATE", self.state),
+            mock.patch.object(customs_alert, "portal_revision",
+                              side_effect=lambda: self.portal),
         ]
         for p in self._patches:
             p.start()
@@ -175,45 +195,83 @@ class TestHsReferenceFreshness(unittest.TestCase):
         os.environ.pop("TRADE_OPERATOR_CHAT_ID", None)
         self.tmp.cleanup()
 
+    def _file(self, y, m, d, body=b"x"):
+        self.ref.write_bytes(body)
+        t = _ts(y, m, d)
+        os.utime(self.ref, (t, t))
+
+    def _check(self, now=None):
+        return customs_alert._check_hs_reference_freshness(
+            now=self.now if now is None else now)
+
     def test_missing_file_returns_none(self):
-        self.assertIsNone(customs_alert._check_hs_reference_freshness())
+        self.assertIsNone(self._check())
 
-    def test_fresh_file_returns_none(self):
-        self.ref.write_bytes(b"x")
-        os.utime(self.ref, (time.time(), time.time()))
-        self.assertIsNone(customs_alert._check_hs_reference_freshness())
+    def test_reported_case_180_day_old_current_revision_is_silent(self):
+        """The 2026-11-27 alert: saved 180 days ago, after the 2026-01-01
+        revision the portal still names → current, no alert, and the
+        attribution is recorded for later runs."""
+        self._file(2026, 5, 31)
+        self.assertIsNone(self._check())
+        rec = __import__("json").loads(self.state.read_text())
+        self.assertEqual(rec["revision"], "2026-01-01")
 
-    def test_stale_file_returns_alert(self):
-        self.ref.write_bytes(b"x")
-        old = time.time() - 200 * 86400  # 200 days old > 180-day threshold
-        os.utime(self.ref, (old, old))
-        msg = customs_alert._check_hs_reference_freshness()
+    def test_newer_portal_revision_alerts(self):
+        self._file(2026, 5, 31)
+        self.assertIsNone(self._check())              # records 2026-01-01
+        self.portal = (self.D(2027, 1, 1), "")
+        msg = self._check(now=_ts(2027, 1, 20))
         self.assertIsNotNone(msg)
-        self.assertIn("개정", msg)
-        self.assertIn("200", msg)
+        self.assertIn("2027-01-01</b> 개정", msg)
+        self.assertIn("2026-05-31 저장 → 2026-01-01 판", msg)
         self.assertIn("15049722", msg)
 
+    def test_first_sight_file_older_than_revision_alerts_without_record(self):
+        self._file(2025, 12, 1)
+        msg = self._check()
+        self.assertIsNotNone(msg)
+        self.assertIn("그보다 앞선 판", msg)
+        self.assertFalse(self.state.exists())         # not attributed
+
+    def test_replaced_file_is_the_portal_latest_even_if_saved_before_effective(self):
+        """A pre-published revision downloaded in December must not read as
+        old after the record exists (the date-only rule would nag forever)."""
+        self._file(2026, 5, 31)
+        self.assertIsNone(self._check())               # record: old file
+        self.portal = (self.D(2027, 1, 1), "")
+        self._file(2026, 12, 20, body=b"new revision")  # operator replaced it
+        self.assertIsNone(self._check(now=_ts(2026, 12, 21)))
+        self.assertIsNone(self._check(now=_ts(2027, 2, 20)))
+        rec = __import__("json").loads(self.state.read_text())
+        self.assertEqual(rec["revision"], "2027-01-01")
+
+    def test_portal_unreadable_falls_back_to_calendar_and_says_why(self):
+        self.portal = (None, "포털 접속 실패(URLError)")
+        self._file(2026, 5, 31)
+        self.assertIsNone(self._check())               # saved after Jan 1
+        self._file(2025, 12, 1)
+        msg = self._check()
+        self.assertIsNotNone(msg)
+        self.assertIn("달력 기준(1월 1일 개정) — 포털 접속 실패(URLError)", msg)
+        self.assertIn("2026-01-01</b> 개정", msg)
+        self.assertFalse(self.state.exists())          # nothing attributed
+
     def test_recent_marker_blocks_realert(self):
-        self.ref.write_bytes(b"x")
-        old = time.time() - 200 * 86400
-        os.utime(self.ref, (old, old))
-        self.marker.touch()  # alerted recently → suppressed
-        self.assertIsNone(customs_alert._check_hs_reference_freshness())
+        self._file(2025, 12, 1)
+        self.marker.touch()
+        t = self.now - 5 * 86400
+        os.utime(self.marker, (t, t))
+        self.assertIsNone(self._check())
 
     def test_old_marker_allows_realert(self):
-        self.ref.write_bytes(b"x")
-        old = time.time() - 200 * 86400
-        os.utime(self.ref, (old, old))
+        self._file(2025, 12, 1)
         self.marker.touch()
-        # Marker older than HS_REF_REALERT_DAYS → re-alert allowed
-        far = time.time() - 60 * 86400
-        os.utime(self.marker, (far, far))
-        self.assertIsNotNone(customs_alert._check_hs_reference_freshness())
+        t = self.now - 60 * 86400
+        os.utime(self.marker, (t, t))
+        self.assertIsNotNone(self._check())
 
     def test_run_sends_freshness_then_touches_marker(self):
-        self.ref.write_bytes(b"x")
-        old = time.time() - 200 * 86400
-        os.utime(self.ref, (old, old))
+        self._file(2025, 12, 1)
         c = _Collector(ok=True)
         with mock.patch.object(customs_alert.hs_map, "entries", return_value=[]):
             customs_alert.run(db_path=self.dir / "customs.db", notify=c)
@@ -222,13 +280,95 @@ class TestHsReferenceFreshness(unittest.TestCase):
         self.assertTrue(self.marker.exists())
 
     def test_run_does_not_touch_marker_on_send_failure(self):
-        self.ref.write_bytes(b"x")
-        old = time.time() - 200 * 86400
-        os.utime(self.ref, (old, old))
+        self._file(2025, 12, 1)
         fail = _Collector(ok=False)
         with mock.patch.object(customs_alert.hs_map, "entries", return_value=[]):
             customs_alert.run(db_path=self.dir / "customs.db", notify=fail)
         self.assertFalse(self.marker.exists())  # retry next tick
+
+    def test_hs_check_is_read_only_and_speaks_on_healthy_branch(self):
+        import contextlib
+        import io
+        self._file(2026, 5, 31)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch.object(customs_alert.sys, "argv", ["x", "--hs-check"]):
+            rc = customs_alert.main()
+        self.assertEqual(rc, 0)
+        self.assertIn("✅ 최신판", out.getvalue())
+        self.assertIn("포털 최신판: 2026-01-01 개정", out.getvalue())
+        self.assertFalse(self.state.exists())
+        self.assertFalse(self.marker.exists())
+
+    def test_hs_check_calendar_fallback_never_says_older_next_to_ok(self):
+        """Portal unreadable + no record + saved after Jan 1: the verdict
+        is ✅ by save date, so the 'held' line must not claim an older
+        revision on the same screen (self-review 2026-11-27)."""
+        import contextlib
+        import io
+        self.portal = (None, "포털 접속 실패(URLError)")
+        self._file(2026, 5, 31)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch.object(customs_alert.sys, "argv", ["x", "--hs-check"]):
+            rc = customs_alert.main()
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("✅ 최신판", text)
+        self.assertIn("판 기록 없음 — 저장일이 개정일 뒤라 최신판으로 봄", text)
+        self.assertNotIn("그보다 앞선 판", text)
+
+    def test_hs_check_stale_returns_1(self):
+        import contextlib
+        import io
+        self._file(2025, 12, 1)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch.object(customs_alert.sys, "argv", ["x", "--hs-check"]):
+            rc = customs_alert.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("⚠️ 새 판을 받아", out.getvalue())
+        self.assertIn("그보다 앞선 판", out.getvalue())
+
+
+class TestPortalRevision(unittest.TestCase):
+    """The portal reader: latest date on the page, and two named failure
+    branches (unreachable vs. layout without the marker)."""
+
+    def _body(self, text):
+        class _R:
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *a):
+                return False
+
+            def read(s, n=-1):
+                return text.encode("utf-8")
+        return mock.patch.object(customs_alert.urllib.request, "urlopen",
+                                 return_value=_R())
+
+    def test_latest_date_wins(self):
+        from datetime import date
+        # Older first so 'first match' can't pass for 'latest'; 20251399
+        # is not a date and must be skipped, not raise.
+        with self._body("이력 관세청_HS부호_20250101 "
+                        "<title>관세청_HS부호_20260101</title> 관세청_HS부호_20251399"):
+            self.assertEqual(customs_alert.portal_revision(),
+                             (date(2026, 1, 1), ""))
+
+    def test_page_without_marker_names_layout(self):
+        with self._body("<html>다른 화면</html>"):
+            rev, why = customs_alert.portal_revision()
+        self.assertIsNone(rev)
+        self.assertIn("표기가 없음", why)
+
+    def test_unreachable_names_exception(self):
+        with mock.patch.object(customs_alert.urllib.request, "urlopen",
+                               side_effect=OSError("down")):
+            rev, why = customs_alert.portal_revision()
+        self.assertIsNone(rev)
+        self.assertEqual(why, "포털 접속 실패(OSError)")
 
 
 class SplitTelegramTests(unittest.TestCase):
